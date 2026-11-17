@@ -1,4 +1,4 @@
-//! Resolve the ordered terrain aliases used by movement costs and defense.
+//! Resolve terrain aliases and scenario rule features.
 
 use std::collections::HashMap;
 
@@ -17,6 +17,36 @@ pub enum AliasTerm<'a> {
     Terrain(&'a str),
 }
 
+/// Game rules attached to a terrain code.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TerrainFeatures {
+    pub village: bool,
+    pub castle: bool,
+    pub keep: bool,
+    pub healing: i32,
+}
+
+impl TerrainFeatures {
+    fn from_wml(terrain: &Node) -> Self {
+        let value = |key| {
+            terrain
+                .attributes
+                .get(key)
+                .filter(|value| value.translations.is_empty())
+                .map(|value| value.text.as_str())
+        };
+        let enabled = |key| matches!(value(key), Some("yes" | "true"));
+        Self {
+            village: enabled("gives_income"),
+            castle: enabled("recruit_onto"),
+            keep: enabled("recruit_from"),
+            healing: value("heals")
+                .and_then(|text| text.trim_ascii().parse().ok())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TerrainAliases {
     definitions: HashMap<String, Definition>,
@@ -27,6 +57,7 @@ struct Definition {
     id: String,
     movement: Vec<String>,
     defense: Vec<String>,
+    features: TerrainFeatures,
 }
 
 impl Definition {
@@ -55,6 +86,7 @@ impl TerrainAliases {
                     id: terrain.attribute("id").unwrap_or_default().to_owned(),
                     movement: read_alias(terrain.attribute("mvt_alias"), shared, code),
                     defense: read_alias(terrain.attribute("def_alias"), shared, code),
+                    features: TerrainFeatures::from_wml(terrain),
                 }
             });
         }
@@ -68,6 +100,24 @@ impl TerrainAliases {
             .map(|definition| definition.id.as_str())
     }
 
+    /// Returns the features of an exact terrain code or a known base and overlay.
+    /// Undefined terrain has no special features and heals zero hitpoints.
+    pub fn features(&self, code: &str) -> TerrainFeatures {
+        let code = canonical_code(code);
+        if let Some(definition) = self.definitions.get(code) {
+            return definition.features;
+        }
+        if let Some((base, overlay)) = self.layers(code) {
+            return TerrainFeatures {
+                village: base.features.village || overlay.features.village,
+                castle: base.features.castle || overlay.features.castle,
+                keep: base.features.keep || overlay.features.keep,
+                healing: base.features.healing.max(overlay.features.healing),
+            };
+        }
+        TerrainFeatures::default()
+    }
+
     /// Resolve one layer of aliasing. Callers can evaluate terrain references
     /// recursively with their own movement or defense values.
     pub fn terms<'a>(&'a self, code: &'a str, kind: AliasKind) -> Vec<AliasTerm<'a>> {
@@ -76,16 +126,16 @@ impl TerrainAliases {
             return alias_terms(definition.terms(kind)).collect();
         }
 
-        if let Some(overlay_start) = code.find('^') {
-            let (base, overlay) = code.split_at(overlay_start);
-            if let (Some(base), Some(overlay)) =
-                (self.definitions.get(base), self.definitions.get(overlay))
-            {
-                return merge_aliases(base.terms(kind), overlay.terms(kind));
-            }
+        if let Some((base, overlay)) = self.layers(code) {
+            return merge_aliases(base.terms(kind), overlay.terms(kind));
         }
 
         vec![AliasTerm::Terrain(code)]
+    }
+
+    fn layers(&self, code: &str) -> Option<(&Definition, &Definition)> {
+        let (base, overlay) = code.split_at(code.find('^')?);
+        Some((self.definitions.get(base)?, self.definitions.get(overlay)?))
     }
 }
 
@@ -135,7 +185,7 @@ fn merge_aliases<'a>(base: &'a [String], overlay: &'a [String]) -> Vec<AliasTerm
 mod tests {
     use super::AliasKind::{Defense, Movement};
     use super::AliasTerm::{Best, Terrain, Worst};
-    use super::TerrainAliases;
+    use super::{TerrainAliases, TerrainFeatures};
     use crate::wml;
 
     fn aliases(config: &str) -> TerrainAliases {
@@ -203,5 +253,91 @@ mod tests {
         assert_eq!(catalog.terms("Gg^Vh", Movement), [Terrain("Vt")]);
         assert_eq!(catalog.terms("Gg^", Defense), [Terrain("Gg")]);
         assert_eq!(catalog.terms("Hh^Fp", Defense), [Terrain("Hh^Fp")]);
+    }
+
+    #[test]
+    fn terrain_features_combine_known_layers_and_default_for_unknown_codes() {
+        let catalog = aliases(
+            r#"
+            [terrain_type]
+                string=Ch
+                recruit_onto=yes
+                heals=3
+            [/terrain_type]
+            [terrain_type]
+                string=^Vh
+                gives_income=true
+                recruit_from=yes
+                heals=8
+            [/terrain_type]
+            [terrain_type]
+                string=^Fp
+                heals=-2
+            [/terrain_type]
+            "#,
+        );
+        assert_eq!(
+            catalog.features("Ch^Vh"),
+            TerrainFeatures {
+                village: true,
+                castle: true,
+                keep: true,
+                healing: 8,
+            }
+        );
+        assert_eq!(
+            catalog.features("Ch^Fp"),
+            TerrainFeatures {
+                castle: true,
+                healing: 3,
+                ..TerrainFeatures::default()
+            }
+        );
+        assert_eq!(catalog.features("Ch^Fj"), TerrainFeatures::default());
+        assert_eq!(catalog.features("Gg^Vh"), TerrainFeatures::default());
+    }
+
+    #[test]
+    fn exact_terrain_features_override_layers_and_keep_the_first_definition() {
+        let catalog = aliases(
+            r#"
+            [terrain_type]
+                string=Ch
+                recruit_onto=yes
+            [/terrain_type]
+            [terrain_type]
+                string=^Vh
+                gives_income=yes
+                heals=8
+            [/terrain_type]
+            [terrain_type]
+                string=Ch^Vh
+                recruit_from=true
+                gives_income=no
+                recruit_onto=1
+                heals=-1
+            [/terrain_type]
+            [terrain_type]
+                string=Ch^Vh
+                gives_income=yes
+                heals=7
+            [/terrain_type]
+            "#,
+        );
+        assert_eq!(
+            catalog.features("Ch^Vh"),
+            TerrainFeatures {
+                keep: true,
+                healing: -1,
+                ..TerrainFeatures::default()
+            }
+        );
+        assert_eq!(
+            catalog.features("Ch^"),
+            TerrainFeatures {
+                castle: true,
+                ..TerrainFeatures::default()
+            }
+        );
     }
 }
