@@ -44,6 +44,18 @@ pub struct Rules<'data> {
     pub resistance: &'data BTreeMap<String, DamageTable>,
 }
 
+impl Rules<'_> {
+    fn walking_cost(&self, unit_type: &UnitType, terrain: &str) -> Option<NonZeroU32> {
+        let inherited = self
+            .movement
+            .get(&unit_type.movement_type)
+            .map(|profile| &profile.movement_costs);
+        unit_type
+            .movement_cost_overrides
+            .cost_with_fallback(self.terrain, terrain, false, inherited)
+    }
+}
+
 /// A headless match on a fixed, fully visible map with two opposing sides.
 ///
 /// This match uses base unit stats and supports unconditional weapon firststrike.
@@ -138,7 +150,7 @@ impl<'data> FixedMatch<'data> {
                 .move_destinations(
                     turn.side,
                     from,
-                    |terrain| self.walking_cost(unit, terrain),
+                    |terrain| self.rules.walking_cost(unit.unit_type, terrain),
                     |side| side == opponent,
                 )
                 .expect("owned move origin");
@@ -163,14 +175,12 @@ impl<'data> FixedMatch<'data> {
         match action {
             Action::Move { from, to } => {
                 let board = &mut self.scenario.board;
-                let unit = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
-                let profile = self.rules.movement.get(&unit.unit_type.movement_type);
-                let terrain_aliases = self.rules.terrain;
+                let unit_type = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?.unit_type;
                 board.move_unit(
                     turn.side,
                     from,
                     to,
-                    |terrain| profile?.movement_costs.cost(terrain_aliases, terrain, false),
+                    |terrain| self.rules.walking_cost(unit_type, terrain),
                     |side| side == opponent,
                 )?;
                 if self.capture_village(turn.side, to) {
@@ -240,14 +250,6 @@ impl<'data> FixedMatch<'data> {
         let index = turn.side - 1;
         let side = &self.scenario.sides[index];
         self.gold[index] += net_income(side, DEFAULT_BASE_INCOME, villages, upkeep);
-    }
-
-    fn walking_cost(&self, unit: &UnitState<'_>, terrain: &str) -> Option<NonZeroU32> {
-        self.rules
-            .movement
-            .get(&unit.unit_type.movement_type)?
-            .movement_costs
-            .cost(self.rules.terrain, terrain, false)
     }
 
     fn prepare_attack(&self, turn: Turn, choice: AttackChoice) -> Result<Attack, AttackError> {
@@ -488,6 +490,76 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         let (observation, _) = game.decision().unwrap();
         assert_eq!(observation.tiles[1].village_owner, Some(1));
         assert_eq!(observation.units[0].moves_left, Some(0));
+    }
+
+    #[test]
+    fn unit_movement_costs_override_selected_inherited_terrains() {
+        let bundle = crate::scenario_bundle::Bundle::parse(
+            br#"
+            [terrain_type]
+                id=flat
+                string=Gg
+            [/terrain_type]
+            [terrain_type]
+                id=hills
+                string=Hh
+            [/terrain_type]
+            [terrain_type]
+                id=shallow_water
+                string=Ww
+            [/terrain_type]
+            [units]
+                [movetype]
+                    name=foot
+                    [movement_costs]
+                        flat=1
+                        hills=1
+                        shallow_water=1
+                    [/movement_costs]
+                [/movetype]
+                [unit_type]
+                    id=Fighter
+                    movement=4
+                    movement_type=foot
+                    [movement_costs]
+                        flat=4
+                        shallow_water=unknown
+                    [/movement_costs]
+                    [movement_costs]
+                        flat=2
+                    [/movement_costs]
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Hh,Ww,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    type=Fighter
+                [/side]
+                [side]
+                    side=2
+                    type=Fighter
+                [/side]
+            [/scenario]
+            "#,
+        )
+        .unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let [home, grass, hill, water] = [0, 1, 2, 3].map(|x| Hex { x, y: 0 });
+        let (_, actions) = game.decision().unwrap();
+        assert!(actions.contains(&Action::Move { from: home, to: hill }));
+        assert!(!actions.contains(&Action::Move { from: home, to: water }));
+
+        game.step(Action::Move { from: home, to: grass }).unwrap();
+        assert_eq!(game.scenario.board.unit_at(grass).unwrap().moves_left, 2);
+        game.step(Action::Move { from: grass, to: hill }).unwrap();
+        assert_eq!(game.scenario.board.unit_at(hill).unwrap().moves_left, 1);
+        assert_eq!(
+            game.step(Action::Move { from: hill, to: water }),
+            Err(MatchError::Move(MoveError::Unreachable(water))),
+        );
     }
 
     #[test]
