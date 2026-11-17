@@ -58,8 +58,13 @@ function capture.snapshot(step, time_over)
     end
     for _, unit in ipairs(units) do
         local unit_type = unit.type:gsub("[\\\t\r\n]", escapes)
+        local traits = {}
+        for index, id in ipairs(unit.traits) do
+            traits[index] = id:gsub("[\\\t\r\n]", escapes)
+        end
         row("unit", unit.x, unit.y, unit.side, unit_type, unit.hitpoints,
-            unit.moves, unit.attacks_left, unit.canrecruit and 1 or 0, unit.experience)
+            unit.moves, unit.attacks_left, unit.canrecruit and 1 or 0, unit.experience,
+            table.unpack(traits))
     end
     for _, village in ipairs(owned_villages()) do
         row("village", village.x, village.y, village.side)

@@ -21,8 +21,8 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
     }
     for unit in &snapshot.units {
         let (x, y) = wml_position(unit.position)?;
-        let type_id = escape_type_id(&unit.type_id);
-        writeln!(
+        let type_id = escape_id(&unit.type_id);
+        write!(
             out,
             "unit\t{x}\t{y}\t{}\t{type_id}\t{}\t{}\t{}\t{}\t{}",
             unit.side,
@@ -32,6 +32,10 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
             u8::from(unit.can_recruit),
             unit.experience
         )?;
+        for trait_id in &unit.traits {
+            write!(out, "\t{}", escape_id(trait_id))?;
+        }
+        writeln!(out)?;
     }
     for &(position, side) in &snapshot.villages {
         let (x, y) = wml_position(position)?;
@@ -40,9 +44,9 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
     writeln!(out, "end\t{step}")
 }
 
-fn escape_type_id(type_id: &str) -> String {
-    let mut escaped = String::with_capacity(type_id.len());
-    for character in type_id.chars() {
+fn escape_id(id: &str) -> String {
+    let mut escaped = String::with_capacity(id.len());
+    for character in id.chars() {
         match character {
             '\\' => escaped.push_str("\\\\"),
             '\t' => escaped.push_str("\\t"),
@@ -84,6 +88,7 @@ mod tests {
                     attacks_left: 2,
                     can_recruit: true,
                     experience: 9,
+                    traits: vec!["quick".to_owned(), "夜\tfighter".to_owned()],
                 },
                 SnapshotUnit {
                     position: Hex { x: 1, y: 0 },
@@ -94,6 +99,7 @@ mod tests {
                     attacks_left: 0,
                     can_recruit: false,
                     experience: 0,
+                    traits: Vec::new(),
                 },
             ],
             villages: vec![(Hex { x: 0, y: 1 }, 1), (Hex { x: 4, y: 0 }, 2)],
@@ -106,7 +112,7 @@ mod tests {
                 "step\t3\tplaying\t7\t2\n",
                 "gold\t1\t-4\n",
                 "gold\t2\t17\n",
-                "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\n",
+                "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\tquick\t夜\\tfighter\n",
                 "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\t0\n",
                 "village\t1\t2\t1\n",
                 "village\t5\t1\t2\n",
