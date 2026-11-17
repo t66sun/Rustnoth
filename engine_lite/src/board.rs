@@ -25,6 +25,7 @@ pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{combatant, within_range};
 
 const REST_HEALING: i64 = 2;
+pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
 
 /// Full referee state for the fixed map and its units.
 ///
@@ -35,6 +36,7 @@ pub struct Battlefield<'rules> {
     units: BTreeMap<Hex, UnitState<'rules>>,
     resting: BTreeSet<Hex>,
     unit_types: &'rules BTreeMap<String, UnitType>,
+    experience_modifier: i32,
 }
 
 #[derive(Debug)]
@@ -44,6 +46,7 @@ pub struct UnitState<'rules> {
     pub unit_type: &'rules UnitType,
     pub hitpoints: i32,
     pub(crate) experience: i32,
+    base_max_experience: i32,
     pub moves_left: i32,
     pub attacks_left: i32,
     pub can_recruit: bool,
@@ -66,7 +69,7 @@ impl UnitState<'_> {
     }
 
     pub fn max_experience(&self) -> i32 {
-        self.traits.as_ref().map_or(self.unit_type.experience, |traits| traits.stats.max_experience)
+        self.traits.as_ref().map_or(self.base_max_experience, |traits| traits.stats.max_experience)
     }
 
     pub fn traits(&self) -> impl Iterator<Item = &Node> {
@@ -97,19 +100,26 @@ impl<'rules> Battlefield<'rules> {
             moves_left: None,
             attacks_left: None,
         });
-        Self::from_authored_starting_units(map, starting_units, unit_types)
+        Self::from_authored_starting_units(
+            map,
+            starting_units,
+            unit_types,
+            DEFAULT_EXPERIENCE_MODIFIER,
+        )
     }
 
     pub(crate) fn from_authored_starting_units(
         map: ScenarioMap,
         starting_units: impl IntoIterator<Item = AuthoredStartingUnit>,
         unit_types: &'rules BTreeMap<String, UnitType>,
+        experience_modifier: i32,
     ) -> Result<Self, BoardError> {
         let mut board = Self {
             map,
             units: BTreeMap::new(),
             resting: BTreeSet::new(),
             unit_types,
+            experience_modifier,
         };
         for AuthoredStartingUnit {
             placement: start,
@@ -134,6 +144,7 @@ impl<'rules> Battlefield<'rules> {
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
                 experience,
+                base_max_experience: scaled_experience(unit_type.experience, experience_modifier),
                 moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
@@ -181,8 +192,14 @@ impl<'rules> Battlefield<'rules> {
 
             unit.experience -= required;
             unit.unit_type = next_type;
+            unit.base_max_experience =
+                scaled_experience(next_type.experience, self.experience_modifier);
             if let Some(traits) = &mut unit.traits {
-                traits.stats = RecruitStats::from_traits(next_type, &traits.definitions);
+                traits.stats = RecruitStats::from_traits_with_base_experience(
+                    next_type,
+                    &traits.definitions,
+                    unit.base_max_experience,
+                );
             }
             unit.hitpoints = unit.max_hitpoints();
             unit.moves_left = unit.moves_left.min(unit.max_movement().max(0));
@@ -197,7 +214,7 @@ impl<'rules> Battlefield<'rules> {
         type_id: &str,
         position: Hex,
     ) -> Result<(), BoardError> {
-        self.place_recruit_with(side, type_id, position, |_| None)
+        self.place_recruit_with(side, type_id, position, |_, _| None)
     }
 
     pub(crate) fn place_random_recruit(
@@ -207,10 +224,14 @@ impl<'rules> Battlefield<'rules> {
         position: Hex,
         rng: &mut ReplayRng,
     ) -> Result<(), BoardError> {
-        self.place_recruit_with(side, type_id, position, |unit_type| {
+        self.place_recruit_with(side, type_id, position, |unit_type, base_max_experience| {
             let definitions = unit_type.traits.select_for_recruit(rng);
             (!definitions.is_empty()).then(|| UnitTraits {
-                stats: RecruitStats::from_traits(unit_type, &definitions),
+                stats: RecruitStats::from_traits_with_base_experience(
+                    unit_type,
+                    &definitions,
+                    base_max_experience,
+                ),
                 definitions,
             })
         })
@@ -221,21 +242,24 @@ impl<'rules> Battlefield<'rules> {
         side: usize,
         type_id: &str,
         position: Hex,
-        select: impl FnOnce(&'rules UnitType) -> Option<UnitTraits<'rules>>,
+        select: impl FnOnce(&'rules UnitType, i32) -> Option<UnitTraits<'rules>>,
     ) -> Result<(), BoardError> {
+        let experience_modifier = self.experience_modifier;
         let unit_type = self.unit_type(type_id);
         let tile = self.vacant_unit_slot(position)?;
         let unit_type = unit_type.ok_or_else(|| BoardError::UnknownUnitType {
             position,
             type_id: type_id.to_owned(),
         })?;
-        let traits = select(unit_type);
+        let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
+        let traits = select(unit_type, base_max_experience);
         tile.insert(UnitState {
             side,
             id: None,
             unit_type,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
             experience: 0,
+            base_max_experience,
             moves_left: 0,
             attacks_left: 0,
             can_recruit: false,
@@ -377,6 +401,11 @@ impl<'rules> Battlefield<'rules> {
         }
         self.begin_resting(side);
     }
+}
+
+fn scaled_experience(base: i32, modifier: i32) -> i32 {
+    let scaled = (i64::from(base) * i64::from(modifier) + 50) / 100;
+    scaled.clamp(1, i64::from(i32::MAX)) as i32
 }
 
 #[derive(Debug, PartialEq, Eq)]

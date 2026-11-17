@@ -121,6 +121,7 @@ mod tests {
         ).unwrap());
         let scenario = wml::parse(
             r#"
+            experience_modifier=33
             map_data="Xv,Xv,Xv,Xv,Xv
 Xv,1 Kh,Ch,2 Kh,Xv
 Xv,Xv,Xv,Xv,Xv"
@@ -146,10 +147,12 @@ Xv,Xv,Xv,Xv,Xv"
             scenario_start::load(&scenario, &types, |_| unreachable!()).unwrap(), rules, 5489,
         ).unwrap();
         let castle = Hex { x: 1, y: 0 };
+        let leader = game.scenario.board.unit_at(Hex { x: 0, y: 0 }).unwrap();
+        assert_eq!(leader.max_experience(), 12);
         game.step(Action::Recruit { unit_type: "Guard".into(), to: castle }).unwrap();
         let recruit = game.scenario.board.unit_at(castle).unwrap();
         assert_eq!(recruit.traits().next().unwrap().attribute("id"), Some("veteran"));
-        assert_eq!((recruit.hitpoints, recruit.moves_left, recruit.max_experience()), (37, 0, 28));
+        assert_eq!((recruit.hitpoints, recruit.moves_left, recruit.max_experience()), (37, 0, 10));
         assert_eq!(game.rng.seed_and_calls(), (5489, 1));
 
         game.step(Action::EndTurn).unwrap();
