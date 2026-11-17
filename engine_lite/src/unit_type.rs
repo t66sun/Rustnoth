@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::movement_cost::MovementCosts;
+use crate::terrain_defense::TerrainDefense;
 use crate::time_of_day::Alignment;
 use crate::weapon::WeaponProfile;
 use crate::wml::Node;
@@ -20,6 +21,8 @@ pub struct UnitType {
     pub movement_type: String,
     /// Terrain costs that this unit type defines over its inherited movement type.
     pub movement_cost_overrides: MovementCosts,
+    /// Terrain defense that this unit type defines over its inherited movement type.
+    pub defense_overrides: TerrainDefense,
     pub emits_zoc: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
@@ -69,6 +72,12 @@ impl UnitType {
                 .filter(|(tag, _)| tag == "movement_costs")
                 .map(|(_, table)| table),
         );
+        let defense_overrides = TerrainDefense::from_wml_tables(
+            unit.children
+                .iter()
+                .filter(|(tag, _)| tag == "defense")
+                .map(|(_, table)| table),
+        );
         Self {
             id: text("id").to_owned(),
             level,
@@ -80,6 +89,7 @@ impl UnitType {
             alignment,
             movement_type: text("movement_type").to_owned(),
             movement_cost_overrides,
+            defense_overrides,
             emits_zoc,
             advances_to,
             attacks: unit
