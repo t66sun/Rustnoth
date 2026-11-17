@@ -105,6 +105,7 @@ impl<'data> FixedMatch<'data> {
                 game.state = MatchState::Draw;
             } else {
                 game.settle_income(turn);
+                game.scenario.board.begin_resting(turn.side);
             }
         }
         Ok(game)
@@ -190,7 +191,7 @@ impl<'data> FixedMatch<'data> {
                     .advance_turn(turn, &[1, 2], self.scenario.last_round);
                 self.state = if let Some(next) = next {
                     self.settle_income(next);
-                    self.scenario.board.heal_on_terrain(next.side, self.rules.terrain);
+                    self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain);
                     MatchState::Playing(next)
                 } else {
                     MatchState::Draw
@@ -547,6 +548,84 @@ Xv,Xv,Xv,Xv,Xv"
         assert_eq!(hitpoints(&game), [5, 10, 10]);
         game.step(Action::EndTurn).unwrap();
         assert_eq!(hitpoints(&game), [10, 10, 1]);
+    }
+
+    #[test]
+    fn heals_at_next_turn_start_only_after_resting() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Gg,Gg,Xv
+Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Fighter
+            [/side]
+            [side]
+                side=2
+                type=Fighter
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(
+            wml::parse(
+                r#"
+                id=Fighter
+                hitpoints=10
+                movement=3
+                movement_type=foot
+                [attack]
+                    name=sword
+                    type=blade
+                    range=melee
+                    movement_used=0
+                    accuracy=100
+                    damage=5
+                    number=1
+                [/attack]
+                "#,
+            )
+            .unwrap(),
+        );
+        let roster = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let terrain = TerrainAliases::from_wml(
+            &wml::parse("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]").unwrap(),
+        );
+        let movement = read_movement_types(
+            &wml::parse("[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]")
+                .unwrap(),
+        );
+        let resistance = BTreeMap::new();
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        let west = Hex { x: 0, y: 0 };
+        let east = Hex { x: 1, y: 0 };
+        let south = Hex { x: 0, y: 1 };
+        let hp = |game: &FixedMatch<'_>, position| {
+            game.scenario.board.unit_at(position).unwrap().hitpoints
+        };
+
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::Attack(AttackChoice { from: east, to: west, weapon: 0 })).unwrap();
+        assert_eq!((hp(&game, west), hp(&game, east)), (5, 5));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(hp(&game, west), 5);
+        game.step(Action::Move { from: west, to: south }).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(hp(&game, east), 5);
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(hp(&game, south), 5);
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!((hp(&game, south), hp(&game, east)), (5, 7));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!((hp(&game, south), hp(&game, east)), (7, 7));
     }
 
     #[test]

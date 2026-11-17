@@ -1,6 +1,6 @@
 use std::{
     collections::{
-        BTreeMap,
+        BTreeMap, BTreeSet,
         btree_map::{Entry, VacantEntry},
     },
     error, fmt,
@@ -20,6 +20,8 @@ use crate::{
 mod attack;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 
+const REST_HEALING: i64 = 2;
+
 /// Full referee state for the fixed map and its units.
 ///
 /// Use a side-specific observation when supplying information to a policy.
@@ -27,6 +29,7 @@ pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
     units: BTreeMap<Hex, UnitState<'rules>>,
+    resting: BTreeSet<Hex>,
     unit_types: &'rules BTreeMap<String, UnitType>,
 }
 
@@ -51,6 +54,7 @@ impl<'rules> Battlefield<'rules> {
         let mut board = Self {
             map,
             units: BTreeMap::new(),
+            resting: BTreeSet::new(),
             unit_types,
         };
         for start in starting_units {
@@ -156,6 +160,9 @@ impl<'rules> Battlefield<'rules> {
         // The search can leave at most the unit's starting i32 movement budget.
         unit.moves_left = remaining as i32;
         self.units.insert(to, unit);
+        if self.resting.remove(&from) {
+            self.resting.insert(to);
+        }
         Ok(())
     }
 
@@ -212,6 +219,10 @@ impl<'rules> Battlefield<'rules> {
         last_round: Option<i32>,
     ) -> Option<Turn> {
         let next = current.next(active_sides, last_round)?;
+        self.resting.retain(|hex| {
+            let unit = &self.units[hex];
+            unit.side != current.side || unit.moves_left == unit.unit_type.movement.max(0)
+        });
         for unit in self.units.values_mut().filter(|unit| unit.side == next.side) {
             unit.moves_left = unit.unit_type.movement.max(0);
             unit.attacks_left = unit.unit_type.max_attacks.max(0);
@@ -219,15 +230,25 @@ impl<'rules> Battlefield<'rules> {
         Some(next)
     }
 
-    /// Applies the terrain's base healing to units on the incoming side.
-    pub(crate) fn heal_on_terrain(&mut self, side: usize, terrain: &TerrainAliases) {
+    pub(crate) fn begin_resting(&mut self, side: usize) {
+        self.resting.extend(
+            self.units.iter().filter(|(_, unit)| unit.side == side).map(|(&hex, _)| hex),
+        );
+    }
+
+    /// Applies terrain and rest healing together before marking a new turn's rest.
+    pub(crate) fn heal_at_turn_start(&mut self, side: usize, terrain: &TerrainAliases) {
         for (&hex, unit) in self.units.iter_mut().filter(|(_, unit)| unit.side == side) {
-            let healing = self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
+            let terrain_healing =
+                self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
+            let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
+            let healing = i64::from(terrain_healing) + rest_healing;
             let hitpoints = i64::from(unit.hitpoints);
             let max_heal = (i64::from(unit.unit_type.hitpoints) - hitpoints).max(0);
             let min_heal = (1 - hitpoints).min(0);
-            unit.hitpoints = (hitpoints + i64::from(healing).clamp(min_heal, max_heal)) as i32;
+            unit.hitpoints = (hitpoints + healing.clamp(min_heal, max_heal)) as i32;
         }
+        self.begin_resting(side);
     }
 }
 
