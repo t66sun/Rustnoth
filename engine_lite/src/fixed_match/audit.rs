@@ -1,8 +1,10 @@
 //! Referee snapshots for replay audits and differential tests.
 
-use crate::hex::Hex;
+use std::mem;
 
-use super::{FixedMatch, MatchState};
+use crate::{hex::Hex, rng::ReplayRng};
+
+use super::{Action, FixedMatch, MatchError, MatchState};
 
 /// Match state recorded by the referee at an action boundary.
 #[derive(Debug, Eq, PartialEq)]
@@ -29,6 +31,21 @@ pub struct SnapshotUnit {
 }
 
 impl FixedMatch<'_> {
+    /// Executes a referee audit step with a temporary stream at the given checkpoint.
+    /// Returns the number of draws made by the normal action path.
+    pub(crate) fn step_with_rng_checkpoint(
+        &mut self,
+        action: Action,
+        seed: u32,
+        calls: u32,
+    ) -> Result<(MatchState, u32), MatchError> {
+        let original = mem::replace(&mut self.rng, ReplayRng::restore(seed, calls));
+        let result = self.step(action);
+        let (_, after) = self.rng.seed_and_calls();
+        self.rng = original;
+        result.map(|state| (state, after.wrapping_sub(calls)))
+    }
+
     /// Records both sides for referee use, including after the match ends.
     pub fn audit_snapshot(&self) -> Snapshot {
         Snapshot {
@@ -62,8 +79,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        fixed_match::{Action, Rules},
+        board::{AttackChoice, AttackError},
+        fixed_match::Rules,
         movement_types::read_movement_types,
+        scenario_bundle::Bundle,
         scenario_start,
         terrain_aliases::TerrainAliases,
         turn::Turn,
@@ -72,6 +91,78 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn scoped_rng_uses_the_given_draw_offset_and_restores_the_normal_stream() {
+        let bundle = Bundle::parse(
+            br#"
+            [terrain_type]
+                id=flat
+                string=Gg
+            [/terrain_type]
+            [units]
+                [movetype]
+                    name=foot
+                    [defense]
+                        flat=50
+                    [/defense]
+                [/movetype]
+                [unit_type]
+                    id=Fighter
+                    hitpoints=10
+                    movement_type=foot
+                    [attack]
+                        name=sword
+                        type=blade
+                        range=melee
+                        damage=3
+                        number=1
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    type=Fighter
+                [/side]
+                [side]
+                    side=2
+                    type=Fighter
+                [/side]
+            [/scenario]
+            "#,
+        )
+        .unwrap();
+        let mut game = bundle.start(22, |_| unreachable!()).unwrap();
+        game.rng.next_u32();
+        let attack = AttackChoice {
+            from: Hex { x: 0, y: 0 },
+            to: Hex { x: 1, y: 0 },
+            weapon: 0,
+        };
+
+        let before = game.audit_snapshot();
+        let invalid = Action::Attack(AttackChoice { weapon: 1, ..attack });
+        assert_eq!(
+            game.step_with_rng_checkpoint(invalid, 5489, 3),
+            Err(MatchError::Attack(AttackError::UnavailableWeapon))
+        );
+        assert_eq!(game.rng.seed_and_calls(), (22, 1));
+        assert_eq!(game.audit_snapshot(), before);
+
+        assert_eq!(
+            game.step_with_rng_checkpoint(Action::Attack(attack), 5489, 3),
+            Ok((before.state, 2))
+        );
+        // At this offset the first roll is 85 (miss) and the second is 4 (hit).
+        let after = game.audit_snapshot();
+        assert_eq!(after.units[0].hitpoints, 7);
+        assert_eq!(after.units[1].hitpoints, 10);
+        assert_eq!(game.rng.next_u32(), ReplayRng::restore(22, 1).next_u32());
+    }
 
     #[test]
     fn captures_both_sides_before_and_after_an_action_and_at_game_end() {
