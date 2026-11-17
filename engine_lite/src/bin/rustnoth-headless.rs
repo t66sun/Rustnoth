@@ -1,18 +1,10 @@
-use std::{
-    collections::BTreeMap, env, error::Error, fs, io, num::NonZeroUsize, path::Path,
-    process::ExitCode,
-};
+use std::{env, error::Error, fs, io, num::NonZeroUsize, path::Path, process::ExitCode};
 
 use engine_lite::{
-    fixed_match::{Action, FixedMatch, MatchState, Rules},
+    fixed_match::{Action, MatchState},
     hex::Hex,
-    movement_types::read_movement_types,
     observation::Observation,
-    resistance::DamageTable,
-    scenario_start,
-    terrain_aliases::TerrainAliases,
-    unit_type::read_unit_types,
-    wml::{self, Node},
+    scenario_bundle::Bundle,
 };
 
 const USAGE: &str = "rustnoth-headless <preprocessed-bundle.cfg> <seed> <action-limit>\n\
@@ -68,32 +60,8 @@ fn play_bundle(
     action_limit: NonZeroUsize,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<MatchState, Box<dyn Error>> {
-    let bundle = wml::parse(data)?;
-    let terrain = TerrainAliases::from_wml(&bundle);
-    let mut units = None;
-    let mut scenario = None;
-    for (tag, node) in bundle.children {
-        let slot = match tag.as_str() {
-            "units" => &mut units,
-            "scenario" => &mut scenario,
-            _ => continue,
-        };
-        if slot.replace(node).is_some() {
-            return Err(format!("expected exactly one [{tag}] block").into());
-        }
-    }
-    let units = units.ok_or("missing [units] block")?;
-    let scenario = scenario.ok_or("missing [scenario] block")?;
-    let movement = read_movement_types(&units);
-    let resistance = read_resistance(&units);
-    let unit_types = read_unit_types(units);
-    let start = scenario_start::load(&scenario, &unit_types, read_map_file)?;
-    let rules = Rules {
-        terrain: &terrain,
-        movement: &movement,
-        resistance: &resistance,
-    };
-    let mut game = FixedMatch::new(start, rules, seed)?;
+    let bundle = Bundle::parse(data)?;
+    let mut game = bundle.start(seed, read_map_file)?;
     for _ in 0..action_limit.get() {
         let Some((observation, actions)) = game.decision() else {
             break;
@@ -106,23 +74,6 @@ fn play_bundle(
         }
         state => Ok(state),
     }
-}
-
-fn read_resistance(units: &Node) -> BTreeMap<String, DamageTable> {
-    let mut tables = BTreeMap::new();
-    for (tag, node) in &units.children {
-        if tag == "movetype" {
-            let name = node.attribute("name").unwrap_or_default().to_owned();
-            tables.entry(name).or_insert_with(|| {
-                node.children
-                    .iter()
-                    .find(|(tag, _)| tag == "resistance")
-                    .map(|(_, table)| DamageTable::from_wml(table))
-                    .unwrap_or_default()
-            });
-        }
-    }
-    tables
 }
 
 fn choose_action(observation: &Observation, actions: Vec<Action>) -> Action {
