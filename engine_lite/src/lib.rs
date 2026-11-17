@@ -6,6 +6,7 @@ pub mod scenario_time;
 pub mod map;
 pub mod weapon;
 pub mod movement_cost;
+pub mod movement_types;
 pub mod terrain_aliases;
 pub mod scenario_sides;
 pub mod combat;
