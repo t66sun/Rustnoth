@@ -4,7 +4,7 @@ const COLUMN_SPACING: f32 = 0.75;
 const ODD_COLUMN_SHIFT: f32 = 0.5;
 const MAX_TILE_SIZE: f32 = 144.0;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     pub x: f32,
     pub y: f32,
