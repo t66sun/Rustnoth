@@ -21,41 +21,50 @@ pub fn compare(rust: &str, native: &str) -> Result<usize, String> {
 }
 
 fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
-    let mut lines = text.lines().enumerate();
+    let mut lines = text.lines().enumerate().peekable();
     let mut frames = Vec::new();
+    let mut roster_size = None;
     while let Some((line, header)) = lines.next() {
         let step = frames.len();
         let bad_row = |line, message| format!("step {step}, line {}: {message}", line + 1);
+        let bad_header = || bad_row(line, "expected a step header with the next index");
         let fields: Vec<_> = header.split('\t').collect();
-        let valid_header = match fields.as_slice() {
-            ["step", index, "playing", round, side] => {
-                index.parse::<usize>() == Ok(step)
-                    && round.parse::<i32>().is_ok()
-                    && valid_side(side)
+        let header_side = match fields.as_slice() {
+            ["step", index, "playing", round, side]
+                if index.parse::<usize>() == Ok(step) && round.parse::<i32>().is_ok() =>
+            {
+                Some(side_number(side).ok_or_else(&bad_header)?)
             }
-            ["step", index, "won", winner] => {
-                index.parse::<usize>() == Ok(step) && valid_side(winner)
+            ["step", index, "won", winner] if index.parse::<usize>() == Ok(step) => {
+                Some(side_number(winner).ok_or_else(&bad_header)?)
             }
-            ["step", index, "draw"] => index.parse::<usize>() == Ok(step),
-            _ => false,
+            ["step", index, "draw"] if index.parse::<usize>() == Ok(step) => None,
+            _ => return Err(bad_header()),
         };
-        if !valid_header {
-            return Err(bad_row(line, "expected a step header with the next index"));
-        }
 
         let mut rows = vec![header];
-        for side in [1, 2] {
+        let mut side_count = 0;
+        while side_count < roster_size.unwrap_or(2)
+            || (roster_size.is_none()
+                && lines.peek().is_some_and(|(_, row)| row.starts_with("gold\t")))
+        {
+            side_count += 1;
             let Some((line, row)) = lines.next() else {
-                return Err(format!("step {step}: missing gold row for side {side}"));
+                return Err(format!("step {step}: missing gold row for side {side_count}"));
             };
             let fields: Vec<_> = row.split('\t').collect();
             if !matches!(fields.as_slice(), ["gold", owner, amount]
-                if owner.parse::<u8>() == Ok(side) && amount.parse::<i64>().is_ok())
+                if owner.parse::<usize>() == Ok(side_count) && amount.parse::<i64>().is_ok())
             {
                 return Err(bad_row(line, "expected gold rows in side order"));
             }
             rows.push(row);
         }
+        roster_size.get_or_insert(side_count);
+        if header_side.is_some_and(|side| side > side_count) {
+            return Err(bad_header());
+        }
+        let valid_side = |side: &str| side_number(side).is_some_and(|number| number <= side_count);
 
         let mut last_unit = None;
         let mut last_village = None;
@@ -93,8 +102,11 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
     Ok(frames)
 }
 
-fn valid_side(side: &str) -> bool {
-    matches!(side, "1" | "2")
+fn side_number(side: &str) -> Option<usize> {
+    if !matches!(side.as_bytes().first(), Some(b'1'..=b'9')) {
+        return None;
+    }
+    side.parse().ok()
 }
 
 fn next_position(x: &str, y: &str, last: &mut Option<(i32, i32)>) -> bool {
@@ -116,6 +128,40 @@ mod tests {
     const INITIAL: &str = "step\t0\tplaying\t1\t1\ngold\t1\t100\ngold\t2\t100\nend\t0\n";
     const AFTER_MOVE: &str = "step\t1\tplaying\t1\t1\ngold\t1\t100\ngold\t2\t100\n\
         unit\t2\t1\t1\tFootman\t12\t3\t1\t1\nend\t1\n";
+    const THREE_SIDES: &str = concat!(
+        "step\t0\tplaying\t1\t3\ngold\t1\t34\ngold\t2\t38\ngold\t3\t42\n",
+        "unit\t2\t1\t3\tBowman\t33\t5\t1\t1\t0\nvillage\t2\t1\t3\nend\t0\n",
+        "step\t1\twon\t3\ngold\t1\t34\ngold\t2\t38\ngold\t3\t42\nend\t1\n",
+    );
+
+    #[test]
+    fn compares_all_three_sides() {
+        assert_eq!(compare(THREE_SIDES, THREE_SIDES), Ok(2));
+        let rust = THREE_SIDES.replacen("gold\t3\t42", "gold\t3\t41", 1);
+        assert_eq!(
+            compare(&rust, THREE_SIDES).unwrap_err(),
+            "step 0 differs\n  expected native: gold\t3\t42\n  actual Rust:     gold\t3\t41",
+        );
+    }
+
+    #[test]
+    fn rejects_unlisted_sides_and_inconsistent_gold_rows() {
+        for (old, new) in [
+            ("playing\t1\t3", "playing\t1\t4"),
+            ("won\t3", "won\t4"),
+            ("\t3\tBowman", "\t4\tBowman"),
+            ("village\t2\t1\t3", "village\t2\t1\t4"),
+            ("gold\t2\t38\ngold\t3\t42", "gold\t3\t42\ngold\t2\t38"),
+            ("gold\t3\t42\nend\t1", "end\t1"),
+            ("gold\t3\t42\nend\t1", "gold\t3\t42\ngold\t4\t43\nend\t1"),
+        ] {
+            let malformed = THREE_SIDES.replacen(old, new, 1);
+            assert!(
+                compare(&malformed, THREE_SIDES).unwrap_err().starts_with("malformed Rust trace"),
+                "{malformed}",
+            );
+        }
+    }
 
     #[test]
     fn reports_first_unequal_row_at_its_step() {
