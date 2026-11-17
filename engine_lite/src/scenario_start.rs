@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, error, fmt, io};
 
 use crate::{
-    board::{Battlefield, BoardError},
+    board::{Battlefield, BoardError, DEFAULT_EXPERIENCE_MODIFIER},
     scenario_map::{self, ScenarioMapError},
     scenario_sides::{SideConfig, read_sides},
     scenario_time::{integer, read_time_schedule},
@@ -30,7 +30,9 @@ pub fn load<'rules>(
     let map = scenario_map::load(scenario, read_map_file).map_err(ScenarioStartError::Map)?;
     let units = read_authored_starting_units(scenario, &map)
         .map_err(ScenarioStartError::Placement)?;
-    let board = Battlefield::from_authored_starting_units(map, units, unit_types)
+    let experience_modifier = integer(scenario, "experience_modifier")
+        .unwrap_or(DEFAULT_EXPERIENCE_MODIFIER);
+    let board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
         .map_err(ScenarioStartError::Board)?;
 
     Ok(ScenarioStart {
@@ -245,6 +247,7 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         for (x, experience) in [(0, 7), (1, 57), (2, -3), (3, 0)] {
             let unit = start.board.unit_at(Hex { x, y: 0 }).unwrap();
             assert_eq!((unit.experience, unit.unit_type.experience), (experience, 40));
+            assert_eq!(unit.max_experience(), 40);
         }
     }
 

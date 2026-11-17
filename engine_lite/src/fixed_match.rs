@@ -391,9 +391,10 @@ mod tests {
     };
 
     #[test]
-    fn advances_combat_survivors_with_only_one_supported_type_choice() {
+    fn advances_combat_survivors_using_scenario_experience_thresholds() {
         let scenario = wml::parse(
             r#"
+            experience_modifier=50
             map_data="Xv,Xv,Xv,Xv
 Xv,1 Gg,2 Gg,Xv
 Xv,Xv,Xv,Xv"
@@ -423,7 +424,7 @@ Xv,Xv,Xv,Xv"
                     movement=4
                     attacks=4
                     level=1
-                    experience=10
+                    experience=20
                     advances_to=Veteran
                     [attack]
                         name=sword
@@ -440,7 +441,7 @@ Xv,Xv,Xv,Xv"
                     movement=2
                     attacks=2
                     level=2
-                    experience=18
+                    experience=36
                     advances_to=Champion
                 [/unit_type]
                 [unit_type]
@@ -476,6 +477,7 @@ Xv,Xv,Xv,Xv"
 
         let attacker = game.scenario.board.unit_at(from).unwrap();
         assert_eq!(attacker.unit_type.id, "Champion");
+        assert_eq!(attacker.max_experience(), 25);
         assert_eq!((attacker.hitpoints, attacker.experience), (25, 2));
         assert_eq!((attacker.moves_left, attacker.attacks_left), (2, 0));
         assert_eq!(
