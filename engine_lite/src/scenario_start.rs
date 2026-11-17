@@ -165,6 +165,51 @@ Xv,Xv,Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn starting_units_use_authored_action_counters_with_a_zero_floor() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Fighter
+                moves=1
+                attacks_left=0
+                [leader]
+                    type=Fighter
+                    x,y=2,1
+                    moves=7
+                    attacks_left=3
+                [/leader]
+                [unit]
+                    type=Fighter
+                    x,y=3,1
+                    moves=-3
+                    attacks_left=-1
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x,y=4,1
+                    attacks_left=invalid
+                [/unit]
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(
+            wml::parse("id=Fighter\nmovement=4\nattacks=2").unwrap(),
+        );
+        let unit_types = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let start = load(&scenario, &unit_types, |_| panic!("inline map requested a file"))
+            .unwrap();
+
+        for (x, expected) in [(0, (1, 0)), (1, (7, 3)), (2, (0, 0)), (3, (4, 2))] {
+            let unit = start.board.unit_at(Hex { x, y: 0 }).unwrap();
+            assert_eq!((unit.moves_left, unit.attacks_left), expected);
+        }
+    }
+
+    #[test]
     fn defaults_to_round_one_without_a_round_limit() {
         for turns in ["", "turns=-1\n"] {
             let scenario = wml::parse(format!("{turns}map_data=\"{MAP}\"")).unwrap();
