@@ -1,9 +1,13 @@
-use std::{collections::BTreeMap, error, fmt, num::NonZeroU32};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error, fmt,
+    num::NonZeroU32,
+};
 
 use crate::{
     board::{
-        Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState, combatant,
-        within_range,
+        Attack, AttackChoice, AttackError, Battlefield, MoveError, StrikeModifiers, UnitState,
+        combatant, within_range,
     },
     hex::Hex,
     income::{DEFAULT_BASE_INCOME, net_income},
@@ -204,6 +208,8 @@ impl<'data> FixedMatch<'data> {
             }
             Action::Recruit { unit_type, to } => self.recruit(turn.side, &unit_type, to)?,
             Action::EndTurn => {
+                let surviving_sides: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
+                self.village_owners.retain(|_, side| surviving_sides.contains(side));
                 let next = self
                     .scenario
                     .board
@@ -324,17 +330,17 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn check_leaders(&mut self) {
-        let mut leader_sides = self
-            .scenario
-            .board
-            .units()
-            .filter_map(|(_, unit)| unit.can_recruit.then_some(unit.side));
+        let mut leader_sides = leader_sides(&self.scenario.board);
         self.state = match leader_sides.next() {
             None => MatchState::Draw,
             Some(side) if leader_sides.all(|other| other == side) => MatchState::Won(side),
             Some(_) => self.state,
         };
     }
+}
+
+fn leader_sides<'board>(board: &'board Battlefield<'_>) -> impl Iterator<Item = usize> + 'board {
+    board.units().filter_map(|(_, unit)| unit.can_recruit.then_some(unit.side))
 }
 
 fn supports_unit(unit_type: &UnitType) -> bool {
@@ -1173,5 +1179,80 @@ Xv,Xv,Xv,Xv,Xv"
         assert!(actions.contains(&attack(1)));
         assert_eq!(game.step(attack(0)), Ok(MatchState::Playing(Turn { round: 1, side: 3 })));
         assert_eq!(game.step(attack(1)), Ok(MatchState::Won(3)));
+    }
+
+    #[test]
+    fn end_turn_releases_villages_after_the_last_leader_is_lost() {
+        let bundle = crate::scenario_bundle::Bundle::parse(
+            br#"
+            [terrain_type]
+                string=Gg^Vh
+                gives_income=yes
+            [/terrain_type]
+            [units]
+                [unit_type]
+                    id=Fighter
+                    hitpoints=10
+                    [attack]
+                        range=melee
+                        damage=10
+                        number=1
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                turns=2
+                map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,3 Gg,Gg^Vh,Xv
+Xv,Gg,Gg,Gg,Gg^Vh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    type=Fighter
+                [/side]
+                [side]
+                    side=2
+                    type=Fighter
+                    gold=20
+                    [leader]
+                        type=Fighter
+                        x,y=1,2
+                    [/leader]
+                    [village]
+                        x,y=4,1
+                    [/village]
+                [/side]
+                [side]
+                    side=3
+                    type=Fighter
+                    [village]
+                        x,y=4,2
+                    [/village]
+                [/side]
+            [/scenario]
+            "#,
+        )
+        .unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let second_village = (Hex { x: 3, y: 0 }, 2);
+        let third_village = (Hex { x: 3, y: 1 }, 3);
+        let attack = |to| Action::Attack(AttackChoice { from: Hex { x: 0, y: 0 }, to, weapon: 0 });
+
+        game.step(attack(Hex { x: 1, y: 0 })).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.audit_snapshot().villages, [second_village, third_village]);
+
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        game.step(attack(Hex { x: 0, y: 1 })).unwrap();
+        assert_eq!(game.audit_snapshot().villages, [second_village, third_village]);
+
+        assert_eq!(
+            game.step(Action::EndTurn),
+            Ok(MatchState::Playing(Turn { round: 2, side: 2 }))
+        );
+        let refresh = game.audit_snapshot();
+        assert_eq!(refresh.villages, [third_village]);
+        assert_eq!(refresh.gold[1], 20 + i64::from(DEFAULT_BASE_INCOME));
     }
 }
