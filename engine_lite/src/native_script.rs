@@ -33,14 +33,24 @@ end
 
 "#;
 
-/// Runs scripted commands at native side-turn refresh events and records the
-/// initial frame and the frame after each command.
+/// Generates native audit events for sides 1 and 2.
 pub fn generate(
     actions: &[Action],
     first_round: i32,
     last_round: Option<i32>,
 ) -> io::Result<NativeScript> {
-    let groups = native_turns::partition(actions, first_round)
+    generate_for_sides(actions, first_round, last_round, &[1, 2])
+}
+
+/// Generates native side-turn refresh events in active side order and records
+/// the initial frame and the frame after each command.
+pub fn generate_for_sides(
+    actions: &[Action],
+    first_round: i32,
+    last_round: Option<i32>,
+    sides: &[usize],
+) -> io::Result<NativeScript> {
+    let groups = native_turns::partition_for_sides(actions, first_round, sides)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut events = Vec::with_capacity(groups.len());
     let mut lua = format!("local last_step = {}\n{LUA_HEADER}", actions.len());
@@ -272,5 +282,37 @@ mod tests {
             generate(&too_long, 7, Some(7)),
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
+    }
+
+    #[test]
+    fn schedules_the_third_side_before_the_final_round_expires() {
+        let actions = [
+            Action::EndTurn,
+            Action::EndTurn,
+            Action::Move {
+                from: Hex { x: 0, y: 1 },
+                to: Hex { x: 1, y: 2 },
+            },
+            Action::EndTurn,
+        ];
+        let native = generate_for_sides(&actions, 7, Some(7), &[1, 2, 3]).unwrap();
+        let names: Vec<_> = native.events.iter().map(|event| event.attribute("name")).collect();
+        assert_eq!(
+            names,
+            [
+                Some("side 1 turn 7 refresh"),
+                Some("side 2 turn 7 refresh"),
+                Some("side 3 turn 7 refresh"),
+                Some("time over"),
+            ],
+        );
+        assert!(native.lua.contains(concat!(
+            "groups[3] = function()\n",
+            "    if checkpoint(2, false) then return end\n",
+            "    actions.move(1, 2, 2, 3)\n",
+            "    if checkpoint(3, false) then return end\n",
+            "    actions.end_turn()\n",
+        )));
+        assert!(native.lua.contains("groups[4] = function()\n    if checkpoint(4, true)"));
     }
 }
