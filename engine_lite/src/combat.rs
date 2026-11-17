@@ -17,6 +17,12 @@ pub struct CombatResult {
     pub defender_hitpoints: u32,
 }
 
+/// Computes a weapon's chance to hit before specials and invulnerability.
+pub fn base_hit_chance(terrain_chance: u8, accuracy: i32, parry: i32) -> u8 {
+    let chance = i64::from(terrain_chance) + i64::from(accuracy) - i64::from(parry);
+    chance.clamp(0, 100) as u8
+}
+
 /// Resolves the strike sequence for ordinary seeded combat.
 ///
 /// Both participants' damage and chance to hit are fixed for the exchange.
@@ -66,6 +72,15 @@ pub fn resolve_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accuracy_and_parry_modify_terrain_chance_before_clamping() {
+        assert_eq!(base_hit_chance(60, 10, 15), 55);
+        assert_eq!(base_hit_chance(60, 10, -5), 75);
+        assert_eq!(base_hit_chance(95, 10, 15), 90);
+        assert_eq!(base_hit_chance(95, 10, 2), 100);
+        assert_eq!(base_hit_chance(10, -5, 20), 0);
+    }
 
     fn unit(hitpoints: u32, strikes: u32, damage: u32, hit_chance: u8) -> Combatant {
         Combatant {
