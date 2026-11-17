@@ -7,7 +7,9 @@ use std::{
     process::ExitCode,
 };
 
-use engine_lite::{fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml};
+use engine_lite::{
+    fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml,
+};
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
 use rustnoth_gui::{assets::AssetCatalog, selection::Selection, session::Session};
 
@@ -130,18 +132,38 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             selection.clear();
             message = None;
         }
-        if is_mouse_button_pressed(MouseButton::Left)
+        let (mouse_x, mouse_y) = mouse_position();
+        let pointer = vec2(mouse_x, mouse_y);
+        let clicked = is_mouse_button_pressed(MouseButton::Left);
+        let can_end = session.legal_actions().contains(&Action::EndTurn);
+        let button = render::end_turn_button(screen_width(), screen_height(), can_end);
+        let requested = if can_end
+            && (is_key_pressed(KeyCode::Space)
+                || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
+        {
+            Some(Action::EndTurn)
+        } else if clicked
             && let Some(observation) = session.observation()
             && let Some(layout) = render::board_layout(observation)
-            && let Some(position) = layout.hex_at(mouse_position().into())
-            && let Some(action) = select_move(&mut selection, position, observation, session.legal_actions())
+            && let Some(position) = layout.hex_at([mouse_x, mouse_y])
         {
+            select_move(&mut selection, position, observation, session.legal_actions())
+        } else {
+            None
+        };
+        if let Some(action) = requested {
+            let reselect = match &action {
+                Action::Move { to, .. } => Some(*to),
+                _ => None,
+            };
             match session.apply(action) {
                 Ok(_) => {
                     message = None;
                     selection.clear();
                     if let Some(observation) = session.observation() {
-                        selection.select_own(position, observation);
+                        if let Some(position) = reselect {
+                            selection.select_own(position, observation);
+                        }
                         art.load(observation, &data.assets);
                     }
                 }
@@ -160,6 +182,12 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                 assets: &data.assets,
             },
         );
+        if session.legal_actions().contains(&Action::EndTurn)
+            && let Some(bounds) = button
+        {
+            let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
+            render::draw_end_turn_button(bounds, highlighted, &art);
+        }
         next_frame().await;
     }
 }
