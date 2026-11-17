@@ -19,4 +19,6 @@ Rustnoth 的目标是为《韦诺之战》1.18.8 训练对战智能体。Rust �
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-headless -- bundle.cfg 5489 100
 ```
 
-最后两个参数分别是随机种子和动作上限。命令输出胜方或平局。如果动作上限先用尽，命令以错误退出。
+示例中的随机种子为 `5489`，动作上限为 `100`。命令输出胜方或平局。如果动作上限先用尽，命令以错误退出。
+
+使用原版单位和地形时，在命令末尾加上 `--core-config path/to/preprocessed-core.cfg`。场景包可只包含 `[scenario]`，也可附带自定义单位和地形。预处理命令见[原版裁判逐步对拍](PARITY.md)。
