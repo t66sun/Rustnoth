@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::wml::Node;
+use crate::{hex::Hex, wml::Node};
 
 /// Which parts of this side's visibility are shared with allies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +26,8 @@ pub struct SideConfig {
     pub village_support: i32,
     pub recall_cost: i32,
     pub recruits: BTreeSet<String>,
+    /// Authored initial village locations, to be checked against the map.
+    pub starting_villages: BTreeSet<Hex>,
 }
 
 impl SideConfig {
@@ -73,6 +75,16 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         village_support: int_attribute(cfg, "village_support", 1),
         recall_cost: int_attribute(cfg, "recall_cost", 20),
         recruits: names(cfg.attribute("recruit").unwrap_or_default()).collect(),
+        starting_villages: cfg
+            .children
+            .iter()
+            .filter(|(tag, _)| tag == "village")
+            .filter_map(|(_, village)| {
+                let x = int_attribute(village, "x", 0);
+                let y = int_attribute(village, "y", 0);
+                Hex::from_wml(x, y).filter(|hex| hex.x >= 0 && hex.y >= 0)
+            })
+            .collect(),
     }
 }
 
@@ -130,6 +142,18 @@ fn int_attribute(cfg: &Node, key: &str, default: i32) -> i32 {
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn reads_the_authored_village_locations_of_each_side() {
+        let scenario = wml::parse(
+            "[side]\n[village]\nx,y=4,2\n[/village]\n[village]\nx,y=4,2\n[/village]\n\
+             [village]\nx=8\n[/village]\n[/side]\n[side]\n[village]\nx,y=1,1\n[/village]\n[/side]",
+        )
+        .unwrap();
+        let sides = read_sides(&scenario);
+        assert_eq!(sides[0].starting_villages, BTreeSet::from([Hex { x: 3, y: 1 }]));
+        assert_eq!(sides[1].starting_villages, BTreeSet::from([Hex { x: 0, y: 0 }]));
+    }
 
     #[test]
     fn alliances_require_a_shared_team_name_between_the_two_sides() {
