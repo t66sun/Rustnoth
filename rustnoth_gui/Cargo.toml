@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 engine_lite = { path = "../engine_lite" }
+macroquad = { version = "=0.4.16", default-features = false }
