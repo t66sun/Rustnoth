@@ -1,6 +1,7 @@
 //! Rust rules for The Battle for Wesnoth 1.18.8.
 
 pub mod audit_actions;
+pub mod audit_replay;
 pub mod hex;
 pub mod time_of_day;
 pub mod scenario_time;
