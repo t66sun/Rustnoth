@@ -22,3 +22,4 @@ pub mod visibility;
 pub mod starting_units;
 pub mod board;
 pub mod observation;
+pub mod resistance;
