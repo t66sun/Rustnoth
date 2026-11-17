@@ -1,5 +1,8 @@
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{
+        BTreeMap,
+        btree_map::{Entry, VacantEntry},
+    },
     error, fmt,
     num::NonZeroU32,
 };
@@ -23,6 +26,7 @@ pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
     units: BTreeMap<Hex, UnitState<'rules>>,
+    unit_types: &'rules BTreeMap<String, UnitType>,
 }
 
 #[derive(Debug)]
@@ -43,15 +47,14 @@ impl<'rules> Battlefield<'rules> {
         starting_units: Vec<StartingUnit>,
         unit_types: &'rules BTreeMap<String, UnitType>,
     ) -> Result<Self, BoardError> {
-        let mut units = BTreeMap::new();
+        let mut board = Self {
+            map,
+            units: BTreeMap::new(),
+            unit_types,
+        };
         for start in starting_units {
             let position = start.position;
-            if !map.is_playable(position) {
-                return Err(BoardError::OutsideMap(position));
-            }
-            let Entry::Vacant(tile) = units.entry(position) else {
-                return Err(BoardError::Occupied(position));
-            };
+            let tile = board.vacant_unit_slot(position)?;
             let unit_type =
                 unit_types
                     .get(&start.type_id)
@@ -69,7 +72,7 @@ impl<'rules> Battlefield<'rules> {
                 can_recruit: start.can_recruit,
             });
         }
-        Ok(Self { map, units })
+        Ok(board)
     }
 
     pub fn map(&self) -> &ScenarioMap {
@@ -78,6 +81,48 @@ impl<'rules> Battlefield<'rules> {
 
     pub fn unit_at(&self, position: Hex) -> Option<&UnitState<'rules>> {
         self.units.get(&position)
+    }
+
+    pub fn unit_type(&self, id: &str) -> Option<&'rules UnitType> {
+        self.unit_types.get(id)
+    }
+
+    /// Places a base recruit after the referee checks recruitment eligibility.
+    pub fn place_recruit(
+        &mut self,
+        side: usize,
+        type_id: &str,
+        position: Hex,
+    ) -> Result<(), BoardError> {
+        let unit_type = self.unit_type(type_id);
+        let tile = self.vacant_unit_slot(position)?;
+        let unit_type = unit_type.ok_or_else(|| BoardError::UnknownUnitType {
+            position,
+            type_id: type_id.to_owned(),
+        })?;
+        tile.insert(UnitState {
+            side,
+            id: None,
+            unit_type,
+            hitpoints: unit_type.hitpoints,
+            moves_left: 0,
+            attacks_left: 0,
+            can_recruit: false,
+        });
+        Ok(())
+    }
+
+    fn vacant_unit_slot(
+        &mut self,
+        position: Hex,
+    ) -> Result<VacantEntry<'_, Hex, UnitState<'rules>>, BoardError> {
+        if !self.map.is_playable(position) {
+            return Err(BoardError::OutsideMap(position));
+        }
+        match self.units.entry(position) {
+            Entry::Vacant(tile) => Ok(tile),
+            Entry::Occupied(_) => Err(BoardError::Occupied(position)),
+        }
     }
 
     /// Applies a current-turn move on a fully visible fixed battlefield.
@@ -177,10 +222,10 @@ pub enum BoardError {
 impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OutsideMap(hex) => write!(f, "starting hex {hex:?} is outside the playable map"),
-            Self::Occupied(hex) => write!(f, "starting hex {hex:?} already has a unit"),
+            Self::OutsideMap(hex) => write!(f, "placement hex {hex:?} is outside the playable map"),
+            Self::Occupied(hex) => write!(f, "placement hex {hex:?} already has a unit"),
             Self::UnknownUnitType { position, type_id } => {
-                write!(f, "unknown unit type {type_id:?} at starting hex {position:?}")
+                write!(f, "unknown unit type {type_id:?} at placement hex {position:?}")
             }
         }
     }
@@ -282,6 +327,60 @@ mod tests {
             .unwrap_err(),
             BoardError::Occupied(WEST)
         );
+    }
+
+    #[test]
+    fn recruited_unit_enters_at_full_health_and_acts_on_its_next_turn() {
+        let unit_types = types();
+        let mut board = Battlefield::new(map(), Vec::new(), &unit_types).unwrap();
+
+        board.place_recruit(2, "Spearman", EAST).unwrap();
+        let recruit = board.unit_at(EAST).unwrap();
+        assert_eq!(recruit.side, 2);
+        assert!(recruit.id.is_none());
+        assert!(std::ptr::eq(recruit.unit_type, &unit_types["Spearman"]));
+        assert_eq!(
+            (recruit.hitpoints, recruit.moves_left, recruit.attacks_left),
+            (36, 0, 0)
+        );
+        assert!(!recruit.can_recruit);
+
+        let current = Turn { round: 1, side: 1 };
+        assert_eq!(
+            board.advance_turn(current, &[1, 2], None),
+            Some(Turn { round: 1, side: 2 })
+        );
+        let recruit = board.unit_at(EAST).unwrap();
+        assert_eq!(
+            (recruit.hitpoints, recruit.moves_left, recruit.attacks_left),
+            (36, 5, 2)
+        );
+    }
+
+    #[test]
+    fn invalid_recruit_placements_leave_the_board_unchanged() {
+        let unit_types = types();
+        let mut board = Battlefield::new(map(), Vec::new(), &unit_types).unwrap();
+        board.place_recruit(1, "Spearman", WEST).unwrap();
+        let border = Hex { x: -1, y: 0 };
+
+        assert_eq!(
+            board.place_recruit(2, "Spearman", WEST),
+            Err(BoardError::Occupied(WEST))
+        );
+        assert_eq!(
+            board.place_recruit(2, "Spearman", border),
+            Err(BoardError::OutsideMap(border))
+        );
+        assert_eq!(
+            board.place_recruit(2, "missing", EAST),
+            Err(BoardError::UnknownUnitType {
+                position: EAST,
+                type_id: "missing".to_owned()
+            })
+        );
+        let occupied: Vec<_> = board.units().map(|(hex, unit)| (hex, unit.side)).collect();
+        assert_eq!(occupied, [(WEST, 1)]);
     }
 
     fn corridor_hex(y: i32) -> Hex {
