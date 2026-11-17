@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, error, fmt, num::NonZeroU32};
 
 use crate::{
-    board::{Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState},
+    board::{
+        Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState, combatant,
+        within_range,
+    },
     hex::Hex,
     income::{DEFAULT_BASE_INCOME, net_income},
     movement_types::MovementType,
@@ -18,6 +21,7 @@ use crate::{
 
 pub mod audit;
 mod recruit;
+mod retaliation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -44,7 +48,6 @@ pub struct Rules<'data> {
 ///
 /// This match uses base unit stats and ordinary weapons. It ends when a
 /// side loses its last leader or the scenario reaches the round limit.
-/// With multiple eligible retaliation weapons it uses the first in unit order.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
@@ -256,25 +259,29 @@ impl<'data> FixedMatch<'data> {
             .get(choice.weapon)
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
-        let retaliation = defender
+        let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to);
+        let candidates = defender
             .unit_type
             .attacks
             .iter()
             .enumerate()
-            .find(|(_, response)| {
-                response.range == weapon.range
-                    && (i64::from(response.min_range)..=i64::from(response.max_range))
-                        .contains(&distance)
+            .filter(|(_, response)| {
+                response.can_retaliate
+                    && response.range == weapon.range
+                    && within_range(response, distance)
             })
             .map(|(index, response)| {
-                (index, self.modifiers(turn, defender, attacker, response, choice.from))
+                let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
+                let attacker_stats = combatant(attacker, weapon, &modifiers, response.parry);
+                let defender_stats = combatant(defender, response, &response_modifiers, weapon.parry);
+                ((index, response_modifiers), attacker_stats, defender_stats)
             });
         Ok(Attack {
             from: choice.from,
             to: choice.to,
             weapon: choice.weapon,
-            modifiers: self.modifiers(turn, attacker, defender, weapon, choice.to),
-            retaliation,
+            retaliation: retaliation::select(candidates),
+            modifiers,
         })
     }
 
@@ -548,6 +555,102 @@ Xv,Xv,Xv,Xv,Xv"
         assert_eq!(hitpoints(&game), [5, 10, 10]);
         game.step(Action::EndTurn).unwrap();
         assert_eq!(hitpoints(&game), [10, 10, 1]);
+    }
+
+    #[test]
+    fn chooses_the_best_eligible_retaliation_and_keeps_the_first_tie() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Attacker
+            [/side]
+            [side]
+                side=2
+                type=Defender
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let attacker = UnitType::from_wml(
+            wml::parse(
+                r#"
+                id=Attacker
+                hitpoints=10
+                [attack]
+                    range=melee
+                    damage=1
+                    number=1
+                [/attack]
+                "#,
+            )
+            .unwrap(),
+        );
+        let defender = UnitType::from_wml(
+            wml::parse(
+                r#"
+                id=Defender
+                hitpoints=10
+                [attack]
+                    range=melee
+                    damage=3
+                    number=1
+                [/attack]
+                [attack]
+                    range=ranged
+                    damage=10
+                    number=1
+                [/attack]
+                [attack]
+                    range=melee
+                    min_range=2
+                    max_range=2
+                    damage=10
+                    number=1
+                [/attack]
+                [attack]
+                    range=melee
+                    defense_weight=0
+                    damage=10
+                    number=1
+                [/attack]
+                [attack]
+                    range=melee
+                    defense_weight=0.25
+                    damage=7
+                    number=1
+                [/attack]
+                [attack]
+                    range=melee
+                    damage=7
+                    number=1
+                [/attack]
+                "#,
+            )
+            .unwrap(),
+        );
+        let roster = BTreeMap::from([(attacker.id.clone(), attacker), (defender.id.clone(), defender)]);
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let terrain = TerrainAliases::from_wml(&wml::Node::default());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 1, y: 0 };
+        let choice = AttackChoice { from, to, weapon: 0 };
+        let attack = game.prepare_attack(Turn { round: 1, side: 1 }, choice).unwrap();
+        assert_eq!(attack.retaliation.map(|(index, _)| index), Some(4));
+        game.step(Action::Attack(choice)).unwrap();
+        assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 3);
+        assert_eq!(game.rng.seed_and_calls(), (5489, 2));
     }
 
     #[test]

@@ -142,11 +142,11 @@ impl Battlefield<'_> {
     }
 }
 
-fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
+pub(crate) fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
     (i64::from(weapon.min_range)..=i64::from(weapon.max_range)).contains(&distance)
 }
 
-fn combatant(
+pub(crate) fn combatant(
     unit: &UnitState<'_>,
     weapon: &WeaponProfile,
     modifiers: &StrikeModifiers,
