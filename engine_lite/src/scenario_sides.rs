@@ -1,0 +1,232 @@
+use std::collections::BTreeSet;
+
+use crate::wml::Node;
+
+/// Which parts of this side's visibility are shared with allies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShareVision {
+    All,
+    Shroud,
+    None,
+}
+
+/// The initial rules settings for a side.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SideConfig {
+    /// One-based position in the scenario's side roster.
+    pub side: usize,
+    pub team_names: Vec<String>,
+    pub fog: bool,
+    pub shroud: bool,
+    pub share_vision: ShareVision,
+    pub starting_gold: i32,
+    /// The side's WML `income`, added to the global base income.
+    pub income_bonus: i32,
+    pub village_gold: i32,
+    pub village_support: i32,
+    pub recall_cost: i32,
+    pub recruits: BTreeSet<String>,
+}
+
+/// Reads direct `[side]` children of a preprocessed scenario in roster order.
+/// Omitted economy settings use the standard Wesnoth 1.18.8 scenario defaults.
+pub fn read_sides(scenario: &Node) -> Vec<SideConfig> {
+    scenario
+        .children
+        .iter()
+        .filter(|(tag, _)| tag == "side")
+        .enumerate()
+        .map(|(index, (_, node))| read_side(index + 1, node))
+        .collect()
+}
+
+fn read_side(side: usize, cfg: &Node) -> SideConfig {
+    let team_names = cfg
+        .attribute("team_name")
+        .filter(|name| !name.is_empty())
+        .or_else(|| cfg.attribute("side"))
+        .unwrap_or_default();
+    let gold = cfg.attribute("gold").unwrap_or_default();
+    let starting_gold = if gold.is_empty() {
+        100
+    } else {
+        int_attribute(cfg, "gold", 0)
+    };
+
+    SideConfig {
+        side,
+        team_names: names(team_names).collect(),
+        fog: bool_attribute(cfg, "fog", false),
+        shroud: bool_attribute(cfg, "shroud", false),
+        share_vision: read_share_vision(cfg),
+        starting_gold,
+        income_bonus: int_attribute(cfg, "income", 0),
+        village_gold: int_attribute(cfg, "village_gold", 1),
+        village_support: int_attribute(cfg, "village_support", 1),
+        recall_cost: int_attribute(cfg, "recall_cost", 20),
+        recruits: names(cfg.attribute("recruit").unwrap_or_default()).collect(),
+    }
+}
+
+fn names(list: &str) -> impl Iterator<Item = String> + '_ {
+    list.split(',')
+        .map(str::trim_ascii)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+fn read_share_vision(cfg: &Node) -> ShareVision {
+    if cfg.attributes.contains_key("share_view") || cfg.attributes.contains_key("share_maps") {
+        if bool_attribute(cfg, "share_view", false) {
+            return ShareVision::All;
+        }
+        if bool_attribute(cfg, "share_maps", true) {
+            return ShareVision::Shroud;
+        }
+        return ShareVision::None;
+    }
+
+    match cfg.attribute("share_vision") {
+        Some("shroud") => ShareVision::Shroud,
+        Some("none") => ShareVision::None,
+        _ => ShareVision::All,
+    }
+}
+
+fn bool_attribute(cfg: &Node, key: &str, default: bool) -> bool {
+    match cfg.attributes.get(key) {
+        Some(value) if value.translations.is_empty() => match value.text.as_str() {
+            "yes" | "true" => true,
+            "no" | "false" => false,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
+fn int_attribute(cfg: &Node, key: &str, default: i32) -> i32 {
+    let Some(value) = cfg.attributes.get(key).filter(|v| v.translations.is_empty()) else {
+        return default;
+    };
+    let text = value.text.trim_ascii_start();
+    // Wesnoth's string-to-integer conversion consumes the leading decimal digits.
+    let sign = usize::from(text.starts_with(['+', '-']));
+    let digit_count = text.as_bytes()[sign..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    text[..sign + digit_count].parse().unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wml;
+
+    #[test]
+    fn keeps_side_order_and_falls_back_to_the_declared_team_name() {
+        let scenario = wml::parse(
+            r#"
+            [side]
+                side=1
+                team_name=" Loyalists, Convoy, "
+                fog=true
+                shroud=yes
+                recruit="Spearman, Heavy Infantryman, Spearman, , Bowman"
+            [/side]
+            [event]
+                [side]
+                    side=30
+                [/side]
+            [/event]
+            [side]
+                side=2
+            [/side]
+            "#,
+        )
+        .unwrap();
+
+        let sides = read_sides(&scenario);
+        assert_eq!(sides.len(), 2);
+        assert_eq!((sides[0].side, sides[1].side), (1, 2));
+        assert_eq!(sides[0].team_names, ["Loyalists", "Convoy"]);
+        assert_eq!(sides[1].team_names, ["2"]);
+        assert!(sides[0].fog && sides[0].shroud);
+        assert!(!sides[1].fog && !sides[1].shroud);
+        assert_eq!(
+            sides[0].recruits.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["Bowman", "Heavy Infantryman", "Spearman"]
+        );
+    }
+
+    #[test]
+    fn loads_fresh_scenario_economy_defaults_and_explicit_values() {
+        let scenario = wml::parse(
+            r#"
+            [side]
+                side=1
+            [/side]
+            [side]
+                side=2
+                gold=0
+                income=-2
+                village_gold=4
+                village_support=0
+                recall_cost=10
+            [/side]
+            [side]
+                side=3
+                gold=-5
+                village_gold=all
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let sides = read_sides(&scenario);
+        let economy = |side: &SideConfig| {
+            (
+                side.starting_gold,
+                side.income_bonus,
+                side.village_gold,
+                side.village_support,
+                side.recall_cost,
+            )
+        };
+        assert_eq!(economy(&sides[0]), (100, 0, 1, 1, 20));
+        assert_eq!(economy(&sides[1]), (0, -2, 4, 0, 10));
+        assert_eq!(economy(&sides[2]), (-5, 0, 1, 1, 20));
+    }
+
+    #[test]
+    fn applies_native_legacy_visibility_precedence() {
+        let scenario = wml::parse(
+            r#"
+            [side]
+                share_vision=none
+                share_view=yes
+                share_maps=no
+                fog=1
+            [/side]
+            [side]
+                share_vision=none
+                share_view=no
+            [/side]
+            [side]
+                share_vision=shroud
+                share_maps=no
+            [/side]
+            [side]
+                share_vision=shroud
+            [/side]
+            "#,
+        )
+        .unwrap();
+
+        let sides = read_sides(&scenario);
+        assert!(!sides[0].fog);
+        assert_eq!(sides[0].share_vision, ShareVision::All);
+        assert_eq!(sides[1].share_vision, ShareVision::Shroud);
+        assert_eq!(sides[2].share_vision, ShareVision::None);
+        assert_eq!(sides[3].share_vision, ShareVision::Shroud);
+    }
+}
