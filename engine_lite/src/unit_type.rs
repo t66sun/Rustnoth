@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::movement_cost::MovementCosts;
+use crate::resistance::DamageTable;
 use crate::terrain_defense::TerrainDefense;
 use crate::time_of_day::Alignment;
 use crate::weapon::WeaponProfile;
@@ -31,6 +32,8 @@ pub struct UnitType {
     pub emits_zoc: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
+    /// Damage percentages that this unit type defines over its inherited movement type.
+    pub resistance_overrides: DamageTable,
     pub traits: TraitPool,
 }
 
@@ -88,6 +91,12 @@ impl UnitType {
                 .filter(|(tag, _)| tag == "defense")
                 .map(|(_, table)| table),
         );
+        let resistance_overrides = DamageTable::from_wml_tables(
+            unit.children
+                .iter()
+                .filter(|(tag, _)| tag == "resistance")
+                .map(|(_, table)| table),
+        );
         let mut result = Self {
             id: text("id").to_owned(),
             level,
@@ -100,6 +109,7 @@ impl UnitType {
             movement_type: text("movement_type").to_owned(),
             movement_cost_overrides,
             defense_overrides,
+            resistance_overrides,
             emits_zoc,
             advances_to,
             attacks: Vec::new(),
