@@ -34,6 +34,7 @@ pub mod recruit_hexes;
 pub mod audit_trace;
 pub mod scenario_bundle;
 pub mod wml_emit;
+pub mod native_addon;
 pub mod native_actions;
 pub mod native_capture;
 pub mod native_process;

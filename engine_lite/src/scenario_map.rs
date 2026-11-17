@@ -1,4 +1,4 @@
-use std::{error, fmt, io};
+use std::{borrow::Cow, error, fmt, io};
 
 use crate::{
     map::{MapParseError, ScenarioMap},
@@ -13,8 +13,16 @@ pub fn load(
     scenario: &Node,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<ScenarioMap, ScenarioMapError> {
+    let data = read_data(scenario, read_map_file)?;
+    ScenarioMap::parse(&data).map_err(ScenarioMapError::Invalid)
+}
+
+pub(crate) fn read_data(
+    scenario: &Node,
+    read_map_file: impl FnOnce(&str) -> io::Result<String>,
+) -> Result<Cow<'_, str>, ScenarioMapError> {
     if let Some(inline) = scenario.attribute("map_data").filter(|s| !s.is_empty()) {
-        return ScenarioMap::parse(inline).map_err(ScenarioMapError::Invalid);
+        return Ok(Cow::Borrowed(inline));
     }
 
     let file = scenario
@@ -25,7 +33,7 @@ pub fn load(
         file: file.to_owned(),
         source,
     })?;
-    ScenarioMap::parse(&contents).map_err(ScenarioMapError::Invalid)
+    Ok(Cow::Owned(contents))
 }
 
 #[derive(Debug)]
