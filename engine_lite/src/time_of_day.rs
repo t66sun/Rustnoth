@@ -1,5 +1,7 @@
 //! Scenario-wide time-of-day cycles.
 
+use std::collections::BTreeSet;
+
 /// A scheduled time and its base lawful combat bonus, in percent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimeOfDay {
@@ -7,11 +9,21 @@ pub struct TimeOfDay {
     pub lawful_bonus: i32,
 }
 
+/// A unit's response to time-of-day combat bonuses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Alignment {
+    Lawful,
+    Neutral,
+    Chaotic,
+    Liminal,
+}
+
 /// The global schedule anchored to the scenario's turn and time index.
 #[derive(Clone, Debug)]
 pub struct TimeSchedule {
     entries: Vec<TimeOfDay>,
     turn_offset: i64,
+    liminal_bonus: i64,
 }
 
 impl TimeSchedule {
@@ -29,6 +41,7 @@ impl TimeSchedule {
         }
 
         Self {
+            liminal_bonus: default_liminal_bonus(&entries),
             entries,
             turn_offset: i64::from(current_time) - i64::from(turn_at),
         }
@@ -45,11 +58,66 @@ impl TimeSchedule {
     pub fn at_turn(&self, turn: i32) -> &TimeOfDay {
         &self.entries[self.index_at_turn(turn)]
     }
+
+    /// Sets the scenario's explicit liminal bonus instead of the schedule default.
+    pub fn with_liminal_bonus(mut self, bonus: i32) -> Self {
+        self.liminal_bonus = i64::from(bonus);
+        self
+    }
+
+    /// Returns the damage adjustment in percentage points.
+    ///
+    /// Pass the lawful bonus effective at the unit's location. The global
+    /// schedule supplies the liminal bonus even when the local bonus differs.
+    pub fn combat_modifier(
+        &self,
+        lawful_bonus: i32,
+        alignment: Alignment,
+        fearless: bool,
+    ) -> i64 {
+        let lawful = i64::from(lawful_bonus);
+        let modifier = match alignment {
+            Alignment::Lawful => lawful,
+            Alignment::Neutral => 0,
+            Alignment::Chaotic => -lawful,
+            Alignment::Liminal => self.liminal_bonus - lawful.abs(),
+        };
+
+        if fearless { modifier.max(0) } else { modifier }
+    }
+}
+
+fn default_liminal_bonus(entries: &[TimeOfDay]) -> i64 {
+    let mut lawful_total = 0;
+    let mut chaotic_total = 0;
+    let mut candidates = BTreeSet::new();
+    for time in entries {
+        let bonus = i64::from(time.lawful_bonus);
+        lawful_total += bonus.max(0);
+        chaotic_total += (-bonus).max(0);
+        candidates.insert(bonus.abs());
+    }
+
+    let target = lawful_total.max(chaotic_total);
+    let mut closest_distance = target;
+    let mut chosen_bonus = 0;
+    // The liminal total is the candidate applied to each slot, less the
+    // sum of the slots' absolute lawful bonuses.
+    let magnitude_sum = lawful_total + chaotic_total;
+    for candidate in candidates {
+        let total = candidate * entries.len() as i64 - magnitude_sum;
+        let distance = (target - total).abs();
+        if distance < closest_distance {
+            closest_distance = distance;
+            chosen_bonus = candidate;
+        }
+    }
+    chosen_bonus.max(25)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TimeOfDay, TimeSchedule};
+    use super::{Alignment, TimeOfDay, TimeSchedule};
 
     fn default_entries() -> Vec<TimeOfDay> {
         [
@@ -117,5 +185,52 @@ mod tests {
         assert_eq!(schedule.index_at_turn(12), 0);
         assert_eq!(time.id, "nulltod");
         assert_eq!(time.lawful_bonus, 0);
+    }
+
+    #[test]
+    fn alignment_and_fearless_use_the_effective_lawful_bonus() {
+        let schedule = TimeSchedule::new(default_entries(), 1, 0);
+        assert_eq!(schedule.combat_modifier(25, Alignment::Lawful, false), 25);
+        assert_eq!(schedule.combat_modifier(-25, Alignment::Lawful, false), -25);
+        assert_eq!(schedule.combat_modifier(-25, Alignment::Lawful, true), 0);
+        assert_eq!(schedule.combat_modifier(25, Alignment::Chaotic, false), -25);
+        assert_eq!(schedule.combat_modifier(25, Alignment::Chaotic, true), 0);
+        assert_eq!(schedule.combat_modifier(-25, Alignment::Chaotic, true), 25);
+        assert_eq!(schedule.combat_modifier(25, Alignment::Neutral, false), 0);
+        assert_eq!(schedule.combat_modifier(35, Alignment::Liminal, false), -10);
+        assert_eq!(schedule.combat_modifier(-35, Alignment::Liminal, true), 0);
+    }
+
+    #[test]
+    fn liminal_default_chooses_a_schedule_magnitude_with_a_floor_of_25() {
+        let schedule = |bonuses: &[i32]| {
+            let entries = bonuses
+                .iter()
+                .map(|&lawful_bonus| TimeOfDay {
+                    id: String::new(),
+                    lawful_bonus,
+                })
+                .collect();
+            TimeSchedule::new(entries, 1, 0)
+        };
+        assert_eq!(
+            schedule(&[-40, 0, 25]).combat_modifier(0, Alignment::Liminal, false),
+            40
+        );
+        assert_eq!(
+            schedule(&[-10, 0, 10]).combat_modifier(0, Alignment::Liminal, false),
+            25
+        );
+        assert_eq!(
+            schedule(&[-50, 50]).combat_modifier(0, Alignment::Liminal, false),
+            25
+        );
+    }
+
+    #[test]
+    fn explicit_liminal_bonus_overrides_the_default_floor() {
+        let schedule = TimeSchedule::new(default_entries(), 1, 0).with_liminal_bonus(15);
+        assert_eq!(schedule.combat_modifier(-10, Alignment::Liminal, false), 5);
+        assert_eq!(schedule.combat_modifier(20, Alignment::Liminal, false), -5);
     }
 }
