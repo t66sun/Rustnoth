@@ -14,7 +14,7 @@ use crate::{
 };
 
 mod attack;
-pub use attack::{Attack, AttackError, StrikeModifiers};
+pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 
 /// Full referee state for the fixed map and its units.
 ///
