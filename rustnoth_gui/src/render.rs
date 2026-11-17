@@ -81,19 +81,20 @@ fn panel_width() -> f32 {
     (screen_width() * 0.23).clamp(148.0, 250.0)
 }
 
-pub fn board_layout(view: &Observation) -> Option<BoardLayout> {
-    BoardLayout::fit(view.width, view.height, Viewport {
-        x: 16.0,
-        y: HEADER_HEIGHT + 16.0,
-        width: screen_width() - panel_width() - 32.0,
-        height: screen_height() - HEADER_HEIGHT - 32.0,
-    })
+pub fn board_viewport() -> Viewport {
+    Viewport {
+        x: 0.0,
+        y: HEADER_HEIGHT,
+        width: screen_width() - panel_width(),
+        height: screen_height() - HEADER_HEIGHT,
+    }
 }
 
 pub fn draw(
     title: &str,
     state: MatchState,
     observation: Option<&Observation>,
+    layout: Option<&BoardLayout>,
     art: &BoardArt,
     movement: MovementView<'_>,
 ) {
@@ -102,10 +103,8 @@ pub fn draw(
     let height = screen_height();
     let panel_width = panel_width();
     let panel_x = (width - panel_width).max(0.0);
-    if let Some(view) = observation
-        && let Some(layout) = board_layout(view)
-    {
-        draw_board(view, &layout, art, &movement);
+    if let (Some(view), Some(layout)) = (observation, layout) {
+        draw_board(view, layout, art, &movement);
     }
     draw_rectangle(0.0, 0.0, width, HEADER_HEIGHT, PANEL);
     draw_rectangle(panel_x, HEADER_HEIGHT, panel_width, (height - HEADER_HEIGHT).max(0.0), PANEL);

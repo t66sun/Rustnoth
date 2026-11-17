@@ -11,9 +11,13 @@ use engine_lite::{fixed_match::Action, hex::Hex, observation::Observation, scena
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
 use rustnoth_gui::{assets::AssetCatalog, selection::Selection, session::Session};
 
+use camera::BoardCamera;
+
+mod camera;
 mod render;
 
-const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]";
+const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+Scroll over the board to zoom. Press Home to fit the board.";
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -117,6 +121,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
     let mut session = Session::new(game);
     let mut selection = Selection::default();
+    let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets);
@@ -130,10 +135,17 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             selection.clear();
             message = None;
         }
+        let pointer = mouse_position().into();
+        if let Some(observation) = session.observation() {
+            let reset = is_key_pressed(KeyCode::Home);
+            camera.fit(render::board_viewport(), observation.width, observation.height, reset);
+            if !reset {
+                camera.scroll(pointer, mouse_wheel().1);
+            }
+        }
         if is_mouse_button_pressed(MouseButton::Left)
             && let Some(observation) = session.observation()
-            && let Some(layout) = render::board_layout(observation)
-            && let Some(position) = layout.hex_at(mouse_position().into())
+            && let Some(position) = camera.hex_at(pointer)
             && let Some(action) = select_move(&mut selection, position, observation, session.legal_actions())
         {
             match session.apply(action) {
@@ -152,6 +164,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             &data.title,
             session.state(),
             session.observation(),
+            camera.layout(),
             &art,
             render::MovementView {
                 selected: selection.unit(),
