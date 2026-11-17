@@ -27,3 +27,4 @@ pub mod scenario_start;
 pub mod fixed_match;
 pub mod income;
 pub mod recruit_hexes;
+pub mod native_capture;
