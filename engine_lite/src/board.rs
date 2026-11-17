@@ -89,6 +89,30 @@ impl<'rules> Battlefield<'rules> {
         movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
         is_enemy: impl Fn(usize) -> bool,
     ) -> Result<(), MoveError> {
+        let remaining = self
+            .move_destinations(active_side, from, movement_cost, is_enemy)?
+            .get(&to)
+            .copied()
+            .ok_or(MoveError::Unreachable(to))?;
+
+        let mut unit = self.units.remove(&from).expect("validated move source");
+        // The search can leave at most the unit's starting i32 movement budget.
+        unit.moves_left = remaining as i32;
+        self.units.insert(to, unit);
+        Ok(())
+    }
+
+    /// Returns legal destinations in hex order and the movement left at each.
+    ///
+    /// The referee must use this on a fully visible battlefield with the
+    /// active side's terrain costs and enemy relations.
+    pub fn move_destinations(
+        &self,
+        active_side: usize,
+        from: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        is_enemy: impl Fn(usize) -> bool,
+    ) -> Result<BTreeMap<Hex, u32>, MoveError> {
         let unit = self.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
         if unit.side != active_side {
             return Err(MoveError::WrongSide(from));
@@ -96,7 +120,7 @@ impl<'rules> Battlefield<'rules> {
         let moves_left = unit.moves_left.max(0) as u32;
         let hostile = |unit: &UnitState<'rules>| unit.side != active_side && is_enemy(unit.side);
 
-        let remaining = reachable_destinations(from, moves_left, |position| {
+        Ok(reachable_destinations(from, moves_left, |position| {
             if !self.map.is_playable(position) {
                 return None;
             }
@@ -115,16 +139,7 @@ impl<'rules> Battlefield<'rules> {
                 occupancy,
                 stops_movement,
             })
-        })
-        .get(&to)
-        .copied()
-        .ok_or(MoveError::Unreachable(to))?;
-
-        let mut unit = self.units.remove(&from).expect("validated move source");
-        // The search can leave at most the unit's starting i32 movement budget.
-        unit.moves_left = remaining as i32;
-        self.units.insert(to, unit);
-        Ok(())
+        }))
     }
 
     /// Iterates over units in hex order.
@@ -277,6 +292,38 @@ mod tests {
 
     fn walking_cost(terrain: &str) -> Option<NonZeroU32> {
         NonZeroU32::new(if terrain == "Hh" { 2 } else { 1 })
+    }
+
+    #[test]
+    fn lists_legal_destinations_with_their_execution_costs() {
+        let unit_types = types();
+        let from = corridor_hex(0);
+        let occupied = [(0, 1), (1, 2), (4, 3)];
+        let board = corridor(&unit_types, &occupied);
+        let is_enemy = |side| side == 3;
+
+        let destinations = board
+            .move_destinations(1, from, walking_cost, is_enemy)
+            .unwrap();
+        assert_eq!(
+            destinations,
+            BTreeMap::from([(corridor_hex(2), 2), (corridor_hex(3), 0)]),
+        );
+        assert_eq!(board.unit_at(from).unwrap().moves_left, 5);
+        assert_eq!(
+            board.move_destinations(1, corridor_hex(1), walking_cost, is_enemy),
+            Err(MoveError::WrongSide(corridor_hex(1))),
+        );
+        assert_eq!(
+            board.move_destinations(1, corridor_hex(2), walking_cost, is_enemy),
+            Err(MoveError::MissingUnit(corridor_hex(2))),
+        );
+
+        for (to, remaining) in destinations {
+            let mut board = corridor(&unit_types, &occupied);
+            board.move_unit(1, from, to, walking_cost, is_enemy).unwrap();
+            assert_eq!(board.unit_at(to).unwrap().moves_left, remaining as i32);
+        }
     }
 
     #[test]
