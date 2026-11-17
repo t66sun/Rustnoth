@@ -56,6 +56,7 @@ impl<'rules> Battlefield<'rules> {
         let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
             placement,
             hitpoints: None,
+            experience: 0,
             moves_left: None,
             attacks_left: None,
         });
@@ -76,6 +77,7 @@ impl<'rules> Battlefield<'rules> {
         for AuthoredStartingUnit {
             placement: start,
             hitpoints,
+            experience,
             moves_left,
             attacks_left,
         } in starting_units
@@ -94,7 +96,7 @@ impl<'rules> Battlefield<'rules> {
                 id: start.id,
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
-                experience: 0,
+                experience,
                 moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
