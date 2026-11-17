@@ -134,9 +134,19 @@ fn write_action(lua: &mut String, action: &Action, step: usize) -> io::Result<()
         }
         Action::Recruit { unit_type, to } => {
             let (x, y) = coordinates(*to)?;
-            write!(lua, "    actions.recruit({x}, {y}, ").unwrap();
+            writeln!(
+                lua,
+                "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_RECRUIT_BEGIN {step}\", false)"
+            )
+            .unwrap();
+            write!(lua, "    local trait_draws = actions.recruit({x}, {y}, ").unwrap();
             write_string(lua, unit_type);
             lua.push_str(")\n");
+            writeln!(
+                lua,
+                "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_RECRUIT_END {step} \" .. trait_draws, false)"
+            )
+            .unwrap();
         }
         Action::EndTurn => unreachable!("turn groups exclude end turns"),
     }
@@ -218,6 +228,13 @@ mod tests {
         )
         .unwrap();
         assert!(native.lua.contains(r#"actions.recruit(3, 4, "Bandit \"暗\"\\\010")"#));
+        assert!(native.lua.contains(concat!(
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_RECRUIT_BEGIN 1\", false)\n",
+            "    local trait_draws = actions.recruit(",
+        )));
+        assert!(native.lua.contains(
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_RECRUIT_END 1 \" .. trait_draws, false)\n"
+        ));
     }
 
     #[test]
