@@ -20,6 +20,7 @@ pub struct ObservedTile {
     pub position: Hex,
     pub terrain: String,
     pub visible: bool,
+    pub village_owner: Option<usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,6 +58,7 @@ pub fn project(
                     position,
                     terrain: terrain.to_owned(),
                     visible: visibility == HexVisibility::Visible,
+                    village_owner: None,
                 });
             }
         }
