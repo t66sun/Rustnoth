@@ -16,6 +16,7 @@ use crate::{
     weapon::WeaponProfile,
 };
 
+pub mod audit;
 mod recruit;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
