@@ -56,17 +56,18 @@ impl Rules<'_> {
     }
 }
 
-/// A headless match on a fixed, fully visible map with two opposing sides.
+/// A headless free-for-all on a fixed, fully visible map.
 ///
 /// This match applies ordinary recruit traits and supports unconditional weapon firststrike.
-/// It ends when a side loses its last leader or the scenario reaches the round limit.
+/// It ends when fewer than two sides have leaders or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
     rng: ReplayRng,
     state: MatchState,
     village_owners: BTreeMap<Hex, usize>,
-    gold: [i64; 2],
+    side_order: Vec<usize>,
+    gold: Vec<i64>,
 }
 
 impl<'data> FixedMatch<'data> {
@@ -75,24 +76,24 @@ impl<'data> FixedMatch<'data> {
         rules: Rules<'data>,
         seed: u32,
     ) -> Result<Self, MatchError> {
-        let [first, second] = scenario.sides.as_slice() else {
-            return Err(MatchError::UnsupportedScenario);
-        };
-        if first.side != 1
-            || second.side != 2
-            || !first.is_enemy(second)
-            || first.fog
-            || first.shroud
-            || second.fog
-            || second.shroud
+        let side_count = scenario.sides.len();
+        if side_count < 2
+            || scenario.sides.iter().enumerate().any(|(index, side)| {
+                side.side != index + 1
+                    || side.fog
+                    || side.shroud
+                    || scenario.sides[..index].iter().any(|other| !side.is_enemy(other))
+            })
             || scenario
                 .board
                 .units()
-                .any(|(_, unit)| !matches!(unit.side, 1 | 2) || !supports_unit(unit.unit_type))
+                .any(|(_, unit)| {
+                    !(1..=side_count).contains(&unit.side) || !supports_unit(unit.unit_type)
+                })
         {
             return Err(MatchError::UnsupportedScenario);
         }
-        let gold = [i64::from(first.starting_gold), i64::from(second.starting_gold)];
+        let gold = scenario.sides.iter().map(|side| i64::from(side.starting_gold)).collect();
         let mut village_owners = BTreeMap::new();
         let map = scenario.board.map();
         for side in &scenario.sides {
@@ -113,6 +114,7 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
+            side_order: (1..=side_count).collect(),
             gold,
         };
         game.check_leaders();
@@ -137,7 +139,7 @@ impl<'data> FixedMatch<'data> {
             return None;
         };
         let board = &self.scenario.board;
-        let opponent = opposing_side(turn.side);
+        let is_enemy = |side| side != turn.side;
         let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
         let mut observation = project(board, turn.side, &vision, |_| true);
         observation.gold = Some(self.gold[turn.side - 1]);
@@ -151,14 +153,14 @@ impl<'data> FixedMatch<'data> {
                     turn.side,
                     from,
                     |terrain| self.rules.walking_cost(unit.unit_type, terrain),
-                    |side| side == opponent,
+                    is_enemy,
                 )
                 .expect("owned move origin");
             actions.extend(destinations.into_keys().map(|to| Action::Move { from, to }));
         }
         actions.extend(
             board
-                .attack_choices(turn.side, |side| side == opponent)
+                .attack_choices(turn.side, is_enemy)
                 .into_iter()
                 .map(Action::Attack),
         );
@@ -171,7 +173,7 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
-        let opponent = opposing_side(turn.side);
+        let is_enemy = |side| side != turn.side;
         match action {
             Action::Move { from, to } => {
                 let board = &mut self.scenario.board;
@@ -181,7 +183,7 @@ impl<'data> FixedMatch<'data> {
                     from,
                     to,
                     |terrain| self.rules.walking_cost(unit_type, terrain),
-                    |side| side == opponent,
+                    is_enemy,
                 )?;
                 if self.capture_village(turn.side, to) {
                     self.scenario.board.stop_movement(to);
@@ -193,7 +195,7 @@ impl<'data> FixedMatch<'data> {
                 board.apply_attack(
                     turn.side,
                     attack,
-                    |side| side == opponent,
+                    is_enemy,
                     &mut self.rng,
                 )?;
                 board.advance_after_combat(choice.from, supports_unit);
@@ -205,7 +207,7 @@ impl<'data> FixedMatch<'data> {
                 let next = self
                     .scenario
                     .board
-                    .advance_turn(turn, &[1, 2], self.scenario.last_round);
+                    .advance_turn(turn, &self.side_order, self.scenario.last_round);
                 self.state = if let Some(next) = next {
                     self.settle_income(next);
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain);
@@ -322,28 +324,21 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn check_leaders(&mut self) {
-        let mut leaders = [false; 2];
-        for (_, unit) in self.scenario.board.units().filter(|(_, unit)| unit.can_recruit) {
-            leaders[unit.side - 1] = true;
-        }
-        self.state = match leaders {
-            [true, true] => self.state,
-            [true, false] => MatchState::Won(1),
-            [false, true] => MatchState::Won(2),
-            [false, false] => MatchState::Draw,
+        let mut leader_sides = self
+            .scenario
+            .board
+            .units()
+            .filter_map(|(_, unit)| unit.can_recruit.then_some(unit.side));
+        self.state = match leader_sides.next() {
+            None => MatchState::Draw,
+            Some(side) if leader_sides.all(|other| other == side) => MatchState::Won(side),
+            Some(_) => self.state,
         };
     }
 }
 
 fn supports_unit(unit_type: &UnitType) -> bool {
     unit_type.attacks.iter().all(WeaponProfile::supports_specials)
-}
-
-fn opposing_side(side: usize) -> usize {
-    match side {
-        1 => 2,
-        _ => 1,
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -371,7 +366,7 @@ impl fmt::Display for MatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedScenario => f.write_str(
-                "fixed match requires two hostile sides with full visibility and supported weapons",
+                "fixed match requires at least two mutually hostile sides in order, with full visibility and supported weapons",
             ),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
@@ -1069,5 +1064,112 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         later_round.start_round = 2;
         let resumed = FixedMatch::new(later_round, rules(), 5489).unwrap();
         assert_eq!(observed_gold(&resumed), (1, Some(24)));
+    }
+
+    #[test]
+    fn rotates_three_hostile_sides_and_uses_each_sides_gold_and_actions() {
+        let bundle = crate::scenario_bundle::Bundle::parse(
+            br#"
+            [terrain_type]
+                string=Kh
+                recruit_from=yes
+                recruit_onto=yes
+            [/terrain_type]
+            [terrain_type]
+                string=Ch
+                recruit_onto=yes
+            [/terrain_type]
+            [units]
+                [unit_type]
+                    id=Fighter
+                    hitpoints=10
+                    attacks=2
+                    cost=8
+                    level=1
+                    [attack]
+                        range=melee
+                        damage=10
+                        number=1
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                turns=2
+                map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,3 Kh,Ch,Xv
+Xv,2 Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    team_name=west
+                    type=Fighter
+                    gold=34
+                [/side]
+                [side]
+                    side=2
+                    team_name=south
+                    type=Fighter
+                    gold=38
+                [/side]
+                [side]
+                    side=3
+                    team_name=east
+                    type=Fighter
+                    gold=42
+                    income=3
+                    recruit=Fighter
+                [/side]
+            [/scenario]
+            "#,
+        )
+        .unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let recruit = Action::Recruit {
+            unit_type: "Fighter".to_owned(),
+            to: Hex { x: 2, y: 0 },
+        };
+        for (round, side, gold) in [
+            (1, 1, [34, 38, 42]),
+            (1, 2, [34, 38, 42]),
+            (1, 3, [34, 38, 42]),
+            (2, 1, [36, 38, 34]),
+            (2, 2, [36, 40, 34]),
+            (2, 3, [36, 40, 38]),
+        ] {
+            assert_eq!(game.state(), MatchState::Playing(Turn { round, side }));
+            assert_eq!(game.audit_snapshot().gold, gold);
+            let (observation, actions) = game.decision().unwrap();
+            assert_eq!((observation.side, observation.gold), (side, Some(gold[side - 1])));
+            assert!(
+                observation.units.iter().all(|unit| unit.moves_left.is_some() == (unit.side == side))
+            );
+            if (round, side) == (1, 3) {
+                assert!(actions.contains(&recruit));
+                game.step(recruit.clone()).unwrap();
+                assert_eq!(game.audit_snapshot().gold, [34, 38, 34]);
+            }
+            game.step(Action::EndTurn).unwrap();
+        }
+        assert_eq!(game.state(), MatchState::Draw);
+        assert_eq!(game.audit_snapshot().gold, [36, 40, 38]);
+        let mut trace = Vec::new();
+        crate::audit_trace::write_snapshot(&mut trace, 0, &game.audit_snapshot()).unwrap();
+        assert!(String::from_utf8(trace).unwrap().contains("gold\t3\t38\n"));
+
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let attack = |y| {
+            Action::Attack(AttackChoice {
+                from: Hex { x: 1, y: 0 },
+                to: Hex { x: 0, y },
+                weapon: 0,
+            })
+        };
+        let (_, actions) = game.decision().unwrap();
+        assert!(actions.contains(&attack(0)));
+        assert!(actions.contains(&attack(1)));
+        assert_eq!(game.step(attack(0)), Ok(MatchState::Playing(Turn { round: 1, side: 3 })));
+        assert_eq!(game.step(attack(1)), Ok(MatchState::Won(3)));
     }
 }
