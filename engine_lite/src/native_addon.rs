@@ -45,24 +45,31 @@ fn prepare(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing [scenario] block"))?;
     let (tag, scenario) = &mut document.children[index];
 
-    let mut sides = 0;
-    for (tag, side) in &mut scenario.children {
-        if tag == "side" {
-            set_attribute(side, "controller", "human");
-            sides += 1;
+    let mut sides = Vec::new();
+    for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
+        let expected = sides.len() + 1;
+        let declared = integer(side, "side").and_then(|number| usize::try_from(number).ok());
+        if side.attribute("side").is_some() && declared != Some(expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("native audit expected side {expected} at roster position {expected}"),
+            )
+            .into());
         }
+        set_attribute(side, "controller", "human");
+        sides.push(expected);
     }
-    if sides != 2 {
+    if sides.len() < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "native audit requires exactly two sides",
+            "native audit requires at least two sides",
         )
         .into());
     }
 
     let first_round = integer(scenario, "turn_at").unwrap_or(1);
     let last_round = integer(scenario, "turns").filter(|&turns| turns != -1);
-    let script = native_script::generate(actions, first_round, last_round)?;
+    let script = native_script::generate_for_sides(actions, first_round, last_round, &sides)?;
     let map = scenario_map::read_data(scenario, read_map_file)?.into_owned();
 
     *tag = "test".to_owned();
@@ -108,6 +115,57 @@ mod tests {
     use super::*;
 
     const MAP: &str = "Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv";
+
+    #[test]
+    fn packages_the_third_side_before_the_final_round_ends() {
+        let bundle = br#"
+            [scenario]
+                turns=1
+                map_file="three.map"
+                [side]
+                    side=1
+                [/side]
+                [side]
+                    side=2
+                [/side]
+                [side]
+                    side=3
+                    gold=42
+                    controller=ai
+                [/side]
+            [/scenario]
+        "#;
+        let (document, script) = prepare(
+            bundle,
+            &[Action::EndTurn, Action::EndTurn, Action::EndTurn],
+            0,
+            |filename| {
+                assert_eq!(filename, "three.map");
+                Ok("Xv,Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,3 Kh,Xv\nXv,Xv,Xv,Xv,Xv".to_owned())
+            },
+        )
+        .unwrap();
+        let scenario = &document.children[0].1;
+        let third = &scenario.children[2].1;
+        assert_eq!(third.attribute("side"), Some("3"));
+        assert_eq!(third.attribute("gold"), Some("42"));
+        assert_eq!(third.attribute("controller"), Some("human"));
+        let events: Vec<_> = scenario
+            .children
+            .iter()
+            .filter(|(tag, _)| tag == "event")
+            .map(|(_, event)| event.attribute("name").unwrap())
+            .collect();
+        assert_eq!(
+            events,
+            ["side 1 turn 1 refresh", "side 2 turn 1 refresh", "side 3 turn 1 refresh", "time over"]
+        );
+        assert!(script.contains(concat!(
+            "groups[3] = function()\n",
+            "    if checkpoint(2, false) then return end\n",
+            "    actions.end_turn()\n",
+        )));
+    }
 
     #[test]
     fn packages_a_seeded_native_test_with_the_inline_map_and_authored_events() {
@@ -218,5 +276,24 @@ mod tests {
         let bundle = b"[units]\n[/units]\n[units]\n[/units]\n[scenario]\n[/scenario]";
         let error = prepare(bundle, &[], 0, |_| unreachable!()).unwrap_err();
         assert_eq!(error.to_string(), "duplicate [units] blocks");
+    }
+
+    #[test]
+    fn rejects_a_declared_side_number_outside_roster_order() {
+        let bundle = br#"
+            [scenario]
+                [side]
+                    side=1
+                [/side]
+                [side]
+                    side=3
+                [/side]
+                [side]
+                    side=2
+                [/side]
+            [/scenario]
+        "#;
+        let error = prepare(bundle, &[], 0, |_| unreachable!()).unwrap_err();
+        assert_eq!(error.to_string(), "native audit expected side 2 at roster position 2");
     }
 }
