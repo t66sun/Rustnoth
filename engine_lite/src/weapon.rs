@@ -57,6 +57,30 @@ impl WeaponProfile {
                 .find_map(|(tag, child)| (tag == "specials").then_some(child)),
         }
     }
+
+    pub(crate) fn has_firststrike(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| {
+                is_unconditional_firststrike(tag, definition)
+            })
+        })
+    }
+
+    pub(crate) fn supports_specials(&self) -> bool {
+        self.specials.as_ref().is_none_or(|specials| {
+            specials.children.iter().all(|(tag, definition)| {
+                is_unconditional_firststrike(tag, definition)
+            })
+        })
+    }
+}
+
+fn is_unconditional_firststrike(tag: &str, definition: &Node) -> bool {
+    tag == "firststrike"
+        && definition.children.is_empty()
+        && definition.attributes.keys().all(|key| {
+            matches!(key.as_str(), "id" | "name" | "description" | "special_note")
+        })
 }
 
 #[cfg(test)]
@@ -121,5 +145,29 @@ mod tests {
         assert_eq!((weapon.accuracy, weapon.parry), (0, 0));
         assert_eq!((weapon.movement_used, weapon.attacks_used), (100_000, 1));
         assert!(weapon.specials.is_none());
+    }
+
+    #[test]
+    fn accepts_unconditional_firststrike_and_rejects_unsupported_specials() {
+        let weapon = |special| {
+            WeaponProfile::from_wml(
+                wml::parse(format!("[specials]\n{special}\n[/specials]")).unwrap(),
+            )
+        };
+        let stock = weapon(
+            "[firststrike]\nid=firststrike\nname=_\"first strike\"\n\
+             description=_\"Strikes first.\"\nspecial_note=_\"First strike.\"\n[/firststrike]",
+        );
+        assert!(stock.has_firststrike());
+        assert!(stock.supports_specials());
+        for unsupported in [
+            "[firststrike]\nid=firststrike\nactive_on=defense\n[/firststrike]",
+            "[firststrike]\n[filter_opponent]\ntype=Fighter\n[/filter_opponent]\n[/firststrike]",
+            "[poison]\nid=poison\n[/poison]",
+        ] {
+            let weapon = weapon(unsupported);
+            assert!(!weapon.has_firststrike());
+            assert!(!weapon.supports_specials());
+        }
     }
 }

@@ -46,8 +46,8 @@ pub struct Rules<'data> {
 
 /// A headless match on a fixed, fully visible map with two opposing sides.
 ///
-/// This match uses base unit stats and ordinary weapons. It ends when a
-/// side loses its last leader or the scenario reaches the round limit.
+/// This match uses base unit stats and supports unconditional weapon firststrike.
+/// It ends when a side loses its last leader or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
@@ -327,12 +327,7 @@ impl<'data> FixedMatch<'data> {
 }
 
 fn supports_unit(unit_type: &UnitType) -> bool {
-    unit_type.attacks.iter().all(|weapon| {
-        weapon
-            .specials
-            .as_ref()
-            .is_none_or(|specials| specials.children.is_empty())
-    })
+    unit_type.attacks.iter().all(WeaponProfile::supports_specials)
 }
 
 fn opposing_side(side: usize) -> usize {
@@ -367,7 +362,7 @@ impl fmt::Display for MatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedScenario => f.write_str(
-                "fixed match requires two hostile sides with full visibility and base weapons",
+                "fixed match requires two hostile sides with full visibility and supported weapons",
             ),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
@@ -652,6 +647,74 @@ Xv,Xv,Xv,Xv"
         game.step(Action::Attack(choice)).unwrap();
         assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 3);
         assert_eq!(game.rng.seed_and_calls(), (5489, 2));
+    }
+
+    #[test]
+    fn prefers_lethal_firststrike_retaliation_and_applies_it_before_the_attack() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Attacker
+            [/side]
+            [side]
+                side=2
+                type=Defender
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let ordinary_attack = r#"
+            [attack]
+                range=melee
+                damage=10
+                number=1
+            [/attack]
+        "#;
+        let firststrike_attack = r#"
+            [attack]
+                range=melee
+                damage=10
+                number=1
+                [specials]
+                    [firststrike]
+                        id=firststrike
+                    [/firststrike]
+                [/specials]
+            [/attack]
+        "#;
+        let attacker = UnitType::from_wml(
+            wml::parse(format!("id=Attacker\nhitpoints=10\n{ordinary_attack}")).unwrap(),
+        );
+        let defender = UnitType::from_wml(
+            wml::parse(format!(
+                "id=Defender\nhitpoints=10\n{ordinary_attack}{firststrike_attack}"
+            ))
+            .unwrap(),
+        );
+        let roster = BTreeMap::from([(attacker.id.clone(), attacker), (defender.id.clone(), defender)]);
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let terrain = TerrainAliases::from_wml(&wml::Node::default());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 1, y: 0 };
+        let choice = AttackChoice { from, to, weapon: 0 };
+        let attack = game.prepare_attack(Turn { round: 1, side: 1 }, choice).unwrap();
+        assert_eq!(attack.retaliation.map(|(index, _)| index), Some(1));
+        assert_eq!(game.step(Action::Attack(choice)), Ok(MatchState::Won(2)));
+        assert!(game.scenario.board.unit_at(from).is_none());
+        assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 10);
+        assert_eq!(game.rng.seed_and_calls(), (5489, 1));
     }
 
     #[test]
