@@ -29,6 +29,8 @@ pub struct SnapshotUnit {
     pub attacks_left: i32,
     pub can_recruit: bool,
     pub experience: i32,
+    /// Applied trait IDs in effect order.
+    pub traits: Vec<String>,
 }
 
 impl FixedMatch<'_> {
@@ -65,6 +67,10 @@ impl FixedMatch<'_> {
                     attacks_left: unit.attacks_left,
                     can_recruit: unit.can_recruit,
                     experience: unit.experience,
+                    traits: unit
+                        .traits()
+                        .map(|trait_| trait_.attribute("id").unwrap_or_default().to_owned())
+                        .collect(),
                 })
                 .collect(),
             villages: self
@@ -231,6 +237,7 @@ Xv,Xv,Xv,Xv,Xv"
             attacks_left: 1,
             can_recruit: true,
             experience: 0,
+            traits: Vec::new(),
         };
         assert_eq!(before.state, MatchState::Playing(Turn { round: 1, side: 1 }));
         assert_eq!(before.gold, [17, 41]);
