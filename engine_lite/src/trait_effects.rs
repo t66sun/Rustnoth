@@ -15,10 +15,18 @@ pub struct RecruitStats {
 impl RecruitStats {
     /// Applies direct HP, movement, experience and attack damage effects in trait order.
     pub fn from_traits(unit: &UnitType, traits: &[&Node]) -> Self {
+        Self::from_traits_with_base_experience(unit, traits, unit.experience)
+    }
+
+    pub(crate) fn from_traits_with_base_experience(
+        unit: &UnitType,
+        traits: &[&Node],
+        base_max_experience: i32,
+    ) -> Self {
         let mut stats = Self {
             max_hitpoints: unit.hitpoints,
             max_movement: unit.movement,
-            max_experience: unit.experience,
+            max_experience: base_max_experience,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
         };
         for trait_ in traits {
