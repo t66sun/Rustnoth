@@ -1,5 +1,7 @@
 use crate::wml::Node;
 
+const MAGICAL_HIT_CHANCE: u8 = 70;
+
 /// The combat fields of a preprocessed Wesnoth 1.18.8 `[attack]` tag.
 #[derive(Debug, PartialEq, Eq)]
 pub struct WeaponProfile {
@@ -66,13 +68,38 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn magical_hit_chance(&self) -> Option<u8> {
+        self.specials.as_ref().and_then(|specials| {
+            specials
+                .children
+                .iter()
+                .any(|(tag, definition)| is_unconditional_magical(tag, definition))
+                .then_some(MAGICAL_HIT_CHANCE)
+        })
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
                 is_unconditional_firststrike(tag, definition)
+                    || is_unconditional_magical(tag, definition)
             })
         })
     }
+}
+
+fn is_unconditional_magical(tag: &str, definition: &Node) -> bool {
+    tag == "chance_to_hit"
+        && definition.children.is_empty()
+        && definition.attribute("id") == Some("magical")
+        && definition.attribute("value").and_then(|value| value.parse().ok())
+            == Some(MAGICAL_HIT_CHANCE)
+        && definition.attribute("cumulative") == Some("no")
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "value" | "cumulative" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_unconditional_firststrike(tag: &str, definition: &Node) -> bool {
@@ -168,6 +195,36 @@ mod tests {
             let weapon = weapon(unsupported);
             assert!(!weapon.has_firststrike());
             assert!(!weapon.supports_specials());
+        }
+    }
+
+    #[test]
+    fn recognizes_stock_magical_without_accepting_other_hit_chance_effects() {
+        let weapon = |fields| {
+            WeaponProfile::from_wml(
+                wml::parse(format!(
+                    "[specials]\n[chance_to_hit]\n{fields}\n[/chance_to_hit]\n[/specials]"
+                ))
+                .unwrap(),
+            )
+        };
+        let stock = weapon(
+            "id=magical\nvalue=70\ncumulative=no\nname= _ \"magical\"\n\
+             description= _ \"Sets the chance to hit.\"\nspecial_note= _ \"Magical attacks.\"",
+        );
+        assert!(stock.supports_specials());
+        assert_eq!(stock.magical_hit_chance(), Some(70));
+
+        for fields in [
+            "id=magical\nvalue=70\ncumulative=no\nactive_on=offense",
+            "id=magical\nvalue=70\ncumulative=no\n[filter_opponent]\ntype=Fighter\n[/filter_opponent]",
+            "id=magical\nvalue=70\ncumulative=yes",
+            "id=magical\nvalue=80\ncumulative=no",
+            "id=marksman\nvalue=70\ncumulative=no",
+        ] {
+            let unsupported = weapon(fields);
+            assert!(!unsupported.supports_specials());
+            assert_eq!(unsupported.magical_hit_chance(), None);
         }
     }
 }

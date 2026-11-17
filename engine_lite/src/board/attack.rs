@@ -171,11 +171,15 @@ pub(crate) fn combatant(
 ) -> Combatant {
     let weapon = &unit.unit_type.attacks[weapon_index];
     let damage = strike_damage(unit.attack_damage(weapon_index), modifiers.damage_multiplier, false);
+    // Native applies the noncumulative magical replacement after accuracy and parry.
+    let hit_chance = weapon.magical_hit_chance().unwrap_or_else(|| {
+        base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry)
+    });
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,
         damage: u32::try_from(damage).unwrap_or(u32::MAX),
-        hit_chance: base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry),
+        hit_chance,
         firststrike: weapon.has_firststrike(),
     }
 }
