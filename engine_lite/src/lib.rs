@@ -5,3 +5,4 @@ pub mod time_of_day;
 pub mod map;
 pub mod wml;
 pub mod rng;
+pub mod strike_damage;
