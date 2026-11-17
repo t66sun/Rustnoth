@@ -301,9 +301,10 @@ impl<'data> FixedMatch<'data> {
         let target_hit_chance = self.rules.movement.get(target_movement).map_or(100, |profile| {
             profile.defense.hit_chance(self.rules.terrain, terrain)
         });
-        let damage_taken = self.rules.resistance.get(target_movement).map_or(100, |table| {
-            table.damage_taken(&weapon.damage_type)
-        });
+        let damage_taken = target.unit_type.resistance_overrides.damage_taken_with_fallback(
+            &weapon.damage_type,
+            self.rules.resistance.get(target_movement),
+        );
         let schedule = &self.scenario.schedule;
         let lawful_bonus = schedule.at_turn(turn.round).lawful_bonus;
         let alignment = schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, false);

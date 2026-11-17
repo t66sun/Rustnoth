@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::movement_cost::MovementCosts;
+use crate::resistance::DamageTable;
 use crate::time_of_day::Alignment;
 use crate::weapon::WeaponProfile;
 use crate::wml::Node;
@@ -23,11 +24,19 @@ pub struct UnitType {
     pub emits_zoc: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
+    /// Damage percentages that this unit type defines over its inherited movement type.
+    pub resistance_overrides: DamageTable,
 }
 
 impl UnitType {
     /// Consumes one flat `[unit_type]` after any inheritance has been resolved.
     pub fn from_wml(unit: Node) -> Self {
+        let resistance_overrides = DamageTable::from_wml_tables(
+            unit.children
+                .iter()
+                .filter(|(tag, _)| tag == "resistance")
+                .map(|(_, table)| table),
+        );
         let text = |key| unit.attribute(key).unwrap_or_default();
         let int = |key, default| {
             unit
@@ -70,6 +79,7 @@ impl UnitType {
                 .map(|(_, table)| table),
         );
         Self {
+            resistance_overrides,
             id: text("id").to_owned(),
             level,
             hitpoints: int("hitpoints", 1),
