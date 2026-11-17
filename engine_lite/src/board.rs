@@ -3,7 +3,9 @@ use std::{
     error, fmt,
 };
 
-use crate::{hex::Hex, map::ScenarioMap, starting_units::StartingUnit, unit_type::UnitType};
+use crate::{
+    hex::Hex, map::ScenarioMap, starting_units::StartingUnit, turn::Turn, unit_type::UnitType,
+};
 
 /// Full referee state for the fixed map and its units.
 ///
@@ -72,6 +74,21 @@ impl<'rules> Battlefield<'rules> {
     /// Iterates over units in hex order.
     pub fn units(&self) -> impl Iterator<Item = (Hex, &UnitState<'rules>)> + '_ {
         self.units.iter().map(|(&position, unit)| (position, unit))
+    }
+
+    /// Advances the referee's side turn and refreshes the incoming side's actions.
+    pub fn advance_turn(
+        &mut self,
+        current: Turn,
+        active_sides: &[usize],
+        last_round: Option<i32>,
+    ) -> Option<Turn> {
+        let next = current.next(active_sides, last_round)?;
+        for unit in self.units.values_mut().filter(|unit| unit.side == next.side) {
+            unit.moves_left = unit.unit_type.movement.max(0);
+            unit.attacks_left = unit.unit_type.max_attacks.max(0);
+        }
+        Some(next)
     }
 }
 
@@ -171,5 +188,34 @@ mod tests {
             .unwrap_err(),
             BoardError::Occupied(WEST)
         );
+    }
+
+    #[test]
+    fn advancing_refreshes_only_the_incoming_side() {
+        let scenario = wml::parse(
+            "[side]\ntype=Spearman\n[/side]\n[side]\ntype=Spearman\n[/side]",
+        )
+        .unwrap();
+        let map = map();
+        let starts = read_starting_units(&scenario, &map).unwrap();
+        let unit_types = types();
+        let mut board = Battlefield::new(map, starts, &unit_types).unwrap();
+        for unit in board.units.values_mut() {
+            unit.hitpoints = 17;
+            unit.moves_left = 0;
+            unit.attacks_left = 0;
+        }
+
+        let first = Turn { round: 1, side: 1 };
+        let second = Turn { round: 1, side: 2 };
+        assert_eq!(board.advance_turn(first, &[1, 2], Some(1)), Some(second));
+        let incoming = board.unit_at(WEST).unwrap();
+        assert_eq!(
+            (incoming.moves_left, incoming.attacks_left, incoming.hitpoints),
+            (5, 2, 17)
+        );
+        assert_eq!(board.unit_at(EAST).unwrap().moves_left, 0);
+        assert_eq!(board.advance_turn(second, &[1, 2], Some(1)), None);
+        assert_eq!(board.unit_at(EAST).unwrap().attacks_left, 0);
     }
 }
