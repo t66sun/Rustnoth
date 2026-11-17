@@ -14,6 +14,12 @@ wesnoth --preprocess-defines=SKIP_CORE,NO_TERRAIN_GFX --preprocess "<install>/da
 
 在对拍命令末尾加上 `--core-config "<out>/_main.cfg"`。场景包可只包含 `[scenario]`，也可附带自定义单位和地形。Rust 从预处理文件读取原版规则，原版裁判从自己的安装读取内置规则。
 
+独立回放也可加载同一个预处理文件。它用指定的种子运行 Rust 裁判，并将逐步记录写入标准输出。
+
+```sh
+cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-step-trace -- <bundle.cfg> <actions.tsv> <seed> --core-config "<out>/_main.cfg"
+```
+
 动作文件为 UTF-8，每行字段用制表符分隔。坐标从 1 起算，武器索引从 0 起算。以下是动作格式示例。
 
 ```text
