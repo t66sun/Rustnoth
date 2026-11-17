@@ -12,6 +12,9 @@ use crate::{
     unit_type::UnitType,
 };
 
+mod attack;
+pub use attack::{Attack, AttackError, StrikeModifiers};
+
 /// Full referee state for the fixed map and its units.
 ///
 /// Use a side-specific observation when supplying information to a policy.
