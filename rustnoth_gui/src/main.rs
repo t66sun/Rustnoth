@@ -11,8 +11,9 @@ use engine_lite::{
     fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml,
 };
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::{assets::AssetCatalog, selection::Selection, session::Session};
+use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::Session};
 
+mod menu;
 mod render;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]";
@@ -124,12 +125,16 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
         art.load(observation, &data.assets);
     }
     let mut message = None;
+    let mut menu: Option<menu::Menu> = None;
     loop {
         if is_key_pressed(KeyCode::Escape) {
-            return Ok(());
+            if menu.take().is_none() {
+                return Ok(());
+            }
         }
         if is_mouse_button_pressed(MouseButton::Right) {
             selection.clear();
+            menu = None;
             message = None;
         }
         let (mouse_x, mouse_y) = mouse_position();
@@ -137,28 +142,53 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
         let clicked = is_mouse_button_pressed(MouseButton::Left);
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let button = render::end_turn_button(screen_width(), screen_height(), can_end);
+        let menu_action = menu.as_mut().and_then(|menu| {
+            if is_key_pressed(KeyCode::Tab) {
+                menu.cycle();
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                Some(menu.focused_action().clone())
+            } else if clicked {
+                menu.action_at(pointer, render::menu_area()).cloned()
+            } else {
+                None
+            }
+        });
         let requested = if can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
             Some(Action::EndTurn)
+        } else if menu_action.is_some() {
+            menu_action
         } else if clicked
             && let Some(observation) = session.observation()
             && let Some(layout) = render::board_layout(observation)
             && let Some(position) = layout.hex_at([mouse_x, mouse_y])
         {
-            select_move(&mut selection, position, observation, session.legal_actions())
+            let movement = select_move(&mut selection, position, observation, session.legal_actions());
+            menu = if movement.is_some() {
+                None
+            } else {
+                menu::Menu::new(
+                    position,
+                    options_at(&selection, position, observation, session.legal_actions(), &data.assets),
+                )
+            };
+            movement
         } else {
             None
         };
         if let Some(action) = requested {
             let reselect = match &action {
                 Action::Move { to, .. } => Some(*to),
+                Action::Attack(attack) => Some(attack.from),
                 _ => None,
             };
             match session.apply(action) {
                 Ok(_) => {
                     message = None;
+                    menu = None;
                     selection.clear();
                     if let Some(observation) = session.observation() {
                         if let Some(position) = reselect {
@@ -180,6 +210,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                 actions: session.legal_actions(),
                 message: message.as_deref(),
                 assets: &data.assets,
+                menu: menu.as_ref(),
             },
         );
         if session.legal_actions().contains(&Action::EndTurn)

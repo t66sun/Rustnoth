@@ -11,6 +11,7 @@ use rustnoth_gui::{
     layout::{BoardLayout, Viewport},
     team_colors::TeamColors,
 };
+use crate::menu::Menu;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
@@ -21,6 +22,7 @@ const BUTTON: Color = Color::from_rgba(57, 68, 51, 255);
 const BUTTON_HIGHLIGHTED: Color = Color::from_rgba(79, 94, 68, 255);
 const UNKNOWN_TERRAIN: Color = Color::from_rgba(51, 65, 50, 255);
 const REACHABLE: Color = Color::from_rgba(240, 214, 106, 190);
+const ATTACKABLE: Color = Color::from_rgba(245, 127, 102, 225);
 const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const HEADER_HEIGHT: f32 = 68.0;
@@ -104,6 +106,7 @@ pub struct MovementView<'a> {
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
     pub assets: &'a AssetCatalog,
+    pub menu: Option<&'a Menu>,
 }
 
 fn sidebar_width(width: f32) -> f32 {
@@ -137,6 +140,12 @@ pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
     label(&art.font, "End turn", bounds.x + 10.0, baseline, 16, TEXT);
     let hint_width = measure_text("Space", art.font.as_ref(), 12, 1.0).width;
     label(&art.font, "Space", bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
+}
+
+pub fn menu_area() -> Rect {
+    let width = screen_width();
+    let sidebar = sidebar_width(width);
+    Rect::new(width - sidebar + 18.0, 333.0, sidebar - 36.0, (screen_height() - 409.0).max(0.0))
 }
 
 pub fn draw(
@@ -190,6 +199,19 @@ pub fn draw(
     if let Some(message) = movement.message {
         label(&art.font, message, inset, height - 76.0, 16, ERROR);
     }
+    if let Some(menu) = movement.menu {
+        let area = menu_area();
+        label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
+        let pointer: Vec2 = mouse_position().into();
+        for row in menu.rows(area) {
+            let bounds = row.bounds;
+            let highlighted = row.focused || bounds.contains(pointer);
+            let fill = if highlighted { BUTTON_HIGHLIGHTED } else { BUTTON };
+            draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, fill);
+            draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, if highlighted { TEXT } else { BORDER });
+            label(&art.font, row.label, bounds.x + 10.0, bounds.y + 27.0, 17, TEXT);
+        }
+    }
 }
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
@@ -214,17 +236,32 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             );
         }
     }
-    if let Some(selected) = movement.selected {
-        for action in movement.actions {
-            if let Action::Move { from, to } = action
-                && *from == selected
-            {
-                let [x, y] = layout.tile_origin(*to);
-                draw_circle(x + size / 2.0, y + size / 2.0, (size * 0.11).max(2.0), REACHABLE);
+    let mut choices = BTreeMap::new();
+    for action in movement.actions {
+        match action {
+            Action::Move { from, to } if Some(*from) == movement.selected => {
+                choices.insert(*to, REACHABLE);
             }
+            Action::Attack(attack) if Some(attack.from) == movement.selected => {
+                choices.insert(attack.to, ATTACKABLE);
+            }
+            Action::Recruit { to, .. } if movement.selected.is_none() => {
+                choices.insert(*to, REACHABLE);
+            }
+            _ => {}
         }
+    }
+    for (to, color) in choices {
+        let [x, y] = layout.tile_origin(to);
+        draw_circle(x + size / 2.0, y + size / 2.0, (size * 0.11).max(2.0), color);
+    }
+    if let Some(selected) = movement.selected {
         let [x, y] = layout.tile_origin(selected);
         draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.48, 0.0, 2.0, SELECTED);
+    }
+    if let Some(menu) = movement.menu {
+        let [x, y] = layout.tile_origin(menu.target);
+        draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.42, 0.0, 2.0, SELECTED);
     }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
