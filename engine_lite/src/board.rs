@@ -18,6 +18,7 @@ use crate::{
 
 mod attack;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
+pub(crate) use attack::{combatant, within_range};
 
 /// Full referee state for the fixed map and its units.
 ///
