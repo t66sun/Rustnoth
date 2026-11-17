@@ -2,6 +2,7 @@
 
 pub mod hex;
 pub mod time_of_day;
+pub mod scenario_time;
 pub mod map;
 pub mod weapon;
 pub mod wml;
