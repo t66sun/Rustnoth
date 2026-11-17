@@ -12,7 +12,7 @@ This repository trains a Wesnoth 1.18.8 agent with a Rust rules core (`engine_li
 
 4. **Every behavior change carries an assertion that fails when reverted.** No silent skips, no lowered or bypassed gates, no retries that hide flakiness, no weakened evidence. A check that cannot run is reported as not run, never as passed.
 
-5. **Never claim more acceptance than observed.** Minimal checks prove wiring only; Ubuntu is the acceptance environment and Windows the reference. Convergence, strength and full native semantics need formal training evidence. A plan or a TEST.md item never authorizes collection or training.
+5. **Never claim more acceptance than observed.** Run project checks and acceptance locally. Minimal checks prove wiring only. Convergence, strength and full native semantics need formal training evidence. A plan or a TEST.md item never authorizes collection or training.
 
 6. **Referee truth never reaches a policy.** Snapshots, unseen units, unexplored terrain, RNG draws and opponent weights stay inside the referee, replay audit, reward computation and differential tests; observations, candidates, teacher queries and predictions see only legal visible context.
 
