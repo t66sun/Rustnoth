@@ -44,6 +44,7 @@ pub struct FixedMatch<'data> {
     rules: Rules<'data>,
     rng: ReplayRng,
     state: MatchState,
+    village_owners: BTreeMap<Hex, usize>,
 }
 
 impl<'data> FixedMatch<'data> {
@@ -74,6 +75,17 @@ impl<'data> FixedMatch<'data> {
         {
             return Err(MatchError::UnsupportedScenario);
         }
+        let mut village_owners = BTreeMap::new();
+        let map = scenario.board.map();
+        for side in &scenario.sides {
+            for &hex in &side.starting_villages {
+                if map.is_playable(hex)
+                    && map.terrain_at(hex).is_some_and(|code| rules.terrain.features(code).village)
+                {
+                    village_owners.entry(hex).or_insert(side.side);
+                }
+            }
+        }
         let mut game = Self {
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
@@ -82,6 +94,7 @@ impl<'data> FixedMatch<'data> {
             scenario,
             rules,
             rng: ReplayRng::new(seed),
+            village_owners,
         };
         game.check_leaders();
         if matches!(game.state, MatchState::Playing(turn)
@@ -104,7 +117,10 @@ impl<'data> FixedMatch<'data> {
         let board = &self.scenario.board;
         let opponent = opposing_side(turn.side);
         let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
-        let observation = project(board, turn.side, &vision, |_| true);
+        let mut observation = project(board, turn.side, &vision, |_| true);
+        for tile in &mut observation.tiles {
+            tile.village_owner = self.village_owners.get(&tile.position).copied();
+        }
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
             let destinations = board
@@ -145,6 +161,15 @@ impl<'data> FixedMatch<'data> {
                     |terrain| profile?.movement_costs.cost(terrain_aliases, terrain, false),
                     |side| side == opponent,
                 )?;
+                if self.village_owners.get(&to).copied() != Some(turn.side)
+                    && board
+                        .map()
+                        .terrain_at(to)
+                        .is_some_and(|code| terrain_aliases.features(code).village)
+                {
+                    self.village_owners.insert(to, turn.side);
+                    board.stop_movement(to);
+                }
             }
             Action::Attack(choice) => {
                 let attack = self.prepare_attack(turn, choice)?;
@@ -300,7 +325,7 @@ mod tests {
             r#"
             turns=2
             map_data="Xv,Xv,Xv,Xv,Xv,Xv
-Xv,1 Gg,Gg,Gg,2 Gg,Xv
+Xv,1 Gg,Vh,Gg,2 Gg,Xv
 Xv,Xv,Xv,Xv,Xv,Xv"
             [side]
                 side=1
@@ -309,6 +334,12 @@ Xv,Xv,Xv,Xv,Xv,Xv"
             [side]
                 side=2
                 type=Fighter
+                [village]
+                    x,y=2,1
+                [/village]
+                [village]
+                    x,y=3,1
+                [/village]
             [/side]
             "#,
         )
@@ -332,7 +363,11 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         .unwrap();
         let roster = BTreeMap::from([("Fighter".to_owned(), UnitType::from_wml(type_data))]);
         let terrain = TerrainAliases::from_wml(
-            &wml::parse("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]").unwrap(),
+            &wml::parse(
+                "[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+                 [terrain_type]\nstring=Vh\ngives_income=yes\nmvt_alias=Gg\n[/terrain_type]",
+            )
+            .unwrap(),
         );
         let movement = read_movement_types(
             &wml::parse("[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]")
@@ -375,5 +410,21 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         }
         assert_eq!(game.step(Action::EndTurn), Ok(MatchState::Draw));
         assert!(game.decision().is_none());
+
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        let village = Hex { x: 1, y: 0 };
+        let (observation, _) = game.decision().unwrap();
+        assert_eq!(observation.tiles[1].village_owner, Some(2));
+        assert_eq!(observation.tiles[2].village_owner, None);
+        game.step(Action::Move { from: Hex { x: 0, y: 0 }, to: village }).unwrap();
+        let (observation, _) = game.decision().unwrap();
+        assert_eq!(observation.tiles[1].village_owner, Some(1));
+        assert_eq!(observation.units[0].moves_left, Some(0));
     }
 }
