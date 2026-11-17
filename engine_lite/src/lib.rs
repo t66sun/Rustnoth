@@ -29,3 +29,4 @@ pub mod fixed_match;
 pub mod income;
 pub mod recruit_hexes;
 pub mod audit_trace;
+pub mod scenario_bundle;
