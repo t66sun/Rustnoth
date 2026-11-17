@@ -23,3 +23,4 @@ pub mod starting_units;
 pub mod board;
 pub mod observation;
 pub mod resistance;
+pub mod scenario_start;

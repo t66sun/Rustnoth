@@ -21,7 +21,7 @@ pub fn read_time_schedule(scenario: &Node) -> TimeSchedule {
     }
 }
 
-fn integer(node: &Node, key: &str) -> Option<i32> {
+pub(crate) fn integer(node: &Node, key: &str) -> Option<i32> {
     let value = node.attributes.get(key)?;
     if !value.translations.is_empty() {
         return None;
