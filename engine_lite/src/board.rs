@@ -125,6 +125,13 @@ impl<'rules> Battlefield<'rules> {
         }
     }
 
+    pub(crate) fn stop_movement(&mut self, position: Hex) {
+        self.units
+            .get_mut(&position)
+            .expect("unit at move destination")
+            .moves_left = 0;
+    }
+
     /// Applies a current-turn move on a fully visible fixed battlefield.
     ///
     /// The referee supplies the mover's terrain cost and the active side's
