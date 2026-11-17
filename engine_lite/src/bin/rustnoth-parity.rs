@@ -6,7 +6,7 @@ use std::{
 };
 
 use engine_lite::{
-    audit_actions, audit_compare, audit_replay, native_addon, native_process,
+    audit_actions, audit_compare, audit_replay, native_addon, native_draws, native_process,
     scenario_bundle::Bundle,
 };
 
@@ -67,8 +67,22 @@ fn compare_referees(
         Ok(contents)
     })?;
 
+    let native_status =
+        native_process::run(executable, run_dir, seed, Duration::from_secs(45))?;
+    let native_error_path = run_dir.join(native_process::STDERR_FILE);
+    let native_log = fs::read_to_string(&native_error_path)?;
+    if !native_status.success() || native_command_error(&native_log) {
+        return Err(format!(
+            "original referee failed ({native_status}); see {}",
+            native_error_path.display()
+        )
+        .into());
+    }
+
+    let draws = native_draws::parse(&native_log)
+        .map_err(|error| format!("{error}; see {}", native_error_path.display()))?;
     let rust_file = run_dir.join(RUST_TRACE);
-    let rust_result = audit_replay::run(
+    let rust_result = audit_replay::run_with_native_draws(
         &bundle,
         &actions,
         seed,
@@ -77,22 +91,8 @@ fn compare_referees(
             _ => Err(io::Error::other("the referees selected different map inputs")),
         },
         fs::File::create_new(&rust_file)?,
+        &draws,
     );
-    let native_status =
-        native_process::run(executable, run_dir, seed, Duration::from_secs(45))?;
-    let native_error_path = run_dir.join(native_process::STDERR_FILE);
-    let native_log = fs::read_to_string(&native_error_path)?;
-    if !native_status.success() || native_command_error(&native_log) {
-        let rust_error = rust_result
-            .err()
-            .map_or_else(String::new, |error| format!("\nRust referee: {error}"));
-        return Err(format!(
-            "original referee failed ({native_status}); see {}{rust_error}",
-            native_error_path.display()
-        )
-        .into());
-    }
-
     let rust_trace = fs::read_to_string(&rust_file)?;
     let native_trace = fs::read_to_string(run_dir.join(native_process::STDOUT_FILE))?;
     let comparison = audit_compare::compare(&rust_trace, &native_trace);
