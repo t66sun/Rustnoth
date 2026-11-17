@@ -5,6 +5,7 @@ pub mod time_of_day;
 pub mod map;
 pub mod weapon;
 pub mod terrain_aliases;
+pub mod scenario_sides;
 pub mod wml;
 pub mod rng;
 pub mod strike_damage;
