@@ -15,6 +15,8 @@ pub struct StartingUnit {
 pub(crate) struct AuthoredStartingUnit {
     pub(crate) placement: StartingUnit,
     pub(crate) hitpoints: Option<i32>,
+    pub(crate) moves_left: Option<i32>,
+    pub(crate) attacks_left: Option<i32>,
 }
 
 /// Reads the on-map starting units from an already preprocessed scenario.
@@ -79,6 +81,8 @@ pub(crate) fn read_authored_starting_units(
                     can_recruit,
                 },
                 hitpoints: integer(unit, "hitpoints"),
+                moves_left: integer(unit, "moves"),
+                attacks_left: integer(unit, "attacks_left"),
             });
         }
     }

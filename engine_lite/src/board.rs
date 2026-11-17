@@ -52,6 +52,8 @@ impl<'rules> Battlefield<'rules> {
         let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
             placement,
             hitpoints: None,
+            moves_left: None,
+            attacks_left: None,
         });
         Self::from_authored_starting_units(map, starting_units, unit_types)
     }
@@ -69,6 +71,8 @@ impl<'rules> Battlefield<'rules> {
         for AuthoredStartingUnit {
             placement: start,
             hitpoints,
+            moves_left,
+            attacks_left,
         } in starting_units
         {
             let position = start.position;
@@ -85,8 +89,8 @@ impl<'rules> Battlefield<'rules> {
                 id: start.id,
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
-                moves_left: unit_type.movement.max(0),
-                attacks_left: unit_type.max_attacks.max(0),
+                moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
+                attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
             });
         }
