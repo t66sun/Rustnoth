@@ -62,7 +62,7 @@ impl Rules<'_> {
 
 /// A headless free-for-all on a fixed, fully visible map.
 ///
-/// This match applies ordinary recruit traits and supports unconditional firststrike and magical weapons.
+/// This match applies ordinary recruit traits and supports stock First Strike, Magical, and Charge.
 /// It ends when fewer than two sides have leaders or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
@@ -282,6 +282,7 @@ impl<'data> FixedMatch<'data> {
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
         let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to);
+        let charging = weapon.has_charge();
         let candidates = defender
             .unit_type
             .attacks
@@ -294,8 +295,10 @@ impl<'data> FixedMatch<'data> {
             })
             .map(|(index, response)| {
                 let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
-                let attacker_stats = combatant(attacker, choice.weapon, &modifiers, response.parry);
-                let defender_stats = combatant(defender, index, &response_modifiers, weapon.parry);
+                let attacker_stats =
+                    combatant(attacker, choice.weapon, &modifiers, response.parry, charging);
+                let defender_stats =
+                    combatant(defender, index, &response_modifiers, weapon.parry, charging);
                 ((index, response_modifiers), attacker_stats, defender_stats)
             });
         Ok(Attack {
@@ -977,12 +980,122 @@ Xv,Xv,Xv,Xv"
         let (response, modifiers) = attack.retaliation.unwrap();
         assert_eq!(response, 1);
         let defender = game.scenario.board.unit_at(to).unwrap();
-        assert_eq!(combatant(defender, response, &modifiers, 90).hit_chance, 70);
-        assert_eq!(combatant(defender, response, &modifiers, -200).hit_chance, 70);
+        assert_eq!(combatant(defender, response, &modifiers, 90, false).hit_chance, 70);
+        assert_eq!(combatant(defender, response, &modifiers, -200, false).hit_chance, 70);
 
         game.step(Action::Attack(choice)).unwrap();
         assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 2);
         assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 9);
+    }
+
+    #[test]
+    fn charge_doubles_both_base_damages_only_when_used_to_attack() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Attacker
+            [/side]
+            [side]
+                side=2
+                type=Defender
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let charge = r#"
+            [specials]
+                [damage]
+                    id=charge
+                    multiply=2
+                    apply_to=both
+                    active_on=offense
+                [/damage]
+            [/specials]
+        "#;
+        let attacker = || {
+            UnitType::from_wml(
+                wml::parse(format!(
+                    r#"
+                    id=Attacker
+                    hitpoints=20
+                    [attack]
+                        type=pierce
+                        range=melee
+                        damage=3
+                        number=1
+                        {charge}
+                    [/attack]
+                    [attack]
+                        type=pierce
+                        range=melee
+                        damage=3
+                        number=1
+                    [/attack]
+                    "#,
+                ))
+                .unwrap(),
+            )
+        };
+        let cases = [
+            // Charge changes 3 to 6 before the 75% resistance rounds 4.5 up to 5.
+            (20, 0, 1, 1, (12, Some(15))),
+            // A lethal charge gives both weapons identical retaliation outcomes.
+            (5, 0, 1, 0, (20, None)),
+            // The defender's charge deals normal damage when it retaliates.
+            (20, 1, 0, 0, (17, Some(18))),
+            (20, 1, 1, 1, (16, Some(18))),
+        ];
+        for (defender_hp, weapon, stronger_weight, response, hitpoints) in cases {
+            let defender = UnitType::from_wml(
+                wml::parse(format!(
+                    r#"
+                    id=Defender
+                    hitpoints={defender_hp}
+                    [resistance]
+                        pierce=75
+                    [/resistance]
+                    [attack]
+                        type=blade
+                        range=melee
+                        damage=3
+                        number=1
+                        {charge}
+                    [/attack]
+                    [attack]
+                        type=blade
+                        range=melee
+                        damage=4
+                        number=1
+                        defense_weight={stronger_weight}
+                    [/attack]
+                    "#,
+                ))
+                .unwrap(),
+            );
+            let attacker = attacker();
+            let roster = BTreeMap::from([(attacker.id.clone(), attacker), (defender.id.clone(), defender)]);
+            let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+            let terrain = TerrainAliases::from_wml(&wml::Node::default());
+            let movement = BTreeMap::new();
+            let resistance = BTreeMap::new();
+            let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+            let mut game = FixedMatch::new(start, rules, 5489).unwrap();
+            let from = Hex { x: 0, y: 0 };
+            let to = Hex { x: 1, y: 0 };
+            let choice = AttackChoice { from, to, weapon };
+            let attack = game.prepare_attack(Turn { round: 1, side: 1 }, choice).unwrap();
+            assert_eq!(attack.retaliation.map(|(index, _)| index), Some(response));
+            game.step(Action::Attack(choice)).unwrap();
+            let board = &game.scenario.board;
+            assert_eq!(
+                (board.unit_at(from).unwrap().hitpoints, board.unit_at(to).map(|unit| unit.hitpoints)),
+                hitpoints,
+            );
+        }
     }
 
     #[test]
