@@ -7,9 +7,9 @@ use std::{
     process::ExitCode,
 };
 
-use engine_lite::{scenario_bundle::Bundle, wml};
+use engine_lite::{fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml};
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::assets::AssetCatalog;
+use rustnoth_gui::{assets::AssetCatalog, selection::Selection, session::Session};
 
 mod render;
 
@@ -115,24 +115,74 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 
 async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
-    let observation = game.decision().map(|(observation, _)| observation);
+    let mut session = Session::new(game);
+    let mut selection = Selection::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
-    if let Some(observation) = &observation {
+    if let Some(observation) = session.observation() {
         art.load(observation, &data.assets);
     }
-    let state = game.state();
+    let mut message = None;
     loop {
         if is_key_pressed(KeyCode::Escape) {
             return Ok(());
         }
-        render::draw(&data.title, state, observation.as_ref(), &art);
+        if is_mouse_button_pressed(MouseButton::Right) {
+            selection.clear();
+            message = None;
+        }
+        if is_mouse_button_pressed(MouseButton::Left)
+            && let Some(observation) = session.observation()
+            && let Some(layout) = render::board_layout(observation)
+            && let Some(position) = layout.hex_at(mouse_position().into())
+            && let Some(action) = select_move(&mut selection, position, observation, session.legal_actions())
+        {
+            match session.apply(action) {
+                Ok(_) => {
+                    message = None;
+                    selection.clear();
+                    if let Some(observation) = session.observation() {
+                        selection.select_own(position, observation);
+                        art.load(observation, &data.assets);
+                    }
+                }
+                Err(error) => message = Some(error.to_string()),
+            }
+        }
+        render::draw(
+            &data.title,
+            session.state(),
+            session.observation(),
+            &art,
+            render::MovementView {
+                selected: selection.unit(),
+                actions: session.legal_actions(),
+                message: message.as_deref(),
+                assets: &data.assets,
+            },
+        );
         next_frame().await;
     }
+}
+
+fn select_move(
+    selection: &mut Selection,
+    position: Hex,
+    observation: &Observation,
+    legal_actions: &[Action],
+) -> Option<Action> {
+    if selection.select_own(position, observation) {
+        return None;
+    }
+    selection
+        .actions_at(position, legal_actions)
+        .find(|action| matches!(action, Action::Move { .. }))
+        .cloned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_lite::observation::ObservedUnit;
 
     #[test]
     fn defaults_to_the_sibling_asset_checkout_and_accepts_an_override() {
@@ -144,5 +194,30 @@ mod tests {
         let custom = Options::parse(&args).unwrap();
         assert_eq!(custom.wesnoth_root, PathBuf::from("Local Wesnoth"));
         assert_eq!(custom.seed, 0);
+    }
+
+    #[test]
+    fn a_map_click_moves_only_a_selected_own_unit_to_a_legal_target() {
+        let start = Hex { x: 0, y: 0 };
+        let destination = Hex { x: 1, y: 0 };
+        let observation = Observation {
+            side: 1,
+            gold: Some(10),
+            width: 3,
+            height: 2,
+            tiles: Vec::new(),
+            units: vec![ObservedUnit {
+                position: start, side: 1, type_id: "Bowman".into(),
+                hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),
+            }],
+        };
+        let action = Action::Move { from: start, to: destination };
+        let legal = [action.clone(), Action::EndTurn];
+        let mut selection = Selection::default();
+        assert_eq!(select_move(&mut selection, destination, &observation, &legal), None);
+        assert_eq!(select_move(&mut selection, start, &observation, &legal), None);
+        assert_eq!(selection.unit(), Some(start));
+        assert_eq!(select_move(&mut selection, Hex { x: 2, y: 0 }, &observation, &legal), None);
+        assert_eq!(select_move(&mut selection, destination, &observation, &legal), Some(action));
     }
 }

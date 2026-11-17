@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use engine_lite::{fixed_match::MatchState, observation::Observation};
+use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::Observation};
 use macroquad::prelude::*;
 use rustnoth_gui::{
     assets::AssetCatalog,
@@ -17,6 +17,9 @@ const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
 const TEXT: Color = Color::from_rgba(242, 235, 211, 255);
 const MUTED: Color = Color::from_rgba(196, 195, 169, 255);
 const UNKNOWN_TERRAIN: Color = Color::from_rgba(51, 65, 50, 255);
+const REACHABLE: Color = Color::from_rgba(240, 214, 106, 190);
+const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
+const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
 
@@ -67,23 +70,42 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
     }).clone()
 }
 
-pub fn draw(title: &str, state: MatchState, observation: Option<&Observation>, art: &BoardArt) {
+pub struct MovementView<'a> {
+    pub selected: Option<Hex>,
+    pub actions: &'a [Action],
+    pub message: Option<&'a str>,
+    pub assets: &'a AssetCatalog,
+}
+
+fn panel_width() -> f32 {
+    (screen_width() * 0.23).clamp(148.0, 250.0)
+}
+
+pub fn board_layout(view: &Observation) -> Option<BoardLayout> {
+    BoardLayout::fit(view.width, view.height, Viewport {
+        x: 16.0,
+        y: HEADER_HEIGHT + 16.0,
+        width: screen_width() - panel_width() - 32.0,
+        height: screen_height() - HEADER_HEIGHT - 32.0,
+    })
+}
+
+pub fn draw(
+    title: &str,
+    state: MatchState,
+    observation: Option<&Observation>,
+    art: &BoardArt,
+    movement: MovementView<'_>,
+) {
     clear_background(BACKGROUND);
     let width = screen_width();
     let height = screen_height();
-    let panel_width = (width * 0.23).clamp(148.0, 250.0);
+    let panel_width = panel_width();
     let panel_x = (width - panel_width).max(0.0);
-    let viewport = Viewport {
-        x: 16.0,
-        y: HEADER_HEIGHT + 16.0,
-        width: panel_x - 32.0,
-        height: height - HEADER_HEIGHT - 32.0,
-    };
-
     if let Some(view) = observation
-        && let Some(layout) = BoardLayout::fit(view.width, view.height, viewport)
+        && let Some(layout) = board_layout(view)
     {
-        draw_board(view, &layout, art);
+        draw_board(view, &layout, art, &movement);
     }
     draw_rectangle(0.0, 0.0, width, HEADER_HEIGHT, PANEL);
     draw_rectangle(panel_x, HEADER_HEIGHT, panel_width, (height - HEADER_HEIGHT).max(0.0), PANEL);
@@ -105,9 +127,23 @@ pub fn draw(title: &str, state: MatchState, observation: Option<&Observation>, a
         }
         MatchState::Draw => label(&art.font, "Draw", inset, baseline, 22, TEXT),
     }
+    if let Some(unit) = observation
+        .and_then(|view| view.units.iter().find(|unit| Some(unit.position) == movement.selected))
+    {
+        draw_line(inset, baseline + 93.0, width - 18.0, baseline + 93.0, 1.0, BORDER);
+        let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
+        label(&art.font, name, inset, baseline + 126.0, 20, TEXT);
+        label(&art.font, &format!("HP {}", unit.hitpoints), inset, baseline + 155.0, 17, MUTED);
+        if let Some(moves) = unit.moves_left {
+            label(&art.font, &format!("Moves {moves}"), inset, baseline + 181.0, 17, MUTED);
+        }
+    }
+    if let Some(message) = movement.message {
+        label(&art.font, message, inset, height - 28.0, 16, ERROR);
+    }
 }
 
-fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
+fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
@@ -123,6 +159,18 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
         if let Some(owner) = tile.village_owner {
             draw_circle(center.x + size * 0.27, center.y - size * 0.26, (size * 0.055).max(2.0), side_color(owner));
         }
+    }
+    if let Some(selected) = movement.selected {
+        for action in movement.actions {
+            if let Action::Move { from, to } = action
+                && *from == selected
+            {
+                let [x, y] = layout.tile_origin(*to);
+                draw_circle(x + size / 2.0, y + size / 2.0, (size * 0.11).max(2.0), REACHABLE);
+            }
+        }
+        let [x, y] = layout.tile_origin(selected);
+        draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.48, 0.0, 2.0, SELECTED);
     }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
