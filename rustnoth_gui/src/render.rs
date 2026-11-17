@@ -16,6 +16,8 @@ const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
 const TEXT: Color = Color::from_rgba(242, 235, 211, 255);
 const MUTED: Color = Color::from_rgba(196, 195, 169, 255);
+const BUTTON: Color = Color::from_rgba(57, 68, 51, 255);
+const BUTTON_HIGHLIGHTED: Color = Color::from_rgba(79, 94, 68, 255);
 const UNKNOWN_TERRAIN: Color = Color::from_rgba(51, 65, 50, 255);
 const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
@@ -67,11 +69,35 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
     }).clone()
 }
 
+fn sidebar_width(width: f32) -> f32 {
+    (width * 0.23).clamp(148.0, 250.0)
+}
+
+pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Rect> {
+    let left = (width - sidebar_width(width)).max(0.0) + 12.0;
+    let bounds = Rect::new(left, height - 62.0, width - left - 12.0, 46.0);
+    (can_end_turn && bounds.w >= 112.0 && bounds.y >= HEADER_HEIGHT).then_some(bounds)
+}
+
+pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
+    let (background, outline) = if highlighted {
+        (BUTTON_HIGHLIGHTED, TEXT)
+    } else {
+        (BUTTON, BORDER)
+    };
+    draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, background);
+    draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, outline);
+    let baseline = bounds.y + 28.0;
+    label(&art.font, "End turn", bounds.x + 10.0, baseline, 16, TEXT);
+    let hint_width = measure_text("Space", art.font.as_ref(), 12, 1.0).width;
+    label(&art.font, "Space", bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
+}
+
 pub fn draw(title: &str, state: MatchState, observation: Option<&Observation>, art: &BoardArt) {
     clear_background(BACKGROUND);
     let width = screen_width();
     let height = screen_height();
-    let panel_width = (width * 0.23).clamp(148.0, 250.0);
+    let panel_width = sidebar_width(width);
     let panel_x = (width - panel_width).max(0.0);
     let viewport = Viewport {
         x: 16.0,
@@ -160,4 +186,22 @@ fn side_color(side: usize) -> Color {
 
 fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: Color) {
     draw_text_ex(message, x, y, TextParams { font: font.as_ref(), font_size: size, color, ..TextParams::default() });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_turn_button_stays_inside_the_sidebar_and_disappears_when_unavailable() {
+        for (width, height) in [(1200.0, 820.0), (480.0, 320.0)] {
+            let button = end_turn_button(width, height, true).unwrap();
+            assert!(button.x >= width - sidebar_width(width));
+            assert!(button.x + button.w < width);
+            assert!(button.y > HEADER_HEIGHT && button.y + button.h < height);
+            assert!(button.contains(vec2(button.x + button.w / 2.0, button.y + button.h / 2.0)));
+            assert!(!button.contains(vec2(0.0, button.y + button.h / 2.0)));
+            assert!(end_turn_button(width, height, false).is_none());
+        }
+    }
 }

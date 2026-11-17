@@ -7,9 +7,9 @@ use std::{
     process::ExitCode,
 };
 
-use engine_lite::{scenario_bundle::Bundle, wml};
+use engine_lite::{fixed_match::Action, scenario_bundle::Bundle, wml};
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::assets::AssetCatalog;
+use rustnoth_gui::{assets::AssetCatalog, session::Session};
 
 mod render;
 
@@ -115,17 +115,37 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 
 async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
-    let observation = game.decision().map(|(observation, _)| observation);
+    let mut session = Session::new(game);
     let mut art = render::BoardArt::new(&data.wesnoth_root);
-    if let Some(observation) = &observation {
+    if let Some(observation) = session.observation() {
         art.load(observation, &data.assets);
     }
-    let state = game.state();
     loop {
         if is_key_pressed(KeyCode::Escape) {
             return Ok(());
         }
-        render::draw(&data.title, state, observation.as_ref(), &art);
+        let can_end_turn = session.legal_actions().contains(&Action::EndTurn);
+        let mut button = render::end_turn_button(screen_width(), screen_height(), can_end_turn);
+        let (mouse_x, mouse_y) = mouse_position();
+        let pointer = vec2(mouse_x, mouse_y);
+        if can_end_turn
+            && (is_key_pressed(KeyCode::Space)
+                || (is_mouse_button_pressed(MouseButton::Left)
+                    && button.is_some_and(|bounds| bounds.contains(pointer))))
+        {
+            session.apply(Action::EndTurn)?;
+            if let Some(observation) = session.observation() {
+                art.load(observation, &data.assets);
+            }
+            if !session.legal_actions().contains(&Action::EndTurn) {
+                button = None;
+            }
+        }
+        render::draw(&data.title, session.state(), session.observation(), &art);
+        if let Some(bounds) = button {
+            let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
+            render::draw_end_turn_button(bounds, highlighted, &art);
+        }
         next_frame().await;
     }
 }
