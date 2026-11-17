@@ -24,12 +24,13 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
         let type_id = escape_type_id(&unit.type_id);
         writeln!(
             out,
-            "unit\t{x}\t{y}\t{}\t{type_id}\t{}\t{}\t{}\t{}",
+            "unit\t{x}\t{y}\t{}\t{type_id}\t{}\t{}\t{}\t{}\t{}",
             unit.side,
             unit.hitpoints,
             unit.moves_left,
             unit.attacks_left,
-            u8::from(unit.can_recruit)
+            u8::from(unit.can_recruit),
+            unit.experience
         )?;
     }
     for &(position, side) in &snapshot.villages {
@@ -82,6 +83,7 @@ mod tests {
                     moves_left: 4,
                     attacks_left: 2,
                     can_recruit: true,
+                    experience: 9,
                 },
                 SnapshotUnit {
                     position: Hex { x: 1, y: 0 },
@@ -91,6 +93,7 @@ mod tests {
                     moves_left: 0,
                     attacks_left: 0,
                     can_recruit: false,
+                    experience: 0,
                 },
             ],
             villages: vec![(Hex { x: 0, y: 1 }, 1), (Hex { x: 4, y: 0 }, 2)],
@@ -103,8 +106,8 @@ mod tests {
                 "step\t3\tplaying\t7\t2\n",
                 "gold\t1\t-4\n",
                 "gold\t2\t17\n",
-                "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\n",
-                "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\n",
+                "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\n",
+                "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\t0\n",
                 "village\t1\t2\t1\n",
                 "village\t5\t1\t2\n",
                 "end\t3\n",

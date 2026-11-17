@@ -28,6 +28,7 @@ pub struct SnapshotUnit {
     pub moves_left: i32,
     pub attacks_left: i32,
     pub can_recruit: bool,
+    pub experience: i32,
 }
 
 impl FixedMatch<'_> {
@@ -63,6 +64,7 @@ impl FixedMatch<'_> {
                     moves_left: unit.moves_left,
                     attacks_left: unit.attacks_left,
                     can_recruit: unit.can_recruit,
+                    experience: unit.experience,
                 })
                 .collect(),
             villages: self
@@ -228,6 +230,7 @@ Xv,Xv,Xv,Xv,Xv"
             moves_left: 3,
             attacks_left: 1,
             can_recruit: true,
+            experience: 0,
         };
         assert_eq!(before.state, MatchState::Playing(Turn { round: 1, side: 1 }));
         assert_eq!(before.gold, [17, 41]);
