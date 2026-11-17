@@ -24,3 +24,4 @@ pub mod board;
 pub mod observation;
 pub mod resistance;
 pub mod scenario_start;
+pub mod fixed_match;
