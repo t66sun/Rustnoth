@@ -1,10 +1,18 @@
 # 逐步裁判对拍
 
-使用原版 Wesnoth 1.18.8 可执行文件、固定场景 WML 和动作脚本。WML 与无界面命令使用同一种包格式。`map_file` 相对于包所在目录解析。对拍工具将原版裁判限制在本次运行目录的独立用户配置中。
+使用原版 Wesnoth 1.18.8 可执行文件、固定场景 WML 和动作脚本。自带规则的场景使用与无界面命令相同的包格式。`map_file` 相对于包所在目录解析。对拍工具将原版裁判限制在本次运行目录的独立用户配置中。
 
 ```sh
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-parity -- <wesnoth-executable> <bundle.cfg> <actions.tsv> <seed> <new-run-dir>
 ```
+
+使用原版单位和地形时，用对拍所用的同一份 Wesnoth 1.18.8 安装预处理核心配置。
+
+```sh
+wesnoth --preprocess-defines=SKIP_CORE,NO_TERRAIN_GFX --preprocess "<install>/data/core/_main.cfg" "<out>"
+```
+
+在对拍命令末尾加上 `--core-config "<out>/_main.cfg"`。场景包可只包含 `[scenario]`，也可附带自定义单位和地形。Rust 从预处理文件读取原版规则，原版裁判从自己的安装读取内置规则。
 
 动作文件为 UTF-8，每行字段用制表符分隔。坐标从 1 起算，武器索引从 0 起算。以下是动作格式示例。
 

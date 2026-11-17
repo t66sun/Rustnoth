@@ -40,8 +40,9 @@ fn prepare(
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<(Node, String), Box<dyn Error>> {
     let mut document = wml::parse(bundle)?;
-    single_block(&document, "units")?;
-    let index = single_block(&document, "scenario")?;
+    let _ = unique_block(&document, "units")?;
+    let index = unique_block(&document, "scenario")?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing [scenario] block"))?;
     let (tag, scenario) = &mut document.children[index];
 
     let mut sides = 0;
@@ -77,21 +78,17 @@ fn prepare(
     Ok((document, script.lua))
 }
 
-fn single_block(bundle: &Node, name: &str) -> io::Result<usize> {
+fn unique_block(bundle: &Node, name: &str) -> io::Result<Option<usize>> {
     let mut indices = bundle
         .children
         .iter()
         .enumerate()
         .filter_map(|(index, (tag, _))| (tag == name).then_some(index));
     match (indices.next(), indices.next()) {
-        (Some(index), None) => Ok(index),
-        (None, _) => Err(io::Error::new(
+        (index, None) => Ok(index),
+        (_, Some(_)) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("missing [{name}] block"),
-        )),
-        (Some(_), Some(_)) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("expected exactly one [{name}] block"),
+            format!("duplicate [{name}] blocks"),
         )),
     }
 }
@@ -189,10 +186,8 @@ mod tests {
     }
 
     #[test]
-    fn inlines_the_shared_external_map_when_map_data_is_empty() {
+    fn packages_a_core_only_scenario_and_inlines_its_external_map() {
         let bundle = br#"
-            [units]
-            [/units]
             [scenario]
                 map_data=""
                 map_file="shared.map"
@@ -208,7 +203,10 @@ mod tests {
             Ok(MAP.to_owned())
         })
         .unwrap();
-        let scenario = &document.children[1].1;
+        let [(tag, scenario)] = document.children.as_slice() else {
+            panic!("expected one native test scenario");
+        };
+        assert_eq!(tag, "test");
         assert_eq!(scenario.attribute("map_data"), Some(MAP));
         assert_eq!(scenario.attribute("map_file"), None);
         let event = &scenario.children[2].1;
@@ -219,6 +217,6 @@ mod tests {
     fn rejects_ambiguous_bundle_blocks_before_reading_maps() {
         let bundle = b"[units]\n[/units]\n[units]\n[/units]\n[scenario]\n[/scenario]";
         let error = prepare(bundle, &[], 0, |_| unreachable!()).unwrap_err();
-        assert_eq!(error.to_string(), "expected exactly one [units] block");
+        assert_eq!(error.to_string(), "duplicate [units] blocks");
     }
 }
