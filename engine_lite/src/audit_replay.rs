@@ -23,7 +23,7 @@ pub fn run(
     write_steps(bundle.start(seed, read_map_file)?, actions, seed, None, out)
 }
 
-/// Replays an accepted native script using its observed RNG stream at each attack.
+/// Replays the native RNG at each attack and any supplied recruit checkpoint.
 pub fn run_with_native_draws(
     bundle: &Bundle,
     actions: &[Action],
@@ -36,9 +36,9 @@ pub fn run_with_native_draws(
         if !step
             .checked_sub(1)
             .and_then(|index| actions.get(index))
-            .is_some_and(|action| matches!(action, Action::Attack(_)))
+            .is_some_and(|action| matches!(action, Action::Attack(_) | Action::Recruit { .. }))
         {
-            return Err(format!("native attack RNG recorded at non-attack step {step}").into());
+            return Err(format!("unexpected native RNG record at step {step}").into());
         }
     }
     write_steps(bundle.start(seed, read_map_file)?, actions, seed, Some(native_draws), out)
@@ -54,26 +54,28 @@ fn write_steps(
     write_snapshot(&mut out, 0, &game.audit_snapshot())?;
     for (index, action) in actions.iter().enumerate() {
         let step = index + 1;
-        let consumption = if let (Some(draws), Action::Attack(_)) = (native_draws, action) {
-            let attack = draws
-                .get(&step)
-                .ok_or_else(|| format!("native attack RNG is missing at step {step}"))?;
-            let (attack_seed, calls) = attack.checkpoint.unwrap_or((seed, 0));
-            validate_words(step, attack, attack_seed, calls)?;
+        let recorded = native_draws.and_then(|draws| draws.get(&step));
+        if native_draws.is_some() && matches!(action, Action::Attack(_)) && recorded.is_none() {
+            return Err(format!("native attack RNG is missing at step {step}").into());
+        }
+        let consumption = if let Some(recorded) = recorded {
+            let kind = if matches!(action, Action::Attack(_)) { "combat" } else { "recruit trait" };
+            let (recorded_seed, calls) = recorded.checkpoint.unwrap_or((seed, 0));
+            validate_words(step, kind, recorded, recorded_seed, calls)?;
             let (_, consumed) = game
-                .step_with_rng_checkpoint(action.clone(), attack_seed, calls)
+                .step_with_rng_checkpoint(action.clone(), recorded_seed, calls)
                 .map_err(|cause| RejectedStep { step, cause })?;
-            Some((consumed as usize, attack.words.len()))
+            Some((kind, consumed as usize, recorded.words.len()))
         } else {
             game.step(action.clone()).map_err(|cause| RejectedStep { step, cause })?;
             None
         };
         write_snapshot(&mut out, step, &game.audit_snapshot())?;
-        if let Some((consumed, expected)) = consumption
+        if let Some((kind, consumed, expected)) = consumption
             && consumed != expected
         {
             return Err(format!(
-                "step {step}: Rust used {consumed} combat draws; original used {expected}"
+                "step {step}: Rust used {consumed} {kind} draws; original used {expected}"
             )
             .into());
         }
@@ -81,19 +83,25 @@ fn write_steps(
     Ok(())
 }
 
-fn validate_words(step: usize, attack: &AttackDraws, seed: u32, calls: u32) -> Result<(), String> {
-    if attack.words.is_empty() {
+fn validate_words(
+    step: usize,
+    kind: &str,
+    recorded: &AttackDraws,
+    seed: u32,
+    calls: u32,
+) -> Result<(), String> {
+    if recorded.words.is_empty() {
         return Ok(());
     }
-    if attack.checkpoint.is_none() {
+    if recorded.checkpoint.is_none() {
         return Err(format!("step {step}: native draws have no RNG checkpoint"));
     }
     let mut rng = ReplayRng::restore(seed, calls);
-    for (index, &native) in attack.words.iter().enumerate() {
+    for (index, &native) in recorded.words.iter().enumerate() {
         let rust = rng.next_u32();
         if rust != native {
             return Err(format!(
-                "step {step}, combat draw {}: Rust RNG produced {rust}; original logged {native}",
+                "step {step}, {kind} draw {}: Rust RNG produced {rust}; original logged {native}",
                 index + 1
             ));
         }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, error::Error, fs, io,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -7,6 +8,7 @@ use std::{
 
 use engine_lite::{
     audit_actions, audit_compare, audit_replay, native_addon, native_draws, native_process,
+    fixed_match::Action,
     scenario_bundle::Bundle,
 };
 
@@ -88,7 +90,7 @@ fn compare_referees(
         .into());
     }
 
-    let draws = native_draws::parse(&native_log)
+    let draws = original_draws(&native_log, &actions)
         .map_err(|error| format!("{error}; see {}", native_error_path.display()))?;
     let rust_file = run_dir.join(RUST_TRACE);
     let rust_result = audit_replay::run_with_native_draws(
@@ -116,6 +118,26 @@ fn compare_referees(
     Ok(count)
 }
 
+fn original_draws(log: &str, actions: &[Action]) -> Result<BTreeMap<usize, native_draws::AttackDraws>, String> {
+    let mut draws = native_draws::parse(log)?;
+    let mut recruits = native_draws::parse_recruits(log)?;
+    for (index, action) in actions.iter().enumerate() {
+        let step = index + 1;
+        if matches!(action, Action::Recruit { .. }) {
+            let recruit = recruits
+                .remove(&step)
+                .ok_or_else(|| format!("native recruit trait RNG is missing at step {step}"))?;
+            if draws.insert(step, recruit).is_some() {
+                return Err(format!("native attack RNG was also recorded at recruit step {step}"));
+            }
+        }
+    }
+    if let Some((&step, _)) = recruits.first_key_value() {
+        return Err(format!("native recruit trait RNG recorded at non-recruit step {step}"));
+    }
+    Ok(draws)
+}
+
 fn native_command_error(log: &str) -> bool {
     log.lines().any(|line| {
         line.contains("error scripting/lua:")
@@ -135,6 +157,7 @@ fn require_every_step(frame_count: usize, action_count: usize) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_lite::hex::Hex;
 
     #[test]
     fn a_matching_prefix_cannot_stand_in_for_the_full_script() {
@@ -148,5 +171,23 @@ mod tests {
         assert!(native_command_error("error engine: Error via [do_command]:"));
         assert!(native_command_error("error scripting/lua: stack traceback"));
         assert!(!native_command_error("PASS TEST (0): rustnoth_trace"));
+    }
+
+    #[test]
+    fn requires_a_native_recruit_checkpoint_even_when_no_traits_are_rolled() {
+        let action = Action::Recruit { unit_type: "Fighter".to_owned(), to: Hex { x: 1, y: 0 } };
+        assert_eq!(
+            original_draws("", &[action.clone()]).unwrap_err(),
+            "native recruit trait RNG is missing at step 1",
+        );
+        let log = concat!(
+            "info wml: RUSTNOTH_AUDIT_RECRUIT_BEGIN 1\n",
+            "info wml: RUSTNOTH_AUDIT_RECRUIT_END 1 0\n",
+        );
+        assert_eq!(original_draws(log, &[action]).unwrap()[&1], native_draws::AttackDraws::default());
+        assert_eq!(
+            original_draws(log, &[Action::EndTurn]).unwrap_err(),
+            "native recruit trait RNG recorded at non-recruit step 1",
+        );
     }
 }
