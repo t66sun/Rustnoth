@@ -6,7 +6,7 @@ use std::{
 use crate::{hex::Hex, map::ScenarioMap, starting_units::StartingUnit, unit_type::UnitType};
 
 mod attack;
-pub use attack::{Attack, AttackError, StrikeModifiers};
+pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 
 /// Full referee state for the fixed map and its units.
 ///

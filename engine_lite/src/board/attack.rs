@@ -10,6 +10,14 @@ use crate::{
 
 use super::{Battlefield, UnitState};
 
+/// A weapon choice against an enemy on a fully visible battlefield.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttackChoice {
+    pub from: Hex,
+    pub to: Hex,
+    pub weapon: usize,
+}
+
 /// An attack with the rules inputs resolved by the referee.
 pub struct Attack {
     pub from: Hex,
@@ -27,6 +35,35 @@ pub struct StrikeModifiers {
 }
 
 impl Battlefield<'_> {
+    /// Lists available attacks in origin, target, then weapon-index order.
+    ///
+    /// Call only for a fully visible battlefield. The returned choices
+    /// contain the inputs the policy can select.
+    pub fn attack_choices(
+        &self,
+        active_side: usize,
+        is_enemy: impl Fn(usize) -> bool,
+    ) -> Vec<AttackChoice> {
+        let mut choices = Vec::new();
+        for (&from, attacker) in &self.units {
+            if attacker.side != active_side || attacker.attacks_left <= 0 {
+                continue;
+            }
+            for (&to, defender) in &self.units {
+                if defender.side == active_side || !is_enemy(defender.side) {
+                    continue;
+                }
+                let distance = from.distance(to) as i64;
+                for (weapon, profile) in attacker.unit_type.attacks.iter().enumerate() {
+                    if within_range(profile, distance) {
+                        choices.push(AttackChoice { from, to, weapon });
+                    }
+                }
+            }
+        }
+        choices
+    }
+
     /// Resolves one ordinary attack and applies its damage and action costs.
     ///
     /// The caller chooses the retaliation weapon and supplies the modifiers
@@ -219,5 +256,28 @@ mod tests {
         assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 10);
         assert_eq!(board.unit_at(ATTACKER).unwrap().attacks_left, 1);
         assert_eq!(rng.seed_and_calls(), (5489, 0));
+    }
+
+    #[test]
+    fn lists_only_in_range_enemy_targets_for_units_with_attacks_left() {
+        let mut types = unit_types();
+        let attacks = &mut types.get_mut("Fighter").unwrap().attacks;
+        attacks.push(WeaponProfile::from_wml(
+            wml::parse("name=longbow\nmin_range=2\nmax_range=3").unwrap(),
+        ));
+        let mut board = board(&types);
+
+        assert_eq!(
+            board.attack_choices(1, |side| side == 2),
+            [AttackChoice {
+                from: ATTACKER,
+                to: DEFENDER,
+                weapon: 0,
+            }]
+        );
+        assert!(board.attack_choices(1, |_| false).is_empty());
+
+        board.units.get_mut(&ATTACKER).unwrap().attacks_left = 0;
+        assert!(board.attack_choices(1, |side| side == 2).is_empty());
     }
 }
