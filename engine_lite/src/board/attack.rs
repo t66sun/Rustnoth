@@ -64,7 +64,7 @@ impl Battlefield<'_> {
         choices
     }
 
-    /// Resolves one ordinary attack and applies its damage and action costs.
+    /// Resolves one ordinary attack and applies damage, experience, and action costs.
     ///
     /// The caller chooses the retaliation weapon and supplies the modifiers
     /// for both sides. This path covers basic combat with fixed strike stats.
@@ -123,6 +123,10 @@ impl Battlefield<'_> {
         let movement_used = weapon.movement_used;
         let attacks_used = weapon.attacks_used;
         let result = resolve_exchange(attacker_stats, defender_stats, NonZeroU32::MIN, rng);
+        let attacker_experience =
+            combat_experience(defender.unit_type.level, result.defender_hitpoints == 0);
+        let defender_experience =
+            combat_experience(attacker.unit_type.level, result.attacker_hitpoints == 0);
 
         self.resting.remove(&from);
         self.resting.remove(&to);
@@ -131,16 +135,27 @@ impl Battlefield<'_> {
         } else {
             let unit = self.units.get_mut(&from).expect("validated attacker");
             unit.hitpoints = result.attacker_hitpoints as i32;
+            unit.experience = unit.experience.saturating_add(attacker_experience);
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
         }
         if result.defender_hitpoints == 0 {
             self.units.remove(&to);
         } else {
-            self.units.get_mut(&to).expect("validated defender").hitpoints =
-                result.defender_hitpoints as i32;
+            let unit = self.units.get_mut(&to).expect("validated defender");
+            unit.hitpoints = result.defender_hitpoints as i32;
+            unit.experience = unit.experience.saturating_add(defender_experience);
         }
         Ok(result)
+    }
+}
+
+fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
+    const KILL_EXPERIENCE: i32 = 8;
+    match (opponent_defeated, opponent_level) {
+        (true, 0) => KILL_EXPERIENCE / 2,
+        (true, level) => level.saturating_mul(KILL_EXPERIENCE),
+        (false, level) => level,
     }
 }
 
@@ -239,7 +254,40 @@ mod tests {
         assert!(board.unit_at(DEFENDER).is_none());
         let attacker = board.unit_at(ATTACKER).unwrap();
         assert_eq!((attacker.moves_left, attacker.attacks_left), (3, 0));
+        assert_eq!(attacker.experience, 4);
         assert_eq!(rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn awards_combat_experience_to_both_survivors_without_retaliation() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.level = 2;
+        fighter.hitpoints = 20;
+        let mut board = board(&types);
+        let mut rng = ReplayRng::new(5489);
+
+        let result = board
+            .apply_attack(1, Attack { retaliation: None, ..attack(0) }, |side| side == 2, &mut rng)
+            .unwrap();
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (20, 10));
+        assert_eq!(board.unit_at(ATTACKER).unwrap().experience, 2);
+        assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 2);
+    }
+
+    #[test]
+    fn a_defender_who_kills_gets_kill_experience() {
+        let mut types = unit_types();
+        types.get_mut("Fighter").unwrap().level = 2;
+        let mut board = board(&types);
+        let mut rng = ReplayRng::new(5489);
+
+        let mut missed_attack = attack(0);
+        missed_attack.modifiers.target_hit_chance = 0;
+        let result = board.apply_attack(1, missed_attack, |side| side == 2, &mut rng).unwrap();
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (0, 10));
+        assert!(board.unit_at(ATTACKER).is_none());
+        assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 16);
     }
 
     #[test]
@@ -257,6 +305,8 @@ mod tests {
         );
         assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 10);
         assert_eq!(board.unit_at(ATTACKER).unwrap().attacks_left, 1);
+        assert_eq!(board.unit_at(ATTACKER).unwrap().experience, 0);
+        assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 0);
         assert_eq!(rng.seed_and_calls(), (5489, 0));
     }
 

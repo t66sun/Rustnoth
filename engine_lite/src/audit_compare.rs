@@ -66,7 +66,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
             let fields: Vec<_> = row.split('\t').collect();
             match fields.as_slice() {
                 ["end", index] if index.parse::<usize>() == Ok(step) => break,
-                ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1"]
+                ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1", experience @ ..]
                     if last_village.is_none()
                         && valid_side(side)
                         && !kind.is_empty()
@@ -74,6 +74,8 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         && hp.parse::<i32>().is_ok()
                         && mp.parse::<i32>().is_ok()
                         && attacks.parse::<i32>().is_ok()
+                        && (experience.is_empty()
+                            || matches!(experience, [value] if value.parse::<i32>().is_ok()))
                         && next_position(x, y, &mut last_unit) => {}
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
@@ -140,6 +142,19 @@ mod tests {
             "step 1 differs\n  expected native: unit\t2\t1\t1\tFootman\t12\t3\t1\t1\n  \
              actual Rust:     <missing>"
         );
+    }
+
+    #[test]
+    fn compares_numeric_unit_experience_and_keeps_legacy_traces_readable() {
+        let legacy = format!("{INITIAL}{AFTER_MOVE}");
+        assert_eq!(compare(&legacy, &legacy), Ok(2));
+
+        let native = legacy.replace("Footman\t12\t3\t1\t1", "Footman\t12\t3\t1\t1\t8");
+        assert_eq!(compare(&native, &native), Ok(2));
+        let rust = native.replace("\t1\t8\n", "\t1\t1\n");
+        assert!(compare(&rust, &native).unwrap_err().starts_with("step 1 differs"));
+        let malformed = native.replace("\t1\t8\n", "\t1\tunknown\n");
+        assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
     }
 
     #[test]
