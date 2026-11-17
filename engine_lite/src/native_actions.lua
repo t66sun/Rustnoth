@@ -36,6 +36,17 @@ function actions.recruit(x, y, type_id)
             tag.from { x = leader.x, y = leader.y },
         },
     }
+    local unit = assert(wesnoth.units.get(x, y), "native recruit did not place a unit")
+    local modifications = wml.get_child(unit.__cfg, "modifications")
+    local trait_draws = 0
+    if modifications then
+        for trait in wml.child_range(modifications, "trait") do
+            if trait.availability ~= "musthave" then
+                trait_draws = trait_draws + 1
+            end
+        end
+    end
+    return trait_draws
 end
 
 function actions.end_turn()
