@@ -137,19 +137,27 @@ impl<'data> FixedMatch<'data> {
         self.state
     }
 
+    /// Projects the current board for a match side, including after the match ends.
+    pub fn observation_for(&self, side: usize) -> Option<Observation> {
+        let gold = *self.gold.get(side.checked_sub(1)?)?;
+        let board = &self.scenario.board;
+        let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
+        let mut observation = project(board, side, &vision, |_| true);
+        observation.gold = Some(gold);
+        for tile in &mut observation.tiles {
+            tile.village_owner = self.village_owners.get(&tile.position).copied();
+        }
+        Some(observation)
+    }
+
     /// The active side's observation and actions, without referee state.
     pub fn decision(&self) -> Option<(Observation, Vec<Action>)> {
         let MatchState::Playing(turn) = self.state else {
             return None;
         };
+        let observation = self.observation_for(turn.side).expect("active match side");
         let board = &self.scenario.board;
         let is_enemy = |side| side != turn.side;
-        let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
-        let mut observation = project(board, turn.side, &vision, |_| true);
-        observation.gold = Some(self.gold[turn.side - 1]);
-        for tile in &mut observation.tiles {
-            tile.village_owner = self.village_owners.get(&tile.position).copied();
-        }
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
             let destinations = board
