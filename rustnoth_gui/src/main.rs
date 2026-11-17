@@ -20,7 +20,9 @@ mod menu;
 mod render;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
-Scroll over the board to zoom. Press Home to fit the board.";
+Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
+Press Home to fit the board.";
+const PAN_PIXELS_PER_SECOND: f32 = 480.0;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -149,6 +151,15 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             camera.fit(render::board_viewport(), observation.width, observation.height, reset);
             if !reset {
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
+                camera.drag(
+                    [mouse_x, mouse_y],
+                    is_mouse_button_pressed(MouseButton::Middle),
+                    is_mouse_button_down(MouseButton::Middle),
+                );
+                let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
+                let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
+                let distance = PAN_PIXELS_PER_SECOND * get_frame_time();
+                camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
         let clicked = is_mouse_button_pressed(MouseButton::Left);
