@@ -13,6 +13,7 @@ const WHEEL_STEP: f32 = 1.0;
 pub struct BoardCamera {
     last_fit: Option<(Viewport, i32, i32)>,
     layout: Option<BoardLayout>,
+    drag_position: Option<[f32; 2]>,
 }
 
 impl BoardCamera {
@@ -22,6 +23,7 @@ impl BoardCamera {
             return;
         }
         self.last_fit = Some(fit);
+        self.drag_position = None;
         self.layout = BoardLayout::fit(
             width,
             height,
@@ -39,6 +41,25 @@ impl BoardCamera {
             && let Some(layout) = self.layout.as_mut()
         {
             *layout = layout.zoomed_at(point, ZOOM_PER_STEP.powf(delta / WHEEL_STEP));
+        }
+    }
+
+    pub fn pan(&mut self, delta: [f32; 2]) {
+        if delta != [0.0, 0.0]
+            && let Some(layout) = self.layout.as_mut()
+        {
+            *layout = layout.panned(delta);
+        }
+    }
+
+    pub fn drag(&mut self, point: [f32; 2], pressed: bool, held: bool) {
+        if !held {
+            self.drag_position = None;
+        } else if pressed {
+            self.drag_position = self.contains(point).then_some(point);
+        } else if let Some([x, y]) = self.drag_position {
+            self.pan([point[0] - x, point[1] - y]);
+            self.drag_position = Some(point);
         }
     }
 
@@ -98,5 +119,50 @@ mod tests {
         camera.fit(resized, 6, 6, false);
         assert_eq!(camera.layout().unwrap().tile_size(), fit.tile_size());
         assert!(camera.layout().unwrap().tile_origin(anchor_hex)[0] > fit.tile_origin(anchor_hex)[0]);
+    }
+
+    #[test]
+    fn pans_the_hit_test_with_the_board_and_stops_at_the_padded_edges() {
+        let viewport = Viewport { x: 20.0, y: 68.0, width: 240.0, height: 200.0 };
+        let mut camera = BoardCamera::default();
+        let first = Hex { x: 0, y: 0 };
+        let last = Hex { x: 5, y: 5 };
+        camera.fit(viewport, 6, 6, false);
+        let fitted_origin = camera.layout().unwrap().tile_origin(first);
+        camera.pan([80.0, -80.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), fitted_origin);
+
+        camera.scroll([140.0, 168.0], 12.0 * WHEEL_STEP);
+        camera.pan([2_000.0, 2_000.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [36.0, 84.0]);
+
+        camera.drag([19.0, 156.0], true, true);
+        camera.drag([88.0, 136.0], false, true);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [36.0, 84.0]);
+        camera.drag([108.0, 156.0], true, true);
+        camera.drag([88.0, 136.0], false, true);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [16.0, 64.0]);
+        assert_eq!(camera.hex_at([88.0, 136.0]), Some(first));
+        camera.drag([88.0, 136.0], false, false);
+        camera.drag([68.0, 116.0], false, true);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [16.0, 64.0]);
+
+        camera.pan([-2_000.0, -2_000.0]);
+        let [x, y] = camera.layout().unwrap().tile_origin(last);
+        assert_eq!([x + 144.0, y + 144.0], [244.0, 252.0]);
+    }
+
+    #[test]
+    fn centers_a_fitting_axis_while_panning_the_overflowing_axis() {
+        let viewport = Viewport { x: 0.0, y: 68.0, width: 400.0, height: 240.0 };
+        let mut camera = BoardCamera::default();
+        let first = Hex { x: 0, y: 0 };
+        camera.fit(viewport, 2, 4, false);
+        camera.scroll([190.0, 180.0], 12.0 * WHEEL_STEP);
+        camera.pan([25.0, 2_000.0]);
+
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 84.0]);
+        camera.pan([-25.0, -20.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 64.0]);
     }
 }
