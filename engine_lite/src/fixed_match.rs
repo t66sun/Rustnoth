@@ -62,7 +62,7 @@ impl Rules<'_> {
 
 /// A headless free-for-all on a fixed, fully visible map.
 ///
-/// This match applies ordinary recruit traits and supports unconditional weapon firststrike.
+/// This match applies ordinary recruit traits and supports unconditional firststrike and magical weapons.
 /// It ends when fewer than two sides have leaders or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
@@ -905,6 +905,76 @@ Xv,Xv,Xv,Xv"
         assert!(game.scenario.board.unit_at(from).is_none());
         assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 10);
         assert_eq!(game.rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn magical_hit_chance_drives_both_retaliation_selection_and_combat() {
+        let bundle = crate::scenario_bundle::Bundle::parse(
+            br#"
+            [units]
+                [unit_type]
+                    id=Attacker
+                    hitpoints=10
+                    [attack]
+                        range=melee
+                        damage=1
+                        number=1
+                        parry=90
+                    [/attack]
+                [/unit_type]
+                [unit_type]
+                    id=Defender
+                    hitpoints=10
+                    [attack]
+                        range=melee
+                        damage=2
+                        number=1
+                    [/attack]
+                    [attack]
+                        range=melee
+                        damage=8
+                        number=1
+                        accuracy=-100
+                        [specials]
+                            [chance_to_hit]
+                                id=magical
+                                value=70
+                                cumulative=no
+                            [/chance_to_hit]
+                        [/specials]
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    type=Attacker
+                [/side]
+                [side]
+                    side=2
+                    type=Defender
+                [/side]
+            [/scenario]
+            "#,
+        )
+        .unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 1, y: 0 };
+        let choice = AttackChoice { from, to, weapon: 0 };
+        let attack = game.prepare_attack(Turn { round: 1, side: 1 }, choice).unwrap();
+        let (response, modifiers) = attack.retaliation.unwrap();
+        assert_eq!(response, 1);
+        let defender = game.scenario.board.unit_at(to).unwrap();
+        assert_eq!(combatant(defender, response, &modifiers, 90).hit_chance, 70);
+        assert_eq!(combatant(defender, response, &modifiers, -200).hit_chance, 70);
+
+        game.step(Action::Attack(choice)).unwrap();
+        assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 2);
+        assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 9);
     }
 
     #[test]
