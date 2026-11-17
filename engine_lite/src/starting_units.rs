@@ -27,7 +27,10 @@ pub fn read_starting_units(
         let side = index + 1;
         let mut ids = HashSet::new();
         let mut leader_hex = None;
-        let units = std::iter::once((side_cfg, true))
+        let inline_leader = (!side_cfg.attribute("no_leader").is_some_and(wml_true))
+            .then_some((side_cfg, true));
+        let units = inline_leader
+            .into_iter()
             .chain(children_named(side_cfg, "leader").map(|node| (node, true)))
             .chain(children_named(side_cfg, "unit").map(|node| (node, false)));
         for (unit, leader) in units {
@@ -264,5 +267,18 @@ mod tests {
                 directive: "recall".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn no_leader_disables_the_inline_type_but_keeps_authored_units() {
+        let scenario = wml::parse(
+            "[side]\nno_leader=yes\ntype=Lieutenant\n\
+             [unit]\ntype=Spearman\nx,y=1,1\n[/unit]\n[/side]",
+        )
+        .unwrap();
+        let units = read_starting_units(&scenario, &map()).unwrap();
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].type_id, "Spearman");
+        assert!(!units[0].can_recruit);
     }
 }
