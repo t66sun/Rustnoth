@@ -1,9 +1,16 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     error, fmt,
+    num::NonZeroU32,
 };
 
-use crate::{hex::Hex, map::ScenarioMap, starting_units::StartingUnit, unit_type::UnitType};
+use crate::{
+    hex::Hex,
+    map::ScenarioMap,
+    movement::{MovementTile, Occupancy, reachable_destinations},
+    starting_units::StartingUnit,
+    unit_type::UnitType,
+};
 
 /// Full referee state for the fixed map and its units.
 ///
@@ -69,6 +76,57 @@ impl<'rules> Battlefield<'rules> {
         self.units.get(&position)
     }
 
+    /// Applies a current-turn move on a fully visible fixed battlefield.
+    ///
+    /// The referee supplies the mover's terrain cost and the active side's
+    /// enemy relations. Zone of control comes from adjacent enemy base units.
+    /// This handles ordinary walking without intermediate movement effects.
+    pub fn move_unit(
+        &mut self,
+        active_side: usize,
+        from: Hex,
+        to: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        is_enemy: impl Fn(usize) -> bool,
+    ) -> Result<(), MoveError> {
+        let unit = self.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
+        if unit.side != active_side {
+            return Err(MoveError::WrongSide(from));
+        }
+        let moves_left = unit.moves_left.max(0) as u32;
+        let hostile = |unit: &UnitState<'rules>| unit.side != active_side && is_enemy(unit.side);
+
+        let remaining = reachable_destinations(from, moves_left, |position| {
+            if !self.map.is_playable(position) {
+                return None;
+            }
+            let cost = movement_cost(self.map.terrain_at(position)?)?;
+            let occupancy = match self.unit_at(position) {
+                Some(unit) if hostile(unit) => Occupancy::Enemy,
+                Some(_) => Occupancy::Ally,
+                None => Occupancy::Empty,
+            };
+            let stops_movement = position.neighbors().any(|neighbor| {
+                self.unit_at(neighbor)
+                    .is_some_and(|unit| hostile(unit) && unit.unit_type.emits_zoc)
+            });
+            Some(MovementTile {
+                cost,
+                occupancy,
+                stops_movement,
+            })
+        })
+        .get(&to)
+        .copied()
+        .ok_or(MoveError::Unreachable(to))?;
+
+        let mut unit = self.units.remove(&from).expect("validated move source");
+        // The search can leave at most the unit's starting i32 movement budget.
+        unit.moves_left = remaining as i32;
+        self.units.insert(to, unit);
+        Ok(())
+    }
+
     /// Iterates over units in hex order.
     pub fn units(&self) -> impl Iterator<Item = (Hex, &UnitState<'rules>)> + '_ {
         self.units.iter().map(|(&position, unit)| (position, unit))
@@ -96,6 +154,25 @@ impl fmt::Display for BoardError {
 
 impl error::Error for BoardError {}
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum MoveError {
+    MissingUnit(Hex),
+    WrongSide(Hex),
+    Unreachable(Hex),
+}
+
+impl fmt::Display for MoveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingUnit(hex) => write!(f, "no unit to move at {hex:?}"),
+            Self::WrongSide(hex) => write!(f, "unit at {hex:?} is not on the active side"),
+            Self::Unreachable(hex) => write!(f, "cannot reach {hex:?} this turn"),
+        }
+    }
+}
+
+impl error::Error for MoveError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,7 +186,7 @@ mod tests {
     }
 
     fn types() -> BTreeMap<String, UnitType> {
-        let config = wml::parse("id=Spearman\nhitpoints=36\nmovement=5\nattacks=2").unwrap();
+        let config = wml::parse("id=Spearman\nhitpoints=36\nmovement=5\nattacks=2\nlevel=1").unwrap();
         let unit_type = UnitType::from_wml(config);
         BTreeMap::from([(unit_type.id.clone(), unit_type)])
     }
@@ -170,6 +247,105 @@ mod tests {
             )
             .unwrap_err(),
             BoardError::Occupied(WEST)
+        );
+    }
+
+    fn corridor_hex(y: i32) -> Hex {
+        Hex { x: 0, y }
+    }
+
+    fn corridor<'rules>(
+        unit_types: &'rules BTreeMap<String, UnitType>,
+        positions: &[(i32, usize)],
+    ) -> Battlefield<'rules> {
+        let map = ScenarioMap::parse(
+            "Xv,Xv,Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,Hh,Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
+        )
+        .unwrap();
+        let starts = positions
+            .iter()
+            .map(|&(y, side)| StartingUnit {
+                side,
+                id: Some(format!("unit_{y}")),
+                type_id: "Spearman".to_owned(),
+                position: corridor_hex(y),
+                can_recruit: false,
+            })
+            .collect();
+        Battlefield::new(map, starts, unit_types).unwrap()
+    }
+
+    fn walking_cost(terrain: &str) -> Option<NonZeroU32> {
+        NonZeroU32::new(if terrain == "Hh" { 2 } else { 1 })
+    }
+
+    #[test]
+    fn moves_through_an_ally_and_spends_the_route_cost() {
+        let unit_types = types();
+        let from = corridor_hex(0);
+        let ally = corridor_hex(1);
+        let to = corridor_hex(2);
+        let mut board = corridor(&unit_types, &[(0, 1), (1, 2)]);
+
+        board.move_unit(1, from, to, walking_cost, |_| false).unwrap();
+
+        assert!(board.unit_at(from).is_none());
+        assert_eq!(board.unit_at(ally).unwrap().id.as_deref(), Some("unit_1"));
+        let moved = board.unit_at(to).unwrap();
+        assert_eq!(moved.id.as_deref(), Some("unit_0"));
+        assert_eq!(
+            (moved.moves_left, moved.hitpoints, moved.attacks_left),
+            (2, 36, 2)
+        );
+    }
+
+    #[test]
+    fn rejected_moves_leave_units_and_movement_in_place() {
+        let unit_types = types();
+        let from = corridor_hex(0);
+        let ally = corridor_hex(1);
+        let to = corridor_hex(3);
+        let mut board = corridor(&unit_types, &[(0, 1), (1, 2)]);
+
+        assert_eq!(
+            board.move_unit(2, from, to, walking_cost, |_| false),
+            Err(MoveError::WrongSide(from)),
+        );
+        assert_eq!(
+            board.move_unit(1, from, ally, walking_cost, |_| false),
+            Err(MoveError::Unreachable(ally)),
+        );
+        assert_eq!(
+            board.move_unit(1, from, to, |_| NonZeroU32::new(2), |_| false),
+            Err(MoveError::Unreachable(to)),
+        );
+        assert_eq!(board.unit_at(from).unwrap().moves_left, 5);
+        assert_eq!(board.unit_at(ally).unwrap().side, 2);
+        assert!(board.unit_at(to).is_none());
+    }
+
+    #[test]
+    fn enemy_occupancy_blocks_entry_and_zone_of_control_ends_movement() {
+        let unit_types = types();
+        let from = corridor_hex(0);
+        let controlled = corridor_hex(2);
+        let enemy = corridor_hex(3);
+        let mut board = corridor(&unit_types, &[(0, 1), (3, 2)]);
+
+        assert_eq!(
+            board.move_unit(1, from, enemy, walking_cost, |side| side == 2),
+            Err(MoveError::Unreachable(enemy)),
+        );
+        assert_eq!(board.unit_at(from).unwrap().moves_left, 5);
+        board
+            .move_unit(1, from, controlled, walking_cost, |side| side == 2)
+            .unwrap();
+
+        assert_eq!(board.unit_at(controlled).unwrap().moves_left, 0);
+        assert_eq!(board.unit_at(enemy).unwrap().side, 2);
+        assert_eq!(
+            board.move_unit(1, controlled, corridor_hex(1), walking_cost, |side| side == 2),
+            Err(MoveError::Unreachable(corridor_hex(1))),
         );
     }
 }
