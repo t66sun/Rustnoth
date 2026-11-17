@@ -7,6 +7,7 @@ Rustnoth aims to train an agent for The Battle for Wesnoth 1.18.8. The Rust rule
 The referee owns the full game state. Policies receive only the information and legal actions available to their side.
 
 - [Milestone plan](docs/PLAN.md)
+- [Original referee comparison](docs/PARITY.md)
 - [Working rules](AGENTS.md)
 - [License](LICENSE)
 
