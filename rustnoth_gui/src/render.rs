@@ -9,6 +9,7 @@ use macroquad::prelude::*;
 use rustnoth_gui::{
     assets::AssetCatalog,
     layout::{BoardLayout, Viewport},
+    team_colors::TeamColors,
 };
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
@@ -23,7 +24,8 @@ const ART_HEX_SIZE: f32 = 72.0;
 pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
-    units: BTreeMap<String, Option<Texture2D>>,
+    units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    team_colors: Option<TeamColors>,
     font: Option<Font>,
 }
 
@@ -32,7 +34,18 @@ impl BoardArt {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Self { paths: HashMap::new(), terrain: BTreeMap::new(), units: BTreeMap::new(), font }
+        let palette_path = wesnoth_root.join("data/core/team-colors.cfg");
+        let team_colors = fs::read(&palette_path)
+            .and_then(|bytes| TeamColors::parse(&bytes))
+            .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
+            .ok();
+        Self {
+            paths: HashMap::new(),
+            terrain: BTreeMap::new(),
+            units: BTreeMap::new(),
+            team_colors,
+            font,
+        }
     }
 
     pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog) {
@@ -46,25 +59,39 @@ impl BoardArt {
             });
         }
         for unit in &observation.units {
-            self.units.entry(unit.type_id.clone()).or_insert_with(|| {
-                assets.unit_image(&unit.type_id).and_then(|path| get_texture(&mut self.paths, path))
-            });
+            self.units
+                .entry(unit.type_id.clone())
+                .or_default()
+                .entry(unit.side)
+                .or_insert_with(|| {
+                    let path = assets.unit_image(&unit.type_id)?;
+                    let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
+                    load_texture(&path, palette)
+                });
         }
     }
 }
 
 fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -> Option<Texture2D> {
-    cache.entry(path).or_insert_with_key(|path| {
-        let bytes = fs::read(path)
-            .map_err(|error| eprintln!("{} ({error})", path.display()))
-            .ok()?;
-        let image = Image::from_file_with_format(&bytes, None)
-            .map_err(|error| eprintln!("{} ({error})", path.display()))
-            .ok()?;
-        let texture = Texture2D::from_image(&image);
-        texture.set_filter(FilterMode::Linear);
-        Some(texture)
-    }).clone()
+    cache
+        .entry(path)
+        .or_insert_with_key(|path| load_texture(path, None))
+        .clone()
+}
+
+fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+    let bytes = fs::read(path)
+        .map_err(|error| eprintln!("{} ({error})", path.display()))
+        .ok()?;
+    let mut image = Image::from_file_with_format(&bytes, None)
+        .map_err(|error| eprintln!("{} ({error})", path.display()))
+        .ok()?;
+    if let Some((colors, side)) = palette {
+        colors.recolor(side, &mut image.bytes);
+    }
+    let texture = Texture2D::from_image(&image);
+    texture.set_filter(FilterMode::Linear);
+    Some(texture)
 }
 
 pub fn draw(title: &str, state: MatchState, observation: Option<&Observation>, art: &BoardArt) {
@@ -121,15 +148,25 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
             }
         }
         if let Some(owner) = tile.village_owner {
-            draw_circle(center.x + size * 0.27, center.y - size * 0.26, (size * 0.055).max(2.0), side_color(owner));
+            draw_circle(
+                center.x + size * 0.27,
+                center.y - size * 0.26,
+                (size * 0.055).max(2.0),
+                side_color(art.team_colors.as_ref(), owner),
+            );
         }
     }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
-        let marker = side_color(unit.side);
+        let marker = side_color(art.team_colors.as_ref(), unit.side);
         draw_ellipse(center.x, center.y + size * 0.24, size * 0.23, size * 0.10, 0.0, marker);
-        if let Some(texture) = art.units.get(&unit.type_id).and_then(Option::as_ref) {
+        let texture = art
+            .units
+            .get(&unit.type_id)
+            .and_then(|sides| sides.get(&unit.side))
+            .and_then(Option::as_ref);
+        if let Some(texture) = texture {
             draw_centered(texture, center, size);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
@@ -147,7 +184,10 @@ fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {
     });
 }
 
-fn side_color(side: usize) -> Color {
+fn side_color(palette: Option<&TeamColors>, side: usize) -> Color {
+    if let Some([red, green, blue]) = palette.and_then(|colors| colors.marker_color(side)) {
+        return Color::from_rgba(red, green, blue, 255);
+    }
     const COLORS: [Color; 5] = [
         Color::from_rgba(227, 105, 82, 255),
         Color::from_rgba(108, 163, 231, 255),
@@ -160,4 +200,29 @@ fn side_color(side: usize) -> Color {
 
 fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: Color) {
     draw_text_ex(message, x, y, TextParams { font: font.as_ref(), font_size: size, color, ..TextParams::default() });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn board_markers_use_the_native_palette_and_fall_back_for_unlisted_sides() {
+        let palette = TeamColors::parse(
+            br#"
+[color_range]
+    id=red
+    default=yes
+    rgb=FF0000,FFFFFF,000000,0C2238
+[/color_range]
+[color_palette]
+    magenta=F49AC1
+[/color_palette]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(side_color(Some(&palette), 1), Color::from_rgba(12, 34, 56, 255));
+        assert_eq!(side_color(Some(&palette), 2), Color::from_rgba(108, 163, 231, 255));
+    }
 }
