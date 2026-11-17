@@ -1,8 +1,13 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::time_of_day::Alignment;
 use crate::weapon::WeaponProfile;
 use crate::wml::Node;
+
+mod traits;
+use traits::TraitCatalog;
+pub use traits::TraitPool;
 
 /// Base rules for a preprocessed Wesnoth 1.18.8 `[unit_type]`.
 #[derive(Debug, PartialEq, Eq)]
@@ -20,11 +25,16 @@ pub struct UnitType {
     pub emits_zoc: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
+    pub traits: TraitPool,
 }
 
 impl UnitType {
-    /// Consumes one flat `[unit_type]` after any inheritance has been resolved.
+    /// Consumes one flat `[unit_type]` and its local traits.
     pub fn from_wml(unit: Node) -> Self {
+        Self::from_catalog(unit, &TraitCatalog::default())
+    }
+
+    fn from_catalog(unit: Node, catalog: &TraitCatalog) -> Self {
         let text = |key| unit.attribute(key).unwrap_or_default();
         let int = |key, default| {
             unit
@@ -60,7 +70,7 @@ impl UnitType {
                 .map(str::to_owned)
                 .collect(),
         };
-        Self {
+        let mut result = Self {
             id: text("id").to_owned(),
             level,
             hitpoints: int("hitpoints", 1),
@@ -72,32 +82,34 @@ impl UnitType {
             movement_type: text("movement_type").to_owned(),
             emits_zoc,
             advances_to,
-            attacks: unit
-                .children
-                .into_iter()
-                .filter(|(tag, _)| tag == "attack")
-                .map(|(_, child)| WeaponProfile::from_wml(child))
-                .collect(),
+            attacks: Vec::new(),
+            traits: catalog.inherited_traits(&unit, alignment),
+        };
+        for (tag, child) in unit.children {
+            match tag.as_str() {
+                "attack" => result.attacks.push(WeaponProfile::from_wml(child)),
+                "trait" => result.traits.available.push(Arc::new(child)),
+                _ => {}
+            }
         }
+        result
     }
 }
 
-/// Indexes direct, already-flat `[unit_type]` definitions from a preprocessed `[units]` body.
+/// Indexes flat unit types and resolves their inherited traits from a preprocessed `[units]` body.
 ///
 /// Definitions with a missing or empty ID are ignored. The first definition
 /// with a given ID supplies the base rules.
 pub fn read_unit_types(units: Node) -> BTreeMap<String, UnitType> {
+    let (catalog, unit_definitions) = TraitCatalog::read(units);
     let mut types = BTreeMap::new();
-    for (tag, unit) in units.children {
-        if tag != "unit_type" {
-            continue;
-        }
+    for unit in unit_definitions {
         let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) else {
             continue;
         };
         types
             .entry(id.to_owned())
-            .or_insert_with(|| UnitType::from_wml(unit));
+            .or_insert_with(|| UnitType::from_catalog(unit, &catalog));
     }
     types
 }
@@ -151,6 +163,104 @@ mod tests {
         assert_eq!(spearman.hitpoints, 36);
         assert_eq!(spearman.movement_type, "smallfoot");
         assert_eq!(spearman.attacks[0].id, "spear");
+    }
+
+    #[test]
+    fn loads_global_racial_and_local_traits_in_native_order() {
+        let units = wml::parse(
+            r#"
+            [trait]
+                id=strong
+            [/trait]
+            [unit_type]
+                id=Bowman
+                race=human
+                alignment=lawful
+                [trait]
+                    id=veteran
+                    availability=musthave
+                    require_traits=strong,healthy
+                    exclude_traits=quick
+                    [effect]
+                        apply_to=hitpoints
+                        increase_total=2
+                    [/effect]
+                [/trait]
+            [/unit_type]
+            [trait]
+                id=quick
+            [/trait]
+            [race]
+                id=human
+                num_traits=2
+                [trait]
+                    id=fearless
+                [/trait]
+                [trait]
+                    id=healthy
+                [/trait]
+            [/race]
+            [race]
+                id=human
+                num_traits=7
+            [/race]
+            [race]
+                id=bat
+                num_traits=1
+                ignore_global_traits=true
+                [trait]
+                    id=feral
+                [/trait]
+            [/race]
+            [unit_type]
+                id=Neutral
+                race=human
+                num_traits=1
+            [/unit_type]
+            [unit_type]
+                id=Independent
+                race=human
+                ignore_race_traits=yes
+                [trait]
+                    id=loyal
+                [/trait]
+            [/unit_type]
+            [unit_type]
+                id=Bat
+                race=bat
+            [/unit_type]
+            [unit_type]
+                id=Unknown
+                race=unknown
+                ignore_race_traits=yes
+            [/unit_type]
+            "#,
+        )
+        .unwrap();
+        let types = read_unit_types(units);
+        for (unit, count, expected) in [
+            ("Bowman", 2, &["strong", "quick", "fearless", "healthy", "veteran"][..]),
+            ("Neutral", 1, &["strong", "quick", "healthy"][..]),
+            ("Independent", 2, &["loyal"][..]),
+            ("Bat", 1, &["feral"][..]),
+            ("Unknown", 0, &["strong", "quick"][..]),
+        ] {
+            let traits = &types[unit].traits;
+            let ids: Vec<_> = traits
+                .available
+                .iter()
+                .map(|trait_| trait_.attribute("id").unwrap())
+                .collect();
+            assert_eq!((traits.count, ids.as_slice()), (count, expected), "{unit}");
+        }
+
+        let veteran = &types["Bowman"].traits.available[4];
+        assert_eq!(veteran.attribute("availability"), Some("musthave"));
+        assert_eq!(veteran.attribute("require_traits"), Some("strong,healthy"));
+        assert_eq!(veteran.attribute("exclude_traits"), Some("quick"));
+        let (tag, effect) = &veteran.children[0];
+        assert_eq!(tag, "effect");
+        assert_eq!(effect.attribute("increase_total"), Some("2"));
     }
 
     #[test]
