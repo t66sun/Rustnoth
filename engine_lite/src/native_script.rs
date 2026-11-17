@@ -67,8 +67,9 @@ pub fn generate(
         writeln!(lua, "groups[{index}] = function()").unwrap();
         write_checkpoint(&mut lua, group.before_step, time_over);
         for (offset, action) in group.actions.iter().enumerate() {
-            write_action(&mut lua, action)?;
-            write_checkpoint(&mut lua, group.before_step + offset + 1, false);
+            let step = group.before_step + offset + 1;
+            write_action(&mut lua, action, step)?;
+            write_checkpoint(&mut lua, step, false);
         }
         if group.end_turn {
             lua.push_str("    actions.end_turn()\n");
@@ -104,7 +105,7 @@ fn write_checkpoint(lua: &mut String, step: usize, time_over: bool) {
     writeln!(lua, "    if checkpoint({step}, {time_over}) then return end").unwrap();
 }
 
-fn write_action(lua: &mut String, action: &Action) -> io::Result<()> {
+fn write_action(lua: &mut String, action: &Action, step: usize) -> io::Result<()> {
     match action {
         Action::Move { from, to } => {
             let (from_x, from_y) = coordinates(*from)?;
@@ -116,8 +117,18 @@ fn write_action(lua: &mut String, action: &Action) -> io::Result<()> {
             let (to_x, to_y) = coordinates(attack.to)?;
             writeln!(
                 lua,
+                "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_ATTACK_BEGIN {step}\", false)"
+            )
+            .unwrap();
+            writeln!(
+                lua,
                 "    actions.attack({from_x}, {from_y}, {to_x}, {to_y}, {})",
                 attack.weapon
+            )
+            .unwrap();
+            writeln!(
+                lua,
+                "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_ATTACK_END {step}\", false)"
             )
             .unwrap();
         }
@@ -153,6 +164,8 @@ fn write_string(lua: &mut String, value: &str) {
 
 #[cfg(test)]
 mod tests {
+    use crate::board::AttackChoice;
+
     use super::*;
 
     #[test]
@@ -205,6 +218,29 @@ mod tests {
         )
         .unwrap();
         assert!(native.lua.contains(r#"actions.recruit(3, 4, "Bandit \"暗\"\\\010")"#));
+    }
+
+    #[test]
+    fn bounds_native_attack_logs_by_one_based_script_step() {
+        let native = generate(
+            &[
+                Action::EndTurn,
+                Action::Attack(AttackChoice {
+                    from: Hex { x: 0, y: 1 },
+                    to: Hex { x: 1, y: 1 },
+                    weapon: 0,
+                }),
+            ],
+            1,
+            None,
+        )
+        .unwrap();
+        assert!(native.lua.contains(concat!(
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_ATTACK_BEGIN 2\", false)\n",
+            "    actions.attack(1, 2, 2, 2, 0)\n",
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_ATTACK_END 2\", false)\n",
+            "    if checkpoint(2, false) then return end\n",
+        )));
     }
 
     #[test]

@@ -78,7 +78,14 @@ fn oracle_command(executable: &Path, run_dir: &Path, seed: u32) -> io::Result<Co
     let userdata = run_dir.join("userdata");
     let mut command = command(executable)?;
     command
-        .args(["--unit=rustnoth_trace", "--noreplaycheck", "--nobanner", "--nosound"])
+        .args([
+            "--unit=rustnoth_trace",
+            "--noreplaycheck",
+            "--nobanner",
+            "--nosound",
+            "--log-debug=random",
+            "--log-info=wml",
+        ])
         .arg(format!("--rng-seed={seed}"))
         .arg("--userdata-dir")
         .arg(&userdata)
@@ -134,6 +141,8 @@ mod tests {
             OsStr::new("--noreplaycheck"),
             OsStr::new("--nobanner"),
             OsStr::new("--nosound"),
+            OsStr::new("--log-debug=random"),
+            OsStr::new("--log-info=wml"),
             OsStr::new("--rng-seed=5489"),
             OsStr::new("--userdata-dir"),
             userdata.as_os_str(),
