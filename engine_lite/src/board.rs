@@ -11,7 +11,7 @@ use crate::{
     hex::Hex,
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_destinations},
-    starting_units::StartingUnit,
+    starting_units::{AuthoredStartingUnit, StartingUnit},
     turn::Turn,
     unit_type::UnitType,
 };
@@ -47,12 +47,28 @@ impl<'rules> Battlefield<'rules> {
         starting_units: Vec<StartingUnit>,
         unit_types: &'rules BTreeMap<String, UnitType>,
     ) -> Result<Self, BoardError> {
+        let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
+            placement,
+            hitpoints: None,
+        });
+        Self::from_authored_starting_units(map, starting_units, unit_types)
+    }
+
+    pub(crate) fn from_authored_starting_units(
+        map: ScenarioMap,
+        starting_units: impl IntoIterator<Item = AuthoredStartingUnit>,
+        unit_types: &'rules BTreeMap<String, UnitType>,
+    ) -> Result<Self, BoardError> {
         let mut board = Self {
             map,
             units: BTreeMap::new(),
             unit_types,
         };
-        for start in starting_units {
+        for AuthoredStartingUnit {
+            placement: start,
+            hitpoints,
+        } in starting_units
+        {
             let position = start.position;
             let tile = board.vacant_unit_slot(position)?;
             let unit_type =
@@ -66,7 +82,7 @@ impl<'rules> Battlefield<'rules> {
                 side: start.side,
                 id: start.id,
                 unit_type,
-                hitpoints: unit_type.hitpoints,
+                hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
                 moves_left: unit_type.movement.max(0),
                 attacks_left: unit_type.max_attacks.max(0),
                 can_recruit: start.can_recruit,
