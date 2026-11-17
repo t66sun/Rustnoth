@@ -66,10 +66,16 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_charge(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_charge(tag, definition))
+        })
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
-                is_unconditional_firststrike(tag, definition)
+                is_unconditional_firststrike(tag, definition) || is_stock_charge(tag, definition)
             })
         })
     }
@@ -80,6 +86,21 @@ fn is_unconditional_firststrike(tag: &str, definition: &Node) -> bool {
         && definition.children.is_empty()
         && definition.attributes.keys().all(|key| {
             matches!(key.as_str(), "id" | "name" | "description" | "special_note")
+        })
+}
+
+fn is_stock_charge(tag: &str, definition: &Node) -> bool {
+    tag == "damage"
+        && definition.children.is_empty()
+        && definition.attribute("id") == Some("charge")
+        && definition.attribute("multiply") == Some("2")
+        && definition.attribute("apply_to") == Some("both")
+        && definition.attribute("active_on") == Some("offense")
+        && definition.attributes.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "id" | "multiply" | "apply_to" | "active_on" | "name" | "description" | "special_note"
+            )
         })
 }
 
@@ -167,6 +188,31 @@ mod tests {
         ] {
             let weapon = weapon(unsupported);
             assert!(!weapon.has_firststrike());
+            assert!(!weapon.supports_specials());
+        }
+    }
+
+    #[test]
+    fn accepts_stock_charge_and_rejects_modified_damage_rules() {
+        let charge = "[damage]\nid=charge\nmultiply=2\napply_to=both\nactive_on=offense\n[/damage]";
+        let weapon = |special: &str| {
+            WeaponProfile::from_wml(
+                wml::parse(format!("[specials]\n{special}\n[/specials]")).unwrap(),
+            )
+        };
+        let stock = weapon(charge);
+        assert!(stock.has_charge());
+        assert!(stock.supports_specials());
+        for modified in [
+            charge.replace("multiply=2", "multiply=3"),
+            charge.replace("active_on=offense", "active_on=defense"),
+            charge.replace(
+                "[/damage]",
+                "[filter_opponent]\ntype=Fighter\n[/filter_opponent]\n[/damage]",
+            ),
+        ] {
+            let weapon = weapon(&modified);
+            assert!(!weapon.has_charge());
             assert!(!weapon.supports_specials());
         }
     }

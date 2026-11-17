@@ -104,11 +104,13 @@ impl Battlefield<'_> {
             }
             None => None,
         };
+        let charging = weapon.has_charge();
         let attacker_stats = combatant(
             attacker,
             action.weapon,
             &action.modifiers,
             retaliation.map_or(0, |(_, parry, _)| parry),
+            charging,
         );
         let defender_stats = retaliation.map_or(
             Combatant {
@@ -118,7 +120,7 @@ impl Battlefield<'_> {
                 hit_chance: 0,
                 firststrike: false,
             },
-            |(index, _, modifiers)| combatant(defender, index, modifiers, weapon.parry),
+            |(index, _, modifiers)| combatant(defender, index, modifiers, weapon.parry, charging),
         );
         let movement_used = weapon.movement_used;
         let attacks_used = weapon.attacks_used;
@@ -168,9 +170,12 @@ pub(crate) fn combatant(
     weapon_index: usize,
     modifiers: &StrikeModifiers,
     opposing_parry: i32,
+    charging: bool,
 ) -> Combatant {
     let weapon = &unit.unit_type.attacks[weapon_index];
-    let damage = strike_damage(unit.attack_damage(weapon_index), modifiers.damage_multiplier, false);
+    let base_damage = unit.attack_damage(weapon_index);
+    let base_damage = if charging { base_damage.saturating_mul(2) } else { base_damage };
+    let damage = strike_damage(base_damage, modifiers.damage_multiplier, false);
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,
