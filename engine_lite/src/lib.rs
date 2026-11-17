@@ -35,3 +35,4 @@ pub mod scenario_bundle;
 pub mod wml_emit;
 pub mod native_actions;
 pub mod native_capture;
+pub mod native_process;
