@@ -4,6 +4,7 @@ pub mod hex;
 pub mod time_of_day;
 pub mod map;
 pub mod weapon;
+pub mod movement_cost;
 pub mod terrain_aliases;
 pub mod scenario_sides;
 pub mod combat;
