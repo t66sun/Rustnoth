@@ -28,6 +28,14 @@ pub struct SideConfig {
     pub recruits: BTreeSet<String>,
 }
 
+impl SideConfig {
+    /// Distinct sides are allied when they share at least one team name.
+    pub fn is_enemy(&self, other: &Self) -> bool {
+        self.side != other.side
+            && !self.team_names.iter().any(|name| other.team_names.contains(name))
+    }
+}
+
 /// Reads direct `[side]` children of a preprocessed scenario in roster order.
 /// Omitted economy settings use the standard Wesnoth 1.18.8 scenario defaults.
 pub fn read_sides(scenario: &Node) -> Vec<SideConfig> {
@@ -122,6 +130,24 @@ fn int_attribute(cfg: &Node, key: &str, default: i32) -> i32 {
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn alliances_require_a_shared_team_name_between_the_two_sides() {
+        let scenario = wml::parse(
+            "[side]\nteam_name=east\n[/side]\n\
+             [side]\nteam_name=east, west\n[/side]\n\
+             [side]\nteam_name=west\n[/side]\n\
+             [side]\n[/side]\n",
+        )
+        .unwrap();
+        let sides = read_sides(&scenario);
+        assert!(!sides[0].is_enemy(&sides[1]));
+        assert!(!sides[1].is_enemy(&sides[2]));
+        assert!(sides[0].is_enemy(&sides[2]));
+        assert!(sides[2].is_enemy(&sides[0]));
+        assert!(sides[0].is_enemy(&sides[3]));
+        assert!(!sides[3].is_enemy(&sides[3]));
+    }
 
     #[test]
     fn keeps_side_order_and_falls_back_to_the_declared_team_name() {
