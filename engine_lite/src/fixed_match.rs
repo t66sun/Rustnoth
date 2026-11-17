@@ -191,6 +191,7 @@ impl<'data> FixedMatch<'data> {
                     .advance_turn(turn, &[1, 2], self.scenario.last_round);
                 self.state = if let Some(next) = next {
                     self.settle_income(next);
+                    self.scenario.board.heal_on_terrain(next.side, self.rules.terrain);
                     MatchState::Playing(next)
                 } else {
                     MatchState::Draw
@@ -484,6 +485,69 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         let (observation, _) = game.decision().unwrap();
         assert_eq!(observation.tiles[1].village_owner, Some(1));
         assert_eq!(observation.units[0].moves_left, Some(0));
+    }
+
+    #[test]
+    fn applies_terrain_healing_only_when_the_units_side_begins_its_turn() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg^Vh,2 Gg^Vh,Qq,Xv
+Xv,Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Fighter
+                [unit]
+                    type=Fighter
+                    x,y=3,1
+                [/unit]
+            [/side]
+            [side]
+                side=2
+                type=Fighter
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(
+            wml::parse(
+                "id=Fighter\nhitpoints=10\n[attack]\nname=sword\ntype=blade\nrange=melee\ndamage=5\nnumber=1\n[/attack]",
+            )
+            .unwrap(),
+        );
+        let roster = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let terrain = TerrainAliases::from_wml(
+            &wml::parse(
+                "[terrain_type]\nstring=Gg\n[/terrain_type]\n\
+                 [terrain_type]\nstring=^Vh\ngives_income=yes\nheals=8\n[/terrain_type]\n\
+                 [terrain_type]\nstring=Qq\nheals=-20\n[/terrain_type]",
+            )
+            .unwrap(),
+        );
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        let hitpoints = |game: &FixedMatch<'_>| {
+            [0, 1, 2].map(|x| game.scenario.board.unit_at(Hex { x, y: 0 }).unwrap().hitpoints)
+        };
+        assert_eq!(hitpoints(&game), [10, 10, 10]);
+        game.step(Action::Attack(AttackChoice {
+            from: Hex { x: 0, y: 0 },
+            to: Hex { x: 1, y: 0 },
+            weapon: 0,
+        }))
+        .unwrap();
+        assert_eq!(hitpoints(&game), [5, 5, 10]);
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(hitpoints(&game), [5, 10, 10]);
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(hitpoints(&game), [10, 10, 1]);
     }
 
     #[test]

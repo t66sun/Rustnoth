@@ -12,6 +12,7 @@ use crate::{
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_destinations},
     starting_units::{AuthoredStartingUnit, StartingUnit},
+    terrain_aliases::TerrainAliases,
     turn::Turn,
     unit_type::UnitType,
 };
@@ -232,6 +233,17 @@ impl<'rules> Battlefield<'rules> {
             unit.attacks_left = unit.unit_type.max_attacks.max(0);
         }
         Some(next)
+    }
+
+    /// Applies the terrain's base healing to units on the incoming side.
+    pub(crate) fn heal_on_terrain(&mut self, side: usize, terrain: &TerrainAliases) {
+        for (&hex, unit) in self.units.iter_mut().filter(|(_, unit)| unit.side == side) {
+            let healing = self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
+            let hitpoints = i64::from(unit.hitpoints);
+            let max_heal = (i64::from(unit.unit_type.hitpoints) - hitpoints).max(0);
+            let min_heal = (1 - hitpoints).min(0);
+            unit.hitpoints = (hitpoints + i64::from(healing).clamp(min_heal, max_heal)) as i32;
+        }
     }
 }
 
