@@ -19,3 +19,4 @@ pub mod unit_type;
 pub mod turn;
 pub mod visibility;
 pub mod starting_units;
+pub mod board;
