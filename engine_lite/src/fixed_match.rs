@@ -301,9 +301,12 @@ impl<'data> FixedMatch<'data> {
     ) -> StrikeModifiers {
         let terrain = self.scenario.board.map().terrain_at(target_hex).expect("unit on map");
         let target_movement = &target.unit_type.movement_type;
-        let target_hit_chance = self.rules.movement.get(target_movement).map_or(100, |profile| {
-            profile.defense.hit_chance(self.rules.terrain, terrain)
-        });
+        let inherited_defense = self.rules.movement.get(target_movement).map(|profile| &profile.defense);
+        let target_hit_chance = target.unit_type.defense_overrides.hit_chance_with_fallback(
+            self.rules.terrain,
+            terrain,
+            inherited_defense,
+        );
         let damage_taken = self.rules.resistance.get(target_movement).map_or(100, |table| {
             table.damage_taken(&weapon.damage_type)
         });
