@@ -84,7 +84,7 @@ fn oracle_command(executable: &Path, run_dir: &Path, seed: u32) -> io::Result<Co
             "--nobanner",
             "--nosound",
             "--log-debug=random",
-            "--log-info=wml",
+            "--log-info=wml,unit",
         ])
         .arg(format!("--rng-seed={seed}"))
         .arg("--userdata-dir")
@@ -142,7 +142,7 @@ mod tests {
             OsStr::new("--nobanner"),
             OsStr::new("--nosound"),
             OsStr::new("--log-debug=random"),
-            OsStr::new("--log-info=wml"),
+            OsStr::new("--log-info=wml,unit"),
             OsStr::new("--rng-seed=5489"),
             OsStr::new("--userdata-dir"),
             userdata.as_os_str(),
