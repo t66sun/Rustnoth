@@ -19,6 +19,7 @@ pub mod strike_damage;
 pub mod movement;
 pub mod unit_type;
 pub mod turn;
+pub mod native_turns;
 pub mod visibility;
 pub mod starting_units;
 pub mod board;
