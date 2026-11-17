@@ -179,12 +179,15 @@ impl<'data> FixedMatch<'data> {
             }
             Action::Attack(choice) => {
                 let attack = self.prepare_attack(turn, choice)?;
-                self.scenario.board.apply_attack(
+                let board = &mut self.scenario.board;
+                board.apply_attack(
                     turn.side,
                     attack,
                     |side| side == opponent,
                     &mut self.rng,
                 )?;
+                board.advance_after_combat(choice.from, supports_unit);
+                board.advance_after_combat(choice.to, supports_unit);
                 self.check_leaders();
             }
             Action::Recruit { unit_type, to } => self.recruit(turn.side, &unit_type, to)?,
@@ -384,7 +387,115 @@ impl error::Error for MatchError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{movement_types::read_movement_types, scenario_start, unit_type::UnitType, wml};
+    use crate::{
+        movement_types::read_movement_types,
+        scenario_start,
+        unit_type::{UnitType, read_unit_types},
+        wml,
+    };
+
+    #[test]
+    fn advances_combat_survivors_with_only_one_supported_type_choice() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                id=West
+                type=Fighter
+                experience=29
+                attacks_left=1
+            [/side]
+            [side]
+                side=2
+                id=East
+                type=Fighter
+                experience=9
+                moves=1
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let roster = read_unit_types(
+            wml::parse(
+                r#"
+                [unit_type]
+                    id=Fighter
+                    hitpoints=10
+                    movement=4
+                    attacks=4
+                    level=1
+                    experience=10
+                    advances_to=Veteran
+                    [attack]
+                        name=sword
+                        type=blade
+                        range=melee
+                        damage=5
+                        number=1
+                        movement_used=1
+                    [/attack]
+                [/unit_type]
+                [unit_type]
+                    id=Veteran
+                    hitpoints=18
+                    movement=2
+                    attacks=2
+                    level=2
+                    experience=18
+                    advances_to=Champion
+                [/unit_type]
+                [unit_type]
+                    id=Champion
+                    hitpoints=25
+                    movement=3
+                    attacks=3
+                    level=3
+                    experience=50
+                    advances_to=null
+                [/unit_type]
+                "#,
+            )
+            .unwrap(),
+        );
+        let terrain = TerrainAliases::from_wml(&wml::Node::default());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 1, y: 0 };
+        assert_eq!(
+            game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })),
+            Ok(MatchState::Playing(Turn { round: 1, side: 1 }))
+        );
+
+        let attacker = game.scenario.board.unit_at(from).unwrap();
+        assert_eq!(attacker.unit_type.id, "Champion");
+        assert_eq!((attacker.hitpoints, attacker.experience), (25, 2));
+        assert_eq!((attacker.moves_left, attacker.attacks_left), (2, 0));
+        assert_eq!(
+            (attacker.id.as_deref(), attacker.side, attacker.can_recruit),
+            (Some("West"), 1, true)
+        );
+
+        let defender = game.scenario.board.unit_at(to).unwrap();
+        assert_eq!(defender.unit_type.id, "Veteran");
+        assert_eq!((defender.hitpoints, defender.experience), (18, 0));
+        assert_eq!((defender.moves_left, defender.attacks_left), (1, 2));
+        assert_eq!(
+            (defender.id.as_deref(), defender.side, defender.can_recruit),
+            (Some("East"), 2, true)
+        );
+    }
 
     #[test]
     fn plays_a_seeded_fixed_scenario_to_victory_or_the_round_limit() {
