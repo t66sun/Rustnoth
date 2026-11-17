@@ -14,6 +14,8 @@ pub struct WeaponProfile {
     pub parry: i32,
     pub movement_used: i32,
     pub attacks_used: i32,
+    /// Whether the WML `defense_weight` allows this weapon to retaliate.
+    pub can_retaliate: bool,
     /// The first `[specials]` tag, retained for the combat rules to interpret.
     pub specials: Option<Node>,
 }
@@ -43,6 +45,12 @@ impl WeaponProfile {
             // The native default spends all movement for standard units.
             movement_used: int("movement_used", 100_000),
             attacks_used: int("attacks_used", 1),
+            can_retaliate: attack
+                .attributes
+                .get("defense_weight")
+                .filter(|value| value.translations.is_empty())
+                .and_then(|value| value.text.trim().parse::<f64>().ok())
+                .is_none_or(|weight| weight > 0.0),
             specials: attack
                 .children
                 .into_iter()
