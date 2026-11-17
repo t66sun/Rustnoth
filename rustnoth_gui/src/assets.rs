@@ -1,4 +1,4 @@
-//! Resolve desktop interface art from Wesnoth's preprocessed WML.
+//! Resolve desktop interface art and labels from Wesnoth's preprocessed WML.
 
 use std::{
     collections::BTreeMap,
@@ -7,11 +7,18 @@ use std::{
 
 use engine_lite::wml::{self, Node};
 
-/// Image paths under a local Wesnoth source tree, indexed by WML identifier.
+/// Original presentation data and local image paths indexed by WML identifier.
 #[derive(Debug, Default)]
 pub struct AssetCatalog {
-    units: BTreeMap<String, Option<PathBuf>>,
+    units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
+}
+
+#[derive(Debug)]
+struct UnitAssets {
+    image: Option<PathBuf>,
+    name: Option<String>,
+    weapon_names: Vec<Option<String>>,
 }
 
 impl AssetCatalog {
@@ -27,7 +34,17 @@ impl AssetCatalog {
 
     /// Returns the original sprite path of a unit type.
     pub fn unit_image(&self, id: &str) -> Option<PathBuf> {
-        self.units.get(id)?.clone()
+        self.units.get(id)?.image.clone()
+    }
+
+    /// Returns the unit type's display name from its WML definition.
+    pub fn unit_name(&self, id: &str) -> Option<&str> {
+        self.units.get(id)?.name.as_deref()
+    }
+
+    /// Returns the display name at the referee's zero-based weapon index.
+    pub fn weapon_name(&self, id: &str, index: usize) -> Option<&str> {
+        self.units.get(id)?.weapon_names.get(index)?.as_deref()
     }
 
     /// Returns an exact terrain image or the known base and overlay in draw order.
@@ -61,10 +78,22 @@ impl AssetCatalog {
                         let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) else {
                             continue;
                         };
-                        self.units.entry(id.to_owned()).or_insert_with(|| {
-                            unit.attribute("image")
+                        self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
+                            image: unit
+                                .attribute("image")
                                 .and_then(image_filename)
-                                .map(|image| images.join(image))
+                                .map(|image| images.join(image)),
+                            name: display_name(unit, "name").map(str::to_owned),
+                            weapon_names: unit
+                                .children
+                                .iter()
+                                .filter(|(tag, _)| tag == "attack")
+                                .map(|(_, weapon)| {
+                                    display_name(weapon, "description")
+                                        .or_else(|| display_name(weapon, "name"))
+                                        .map(str::to_owned)
+                                })
+                                .collect(),
                         });
                     }
                 }
@@ -72,6 +101,10 @@ impl AssetCatalog {
             }
         }
     }
+}
+
+fn display_name<'a>(node: &'a Node, attribute: &str) -> Option<&'a str> {
+    node.attribute(attribute).filter(|value| !value.trim().is_empty())
 }
 
 fn terrain_image(node: &Node) -> Option<PathBuf> {
@@ -94,6 +127,56 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_original_unit_names_and_weapons_in_referee_order() {
+        let core = br#"
+[units]
+    [unit_type]
+        id=Bowman
+        name= _ "Bowman"
+        [attack]
+            name=bow
+            description= _ "longbow"
+        [/attack]
+        [attack]
+            name="short sword"
+            description=""
+        [/attack]
+        [attack]
+        [/attack]
+        [attack]
+            name=dagger
+        [/attack]
+    [/unit_type]
+[/units]
+"#;
+        let bundle = br#"
+[units]
+    [unit_type]
+        id=Bowman
+        name="Custom Bowman"
+        [attack]
+            name=spear
+        [/attack]
+    [/unit_type]
+    [unit_type]
+        id=Scout
+        name="Dune Scout"
+    [/unit_type]
+[/units]
+"#;
+        let catalog = AssetCatalog::parse(Path::new("wesnoth_src"), core, bundle).unwrap();
+
+        assert_eq!(catalog.unit_name("Bowman"), Some("Bowman"));
+        assert_eq!(catalog.unit_name("Scout"), Some("Dune Scout"));
+        assert_eq!(catalog.unit_name("Missing"), None);
+        assert_eq!(catalog.weapon_name("Bowman", 0), Some("longbow"));
+        assert_eq!(catalog.weapon_name("Bowman", 1), Some("short sword"));
+        assert_eq!(catalog.weapon_name("Bowman", 2), None);
+        assert_eq!(catalog.weapon_name("Bowman", 3), Some("dagger"));
+        assert_eq!(catalog.weapon_name("Bowman", 4), None);
+    }
 
     #[test]
     fn uses_core_sprites_and_draws_exact_or_layered_terrain_from_the_source_tree() {
