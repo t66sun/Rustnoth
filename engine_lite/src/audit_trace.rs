@@ -73,7 +73,7 @@ mod tests {
     fn writes_a_playing_frame_with_wml_coordinates_and_escaped_type_ids() {
         let snapshot = Snapshot {
             state: MatchState::Playing(Turn { round: 7, side: 2 }),
-            gold: [-4, 17],
+            gold: vec![-4, 17],
             units: vec![
                 SnapshotUnit {
                     position: Hex { x: 0, y: 2 },
@@ -122,7 +122,7 @@ mod tests {
         for (step, state) in [(0, MatchState::Won(2)), (1, MatchState::Draw)] {
             let snapshot = Snapshot {
                 state,
-                gold: [0, 9],
+                gold: vec![0, 9],
                 units: Vec::new(),
                 villages: Vec::new(),
             };
@@ -139,7 +139,7 @@ mod tests {
         for position in [Hex { x: -1, y: 0 }, Hex { x: 0, y: i32::MAX }] {
             let snapshot = Snapshot {
                 state: MatchState::Draw,
-                gold: [0, 0],
+                gold: vec![0, 0],
                 units: Vec::new(),
                 villages: vec![(position, 1)],
             };
