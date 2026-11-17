@@ -144,7 +144,7 @@ mod tests {
             "[terrain_type]\nstring=Gg\nid=flat\n[/terrain_type]\n\
              [terrain_type]\nstring=Ft\nid=forest\n[/terrain_type]\n\
              [terrain_type]\nstring=^Fp\ndef_alias=_bas,Ft\n[/terrain_type]\n\
-             [terrain_type]\nstring=Q1\ndef_alias=-,Ft,Gg,+,Gg\n[/terrain_type]",
+             [terrain_type]\nstring=Q1\ndef_alias=\"-,Ft,Gg,+,Gg\"\n[/terrain_type]",
         );
         let uncapped = defense("flat=40\nforest=70");
         let capped = defense("flat=40\nforest=-70");
