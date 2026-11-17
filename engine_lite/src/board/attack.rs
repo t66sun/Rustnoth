@@ -124,6 +124,8 @@ impl Battlefield<'_> {
         let attacks_used = weapon.attacks_used;
         let result = resolve_exchange(attacker_stats, defender_stats, NonZeroU32::MIN, rng);
 
+        self.resting.remove(&from);
+        self.resting.remove(&to);
         if result.attacker_hitpoints == 0 {
             self.units.remove(&from);
         } else {
