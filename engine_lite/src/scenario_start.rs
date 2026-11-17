@@ -210,6 +210,45 @@ Xv,Xv,Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn preserves_authored_starting_experience_and_defaults_to_zero() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Fighter
+                experience=7
+                [leader]
+                    type=Fighter
+                    x,y=2,1
+                    experience=57
+                [/leader]
+                [unit]
+                    type=Fighter
+                    x,y=3,1
+                    experience=-3
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x,y=4,1
+                [/unit]
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter\nexperience=40").unwrap());
+        let unit_types = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let start = load(&scenario, &unit_types, |_| panic!("inline map requested a file"))
+            .unwrap();
+
+        for (x, experience) in [(0, 7), (1, 57), (2, -3), (3, 0)] {
+            let unit = start.board.unit_at(Hex { x, y: 0 }).unwrap();
+            assert_eq!((unit.experience, unit.unit_type.experience), (experience, 40));
+        }
+    }
+
+    #[test]
     fn defaults_to_round_one_without_a_round_limit() {
         for turns in ["", "turns=-1\n"] {
             let scenario = wml::parse(format!("{turns}map_data=\"{MAP}\"")).unwrap();
