@@ -11,14 +11,18 @@ use crate::{
     scenario_start::ScenarioStart,
     terrain_aliases::TerrainAliases,
     turn::Turn,
+    unit_type::UnitType,
     visibility::VisibilityMask,
     weapon::WeaponProfile,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+mod recruit;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
     Move { from: Hex, to: Hex },
     Attack(AttackChoice),
+    Recruit { unit_type: String, to: Hex },
     EndTurn,
 }
 
@@ -65,15 +69,10 @@ impl<'data> FixedMatch<'data> {
             || first.shroud
             || second.fog
             || second.shroud
-            || scenario.board.units().any(|(_, unit)| {
-                !matches!(unit.side, 1 | 2)
-                    || unit.unit_type.attacks.iter().any(|weapon| {
-                        weapon
-                            .specials
-                            .as_ref()
-                            .is_some_and(|specials| !specials.children.is_empty())
-                    })
-            })
+            || scenario
+                .board
+                .units()
+                .any(|(_, unit)| !matches!(unit.side, 1 | 2) || !supports_unit(unit.unit_type))
         {
             return Err(MatchError::UnsupportedScenario);
         }
@@ -146,6 +145,7 @@ impl<'data> FixedMatch<'data> {
                 .into_iter()
                 .map(Action::Attack),
         );
+        self.extend_recruit_choices(turn.side, &mut actions);
         actions.push(Action::EndTurn);
         Some((observation, actions))
     }
@@ -168,14 +168,8 @@ impl<'data> FixedMatch<'data> {
                     |terrain| profile?.movement_costs.cost(terrain_aliases, terrain, false),
                     |side| side == opponent,
                 )?;
-                if self.village_owners.get(&to).copied() != Some(turn.side)
-                    && board
-                        .map()
-                        .terrain_at(to)
-                        .is_some_and(|code| terrain_aliases.features(code).village)
-                {
-                    self.village_owners.insert(to, turn.side);
-                    board.stop_movement(to);
+                if self.capture_village(turn.side, to) {
+                    self.scenario.board.stop_movement(to);
                 }
             }
             Action::Attack(choice) => {
@@ -188,6 +182,7 @@ impl<'data> FixedMatch<'data> {
                 )?;
                 self.check_leaders();
             }
+            Action::Recruit { unit_type, to } => self.recruit(turn.side, &unit_type, to)?,
             Action::EndTurn => {
                 let next = self
                     .scenario
@@ -202,6 +197,21 @@ impl<'data> FixedMatch<'data> {
             }
         }
         Ok(self.state)
+    }
+
+    fn capture_village(&mut self, side: usize, to: Hex) -> bool {
+        if self.village_owners.get(&to).copied() == Some(side)
+            || !self
+                .scenario
+                .board
+                .map()
+                .terrain_at(to)
+                .is_some_and(|code| self.rules.terrain.features(code).village)
+        {
+            return false;
+        }
+        self.village_owners.insert(to, side);
+        true
     }
 
     fn settle_income(&mut self, turn: Turn) {
@@ -306,6 +316,15 @@ impl<'data> FixedMatch<'data> {
     }
 }
 
+fn supports_unit(unit_type: &UnitType) -> bool {
+    unit_type.attacks.iter().all(|weapon| {
+        weapon
+            .specials
+            .as_ref()
+            .is_none_or(|specials| specials.children.is_empty())
+    })
+}
+
 fn opposing_side(side: usize) -> usize {
     match side {
         1 => 2,
@@ -319,6 +338,7 @@ pub enum MatchError {
     Finished,
     Move(MoveError),
     Attack(AttackError),
+    InvalidRecruit,
 }
 
 impl From<MoveError> for MatchError {
@@ -342,6 +362,9 @@ impl fmt::Display for MatchError {
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
             Self::Attack(error) => error.fmt(f),
+            Self::InvalidRecruit => {
+                f.write_str("unit type or destination is unavailable for recruitment")
+            }
         }
     }
 }
@@ -425,7 +448,7 @@ Xv,Xv,Xv,Xv,Xv,Xv"
             play(Action::Move { from: Hex { x: 0, y: 0 }, to: from }, 1),
             MatchState::Playing(Turn { round: 1, side: 1 })
         );
-        play(attack, 1);
+        play(attack.clone(), 1);
         play(Action::EndTurn, 1);
         assert_eq!(play(Action::EndTurn, 2), MatchState::Playing(Turn { round: 2, side: 1 }));
         assert_eq!(play(attack, 1), MatchState::Won(1));
