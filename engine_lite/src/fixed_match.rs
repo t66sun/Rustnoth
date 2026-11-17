@@ -38,6 +38,7 @@ pub struct Rules<'data> {
 ///
 /// This match uses base unit stats and ordinary weapons. It ends when a
 /// side loses its last leader or the scenario reaches the round limit.
+/// With multiple eligible retaliation weapons it uses the first in unit order.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
@@ -294,7 +295,7 @@ mod tests {
     use crate::{movement_types::read_movement_types, scenario_start, unit_type::UnitType, wml};
 
     #[test]
-    fn plays_a_seeded_fixed_scenario_to_a_winner() {
+    fn plays_a_seeded_fixed_scenario_to_victory_or_the_round_limit() {
         let scenario = wml::parse(
             r#"
             turns=2
@@ -361,5 +362,18 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         assert_eq!(play(attack, 1), MatchState::Won(1));
         assert!(game.decision().is_none());
         assert_eq!(game.step(Action::EndTurn), Err(MatchError::Finished));
+
+        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(
+            start,
+            Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
+            5489,
+        )
+        .unwrap();
+        for _ in 0..3 {
+            assert!(matches!(game.step(Action::EndTurn), Ok(MatchState::Playing(_))));
+        }
+        assert_eq!(game.step(Action::EndTurn), Ok(MatchState::Draw));
+        assert!(game.decision().is_none());
     }
 }
