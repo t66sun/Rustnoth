@@ -32,3 +32,4 @@ pub mod recruit_hexes;
 pub mod audit_trace;
 pub mod scenario_bundle;
 pub mod wml_emit;
+pub mod native_actions;
