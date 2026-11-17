@@ -17,6 +17,7 @@ pub struct Viewport {
 pub struct BoardLayout {
     width: i32,
     height: i32,
+    viewport: Viewport,
     origin: [f32; 2],
     tile_size: f32,
     fitted_tile_size: f32,
@@ -49,6 +50,7 @@ impl BoardLayout {
         Some(Self {
             width,
             height,
+            viewport,
             origin: [
                 x + (available_width - board_width * tile_size) / 2.0,
                 y + (available_height - board_height * tile_size) / 2.0,
@@ -72,6 +74,19 @@ impl BoardLayout {
         Self {
             origin: [x + (left - x) * scale, y + (top - y) * scale],
             tile_size,
+            ..*self
+        }
+    }
+
+    /// Translates the board within the fitted viewport, centering any axis that fits.
+    pub fn panned(&self, [dx, dy]: [f32; 2]) -> Self {
+        let [width, height] = board_extent(self.width, self.height);
+        let viewport = self.viewport;
+        Self {
+            origin: [
+                pan_axis(self.origin[0] + dx, viewport.x, viewport.width, width * self.tile_size),
+                pan_axis(self.origin[1] + dy, viewport.y, viewport.height, height * self.tile_size),
+            ],
             ..*self
         }
     }
@@ -123,6 +138,15 @@ impl BoardLayout {
             return None;
         }
         Some(Hex { x: column as i32, y: row as i32 })
+    }
+}
+
+fn pan_axis(position: f32, start: f32, viewport: f32, board: f32) -> f32 {
+    let overflow = board - viewport;
+    if overflow <= 0.0 {
+        start - overflow / 2.0
+    } else {
+        position.clamp(start - overflow, start)
     }
 }
 
