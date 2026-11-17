@@ -58,7 +58,7 @@ impl Rules<'_> {
 
 /// A headless match on a fixed, fully visible map with two opposing sides.
 ///
-/// This match uses base unit stats and supports unconditional weapon firststrike.
+/// This match applies ordinary recruit traits and supports unconditional weapon firststrike.
 /// It ends when a side loses its last leader or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
@@ -278,8 +278,8 @@ impl<'data> FixedMatch<'data> {
             })
             .map(|(index, response)| {
                 let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
-                let attacker_stats = combatant(attacker, weapon, &modifiers, response.parry);
-                let defender_stats = combatant(defender, response, &response_modifiers, weapon.parry);
+                let attacker_stats = combatant(attacker, choice.weapon, &modifiers, response.parry);
+                let defender_stats = combatant(defender, index, &response_modifiers, weapon.parry);
                 ((index, response_modifiers), attacker_stats, defender_stats)
             });
         Ok(Attack {

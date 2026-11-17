@@ -100,15 +100,15 @@ impl Battlefield<'_> {
                     .get(*index)
                     .filter(|response| response.range == weapon.range && within_range(response, distance))
                     .ok_or(AttackError::UnavailableRetaliation)?;
-                Some((response, modifiers))
+                Some((*index, response.parry, modifiers))
             }
             None => None,
         };
         let attacker_stats = combatant(
             attacker,
-            weapon,
+            action.weapon,
             &action.modifiers,
-            retaliation.map_or(0, |(weapon, _)| weapon.parry),
+            retaliation.map_or(0, |(_, parry, _)| parry),
         );
         let defender_stats = retaliation.map_or(
             Combatant {
@@ -118,7 +118,7 @@ impl Battlefield<'_> {
                 hit_chance: 0,
                 firststrike: false,
             },
-            |(response, modifiers)| combatant(defender, response, modifiers, weapon.parry),
+            |(index, _, modifiers)| combatant(defender, index, modifiers, weapon.parry),
         );
         let movement_used = weapon.movement_used;
         let attacks_used = weapon.attacks_used;
@@ -165,11 +165,12 @@ pub(crate) fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
 
 pub(crate) fn combatant(
     unit: &UnitState<'_>,
-    weapon: &WeaponProfile,
+    weapon_index: usize,
     modifiers: &StrikeModifiers,
     opposing_parry: i32,
 ) -> Combatant {
-    let damage = strike_damage(weapon.damage, modifiers.damage_multiplier, false);
+    let weapon = &unit.unit_type.attacks[weapon_index];
+    let damage = strike_damage(unit.attack_damage(weapon_index), modifiers.damage_multiplier, false);
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,

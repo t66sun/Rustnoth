@@ -34,7 +34,7 @@ impl FixedMatch<'_> {
 
         self.scenario
             .board
-            .place_recruit(side, unit_type, to)
+            .place_random_recruit(side, unit_type, to, &mut self.rng)
             .map_err(|_| MatchError::InvalidRecruit)?;
         self.gold[side - 1] -= cost;
         self.capture_village(side, to);
@@ -80,6 +80,86 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn new_recruits_keep_selected_traits_and_use_their_effective_stats() {
+        let types = read_unit_types(wml::parse(
+            r#"
+            [unit_type]
+                id=Guard
+                hitpoints=33
+                movement=5
+                experience=35
+                num_traits=1
+                [attack]
+                    range=melee
+                    damage=5
+                    number=1
+                [/attack]
+                [trait]
+                    id=veteran
+                    [effect]
+                        apply_to=hitpoints
+                        increase_total=4
+                    [/effect]
+                    [effect]
+                        apply_to=movement
+                        increase=1
+                    [/effect]
+                    [effect]
+                        apply_to=max_experience
+                        increase=-20%
+                    [/effect]
+                    [effect]
+                        apply_to=attack
+                        range=melee
+                        increase_damage=2
+                    [/effect]
+                [/trait]
+            [/unit_type]
+            "#,
+        ).unwrap());
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,2 Kh,Xv
+Xv,Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Guard
+                recruit=Guard
+            [/side]
+            [side]
+                side=2
+                type=Guard
+            [/side]
+            "#,
+        ).unwrap();
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+             [terrain_type]\nstring=Ch\nrecruit_onto=yes\n[/terrain_type]",
+        ).unwrap());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+        let mut game = FixedMatch::new(
+            scenario_start::load(&scenario, &types, |_| unreachable!()).unwrap(), rules, 5489,
+        ).unwrap();
+        let castle = Hex { x: 1, y: 0 };
+        game.step(Action::Recruit { unit_type: "Guard".into(), to: castle }).unwrap();
+        let recruit = game.scenario.board.unit_at(castle).unwrap();
+        assert_eq!(recruit.traits().next().unwrap().attribute("id"), Some("veteran"));
+        assert_eq!((recruit.hitpoints, recruit.moves_left, recruit.max_experience()), (37, 0, 28));
+        assert_eq!(game.rng.seed_and_calls(), (5489, 1));
+
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.scenario.board.unit_at(castle).unwrap().moves_left, 6);
+        let east = Hex { x: 2, y: 0 };
+        game.step(Action::Attack(crate::board::AttackChoice { from: castle, to: east, weapon: 0 }))
+            .unwrap();
+        assert_eq!(game.scenario.board.unit_at(east).unwrap().hitpoints, 26);
+    }
 
     #[test]
     fn recruits_at_the_advertised_castle_tiles_and_charges_only_accepted_actions() {

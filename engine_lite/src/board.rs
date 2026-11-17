@@ -11,10 +11,13 @@ use crate::{
     hex::Hex,
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_destinations},
+    rng::ReplayRng,
     starting_units::{AuthoredStartingUnit, StartingUnit},
     terrain_aliases::TerrainAliases,
+    trait_effects::RecruitStats,
     turn::Turn,
     unit_type::UnitType,
+    wml::Node,
 };
 
 mod attack;
@@ -44,6 +47,40 @@ pub struct UnitState<'rules> {
     pub moves_left: i32,
     pub attacks_left: i32,
     pub can_recruit: bool,
+    traits: Option<UnitTraits<'rules>>,
+}
+
+#[derive(Debug)]
+struct UnitTraits<'rules> {
+    definitions: Vec<&'rules Node>,
+    stats: RecruitStats,
+}
+
+impl UnitState<'_> {
+    pub fn max_hitpoints(&self) -> i32 {
+        self.traits.as_ref().map_or(self.unit_type.hitpoints, |traits| traits.stats.max_hitpoints)
+    }
+
+    pub fn max_movement(&self) -> i32 {
+        self.traits.as_ref().map_or(self.unit_type.movement, |traits| traits.stats.max_movement)
+    }
+
+    pub fn max_experience(&self) -> i32 {
+        self.traits.as_ref().map_or(self.unit_type.experience, |traits| traits.stats.max_experience)
+    }
+
+    pub fn traits(&self) -> impl Iterator<Item = &Node> {
+        self.traits.iter().flat_map(|traits| traits.definitions.iter().copied())
+    }
+
+    fn attack_damage(&self, index: usize) -> i32 {
+        self.traits
+            .as_ref()
+            .map_or_else(
+                || self.unit_type.attacks[index].damage,
+                |traits| traits.stats.attack_damage[index],
+            )
+    }
 }
 
 impl<'rules> Battlefield<'rules> {
@@ -100,6 +137,7 @@ impl<'rules> Battlefield<'rules> {
                 moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
+                traits: None,
             });
         }
         Ok(board)
@@ -129,7 +167,7 @@ impl<'rules> Battlefield<'rules> {
 
         // Wesnoth limits successive advancements at one action boundary to 20.
         for _ in 0..20 {
-            let required = unit.unit_type.experience.max(1);
+            let required = unit.max_experience().max(1);
             if unit.experience < required {
                 break;
             }
@@ -143,8 +181,11 @@ impl<'rules> Battlefield<'rules> {
 
             unit.experience -= required;
             unit.unit_type = next_type;
-            unit.hitpoints = next_type.hitpoints;
-            unit.moves_left = unit.moves_left.min(next_type.movement.max(0));
+            if let Some(traits) = &mut unit.traits {
+                traits.stats = RecruitStats::from_traits(next_type, &traits.definitions);
+            }
+            unit.hitpoints = unit.max_hitpoints();
+            unit.moves_left = unit.moves_left.min(unit.max_movement().max(0));
             unit.attacks_left = unit.attacks_left.min(next_type.max_attacks.max(0));
         }
     }
@@ -156,21 +197,49 @@ impl<'rules> Battlefield<'rules> {
         type_id: &str,
         position: Hex,
     ) -> Result<(), BoardError> {
+        self.place_recruit_with(side, type_id, position, |_| None)
+    }
+
+    pub(crate) fn place_random_recruit(
+        &mut self,
+        side: usize,
+        type_id: &str,
+        position: Hex,
+        rng: &mut ReplayRng,
+    ) -> Result<(), BoardError> {
+        self.place_recruit_with(side, type_id, position, |unit_type| {
+            let definitions = unit_type.traits.select_for_recruit(rng);
+            (!definitions.is_empty()).then(|| UnitTraits {
+                stats: RecruitStats::from_traits(unit_type, &definitions),
+                definitions,
+            })
+        })
+    }
+
+    fn place_recruit_with(
+        &mut self,
+        side: usize,
+        type_id: &str,
+        position: Hex,
+        select: impl FnOnce(&'rules UnitType) -> Option<UnitTraits<'rules>>,
+    ) -> Result<(), BoardError> {
         let unit_type = self.unit_type(type_id);
         let tile = self.vacant_unit_slot(position)?;
         let unit_type = unit_type.ok_or_else(|| BoardError::UnknownUnitType {
             position,
             type_id: type_id.to_owned(),
         })?;
+        let traits = select(unit_type);
         tile.insert(UnitState {
             side,
             id: None,
             unit_type,
-            hitpoints: unit_type.hitpoints,
+            hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
             experience: 0,
             moves_left: 0,
             attacks_left: 0,
             can_recruit: false,
+            traits,
         });
         Ok(())
     }
@@ -279,10 +348,10 @@ impl<'rules> Battlefield<'rules> {
         let next = current.next(active_sides, last_round)?;
         self.resting.retain(|hex| {
             let unit = &self.units[hex];
-            unit.side != current.side || unit.moves_left == unit.unit_type.movement.max(0)
+            unit.side != current.side || unit.moves_left == unit.max_movement().max(0)
         });
         for unit in self.units.values_mut().filter(|unit| unit.side == next.side) {
-            unit.moves_left = unit.unit_type.movement.max(0);
+            unit.moves_left = unit.max_movement().max(0);
             unit.attacks_left = unit.unit_type.max_attacks.max(0);
         }
         Some(next)
@@ -302,7 +371,7 @@ impl<'rules> Battlefield<'rules> {
             let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
             let healing = i64::from(terrain_healing) + rest_healing;
             let hitpoints = i64::from(unit.hitpoints);
-            let max_heal = (i64::from(unit.unit_type.hitpoints) - hitpoints).max(0);
+            let max_heal = (i64::from(unit.max_hitpoints()) - hitpoints).max(0);
             let min_heal = (1 - hitpoints).min(0);
             unit.hitpoints = (hitpoints + healing.clamp(min_heal, max_heal)) as i32;
         }
