@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::{board::StrikeModifiers, combat::Combatant};
+use crate::{
+    board::StrikeModifiers,
+    combat::{Combatant, strike_order},
+};
 
 pub(super) fn select(
     candidates: impl Iterator<Item = ((usize, StrikeModifiers), Combatant, Combatant)>,
@@ -63,6 +66,7 @@ fn exchange(attacker: Combatant, defender: Combatant) -> Outcome {
         return outcome;
     }
 
+    let order = strike_order(&attacker, &defender);
     let units = [attacker, defender];
     let strikes = units.each_ref().map(|unit| {
         if unit.damage == 0 || unit.hit_chance == 0 { 0 } else { unit.strikes }
@@ -72,10 +76,11 @@ fn exchange(attacker: Combatant, defender: Combatant) -> Outcome {
         if ongoing.is_empty() {
             break;
         }
-        for (striker, unit) in units.iter().enumerate() {
+        for striker in order {
             if strike >= strikes[striker] {
                 continue;
             }
+            let unit = &units[striker];
             let target = 1 - striker;
             let chance = f64::from(unit.hit_chance) / 100.0;
             let mut next = BTreeMap::new();

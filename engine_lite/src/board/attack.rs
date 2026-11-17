@@ -160,7 +160,7 @@ pub(crate) fn combatant(
         strikes: weapon.strikes.max(0) as u32,
         damage: u32::try_from(damage).unwrap_or(u32::MAX),
         hit_chance: base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry),
-        firststrike: false,
+        firststrike: weapon.has_firststrike(),
     }
 }
 
