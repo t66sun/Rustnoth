@@ -5,7 +5,7 @@ use crate::{
     scenario_map::{self, ScenarioMapError},
     scenario_sides::{SideConfig, read_sides},
     scenario_time::{integer, read_time_schedule},
-    starting_units::{PlacementError, read_starting_units},
+    starting_units::{PlacementError, read_authored_starting_units},
     time_of_day::TimeSchedule,
     unit_type::UnitType,
     wml::Node,
@@ -28,8 +28,10 @@ pub fn load<'rules>(
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<ScenarioStart<'rules>, ScenarioStartError> {
     let map = scenario_map::load(scenario, read_map_file).map_err(ScenarioStartError::Map)?;
-    let units = read_starting_units(scenario, &map).map_err(ScenarioStartError::Placement)?;
-    let board = Battlefield::new(map, units, unit_types).map_err(ScenarioStartError::Board)?;
+    let units = read_authored_starting_units(scenario, &map)
+        .map_err(ScenarioStartError::Placement)?;
+    let board = Battlefield::from_authored_starting_units(map, units, unit_types)
+        .map_err(ScenarioStartError::Board)?;
 
     Ok(ScenarioStart {
         board,
@@ -118,6 +120,48 @@ mod tests {
         assert_eq!(start.sides[0].starting_gold, 120);
         let second = start.board.unit_at(Hex { x: 1, y: 0 }).unwrap();
         assert_eq!((second.side, second.hitpoints), (2, 28));
+    }
+
+    #[test]
+    fn starting_units_use_authored_current_hitpoints_with_type_as_the_default() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Fighter
+                hitpoints=3
+                [leader]
+                    type=Fighter
+                    x=2
+                    y=1
+                    hitpoints=32
+                [/leader]
+                [unit]
+                    type=Fighter
+                    x=3
+                    y=1
+                    hitpoints=-2
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x=4
+                    y=1
+                [/unit]
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter\nhitpoints=28").unwrap());
+        let unit_types = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let start = load(&scenario, &unit_types, |_| panic!("inline map requested a file"))
+            .unwrap();
+
+        for (hex, expected) in [3, 32, -2, 28].into_iter().enumerate() {
+            let unit = start.board.unit_at(Hex { x: hex as i32, y: 0 }).unwrap();
+            assert_eq!((unit.hitpoints, unit.unit_type.hitpoints), (expected, 28));
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::{collections::HashSet, error, fmt};
 
-use crate::{hex::Hex, map::ScenarioMap, wml::Node};
+use crate::{hex::Hex, map::ScenarioMap, scenario_time::integer, wml::Node};
 
 /// A fixed unit placement, in scenario side and creation order.
 #[derive(Debug, PartialEq, Eq)]
@@ -12,6 +12,11 @@ pub struct StartingUnit {
     pub can_recruit: bool,
 }
 
+pub(crate) struct AuthoredStartingUnit {
+    pub(crate) placement: StartingUnit,
+    pub(crate) hitpoints: Option<i32>,
+}
+
 /// Reads the on-map starting units from an already preprocessed scenario.
 ///
 /// Each side contributes its inline leader, then its `[leader]` children,
@@ -21,6 +26,16 @@ pub fn read_starting_units(
     scenario: &Node,
     map: &ScenarioMap,
 ) -> Result<Vec<StartingUnit>, PlacementError> {
+    Ok(read_authored_starting_units(scenario, map)?
+        .into_iter()
+        .map(|unit| unit.placement)
+        .collect())
+}
+
+pub(crate) fn read_authored_starting_units(
+    scenario: &Node,
+    map: &ScenarioMap,
+) -> Result<Vec<AuthoredStartingUnit>, PlacementError> {
     let mut result = Vec::new();
     let mut occupied = HashSet::new();
     for (index, side_cfg) in children_named(scenario, "side").enumerate() {
@@ -55,12 +70,15 @@ pub fn read_starting_units(
             if can_recruit && leader_hex.is_none() {
                 leader_hex = Some(position);
             }
-            result.push(StartingUnit {
-                side,
-                id: id.map(str::to_owned),
-                type_id: type_id.to_owned(),
-                position,
-                can_recruit,
+            result.push(AuthoredStartingUnit {
+                placement: StartingUnit {
+                    side,
+                    id: id.map(str::to_owned),
+                    type_id: type_id.to_owned(),
+                    position,
+                    can_recruit,
+                },
+                hitpoints: integer(unit, "hitpoints"),
             });
         }
     }
