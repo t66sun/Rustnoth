@@ -19,4 +19,6 @@ The headless command runs a fully visible match between two opposing sides using
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-headless -- bundle.cfg 5489 100
 ```
 
-The last two arguments set the random seed and action limit. The command prints the winner or a draw and exits with an error if the action limit expires first.
+The seed and action limit in this example are `5489` and `100`. The command prints the winner or a draw and exits with an error if the action limit expires first.
+
+For a scenario that uses stock units and terrain, add `--core-config path/to/preprocessed-core.cfg`. The bundle can contain just `[scenario]` or also supply custom units and terrain. See the preprocessing command in the [original referee comparison guide](docs/PARITY.md).
