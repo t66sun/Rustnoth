@@ -10,8 +10,8 @@ use super::{Action, FixedMatch, MatchError, MatchState};
 #[derive(Debug, Eq, PartialEq)]
 pub struct Snapshot {
     pub state: MatchState,
-    /// Gold for sides 1 and 2 in that order.
-    pub gold: [i64; 2],
+    /// Gold in ascending side order, starting with side 1.
+    pub gold: Vec<i64>,
     /// Units in hex order.
     pub units: Vec<SnapshotUnit>,
     /// Owned village hexes and their owners in hex order.
@@ -47,11 +47,11 @@ impl FixedMatch<'_> {
         result.map(|state| (state, after.wrapping_sub(calls)))
     }
 
-    /// Records both sides for referee use, including after the match ends.
+    /// Records all sides for referee use, including after the match ends.
     pub fn audit_snapshot(&self) -> Snapshot {
         Snapshot {
             state: self.state,
-            gold: self.gold,
+            gold: self.gold.clone(),
             units: self
                 .scenario
                 .board
