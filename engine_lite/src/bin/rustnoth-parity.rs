@@ -10,7 +10,7 @@ use engine_lite::{
     scenario_bundle::Bundle,
 };
 
-const USAGE: &str = "rustnoth-parity <wesnoth-executable> <bundle.cfg> <actions.tsv> <seed> <new-run-dir>";
+const USAGE: &str = "rustnoth-parity <wesnoth-executable> <bundle.cfg> <actions.tsv> <seed> <new-run-dir> [--core-config <preprocessed-core.cfg>]";
 const RUST_TRACE: &str = "rust.tsv";
 
 fn main() -> ExitCode {
@@ -31,8 +31,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         println!("{USAGE}");
         return Ok(());
     }
-    let [executable, bundle, actions, seed, run_dir] = args.as_slice() else {
+    let [executable, bundle, actions, seed, run_dir, options @ ..] = args.as_slice() else {
         return Err(USAGE.into());
+    };
+    let core_config = match options {
+        [] => None,
+        [flag, path] if flag == "--core-config" => Some(Path::new(path)),
+        _ => return Err(USAGE.into()),
     };
     let seed = seed
         .to_str()
@@ -41,7 +46,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let bundle = Path::new(bundle);
     let run_dir = Path::new(run_dir);
     let native = Path::new(executable);
-    let matched = compare_referees(native, bundle, Path::new(actions), seed, run_dir)?;
+    let matched = compare_referees(native, bundle, Path::new(actions), seed, run_dir, core_config)?;
     println!("Matched {matched} step(s). Captures are in {}.", run_dir.display());
     Ok(())
 }
@@ -52,9 +57,13 @@ fn compare_referees(
     actions_path: &Path,
     seed: u32,
     run_dir: &Path,
+    core_config: Option<&Path>,
 ) -> Result<usize, Box<dyn Error>> {
     let source = fs::read(bundle_path)?;
-    let bundle = Bundle::parse(&source)?;
+    let bundle = match core_config {
+        Some(path) => Bundle::parse_with_core(&source, &fs::read(path)?)?,
+        None => Bundle::parse(&source)?,
+    };
     let actions = audit_actions::parse(&fs::read_to_string(actions_path)?)?;
     native_process::check_version(executable)?;
     fs::create_dir(run_dir)?;
