@@ -75,7 +75,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
             let fields: Vec<_> = row.split('\t').collect();
             match fields.as_slice() {
                 ["end", index] if index.parse::<usize>() == Ok(step) => break,
-                ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1", experience @ ..]
+                ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1", extra @ ..]
                     if last_village.is_none()
                         && valid_side(side)
                         && !kind.is_empty()
@@ -83,8 +83,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         && hp.parse::<i32>().is_ok()
                         && mp.parse::<i32>().is_ok()
                         && attacks.parse::<i32>().is_ok()
-                        && (experience.is_empty()
-                            || matches!(experience, [value] if value.parse::<i32>().is_ok()))
+                        && valid_unit_details(extra)
                         && next_position(x, y, &mut last_unit) => {}
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
@@ -107,6 +106,12 @@ fn side_number(side: &str) -> Option<usize> {
         return None;
     }
     side.parse().ok()
+}
+
+fn valid_unit_details(fields: &[&str]) -> bool {
+    fields.split_first().is_none_or(|(experience, traits)| {
+        experience.parse::<i32>().is_ok() && traits.iter().all(|id| !id.contains('\r'))
+    })
 }
 
 fn next_position(x: &str, y: &str, last: &mut Option<(i32, i32)>) -> bool {
@@ -201,6 +206,15 @@ mod tests {
         assert!(compare(&rust, &native).unwrap_err().starts_with("step 1 differs"));
         let malformed = native.replace("\t1\t8\n", "\t1\tunknown\n");
         assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+    }
+
+    #[test]
+    fn compares_trait_ids_and_their_effect_order() {
+        let legacy = format!("{INITIAL}{AFTER_MOVE}");
+        let native = legacy.replace("Footman\t12\t3\t1\t1", "Footman\t12\t3\t1\t1\t8\tquick\tstrong");
+        assert_eq!(compare(&native, &native), Ok(2));
+        let rust = native.replace("quick\tstrong", "strong\tquick");
+        assert!(compare(&rust, &native).unwrap_err().starts_with("step 1 differs"));
     }
 
     #[test]
