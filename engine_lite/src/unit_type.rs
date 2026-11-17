@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::time_of_day::Alignment;
 use crate::weapon::WeaponProfile;
 use crate::wml::Node;
@@ -80,10 +82,76 @@ impl UnitType {
     }
 }
 
+/// Indexes direct, already-flat `[unit_type]` definitions from a preprocessed `[units]` body.
+///
+/// Definitions with a missing or empty ID are ignored. The first definition
+/// with a given ID supplies the base rules.
+pub fn read_unit_types(units: Node) -> BTreeMap<String, UnitType> {
+    let mut types = BTreeMap::new();
+    for (tag, unit) in units.children {
+        if tag != "unit_type" {
+            continue;
+        }
+        let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        types
+            .entry(id.to_owned())
+            .or_insert_with(|| UnitType::from_wml(unit));
+    }
+    types
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn indexes_flat_unit_types_by_id_and_keeps_the_first_definition() {
+        let units = wml::parse(
+            r#"
+            [unit_type]
+                id=Spearman
+                hitpoints=36
+                movement_type=smallfoot
+                [attack]
+                    name=spear
+                [/attack]
+            [/unit_type]
+            [unit_type]
+                id=Elvish Scout
+                movement=9
+            [/unit_type]
+            [unit_type]
+                id=Spearman
+                hitpoints=99
+            [/unit_type]
+            [unit_type]
+                id=""
+                hitpoints=50
+            [/unit_type]
+            [unit_type]
+                hitpoints=100
+            [/unit_type]
+            [race]
+                id=elf
+            [/race]
+            "#,
+        )
+        .unwrap();
+        let types = read_unit_types(units);
+
+        assert_eq!(
+            types.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Elvish Scout", "Spearman"]
+        );
+        assert_eq!(types["Elvish Scout"].movement, 9);
+        let spearman = &types["Spearman"];
+        assert_eq!(spearman.hitpoints, 36);
+        assert_eq!(spearman.movement_type, "smallfoot");
+        assert_eq!(spearman.attacks[0].id, "spear");
+    }
 
     #[test]
     fn loads_spearman_base_stats_and_ordered_attacks() {
