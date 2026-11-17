@@ -19,6 +19,7 @@ pub mod rng;
 pub mod strike_damage;
 pub mod movement;
 pub mod unit_type;
+pub mod trait_effects;
 pub mod turn;
 pub mod native_script;
 pub mod native_turns;
