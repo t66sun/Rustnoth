@@ -13,3 +13,4 @@ pub mod rng;
 pub mod strike_damage;
 pub mod movement;
 pub mod unit_type;
+pub mod turn;
