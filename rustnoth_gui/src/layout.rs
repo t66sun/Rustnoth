@@ -2,6 +2,7 @@ use engine_lite::hex::Hex;
 
 const COLUMN_SPACING: f32 = 0.75;
 const ODD_COLUMN_SHIFT: f32 = 0.5;
+const MAX_TILE_SIZE: f32 = 144.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
@@ -18,10 +19,11 @@ pub struct BoardLayout {
     height: i32,
     origin: [f32; 2],
     tile_size: f32,
+    fitted_tile_size: f32,
 }
 
 impl BoardLayout {
-    /// Centers the largest board that fits in the viewport.
+    /// Centers the board at the largest fitting size, up to 144 pixels per tile.
     pub fn fit(width: i32, height: i32, viewport: Viewport) -> Option<Self> {
         let Viewport {
             x,
@@ -38,7 +40,9 @@ impl BoardLayout {
             return None;
         }
         let [board_width, board_height] = board_extent(width, height);
-        let tile_size = (available_width / board_width).min(available_height / board_height);
+        let tile_size = (available_width / board_width)
+            .min(available_height / board_height)
+            .min(MAX_TILE_SIZE);
         if tile_size <= 0.0 {
             return None;
         }
@@ -50,7 +54,26 @@ impl BoardLayout {
                 y + (available_height - board_height * tile_size) / 2.0,
             ],
             tile_size,
+            fitted_tile_size: tile_size,
         })
+    }
+
+    /// Scales around a screen point, between the fitted size and 144 pixels per tile.
+    pub fn zoomed_at(&self, [x, y]: [f32; 2], factor: f32) -> Self {
+        if factor <= 0.0 || ![x, y, factor].into_iter().all(f32::is_finite) {
+            return *self;
+        }
+        let tile_size = (self.tile_size * factor).clamp(self.fitted_tile_size, MAX_TILE_SIZE);
+        if tile_size == self.tile_size {
+            return *self;
+        }
+        let scale = tile_size / self.tile_size;
+        let [left, top] = self.origin;
+        Self {
+            origin: [x + (left - x) * scale, y + (top - y) * scale],
+            tile_size,
+            ..*self
+        }
     }
 
     /// The width and height of one hex's square sprite.
@@ -127,6 +150,31 @@ mod tests {
         assert_eq!(layout.tile_origin(Hex { x: 0, y: 0 }), [65.0, 30.0]);
         assert_eq!(layout.tile_origin(Hex { x: 1, y: 0 }), [119.0, 66.0]);
         assert_eq!(layout.tile_origin(Hex { x: 2, y: 0 }), [173.0, 30.0]);
+    }
+
+    #[test]
+    fn zoom_preserves_the_anchored_hex_and_clamps_to_the_fitted_size() {
+        let fit = layout();
+        let anchor = [137.0, 84.0];
+        let hex = Hex { x: 1, y: 0 };
+        assert_eq!(fit.hex_at(anchor), Some(hex));
+
+        let zoomed = fit.zoomed_at(anchor, 3.0);
+        assert_eq!(zoomed.tile_size(), 144.0);
+        assert_eq!(zoomed.hex_at(anchor), Some(hex));
+        assert_eq!(zoomed.tile_origin(hex), [101.0, 48.0]);
+
+        let restored = zoomed.zoomed_at(anchor, 0.25);
+        assert_eq!(restored.tile_size(), fit.tile_size());
+        assert_eq!(restored.tile_origin(hex), fit.tile_origin(hex));
+    }
+
+    #[test]
+    fn fits_a_small_board_at_the_zoom_ceiling() {
+        let viewport = Viewport { x: 0.0, y: 0.0, width: 600.0, height: 500.0 };
+        let layout = BoardLayout::fit(1, 1, viewport).unwrap();
+        assert_eq!(layout.tile_size(), 144.0);
+        assert_eq!(layout.tile_origin(Hex { x: 0, y: 0 }), [228.0, 178.0]);
     }
 
     #[test]
