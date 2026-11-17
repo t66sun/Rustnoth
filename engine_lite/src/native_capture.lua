@@ -33,26 +33,27 @@ function capture.snapshot(step, time_over)
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
 
-    local leaders = { false, false }
+    local leaders = {}
+    local leader_sides = 0
+    local winning_side
     for _, unit in ipairs(units) do
-        if unit.canrecruit then
+        if unit.canrecruit and not leaders[unit.side] then
             leaders[unit.side] = true
+            leader_sides = leader_sides + 1
+            winning_side = unit.side
         end
     end
 
-    local terminal = true
-    if time_over or (not leaders[1] and not leaders[2]) then
+    local terminal = time_over or leader_sides <= 1
+    if time_over or leader_sides == 0 then
         row("step", step, "draw")
-    elseif not leaders[1] then
-        row("step", step, "won", 2)
-    elseif not leaders[2] then
-        row("step", step, "won", 1)
+    elseif leader_sides == 1 then
+        row("step", step, "won", winning_side)
     else
-        terminal = false
         row("step", step, "playing", wesnoth.current.turn, wesnoth.current.side)
     end
 
-    for side = 1, 2 do
+    for side = 1, #wesnoth.sides do
         row("gold", side, wesnoth.sides[side].gold)
     end
     for _, unit in ipairs(units) do
