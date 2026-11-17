@@ -117,6 +117,38 @@ impl<'rules> Battlefield<'rules> {
         self.unit_types.get(id)
     }
 
+    /// Applies standard type advancement after experience has been awarded.
+    pub(crate) fn advance_after_combat(
+        &mut self,
+        position: Hex,
+        supports_type: impl Fn(&UnitType) -> bool,
+    ) {
+        let Some(unit) = self.units.get_mut(&position) else {
+            return;
+        };
+
+        // Wesnoth limits successive advancements at one action boundary to 20.
+        for _ in 0..20 {
+            let required = unit.unit_type.experience.max(1);
+            if unit.experience < required {
+                break;
+            }
+            let [target] = unit.unit_type.advances_to.as_slice() else {
+                break;
+            };
+            let Some(next_type) = self.unit_types.get(target).filter(|next| supports_type(next))
+            else {
+                break;
+            };
+
+            unit.experience -= required;
+            unit.unit_type = next_type;
+            unit.hitpoints = next_type.hitpoints;
+            unit.moves_left = unit.moves_left.min(next_type.movement.max(0));
+            unit.attacks_left = unit.attacks_left.min(next_type.max_attacks.max(0));
+        }
+    }
+
     /// Places a base recruit after the referee checks recruitment eligibility.
     pub fn place_recruit(
         &mut self,
