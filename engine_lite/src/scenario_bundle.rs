@@ -24,31 +24,37 @@ pub struct Bundle {
 impl Bundle {
     /// Parse the terrain definitions, one units block, and one scenario block.
     pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let bundle = wml::parse(bytes)?;
-        let terrain = TerrainAliases::from_wml(&bundle);
-        let mut units = None;
-        let mut scenario = None;
-        for (tag, node) in bundle.children {
-            let slot = match tag.as_str() {
-                "units" => &mut units,
-                "scenario" => &mut scenario,
-                _ => continue,
-            };
-            if slot.replace(node).is_some() {
-                return Err(format!("expected exactly one [{tag}] block").into());
+        Self::parse_bundle(bytes, None)
+    }
+
+    /// Load the original preprocessed core catalogs and a scenario with optional custom definitions.
+    /// Core terrain codes, movetype names and unit type IDs take precedence.
+    pub fn parse_with_core(scenario_bytes: &[u8], core_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::parse_bundle(scenario_bytes, Some(core_bytes))
+    }
+
+    fn parse_bundle(bytes: &[u8], core_bytes: Option<&[u8]>) -> Result<Self, Box<dyn Error>> {
+        let mut bundle = wml::parse(bytes)?;
+        let units = take_block(&mut bundle, "units")?;
+        let scenario = take_block(&mut bundle, "scenario")?;
+        let (config, units) = if let Some(bytes) = core_bytes {
+            let mut core = wml::parse(bytes)?;
+            let mut core_units =
+                take_block(&mut core, "units")?.ok_or("missing [units] block in core catalog")?;
+            core.children.extend(bundle.children);
+            if let Some(units) = units {
+                core_units.children.extend(units.children);
             }
-        }
-        let units = units.ok_or("missing [units] block")?;
-        let scenario = scenario.ok_or("missing [scenario] block")?;
-        let movement = read_movement_types(&units);
-        let resistance = read_resistance(&units);
-        let unit_types = read_unit_types(units);
+            (core, core_units)
+        } else {
+            (bundle, units.ok_or("missing [units] block")?)
+        };
         Ok(Self {
-            scenario,
-            terrain,
-            movement,
-            resistance,
-            unit_types,
+            scenario: scenario.ok_or("missing [scenario] block")?,
+            terrain: TerrainAliases::from_wml(&config),
+            movement: read_movement_types(&units),
+            resistance: read_resistance(&units),
+            unit_types: read_unit_types(units),
         })
     }
 
@@ -66,6 +72,21 @@ impl Bundle {
         };
         Ok(FixedMatch::new(start, rules, seed)?)
     }
+}
+
+fn take_block(config: &mut Node, tag: &str) -> Result<Option<Node>, Box<dyn Error>> {
+    let mut matching = config
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| name == tag);
+    let Some((index, _)) = matching.next() else {
+        return Ok(None);
+    };
+    if matching.next().is_some() {
+        return Err(format!("expected exactly one [{tag}] block").into());
+    }
+    Ok(Some(config.children.remove(index).1))
 }
 
 fn read_resistance(units: &Node) -> BTreeMap<String, DamageTable> {
@@ -125,5 +146,105 @@ mod tests {
         assert_eq!(first.decision().unwrap().0.side, 2);
         assert_eq!(second.decision().unwrap().0.side, 1);
         assert_eq!(second.state(), initial_state);
+    }
+
+    #[test]
+    fn loads_core_and_adds_custom_catalog_entries_with_core_precedence() {
+        let core = br#"
+            [terrain_type]
+                string=Gg
+                id=flat
+            [/terrain_type]
+            [units]
+                [movetype]
+                    name=smallfoot
+                    [movement_costs]
+                        flat=1
+                    [/movement_costs]
+                    [resistance]
+                        blade=90
+                    [/resistance]
+                [/movetype]
+                [unit_type]
+                    id=Scout
+                    hitpoints=30
+                    movement_type=smallfoot
+                [/unit_type]
+            [/units]
+            [scenario]
+                id=ignored
+            [/scenario]
+        "#;
+        let mut scenario = br#"
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Kh,2 Kh,Xv
+Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    type=Scout
+                [/side]
+                [side]
+                    side=2
+                    type=Scout
+                [/side]
+            [/scenario]
+        "#
+        .to_vec();
+        assert!(Bundle::parse(&scenario).is_err());
+        let stock = Bundle::parse_with_core(&scenario, core).unwrap();
+        assert!(stock.start(5489, |_| unreachable!()).is_ok());
+
+        scenario.extend_from_slice(
+            br#"
+            [terrain_type]
+                string=Gg
+                id=custom_flat
+            [/terrain_type]
+            [terrain_type]
+                string=Qp
+                id=custom_path
+            [/terrain_type]
+            [units]
+                [movetype]
+                    name=smallfoot
+                    [movement_costs]
+                        flat=7
+                    [/movement_costs]
+                    [resistance]
+                        blade=30
+                    [/resistance]
+                [/movetype]
+                [movetype]
+                    name=customfoot
+                    [movement_costs]
+                        custom_path=2
+                    [/movement_costs]
+                [/movetype]
+                [unit_type]
+                    id=Scout
+                    hitpoints=12
+                [/unit_type]
+                [unit_type]
+                    id=Runner
+                    movement_type=customfoot
+                [/unit_type]
+            [/units]
+        "#,
+        );
+        let mixed = Bundle::parse_with_core(&scenario, core).unwrap();
+        assert_eq!(mixed.terrain.terrain_id("Gg"), Some("flat"));
+        assert_eq!(mixed.terrain.terrain_id("Qp"), Some("custom_path"));
+        assert_eq!(mixed.unit_types["Scout"].hitpoints, 30);
+        assert_eq!(mixed.unit_types["Runner"].movement_type, "customfoot");
+        let move_cost = |name: &str, code| {
+            mixed.movement[name]
+                .movement_costs
+                .cost(&mixed.terrain, code, false)
+                .map(|cost| cost.get())
+        };
+        assert_eq!(move_cost("smallfoot", "Gg"), Some(1));
+        assert_eq!(move_cost("customfoot", "Qp"), Some(2));
+        assert_eq!(mixed.resistance["smallfoot"].damage_taken("blade"), 90);
     }
 }
