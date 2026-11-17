@@ -23,6 +23,14 @@ pub fn base_hit_chance(terrain_chance: u8, accuracy: i32, parry: i32) -> u8 {
     chance.clamp(0, 100) as u8
 }
 
+pub(crate) fn strike_order(attacker: &Combatant, defender: &Combatant) -> [usize; 2] {
+    if defender.firststrike && !attacker.firststrike {
+        [1, 0]
+    } else {
+        [0, 1]
+    }
+}
+
 /// Resolves the strike sequence for ordinary seeded combat.
 ///
 /// Both participants' damage and chance to hit are fixed for the exchange.
@@ -34,11 +42,7 @@ pub fn resolve_exchange(
     rounds: NonZeroU32,
     rng: &mut ReplayRng,
 ) -> CombatResult {
-    let order = if defender.firststrike && !attacker.firststrike {
-        [1, 0]
-    } else {
-        [0, 1]
-    };
+    let order = strike_order(&attacker, &defender);
     let strike_limit = attacker.strikes.max(defender.strikes);
     let mut hp = [attacker.hitpoints, defender.hitpoints];
     let participants = [attacker, defender];
@@ -114,6 +118,17 @@ mod tests {
         let result = resolve_exchange(attacker, defender, NonZeroU32::MIN, &mut rng);
         assert_eq!(result.attacker_hitpoints, 0);
         assert_eq!(result.defender_hitpoints, 5);
+        assert_eq!(rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn attacker_strikes_first_when_both_weapons_have_firststrike() {
+        let mut rng = ReplayRng::new(5489);
+        let attacker = Combatant { firststrike: true, ..unit(4, 1, 5, 100) };
+        let defender = Combatant { firststrike: true, ..unit(5, 1, 4, 100) };
+        let result = resolve_exchange(attacker, defender, NonZeroU32::MIN, &mut rng);
+        assert_eq!(result.attacker_hitpoints, 4);
+        assert_eq!(result.defender_hitpoints, 0);
         assert_eq!(rng.seed_and_calls(), (5489, 1));
     }
 
