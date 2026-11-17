@@ -8,6 +8,8 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 pub struct Observation {
     pub side: usize,
+    /// Gold available to the observing side, when supplied by the referee.
+    pub gold: Option<i64>,
     pub width: i32,
     pub height: i32,
     pub tiles: Vec<ObservedTile>,
@@ -84,6 +86,7 @@ pub fn project(
 
     Observation {
         side,
+        gold: None,
         width,
         height,
         tiles,
@@ -160,6 +163,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!((view.side, view.width, view.height), (1, 5, 1));
+        assert_eq!(view.gold, None);
         assert_eq!(
             tiles,
             [(SEEN, "Gg", true), (CONCEALED, "Ff", true), (FOGGED, "Hh", false)]

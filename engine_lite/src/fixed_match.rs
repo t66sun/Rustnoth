@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, error, fmt, num::NonZeroU32};
 use crate::{
     board::{Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState},
     hex::Hex,
+    income::{DEFAULT_BASE_INCOME, net_income},
     movement_types::MovementType,
     observation::{Observation, project},
     resistance::DamageTable,
@@ -45,6 +46,7 @@ pub struct FixedMatch<'data> {
     rng: ReplayRng,
     state: MatchState,
     village_owners: BTreeMap<Hex, usize>,
+    gold: [i64; 2],
 }
 
 impl<'data> FixedMatch<'data> {
@@ -75,6 +77,7 @@ impl<'data> FixedMatch<'data> {
         {
             return Err(MatchError::UnsupportedScenario);
         }
+        let gold = [i64::from(first.starting_gold), i64::from(second.starting_gold)];
         let mut village_owners = BTreeMap::new();
         let map = scenario.board.map();
         for side in &scenario.sides {
@@ -95,12 +98,15 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
+            gold,
         };
         game.check_leaders();
-        if matches!(game.state, MatchState::Playing(turn)
-            if game.scenario.last_round.is_some_and(|limit| turn.round > limit))
-        {
-            game.state = MatchState::Draw;
+        if let MatchState::Playing(turn) = game.state {
+            if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
+                game.state = MatchState::Draw;
+            } else {
+                game.settle_income(turn);
+            }
         }
         Ok(game)
     }
@@ -118,6 +124,7 @@ impl<'data> FixedMatch<'data> {
         let opponent = opposing_side(turn.side);
         let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
         let mut observation = project(board, turn.side, &vision, |_| true);
+        observation.gold = Some(self.gold[turn.side - 1]);
         for tile in &mut observation.tiles {
             tile.village_owner = self.village_owners.get(&tile.position).copied();
         }
@@ -182,14 +189,41 @@ impl<'data> FixedMatch<'data> {
                 self.check_leaders();
             }
             Action::EndTurn => {
-                self.state = self
+                let next = self
                     .scenario
                     .board
-                    .advance_turn(turn, &[1, 2], self.scenario.last_round)
-                    .map_or(MatchState::Draw, MatchState::Playing);
+                    .advance_turn(turn, &[1, 2], self.scenario.last_round);
+                self.state = if let Some(next) = next {
+                    self.settle_income(next);
+                    MatchState::Playing(next)
+                } else {
+                    MatchState::Draw
+                };
             }
         }
         Ok(self.state)
+    }
+
+    fn settle_income(&mut self, turn: Turn) {
+        if turn.round <= 1 {
+            return;
+        }
+
+        let villages = self
+            .village_owners
+            .values()
+            .filter(|&&side| side == turn.side)
+            .count();
+        let upkeep = self
+            .scenario
+            .board
+            .units()
+            .filter(|(_, unit)| unit.side == turn.side && !unit.can_recruit)
+            .map(|(_, unit)| unit.unit_type.level)
+            .sum();
+        let index = turn.side - 1;
+        let side = &self.scenario.sides[index];
+        self.gold[index] += net_income(side, DEFAULT_BASE_INCOME, villages, upkeep);
     }
 
     fn walking_cost(&self, unit: &UnitState<'_>, terrain: &str) -> Option<NonZeroU32> {
@@ -426,5 +460,94 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         let (observation, _) = game.decision().unwrap();
         assert_eq!(observation.tiles[1].village_owner, Some(1));
         assert_eq!(observation.units[0].moves_left, Some(0));
+    }
+
+    #[test]
+    fn settles_only_the_incoming_sides_income_from_round_two() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Vh,Gg,2 Gg,Xv
+Xv,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Fighter
+                gold=23
+                income=2
+                village_gold=2
+                village_support=2
+                [unit]
+                    type=Fighter
+                    x,y=1,2
+                [/unit]
+            [/side]
+            [side]
+                side=2
+                type=Fighter
+                gold=41
+                [village]
+                    x,y=2,1
+                [/village]
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(
+            wml::parse("id=Fighter\nlevel=3\nhitpoints=10\nmovement=3\nmovement_type=foot")
+                .unwrap(),
+        );
+        let roster = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let terrain = TerrainAliases::from_wml(
+            &wml::parse(
+                "[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+                 [terrain_type]\nstring=Vh\ngives_income=yes\nmvt_alias=Gg\n[/terrain_type]",
+            )
+            .unwrap(),
+        );
+        let movement = read_movement_types(
+            &wml::parse(
+                "[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]",
+            )
+            .unwrap(),
+        );
+        let resistance = BTreeMap::new();
+        let load = || scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
+        let rules = || Rules {
+            terrain: &terrain,
+            movement: &movement,
+            resistance: &resistance,
+        };
+        let observed_gold = |game: &FixedMatch<'_>| {
+            let (observation, _) = game.decision().unwrap();
+            (observation.side, observation.gold)
+        };
+
+        let mut game = FixedMatch::new(load(), rules(), 5489).unwrap();
+        assert_eq!(observed_gold(&game), (1, Some(23)));
+        let mut alternate = load();
+        alternate.sides[1].starting_gold = 99;
+        assert_eq!(
+            game.decision(),
+            FixedMatch::new(alternate, rules(), 5489).unwrap().decision()
+        );
+
+        game.step(Action::Move {
+            from: Hex { x: 0, y: 0 },
+            to: Hex { x: 1, y: 0 },
+        })
+        .unwrap();
+        assert_eq!(observed_gold(&game), (1, Some(23)));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(observed_gold(&game), (2, Some(41)));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(observed_gold(&game), (1, Some(28)));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(observed_gold(&game), (2, Some(43)));
+
+        let mut later_round = load();
+        later_round.start_round = 2;
+        let resumed = FixedMatch::new(later_round, rules(), 5489).unwrap();
+        assert_eq!(observed_gold(&resumed), (1, Some(24)));
     }
 }
