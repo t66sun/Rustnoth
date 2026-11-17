@@ -25,3 +25,4 @@ pub mod observation;
 pub mod resistance;
 pub mod scenario_start;
 pub mod fixed_match;
+pub mod recruit_hexes;
