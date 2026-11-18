@@ -15,9 +15,12 @@ pub fn hotkey() -> bool {
     is_key_pressed(KeyCode::J) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl))
 }
 
-pub fn button(width: f32) -> Option<Rect> {
-    let right = width - sidebar_width(width) - 12.0;
-    (right >= 102.0).then_some(Rect::new(right - 100.0, 12.0, 100.0, 44.0))
+pub fn button(width: f32, height: f32) -> Option<Rect> {
+    let frame = BattlefieldFrame::new(width, height);
+    let scale = frame.scale;
+    (frame.map.width >= 550.0 * scale && scale > 0.0).then_some(Rect::new(
+        frame.map.width - 98.0 * scale, 2.0 * scale, 92.0 * scale, 22.0 * scale,
+    ))
 }
 
 fn wrap_entries(objectives: &ScenarioObjectives, font: Option<&Font>, width: f32) -> Vec<(String, bool)> {

@@ -221,7 +221,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
         if !dialogue_open && let Some(objectives) = session.objectives() {
             let opened = render::objectives::hotkey()
                 || (is_mouse_button_pressed(MouseButton::Left)
-                    && render::objectives::button(screen_width()).is_some_and(|r| r.contains(pointer)));
+                    && render::objectives::button(screen_width(), screen_height()).is_some_and(|r| r.contains(pointer)));
             if opened {
                 render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
                 next_frame().await;
@@ -351,11 +351,11 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             && let Some(bounds) = button
         {
             let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
-            render::draw_turn_button(bounds, highlighted, &art, "End turn", "Space");
+            render::draw_turn_button(bounds, highlighted, &art, "End Turn");
         } else if campaign && session.next_scenario().is_some()
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
-            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue", "Enter");
+            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         if let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
