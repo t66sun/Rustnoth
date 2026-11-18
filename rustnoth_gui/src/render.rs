@@ -1,5 +1,6 @@
 mod frame;
 mod minimap;
+pub(crate) use minimap::skirmish_preview;
 mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
