@@ -330,7 +330,26 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                     |from| session.advancement_choices(from),
                 )
             };
-            movement
+            if let Some(attack_menu) = menu.as_mut()
+                && let Action::Attack(choice) = attack_menu.focused_action()
+            {
+                let previews = session.attack_previews(choice.from, choice.to);
+                let window = render::attack_dialog::AttackDialog::new(observation, previews, &data.assets, &mut art, &data.wesnoth_root);
+                let action = if let Some(window) = window {
+                    window.choose(attack_menu, &data.assets, || {
+                        render::draw(&data.title, session.state(), Some(observation), camera.layout(), &mut art,
+                            render::MovementView {
+                                global_time: session.global_time_of_day(), has_objectives: session.objectives().is_some(),
+                                selected: selection.unit(), actions: session.legal_actions(), message: None,
+                                assets: &data.assets, menu: None,
+                            });
+                    }).await
+                } else { None };
+                if action.is_none() { menu = None; }
+                action
+            } else {
+                movement
+            }
         } else {
             None
         };
@@ -353,7 +372,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                         art.load(observation, &data.assets, session.map_item_images());
                     }
                 }
-                Err(error) => message = Some(error.to_string()),
+                Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
         render::draw(

@@ -46,14 +46,14 @@ impl Battlefield<'_> {
         from: Hex,
         to: Hex,
         weapon: &WeaponProfile,
-        enemy_of_defender: impl Fn(usize) -> bool,
+        enemy_of_defender: impl Fn(Hex, usize) -> bool,
     ) -> bool {
         weapon.has_backstab()
             && Direction::CLOCKWISE.into_iter()
                 .find(|&direction| from.neighbor(direction) == Some(to))
                 .and_then(|direction| to.neighbor(direction))
-                .and_then(|opposite| self.unit_at(opposite))
-                .is_some_and(|flanker| !flanker.petrified && enemy_of_defender(flanker.side))
+                .is_some_and(|opposite| self.unit_at(opposite).is_some_and(|flanker|
+                    !flanker.petrified && enemy_of_defender(opposite, flanker.side)))
     }
 
     /// Lists available attacks in origin, target, then weapon-index order.
@@ -164,7 +164,7 @@ impl Battlefield<'_> {
             &action.modifiers,
             retaliation.map_or(0, |(_, response, _)| response.parry),
             StrikeRole::Attack {
-                backstab: self.backstabs(from, to, weapon, |side| sides_are_enemies(defender.side, side)),
+                backstab: self.backstabs(from, to, weapon, |_, side| sides_are_enemies(defender.side, side)),
             },
         );
         let defender_stats = retaliation.map_or(
