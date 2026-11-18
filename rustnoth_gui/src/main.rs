@@ -30,6 +30,7 @@ mod story;
 mod saved_game;
 mod save_dialog;
 mod unit_list;
+mod scenario_report;
 mod title_screen;
 mod tutorial;
 
@@ -270,6 +271,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
     let mut confirmed_recruit = None;
+    let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
     loop {
@@ -543,6 +545,13 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             {
                 if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
                 else { dialogue_page += 1; }
+            }
+        }
+        if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
+            end_report_shown = true;
+            if scenario_report::show(&data.wesnoth_root,&session,campaign).await {
+                if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
+                return Ok(if campaign { session.next_scenario().map(str::to_owned) } else { None });
             }
         }
         next_frame().await;

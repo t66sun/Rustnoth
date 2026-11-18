@@ -57,7 +57,7 @@ pub(crate) enum BoardChange {
     Kill(kill::KillAction, Option<Hex>),
     Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
+    EndLevel { victory: bool, report: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
@@ -395,6 +395,7 @@ fn read_actions<'a>(
             }
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
+                report: crate::scenario_sides::bool_attribute(cfg, "carryover_report", true),
                 next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
                 gold: crate::fixed_match::carryover::GoldOverride::endlevel(cfg, side_count),
             }),
