@@ -10,6 +10,14 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+### 从原版标题画面开始
+
+```sh
+cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5489
+```
+
+标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
+
 ### 在窗口中选择战役场景
 
 给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：
