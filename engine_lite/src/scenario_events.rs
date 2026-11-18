@@ -36,6 +36,7 @@ pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
+    Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String },
 }
 
@@ -164,6 +165,15 @@ impl EventAction {
         if opening && tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+        }
+        if tag == "replace_schedule" {
+            if cfg.attributes.keys().any(|k| k != "current_time") || cfg.children.iter().any(|(tag, time)| {
+                tag != "time" || ["id", "lawful_bonus"].iter().any(|key| time.attribute(key).is_some_and(|v| v.contains('$')))
+            }) { return None; }
+            let entries = crate::scenario_time::time_entries(cfg);
+            let current_time = cfg.attribute("current_time").unwrap_or("0").trim().parse::<i32>().ok()?;
+            if !(0..entries.len()).contains(&usize::try_from(current_time).ok()?) { return None; }
+            return Some(Self::Board(BoardChange::Schedule { entries, current_time }));
         }
         if tag == "capture_village" {
             return VillageCapture::read(cfg).map(|v| Self::Board(BoardChange::CaptureVillage(v)));

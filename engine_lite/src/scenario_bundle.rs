@@ -144,6 +144,22 @@ no_leader=yes
     }
 
     #[test]
+    fn campaign_replaces_the_global_schedule_at_the_active_round() {
+        let config = b"[units]\n[unit_type]\nid=Guard\nhitpoints=24\n[/unit_type]\n[/units]\n\
+            [scenario]\nmap_file=test.map\n[side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n\
+            [time]\nid=day\n[/time]\n[event]\nname=turn 2\n[replace_schedule]\ncurrent_time=1\n\
+            [time]\nid=dusk\n[/time]\n[time]\nid=night\nlawful_bonus=-25\n[/time]\n[/replace_schedule]\n[/event]\n[/scenario]";
+        let bundle = Bundle::parse(config).unwrap();
+        let mut game = bundle.start(1, |_| Ok("Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Xv\nXv,Xv,Xv,Xv".into())).unwrap();
+        assert_eq!(game.global_time_of_day().unwrap().id, "day");
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        let night = game.global_time_of_day().unwrap();
+        assert_eq!((night.id.as_str(), night.lawful_bonus), ("night", -25));
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        assert_eq!(game.global_time_of_day().unwrap().id, "dusk");
+    }
+
+    #[test]
     fn a_parsed_bundle_starts_independent_matches() {
         let bundle = Bundle::parse(
             br#"
