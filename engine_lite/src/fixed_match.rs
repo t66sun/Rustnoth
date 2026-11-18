@@ -457,12 +457,16 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn fire_unit_event(&mut self, name: &str, position: Hex) -> Result<(), MatchError> {
-        let unit = self.scenario.board.unit_at(position).expect("event location has its unit");
-        let id = unit.id.clone();
-        let arrival = crate::scenario_events::ArrivingUnit {
-            position, side: unit.side, id: id.as_deref(), type_id: &unit.unit_type.id,
-        };
-        self.with_events(|events, state| events.fire_for_unit(name, arrival, state))
+        self.fire_units_event(name, position, None)
+    }
+
+    fn fire_units_event(&mut self, name: &str, position: Hex, second: Option<Hex>) -> Result<(), MatchError> {
+        let context = |position| self.scenario.board.unit_at(position).map(|unit| crate::scenario_events::ArrivingUnit {
+            position, side: unit.side, id: unit.id.clone(), type_id: unit.unit_type.id.as_str(),
+        });
+        let primary = context(position);
+        let secondary = second.and_then(context);
+        self.with_events(|events, state| events.dispatch(name, primary, secondary, state))
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> Result<bool, MatchError> {
