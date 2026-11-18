@@ -75,10 +75,12 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
         let valid_side = |side: &str| side_number(side).is_some_and(|number| number <= side_count);
 
         let mut last_unit = None;
+        let mut unit_positions = std::collections::BTreeSet::new();
         let mut status_owner = None;
         let mut last_village = None;
         let mut view_side = 0;
         let mut view_height = 0;
+        let mut listed_units = false;
         loop {
             let Some((line, row)) = lines.next() else {
                 return Err(format!("step {step}: missing end row"));
@@ -100,6 +102,10 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         }
                         view_side = side;
                         view_height = 0;
+                        listed_units = false;
+                    }
+                    if listed_units {
+                        return Err(bad_row(line, "expected the next side after seen units"));
                     }
                     view_height += 1;
                     if side_number(y) != Some(view_height) {
@@ -112,7 +118,24 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         return Err(bad_row(line, "inconsistent view width"));
                     }
                 }
-                _ if view_side != 0 => return Err(bad_row(line, "expected view or matching end")),
+                ["seen", side, positions @ ..] if view_side > 0 && !listed_units
+                    && side_number(side) == Some(view_side) => {
+                    let mut previous = None;
+                    for position in positions {
+                        let valid = position.split_once(',').is_some_and(|(x, y)| {
+                            next_position(x, y, &mut previous) && previous.is_some_and(|hex|
+                                hex.0 as usize <= map_width.unwrap_or(0)
+                                && hex.1 as usize <= view_height
+                                && unit_positions.contains(&hex)
+                            )
+                        });
+                        if !valid {
+                            return Err(bad_row(line, "expected sorted on-map unit positions in seen row"));
+                        }
+                    }
+                    listed_units = true;
+                }
+                _ if view_side != 0 => return Err(bad_row(line, "expected view, seen units or matching end")),
                 ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1", extra @ ..]
                     if last_village.is_none()
                         && valid_side(side)
@@ -124,6 +147,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         && valid_unit_details(extra)
                         && next_position(x, y, &mut last_unit) => {
                         status_owner = Some((*x, *y));
+                        unit_positions.insert(last_unit.expect("validated unit position"));
                     }
                 ["status", x, y, "slowed" | "poisoned"] | ["status", x, y, "slowed", "poisoned"]
                     if last_village.is_none() && status_owner.take() == Some((*x, *y)) => {}
@@ -192,6 +216,28 @@ mod tests {
             compare(&rust, &native).unwrap_err(),
             "step 1 differs\n  expected native: view\t2\t2\tSSV\n  actual Rust:     view\t2\t2\tSFV",
         );
+    }
+
+    #[test]
+    fn distinguishes_hidden_units_on_identical_maps_and_reads_older_views() {
+        let units = "unit\t1\t2\t1\tScout\t9\t2\t1\t0\nunit\t2\t1\t2\tHider\t8\t3\t1\t0\n";
+        let view = "view\t1\t1\tVV\nview\t1\t2\tVV\n";
+        let legacy = INITIAL.replace("end\t0", &format!("{units}{view}end\t0"));
+        let native = legacy.replace("end\t0", "seen\t1\t1,2\nend\t0");
+        let leak = native.replace("seen\t1\t1,2", "seen\t1\t1,2\t2,1");
+        assert_eq!(compare(&legacy, &legacy), Ok(1));
+        assert_eq!(compare(&native, &native), Ok(1));
+        assert!(compare(&native, &legacy).unwrap_err().starts_with("step 0 differs"));
+        assert_eq!(compare(&leak, &native).unwrap_err(),
+            "step 0 differs\n  expected native: seen\t1\t1,2\n  actual Rust:     seen\t1\t1,2\t2,1");
+        let empty = native.replace("seen\t1\t1,2", "seen\t1");
+        assert_eq!(compare(&empty, &empty), Ok(1));
+        for invalid in ["seen\t2", "seen\t1\t1,1", "seen\t1\t0,2", "seen\t1\t1,3",
+            "seen\t1\t2,1\t1,2", "seen\t1\t1,2\t1,2", "seen\t1\nseen\t1",
+            "seen\t1\nview\t1\t3\tVV"] {
+            let malformed = native.replace("seen\t1\t1,2", invalid);
+            assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+        }
     }
 
     #[test]
