@@ -28,27 +28,43 @@ local function owned_villages()
     return owned
 end
 
+local function surviving_sides(units)
+    local leaders = {}
+    for _, unit in ipairs(units) do
+        if unit.canrecruit then
+            leaders[unit.side] = true
+        end
+    end
+    local sides = {}
+    for side = 1, #wesnoth.sides do
+        if leaders[side] then
+            sides[#sides + 1] = side
+        end
+    end
+    return sides
+end
+
+local function enemies_remain(sides)
+    for i, side in ipairs(sides) do
+        for j = i + 1, #sides do
+            if wesnoth.sides.is_enemy(side, sides[j]) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 -- Call after an action or at side-turn refresh, inside the referee only.
 function capture.snapshot(step, time_over)
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
-
-    local leaders = {}
-    local leader_sides = 0
-    local winning_side
-    for _, unit in ipairs(units) do
-        if unit.canrecruit and not leaders[unit.side] then
-            leaders[unit.side] = true
-            leader_sides = leader_sides + 1
-            winning_side = unit.side
-        end
-    end
-
-    local terminal = time_over or leader_sides <= 1
-    if time_over or leader_sides == 0 then
+    local sides = surviving_sides(units)
+    local terminal = time_over or not enemies_remain(sides)
+    if time_over or #sides == 0 then
         row("step", step, "draw")
-    elseif leader_sides == 1 then
-        row("step", step, "won", winning_side)
+    elseif terminal then
+        row("step", step, "won", table.unpack(sides))
     else
         row("step", step, "playing", wesnoth.current.turn, wesnoth.current.side)
     end
