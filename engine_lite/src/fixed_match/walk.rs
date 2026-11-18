@@ -2,9 +2,10 @@ use super::{FixedMatch, MatchError};
 use crate::{hex::Hex, visibility::HexVisibility};
 
 impl FixedMatch<'_> {
-    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MatchError> {
+    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex, trace: Option<&mut Vec<Hex>>) -> Result<(), MatchError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
+        let mut landed_index = 0;
         let mut facing = None;
         let mut discovered = Vec::new();
         let board = &self.scenario.board;
@@ -17,7 +18,7 @@ impl FixedMatch<'_> {
 
         // Native movement checks the plotted path for hidden units before moving the scout.
         // An allied occupant can be traversed but cannot become the scout's final location.
-        for steps in route.windows(2) {
+        for (index, steps) in route.windows(2).enumerate() {
             let (previous, _) = steps[0];
             let (next, remaining) = steps[1];
             // A hidden occupant blocks a tunnel without revealing the remote exit.
@@ -31,6 +32,7 @@ impl FixedMatch<'_> {
                 }
                 None => {
                     position = next;
+                    landed_index = index + 1;
                     facing = previous.direction_to_neighbor(next).or(facing);
                 }
                 Some(_) => {}
@@ -74,6 +76,11 @@ impl FixedMatch<'_> {
         }
         if position != from {
             self.fire_unit_event("moveto", position)?;
+        }
+        if let Some(trace) = trace
+            && self.scenario.board.unit_at(position).is_some_and(|unit| unit.serial == mover_serial && unit.side == side)
+        {
+            trace.extend(route[..=landed_index].iter().map(|&(hex, _)| hex));
         }
         Ok(())
     }
@@ -303,7 +310,9 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
             assert!(!view.units.iter().any(|unit| unit.position == enemy));
             assert!(candidates.contains(&action));
 
-            game.step(action).unwrap();
+            let mut trace = Vec::new();
+            game.move_with_trace(START, GOAL, &mut trace).unwrap();
+            assert_eq!(trace, [START, Hex { x: 1, y: 0 }, Hex { x: 2, y: 0 }, STOP]);
             let scout = game.scenario.board.unit_at(STOP).unwrap();
             assert_eq!((scout.unit_type.id.as_str(), scout.moves_left, scout.attacks_left), ("Elvish Scout", 0, 1));
             assert_eq!(scout.facing, Some(crate::hex::Direction::SouthEast));

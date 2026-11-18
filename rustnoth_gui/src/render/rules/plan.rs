@@ -30,7 +30,11 @@ pub(super) fn build(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile>
 
 /// Standalone map export can use the map file's authored border. Gameplay only
 /// supplies terrain that is present in the current side's observation.
-pub(super) fn map_tiles(catalog: &Catalog, view: &Observation, map: &engine_lite::map::ScenarioMap) -> HashMap<Hex, Tile> {
+pub(super) fn map_tiles(
+    catalog: &Catalog,
+    view: &Observation,
+    map: &engine_lite::map::ScenarioMap,
+) -> HashMap<Hex, Tile> {
     sorted(view, apply(catalog, view, |at| map.terrain_at(at)))
 }
 
@@ -41,7 +45,7 @@ fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Til
             && hex.y >= -1
             && hex.x <= view.width
             && hex.y <= view.height
-            && !tile.layers.is_empty()
+            && (!tile.layers.is_empty() || tile.flags.contains("base"))
     });
     tiles
 }
@@ -50,7 +54,11 @@ pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap
     apply(catalog, view, |_| None)
 }
 
-fn apply<'a>(catalog: &Catalog, view: &'a Observation, border: impl Fn(Hex) -> Option<&'a str>) -> HashMap<Hex, Tile> {
+fn apply<'a>(
+    catalog: &Catalog,
+    view: &'a Observation,
+    border: impl Fn(Hex) -> Option<&'a str>,
+) -> HashMap<Hex, Tile> {
     let mut groups: BTreeMap<&str, Vec<Hex>> = BTreeMap::new();
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
@@ -58,7 +66,10 @@ fn apply<'a>(catalog: &Catalog, view: &'a Observation, border: impl Fn(Hex) -> O
     for (x, y) in (-2..=view.width).flat_map(|x| (-2..=view.height).map(move |y| (x, y))) {
         if x < 0 || y < 0 || x >= view.width || y >= view.height {
             let at = Hex { x, y };
-            groups.entry(border(at).unwrap_or("_off^_usr")).or_default().push(at);
+            groups
+                .entry(border(at).unwrap_or("_off^_usr"))
+                .or_default()
+                .push(at);
         }
     }
     let groups: Vec<_> = groups
@@ -98,7 +109,11 @@ fn apply<'a>(catalog: &Catalog, view: &'a Observation, border: impl Fn(Hex) -> O
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
-            if !inside && border(hex).is_none_or(|code| code.starts_with("_off")) { tile.flags.insert("base".into()); }
+            // The stock default theme installs an invisible base image for OFF_MAP_USER
+            // before any WML rule. Authored holes can be inside the map rectangle.
+            if groups[types[&hex]].0 == "_off^_usr" {
+                tile.flags.insert("base".into());
+            }
             tile.flags
                 .insert(if inside { "_board" } else { "_border" }.into());
             (hex, tile)
@@ -162,4 +177,35 @@ fn apply<'a>(catalog: &Catalog, view: &'a Observation, border: impl Fn(Hex) -> O
         }
     }
     tiles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_lite::observation::ObservedTile;
+
+    #[test]
+    fn authored_offmap_inside_the_rectangle_keeps_the_theme_backdrop_visible() {
+        let catalog = super::super::compile::compile(&[], &[]);
+        let at = Hex { x: 1, y: 0 };
+        let view = Observation {
+            side: 1,
+            allied_sides: vec![1],
+            gold: None,
+            width: 2,
+            height: 1,
+            units: vec![],
+            tiles: vec![ObservedTile {
+                position: at,
+                terrain: "_off^_usr".into(),
+                visible: true,
+                village_owner: None,
+                time_color: [0; 3],
+            }],
+        };
+        let tiles = build(&catalog, &view);
+        assert!(tiles[&at].flags.contains("base") && tiles[&at].flags.contains("_board"));
+        assert!(tiles[&at].layers.is_empty());
+        assert!(!tiles.contains_key(&Hex { x: 0, y: 0 }));
+    }
 }

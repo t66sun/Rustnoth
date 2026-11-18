@@ -14,6 +14,8 @@ pub enum Players {
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
+    animate_combat: bool,
+    last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
     dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
@@ -32,7 +34,9 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None, hovered_move: None, route: None,
+            economy: None,
+            animate_combat: false, last_combat: None,
+            hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
@@ -76,11 +80,31 @@ impl<'rules> Session<'rules> {
         if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
     }
 
+    /// Enabled by the live board after replaying any saved commands.
+    pub fn enable_combat_playback(&mut self) {
+        self.animate_combat = true;
+    }
+
+    pub fn take_combat(&mut self) -> Option<engine_lite::fixed_match::combat_display::VisibleCombat> {
+        self.last_combat.take()
+    }
+
+    fn commit(&mut self, action: Action, advancement: Option<&str>) -> Result<MatchState, MatchError> {
+        self.last_combat = None;
+        let Action::Attack(choice) = action else { return self.game.step(action); };
+        if self.animate_combat && let Some(view) = &self.observation {
+            let (state, fight) = self.game.attack_for_display(choice, advancement, view.side)?;
+            self.last_combat = fight;
+            return Ok(state);
+        }
+        self.game.attack_with_advancements(choice, advancement, None)
+    }
+
     /// Apply at most one computer command per desktop frame.
     pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
         if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
-        match self.game.step(action.clone()) {
+        match self.commit(action.clone(), None) {
             Ok(_) => {}
             // A castle hex offered through fog can turn out to be occupied.
             Err(MatchError::InvalidRecruit) if matches!(action, Action::Recruit { .. }) => {
@@ -180,12 +204,16 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
+        self.apply_recording_walk(action, attacker, None)
+    }
+
+    pub fn apply_recording_walk(&mut self, action: Action, attacker: Option<&str>, trace: Option<&mut Vec<Hex>>) -> Result<MatchState, MatchError> {
         if self.computer_action.is_some() || self.dialogue().is_some() {
             return Err(MatchError::ActionUnavailable);
         }
-        let state = match action.clone() {
-            Action::Attack(attack) => self.game.attack_with_advancements(attack, attacker, None)?,
-            action => self.game.step(action)?,
+        let state = match (action.clone(), trace) {
+            (Action::Move { from, to }, Some(trace)) => self.game.move_with_trace(from, to, trace)?,
+            (action, _) => self.commit(action, attacker)?,
         };
         self.history.push(crate::save_replay::Event::Player(action, attacker.map(str::to_owned)));
         self.refresh();

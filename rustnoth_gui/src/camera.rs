@@ -67,6 +67,16 @@ impl BoardCamera {
         self.center_world([x,y]);
     }
 
+    pub fn show_movement_hex(&mut self, at: Hex) {
+        if let (Some(layout), Some((area, _, _))) = (self.layout.as_ref(), self.last_fit) {
+            let [x, y] = layout.tile_origin(at);
+            let size = layout.tile_size();
+            if x < area.x || y < area.y || x + size > area.x + area.width || y + size > area.y + area.height {
+                self.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
+            }
+        }
+    }
+
     /// Center the viewport on a point in map space, expressed in tile widths and heights.
     pub fn center_world(&mut self, [x, y]: [f32; 2]) {
         if let (Some((viewport, _, _)), Some(layout)) = (self.last_fit, self.layout.as_mut()) {
