@@ -39,6 +39,7 @@ enum EventAction {
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    HealUnit(crate::board::HealUnit),
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool },
@@ -163,6 +164,9 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "heal_unit" {
+            return crate::board::HealUnit::read(cfg).map(|heal| Self::Board(BoardChange::HealUnit(heal)));
+        }
         if tag == "modify_turns" {
             return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
         }
@@ -371,8 +375,8 @@ fn presentation_only(tag: &str, cfg: &Node) -> bool {
     }
 }
 
-#[derive(Debug)]
-struct UnitFilter {
+#[derive(Clone, Debug)]
+pub(crate) struct UnitFilter {
     locations: Vec<WmlRectangle>,
     sides: Vec<usize>,
     ids: Vec<String>,
@@ -380,7 +384,7 @@ struct UnitFilter {
 }
 
 impl UnitFilter {
-    fn read(cfg: &Node) -> Option<Self> {
+    pub(crate) fn read(cfg: &Node) -> Option<Self> {
         if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
             !matches!(key.as_str(), "x" | "y" | "side" | "id" | "type")
                 || !value.translations.is_empty() || value.text.contains('$')
@@ -400,7 +404,7 @@ impl UnitFilter {
         })
     }
 
-    fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
+    pub(crate) fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
         let Some((x, y)) = unit.position.to_wml() else { return false };
         (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
             && (self.sides.is_empty() || self.sides.contains(&unit.side))

@@ -294,6 +294,18 @@ amount=7
     }
 
     #[test]
+    fn healing_the_dying_primary_unit_cancels_removal_and_plague() {
+        let events = "[event]\nname=die\n[heal_unit]\namount=1\n[/heal_unit]\n[/event]";
+        for retaliation in [false, true] {
+            let bundle = scenario("id=fallen", "Gg", retaliation, "type=Walking Corpse", events);
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert!(matches!(fight(&mut game), MatchState::Playing(_)));
+            let victim = game.scenario.board.unit_at(if retaliation { WEST } else { EAST }).unwrap();
+            assert_eq!((victim.id.as_deref(), victim.hitpoints), (Some("fallen"), 1));
+        }
+    }
+
+    #[test]
     fn plague_obeys_village_immunity_authored_status_and_victim_variation() {
         for (victim, terrain, special, expected) in [
             ("", "Gg^Vh", "type=Walking Corpse", None),
