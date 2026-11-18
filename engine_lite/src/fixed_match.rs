@@ -186,6 +186,10 @@ impl<'data> FixedMatch<'data> {
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::TurnLimit(change) => {
+                    self.scenario.last_round = change.apply(self.scenario.last_round);
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
@@ -389,12 +393,14 @@ impl<'data> FixedMatch<'data> {
             Action::EndTurn => {
                 let surviving_sides: BTreeSet<_> = self.surviving_sides().collect();
                 self.village_owners.retain(|_, side| surviving_sides.contains(side));
-                let next = self
-                    .scenario
-                    .board
-                    .advance_turn(turn, &self.side_order, self.scenario.last_round);
-                let end_round = next.is_none_or(|next| next.round != turn.round);
+                let candidate = turn.next(&self.side_order, None);
+                let end_round = candidate.is_none_or(|next| next.round != turn.round);
                 self.with_events(|events, state| events.end_turn(turn, end_round, state))?;
+                if end_round && candidate.is_some_and(|next| self.scenario.last_round.is_some_and(|limit| next.round > limit)) {
+                    self.with_events(|events, state| events.fire("time_over", state))?;
+                }
+                let limit = if end_round { self.scenario.last_round } else { None };
+                let next = self.scenario.board.advance_turn(turn, &self.side_order, limit);
                 self.refog(turn.side);
                 self.state = if let Some(next) = next {
                     self.current_round = next.round;
@@ -408,7 +414,6 @@ impl<'data> FixedMatch<'data> {
                     self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
-                    self.with_events(|events, state| events.fire("time_over", state))?;
                     MatchState::Draw
                 };
             }
