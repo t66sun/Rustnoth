@@ -438,7 +438,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                     window.choose(attack_menu, &data.assets, || {
                         render::draw(session.state(), Some(observation), camera.layout(), &mut art,
                             render::MovementView {
-                                global_time: session.global_time_of_day(),
+                                global_time: session.global_time_of_day(),                                route: None,
+
                                 selected: selection.unit(), actions: session.legal_actions(), message: None,
                                 assets: &data.assets, menu: None,
                             });
@@ -475,6 +476,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
+        let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
+            .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
+        session.track_hovered_move(hovered);
         render::draw(
             session.state(),
             session.observation(),
@@ -482,6 +486,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
+                route: session.hovered_move(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
