@@ -18,6 +18,7 @@ use camera::BoardCamera;
 mod camera;
 mod campaign_browser;
 mod dialog;
+mod display_preferences;
 mod menu;
 mod render;
 mod setup;
@@ -47,7 +48,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let fullscreen = display_preferences::load().unwrap_or_else(|err| {
+        eprintln!("Could not read the Rustnoth display preference: {err}");
+        false
+    });
     let configuration = Conf {
+        fullscreen,
         window_title: format!("Rustnoth - {}", launch.title()),
         window_width: 1200,
         window_height: 820,
@@ -56,7 +62,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
-            Launch::Title(title) => title.run().await,
+            Launch::Title(title) => title.run(fullscreen).await,
             Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
