@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     board::StrikeModifiers,
-    combat::{Combatant, strike_order},
+    combat::{Combatant, apply_hit, strike_order},
 };
 
 pub(super) fn select(
@@ -89,7 +89,7 @@ fn exchange(attacker: Combatant, defender: Combatant) -> Outcome {
                     *next.entry(hitpoints).or_default() += probability * (1.0 - chance);
                 }
                 let mut after_hit = hitpoints;
-                after_hit[target] = hitpoints[target].saturating_sub(unit.damage);
+                apply_hit(&units, &mut after_hit, striker);
                 if after_hit[target] == 0 {
                     outcome.add(after_hit, probability * chance);
                 } else {
@@ -110,7 +110,15 @@ mod tests {
     use super::*;
 
     fn combatant(hitpoints: u32, strikes: u32, damage: u32, hit_chance: u8) -> Combatant {
-        Combatant { hitpoints, strikes, damage, hit_chance, firststrike: false }
+        Combatant {
+            hitpoints,
+            strikes,
+            damage,
+            hit_chance,
+            firststrike: false,
+            drain_healing_cap: None,
+            undrainable: false,
+        }
     }
 
     #[test]
@@ -121,6 +129,17 @@ mod tests {
         assert_eq!(lethal.average_hp[0], 8.0);
         assert_eq!(lethal.death[0], 0.2);
         assert!(lethal.better_for_defender_than(&steady));
+    }
+
+    #[test]
+    fn favors_draining_retaliation_when_healing_outweighs_extra_damage() {
+        let draining = exchange(
+            combatant(20, 1, 6, 100),
+            Combatant { drain_healing_cap: Some(20), ..combatant(20, 1, 6, 100) },
+        );
+        let plain = exchange(combatant(20, 1, 6, 100), combatant(20, 1, 7, 100));
+        assert_eq!(draining.average_hp, [14.0, 17.0]);
+        assert!(draining.better_for_defender_than(&plain));
     }
 
     #[test]

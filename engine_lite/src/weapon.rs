@@ -84,15 +84,33 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_drains(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_drains(tag, definition))
+        })
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
                 is_unconditional_firststrike(tag, definition)
                     || is_unconditional_magical(tag, definition)
                     || is_stock_charge(tag, definition)
+                    || is_stock_drains(tag, definition)
             })
         })
     }
+}
+
+fn is_stock_drains(tag: &str, definition: &Node) -> bool {
+    tag == "drains"
+        && definition.attribute("id") == Some("drains")
+        && definition.children.is_empty()
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_unconditional_magical(tag: &str, definition: &Node) -> bool {
@@ -247,6 +265,30 @@ mod tests {
             let unsupported = weapon(fields);
             assert!(!unsupported.supports_specials());
             assert_eq!(unsupported.magical_hit_chance(), None);
+        }
+    }
+
+    #[test]
+    fn accepts_stock_drains_and_rejects_modified_drain_effects() {
+        let weapon = |fields| {
+            WeaponProfile::from_wml(
+                wml::parse(format!(
+                    "[specials]\n[drains]\nid=drains\n{fields}\n[/drains]\n[/specials]"
+                ))
+                .unwrap(),
+            )
+        };
+        let stock = weapon("name=_\"drains\"");
+        assert!(stock.has_drains());
+        assert!(stock.supports_specials());
+        for fields in [
+            "value=25",
+            "active_on=defense",
+            "[filter_opponent]\ntype=Human\n[/filter_opponent]",
+        ] {
+            let modified = weapon(fields);
+            assert!(!modified.has_drains());
+            assert!(!modified.supports_specials());
         }
     }
 
