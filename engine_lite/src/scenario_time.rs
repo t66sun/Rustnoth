@@ -19,7 +19,9 @@ pub(crate) fn read_map_schedule(scenario: &Node, map: &ScenarioMap) -> TimeSched
     let mut schedule = read_time_schedule(scenario);
     let turn_at = integer(scenario, "turn_at").unwrap_or(1);
     for (_, area) in scenario.children.iter().filter(|(tag, _)| tag == "time_area") {
-        let locations = location_ranges(area, map);
+        let locations = location_ranges(
+            area.attribute("x").unwrap_or_default(), area.attribute("y").unwrap_or_default(), map,
+        );
         let current_time = integer(area, "current_time").unwrap_or(0);
         schedule.add_area(locations, time_entries(area), turn_at, current_time);
     }
@@ -37,12 +39,12 @@ fn time_entries(node: &Node) -> Vec<TimeOfDay> {
         .collect()
 }
 
-fn location_ranges(area: &Node, map: &ScenarioMap) -> Vec<WmlRectangle> {
+pub(crate) fn location_ranges(x: &str, y: &str, map: &ScenarioMap) -> Vec<WmlRectangle> {
     fn values(text: &str) -> Vec<&str> {
         text.split(',').map(str::trim).filter(|value| !value.is_empty()).collect()
     }
-    let xs = values(area.attribute("x").unwrap_or_default());
-    let ys = values(area.attribute("y").unwrap_or_default());
+    let xs = values(x);
+    let ys = values(y);
     (0..xs.len().max(ys.len())).map(|i| (
         axis_range(xs.get(i).copied(), map.width() + 1),
         axis_range(ys.get(i).copied(), map.height() + 1),
