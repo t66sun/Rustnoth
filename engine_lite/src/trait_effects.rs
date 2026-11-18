@@ -137,12 +137,17 @@ fn increase(current: i32, effect: &Node, key: &str, minimum: i32) -> i32 {
     let Some(raw) = effect.attribute(key).filter(|value| !value.is_empty()) else {
         return current;
     };
-    let mut amount = i64::from(integer(effect, key).unwrap_or_default());
+    let amount = integer(effect, key).unwrap_or_default();
     if raw.ends_with('%') {
-        let product = i64::from(current) * amount;
-        // Wesnoth's div100rounded rounds halfway values away from zero.
-        amount = (product + 50 * product.signum()) / 100;
+        return increase_percent(current, amount, minimum);
     }
+    current.saturating_add(amount).max(minimum)
+}
+
+pub(crate) fn increase_percent(current: i32, percent: i32, minimum: i32) -> i32 {
+    let product = i64::from(current) * i64::from(percent);
+    // Wesnoth's div100rounded rounds halfway values away from zero.
+    let amount = (product + 50 * product.signum()) / 100;
     (i64::from(current) + amount).clamp(i64::from(minimum), i64::from(i32::MAX)) as i32
 }
 

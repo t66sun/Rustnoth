@@ -25,6 +25,8 @@ use crate::{
 };
 
 pub mod audit;
+#[cfg(test)]
+mod amla_tests;
 mod illumination;
 mod walk;
 mod vision;
