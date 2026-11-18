@@ -17,7 +17,13 @@ enum SideAction {
 #[derive(Debug)]
 enum EventAction {
     Sides { sides: Vec<usize>, action: SideAction },
-    CaptureVillage(VillageCapture),
+    Map(MapChange),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum MapChange {
+    Capture(VillageCapture),
+    Terrain { position: Hex, code: String },
 }
 
 #[derive(Clone, Debug)]
@@ -99,13 +105,22 @@ impl VillageCapture {
 pub(crate) struct EventState<'a> {
     pub(crate) gold: &'a mut [i64],
     pub(crate) sides: &'a mut [SideConfig],
-    pub(crate) captures: Vec<VillageCapture>,
+    pub(crate) captures: Vec<MapChange>,
 }
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
         if tag == "capture_village" {
-            return VillageCapture::read(cfg).map(Self::CaptureVillage);
+            return VillageCapture::read(cfg).map(|v| Self::Map(MapChange::Capture(v)));
+        }
+        if tag == "terrain" {
+            if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain")) {
+                return None;
+            }
+            let position = Hex::from_wml(cfg.attribute("x")?.trim().parse().ok()?, cfg.attribute("y")?.trim().parse().ok()?)?;
+            let code = cfg.attribute("terrain")?.trim();
+            if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
+            return Some(Self::Map(MapChange::Terrain { position, code: code.into() }));
         }
         let types = |value: &str| {
             value.split(',').map(str::trim).filter(|id| !id.is_empty())
@@ -136,7 +151,7 @@ impl EventAction {
 
     fn apply(&self, state: &mut EventState<'_>) {
         let (sides, action) = match self {
-            Self::CaptureVillage(capture) => {
+            Self::Map(capture) => {
                 state.captures.push(capture.clone());
                 return;
             }
@@ -233,9 +248,14 @@ impl ScenarioEvents {
             let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
                 .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
-                vec![EventAction::CaptureVillage(capture)]
+                vec![EventAction::Map(MapChange::Capture(capture))]
             } else {
-                let Some(changes) = event.children.iter().filter(|(tag, _)| tag != "filter")
+                let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
+                    // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
+                    tag != "filter" && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                        && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
+                        && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
+                })
                     .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
@@ -557,5 +577,53 @@ mod starting_villages_test {
         let mut tiles = Vec::new();
         capture.for_each_hex(&map, |hex| tiles.push(hex));
         assert_eq!(tiles, [Hex { x: 1, y: 0 }]);
+    }
+}
+
+#[cfg(test)]
+mod terrain_event_test {
+    use crate::{scenario_bundle::Bundle, hex::Hex};
+
+    #[test]
+    fn a_new_campaign_village_can_be_claimed_later_in_the_same_event() {
+        let source = br#"[terrain_type]
+string=Gg^Vh
+gives_income=yes
+[/terrain_type]
+[units]
+[unit_type]
+id=Guard
+hitpoints=10
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[objectives]
+side=1
+[/objectives]
+[terrain]
+terrain=Gg^Vh
+x,y=2,1
+[/terrain]
+[capture_village]
+side=2
+x,y=2,1
+[/capture_village]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().villages, [(Hex { x: 1, y: 0 }, 2)]);
+        assert_eq!(game.observation_for(1).unwrap().tiles[1].terrain, "Gg^Vh");
     }
 }
