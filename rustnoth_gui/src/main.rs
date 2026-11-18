@@ -17,13 +17,15 @@ use camera::BoardCamera;
 
 mod camera;
 mod campaign_browser;
+mod desktop;
 mod dialog;
 mod menu;
 mod render;
 mod setup;
 mod title_screen;
 
-const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
+rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -39,7 +41,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let launch = match Options::parse(&args).and_then(Launch::load) {
+    let launch = match Launch::from_args(&args) {
         Ok(data) => data,
         Err(error) => {
             eprintln!("{error}");
@@ -118,11 +120,23 @@ enum Launch {
 }
 
 impl Launch {
+    fn from_args(args: &[OsString]) -> Result<Self, Box<dyn Error>> {
+        let explicit = match args {
+            [] => None,
+            [flag, path] if flag == "--wesnoth-root" => Some(Path::new(path)),
+            _ => return Options::parse(args).and_then(Self::load),
+        };
+        let root = desktop::locate(explicit)?;
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u32;
+        Ok(Self::Title(title_screen::TitleScreen { root, seed, games: title_screen::Games::Installed }))
+    }
+
     fn load(options: Options) -> Result<Self, Box<dyn Error>> {
         let core = read_file(&options.core)?;
         match options.source {
             Source::Title(campaign) => Ok(Self::Title(title_screen::TitleScreen {
-                campaign, root: options.wesnoth_root, core, seed: options.seed,
+                games: title_screen::Games::Prepared(desktop::GameData { campaign, core }),
+                root: options.wesnoth_root, seed: options.seed,
             })),
             Source::Campaign { file, maps } => Ok(Self::Campaign(campaign_browser::Browser::load(
                 &file, maps, core, options.wesnoth_root, options.seed,

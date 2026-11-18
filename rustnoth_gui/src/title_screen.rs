@@ -4,12 +4,16 @@ use std::{error::Error, fs, path::{Path, PathBuf}};
 use engine_lite::wml;
 use macroquad::prelude::*;
 
-use crate::{campaign_browser::Browser, dialog, read_file, setup::Setup};
+use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
+
+pub(super) enum Games {
+    Prepared(desktop::GameData),
+    Installed,
+}
 
 pub(super) struct TitleScreen {
-    pub(super) campaign: Option<(PathBuf, PathBuf)>,
+    pub(super) games: Games,
     pub(super) root: PathBuf,
-    pub(super) core: Vec<u8>,
     pub(super) seed: u32,
 }
 
@@ -37,7 +41,10 @@ impl TitleScreen {
     pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
         let art = Art::load(&self.root)?;
         let tips = tips(&fs::read_to_string(self.root.join("data/tips.cfg"))?)?;
-        let actions = menu(self.campaign.is_some());
+        let actions = menu(match &self.games {
+            Games::Prepared(data) => data.campaign.is_some(),
+            Games::Installed => desktop::campaign_available(&self.root),
+        });
         let mut tip = self.seed as usize % tips.len();
         let mut focus = 0;
         let mut pressed = None;
@@ -87,7 +94,7 @@ impl TitleScreen {
                 Some(Command::Next) => { error = None; tip = (tip + 1) % tips.len(); }
                 Some(command @ (Command::Campaigns | Command::Multiplayer)) => {
                     next_frame().await;
-                    error = self.open(command).await.err().map(|cause| cause.to_string());
+                    error = self.open(command, &art).await.err().map(|cause| cause.to_string());
                 }
                 None => {}
             }
@@ -95,13 +102,28 @@ impl TitleScreen {
         }
     }
 
-    async fn open(&self, command: Command) -> Result<(), Box<dyn Error>> {
+    async fn open(&self, command: Command, art: &Art) -> Result<(), Box<dyn Error>> {
+        let installed;
+        let data = match &self.games {
+            Games::Prepared(data) => data,
+            Games::Installed => {
+                let root = self.root.clone();
+                let worker = std::thread::spawn(move || desktop::prepare(&root, command == Command::Campaigns));
+                while !worker.is_finished() {
+                    art.draw_background(screen_width(), screen_height());
+                    dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
+                    next_frame().await;
+                }
+                installed = worker.join().map_err(|_| "Game data preparation stopped")??;
+                &installed
+            }
+        };
         match command {
             Command::Campaigns => {
-                let (file, maps) = self.campaign.as_ref().ok_or("No campaign supplied")?;
-                Browser::load(file, maps.clone(), self.core.clone(), self.root.clone(), self.seed)?.run().await
+                let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
+                Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?.run().await
             }
-            Command::Multiplayer => Setup::load(self.root.clone(), self.core.clone(), self.seed)?.run().await,
+            Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
