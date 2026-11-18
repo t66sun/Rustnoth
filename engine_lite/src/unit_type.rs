@@ -23,6 +23,7 @@ pub struct UnitType {
     pub max_attacks: i32,
     /// HP restored to adjacent friendly units at the start of this unit's turn.
     pub adjacent_healing: i32,
+    pub(crate) cures_adjacent: bool,
     /// Base experience requirement before applying the scenario's XP modifier.
     pub experience: i32,
     pub cost: i32,
@@ -103,6 +104,7 @@ impl UnitType {
                 .filter(|(tag, _)| tag == "resistance")
                 .map(|(_, table)| table),
         );
+        let (adjacent_healing, cures_adjacent) = stock_adjacent_healing(&unit);
         let mut result = Self {
             id: text("id").to_owned(),
             level,
@@ -114,7 +116,8 @@ impl UnitType {
             hitpoints: int("hitpoints", 1),
             movement: int("movement", 1),
             max_attacks: int("attacks", 1),
-            adjacent_healing: stock_adjacent_healing(&unit),
+            adjacent_healing,
+            cures_adjacent,
             experience: int("experience", 500),
             cost: int("cost", 1),
             alignment,
@@ -171,17 +174,15 @@ fn is_stock_skirmisher(ability: &Node) -> bool {
         ))
 }
 
-fn stock_adjacent_healing(unit: &Node) -> i32 {
+fn stock_adjacent_healing(unit: &Node) -> (i32, bool) {
     unit.children
         .iter()
         .filter(|(tag, _)| tag == "abilities")
         .flat_map(|(_, abilities)| &abilities.children)
         .filter_map(|(tag, heal)| {
             if tag != "heals"
-                || heal.attribute("id") != Some("healing")
                 || heal.attribute("affect_allies") != Some("yes")
                 || heal.attribute("affect_self") != Some("no")
-                || heal.attribute("poison") != Some("slowed")
                 || !heal.attributes.keys().all(|key| {
                     matches!(key.as_str(),
                         "id" | "value" | "affect_allies" | "affect_self" | "poison"
@@ -199,14 +200,14 @@ fn stock_adjacent_healing(unit: &Node) -> i32 {
             {
                 return None;
             }
-            match heal.attribute("value") {
-                Some("4") => Some(4),
-                Some("8") => Some(8),
+            match (heal.attribute("id"), heal.attribute("poison"), heal.attribute("value")) {
+                (Some("healing"), Some("slowed"), Some("4")) => Some((4, false)),
+                (Some("healing"), Some("slowed"), Some("8")) => Some((8, false)),
+                (Some("curing"), Some("cured"), None) => Some((0, true)),
                 _ => None,
             }
         })
-        .max()
-        .unwrap_or(0)
+        .fold((0, false), |(hp, cures), (value, cure)| (hp.max(value), cures || cure))
 }
 
 
