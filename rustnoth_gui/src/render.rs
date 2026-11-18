@@ -547,8 +547,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.42, 0.0, 2.0, SELECTED);
     }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
-    if let Some(focus) = &hover { focus.draw(layout, false); }
+    let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
+    if let Some(focus) = &hover_art { focus.draw(layout, false); }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
@@ -606,7 +606,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     draw_cover(layout, art);
-    if let Some(focus) = &hover { focus.draw(layout, true); }
+    if let Some(focus) = &hover_art { focus.draw(layout, true); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
