@@ -67,6 +67,7 @@ fn listed_traits<'a>(definition: &'a Node, key: &str) -> impl Iterator<Item = &'
 }
 
 struct RaceTraits {
+    undead_variation: String,
     count: i32,
     ignore_global: bool,
     additional: Vec<Arc<Node>>,
@@ -89,6 +90,7 @@ impl TraitCatalog {
                 "race" => {
                     let id = definition.attribute("id").unwrap_or_default().to_owned();
                     catalog.races.entry(id).or_insert_with(|| RaceTraits {
+                        undead_variation: definition.attribute("undead_variation").unwrap_or_default().to_owned(),
                         count: integer(&definition, "num_traits").unwrap_or_default(),
                         ignore_global: enabled(&definition, "ignore_global_traits"),
                         additional: definition
@@ -126,6 +128,12 @@ impl TraitCatalog {
             );
         }
         TraitPool { count, available }
+    }
+
+    pub(super) fn undead_variation<'a>(&'a self, unit: &'a Node) -> &'a str {
+        unit.attribute("undead_variation").filter(|value| !value.is_empty())
+            .or_else(|| self.races.get(unit.attribute("race")?).map(|race| race.undead_variation.as_str()))
+            .unwrap_or_default()
     }
 }
 
