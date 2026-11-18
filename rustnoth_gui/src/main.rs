@@ -25,6 +25,7 @@ mod render;
 mod setup;
 mod story;
 mod title_screen;
+mod tutorial;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
 rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -168,6 +169,7 @@ impl Launch {
 }
 
 struct BoardData {
+    lesson: Option<tutorial::Lesson>,
     scenario: Bundle,
     story: Vec<story::Part>,
     assets: AssetCatalog,
@@ -192,6 +194,7 @@ impl BoardData {
         let story = story::read(config, &title);
         Ok(Self {
             scenario,
+            lesson: None,
             story,
             assets,
             title,
@@ -210,10 +213,11 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
+async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
     let campaign = carryover.is_some();
     let game = data.scenario.start_campaign(data.seed, |name| fs::read_to_string(data.directory.join(name)), carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
+    if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root)?;
@@ -226,6 +230,9 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
     let mut dialogue_page = 0;
     loop {
         let dialogue_open = session.dialogue().is_some();
+        if !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
+            return Ok(None);
+        }
         if !dialogue_open && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
                 return Ok(None);
@@ -274,7 +281,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             art.load(view, &data.assets, session.map_item_images());
         }
         let clicked = !dialogue_open && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        if data.lesson.is_none() && !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -343,6 +350,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
             match session.apply_with_advancement(action, advancement) {
                 Ok(_) => {
+                    if let Some(lesson) = &mut data.lesson { lesson.advance(&mut session); }
                     message = None;
                     menu = None;
                     selection.clear();
@@ -372,6 +380,9 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                 menu: menu.as_ref(),
             },
         );
+        if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
+            lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+        }
         if session.legal_actions().contains(&Action::EndTurn)
             && let Some(bounds) = button
         {

@@ -120,6 +120,11 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    /// Limit the actions offered by the interface during a scripted tutorial step.
+    pub fn retain_actions(&mut self, allowed: impl FnMut(&Action) -> bool) {
+        self.legal_actions.retain(allowed);
+    }
+
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
         if self.computer_action.is_some() { return Vec::new(); }
         self.game.advancement_choices(position)

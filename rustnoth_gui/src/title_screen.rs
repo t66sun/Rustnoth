@@ -137,7 +137,11 @@ impl TitleScreen {
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
-                Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?.run().await
+                let mut browser = Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?;
+                if matches!(&self.games, Games::Installed) {
+                    browser.include_installed_training()?;
+                }
+                browser.run().await
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             _ => unreachable!("only game entries open a child screen"),
