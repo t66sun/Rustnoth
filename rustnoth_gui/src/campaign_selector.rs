@@ -1,4 +1,6 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
+#[path = "campaign_difficulty.rs"]
+mod difficulty;
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -78,6 +80,10 @@ impl<'a> Selector<'a> {
             query: String::new(), editing: false, description_offset: 0, last_click: None,
             art: Art::new(root, campaign),
         }
+    }
+
+    pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
+        difficulty::choose(&mut self.art, campaign).await
     }
 
     pub fn draw(&mut self, error: Option<&str>) -> ListAction {
