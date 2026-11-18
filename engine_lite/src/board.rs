@@ -360,6 +360,10 @@ impl<'rules> Battlefield<'rules> {
         None
     }
 
+    pub(crate) fn change_personal_recruits(&mut self, change: &crate::scenario_events::PersonalRecruits) {
+        for (&position, unit) in &mut self.units { change.apply(position, unit); }
+    }
+
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
         self.map.replace_terrain(hex, code);
     }

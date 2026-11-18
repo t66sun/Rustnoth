@@ -8,6 +8,8 @@ mod items;
 mod variables;
 mod time_areas;
 pub(crate) use time_areas::TimeAreaChange;
+mod personal_recruits;
+pub(crate) use personal_recruits::PersonalRecruits;
 use items::{ItemChange, MapItems};
 use variables::{Comparison, ScalarChange, Scalars};
 
@@ -49,6 +51,7 @@ pub(crate) enum BoardChange {
     Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
+    PersonalRecruits(PersonalRecruits),
     Kill(kill::KillAction, Option<Hex>),
     Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
@@ -193,6 +196,9 @@ impl EventAction {
         }
         if matches!(tag, "time_area" | "remove_time_area") {
             return TimeAreaChange::read(tag, cfg).map(|area| Self::Board(BoardChange::TimeArea(area)));
+        }
+        if matches!(tag, "allow_extra_recruit" | "disallow_extra_recruit" | "set_extra_recruit") {
+            return PersonalRecruits::read(tag, cfg).map(|change| Self::Board(BoardChange::PersonalRecruits(change)));
         }
         if tag == "replace_schedule" {
             if cfg.attributes.keys().any(|k| k != "current_time") || cfg.children.iter().any(|(tag, time)| {

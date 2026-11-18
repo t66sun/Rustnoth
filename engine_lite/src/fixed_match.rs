@@ -236,6 +236,10 @@ impl<'data> FixedMatch<'data> {
                     }
                     continue;
                 }
+                BoardChange::PersonalRecruits(change) => {
+                    self.scenario.board.change_personal_recruits(&change);
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::TimeArea(area) => {
                     area.apply(&mut self.scenario.schedule, self.current_round);
