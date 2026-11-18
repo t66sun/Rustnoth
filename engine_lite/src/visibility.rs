@@ -5,6 +5,7 @@ use crate::hex::Hex;
 use crate::map::ScenarioMap;
 use crate::movement::{reachable_destinations, MovementTile, Occupancy};
 use crate::scenario_sides::{ShareVision, SideConfig};
+use crate::scenario_time::location_ranges;
 
 /// Playable hexes one viewer uncovers using its effective vision costs and range.
 /// A hex too costly to enter is still visible from an adjacent reached hex.
@@ -54,6 +55,8 @@ pub struct VisibilityMask {
     fog: bool,
     shroud: bool,
     sight: BTreeSet<Hex>,
+    /// Saved overrides belong to the viewer and survive refogging.
+    fog_override: BTreeSet<Hex>,
     explored: BTreeSet<Hex>,
 }
 
@@ -66,6 +69,7 @@ impl VisibilityMask {
             fog,
             shroud,
             sight: BTreeSet::new(),
+            fog_override: BTreeSet::new(),
             explored: BTreeSet::new(),
         }
     }
@@ -74,6 +78,18 @@ impl VisibilityMask {
         let mut mask = Self::new(map.width(), map.height(), side.fog, side.shroud);
         if side.fog {
             mask.sight = read_cleared_tiles(&side.fog_data, map);
+            if let Some((x, y)) = &side.fog_override {
+                for (columns, rows) in location_ranges(x, y, map) {
+                    for column in columns {
+                        for row in rows.clone() {
+                            let hex = Hex { x: column - 1, y: row - 1 };
+                            if map.is_playable(hex) {
+                                mask.fog_override.insert(hex);
+                            }
+                        }
+                    }
+                }
+            }
         }
         if side.shroud {
             mask.explored = read_cleared_tiles(&side.shroud_data, map);
@@ -131,7 +147,7 @@ impl VisibilityMask {
         }
         Some(if self.shroud && !self.explored.contains(&hex) {
             HexVisibility::Shrouded
-        } else if self.fog && !self.sight.contains(&hex) {
+        } else if self.fog && !self.sight.contains(&hex) && !self.fog_override.contains(&hex) {
             HexVisibility::Fogged
         } else {
             HexVisibility::Visible
@@ -161,6 +177,44 @@ fn read_cleared_tiles(data: &str, map: &ScenarioMap) -> BTreeSet<Hex> {
 mod tests {
     use super::*;
     use crate::{scenario_sides::read_sides, wml};
+
+    #[test]
+    fn saved_fog_overrides_survive_refog_for_their_owner_on_explored_tiles() {
+        let map = ScenarioMap::parse(concat!(
+            "Xv,Xv,Xv,Xv,Xv,Xv\nXv,Gg,Gg,Gg,Gg,Xv\n",
+            "Xv,Gg,Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv",
+        )).unwrap();
+        let sides = read_sides(&wml::parse(br#"
+[side]
+    team_name=allies
+    fog=yes
+    shroud=yes
+    share_vision=all
+    shroud_data="|000|011|011|011|010"
+    [fog_override]
+        x=0-2,4-8
+        y=2,1-2
+    [/fog_override]
+[/side]
+[side]
+    team_name=allies
+    fog=yes
+[/side]
+"#).unwrap());
+        let mut owner = VisibilityMask::from_side(&map, &sides[0]);
+        let ally = VisibilityMask::from_side(&map, &sides[1]);
+        let at = |x, y| Hex::from_wml(x, y).unwrap();
+        owner.replace_sight([at(3, 2)]);
+        owner.replace_sight([]);
+        assert_eq!(owner.at(at(1, 2)), Some(HexVisibility::Visible));
+        assert_eq!(owner.at(at(2, 1)), Some(HexVisibility::Fogged));
+        assert_eq!(owner.at(at(3, 2)), Some(HexVisibility::Fogged));
+        assert_eq!(owner.at(at(4, 1)), Some(HexVisibility::Visible));
+        assert_eq!(owner.at(at(4, 2)), Some(HexVisibility::Shrouded));
+        assert_eq!(owner.at(at(5, 2)), None);
+        let shared = ally.with_allied_vision(&sides[1], [(&sides[0], &owner)]);
+        assert_eq!(shared.at(at(1, 2)), Some(HexVisibility::Fogged));
+    }
 
     const LEFT: Hex = Hex { x: 0, y: 0 };
     const RIGHT: Hex = Hex { x: 1, y: 0 };
