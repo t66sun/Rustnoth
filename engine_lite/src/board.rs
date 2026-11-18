@@ -93,6 +93,10 @@ impl UnitState<'_> {
         self.traits.iter().flat_map(|traits| traits.definitions.iter().copied())
     }
 
+    pub(crate) fn is_fearless(&self) -> bool {
+        self.traits.as_ref().is_some_and(|traits| traits.stats.fearless)
+    }
+
     fn attack_damage(&self, index: usize) -> i32 {
         self.traits
             .as_ref()
