@@ -3,6 +3,10 @@ use crate::hex::Hex;
 
 impl FixedMatch<'_> {
     pub(super) fn lawful_bonus_at(&self, round: i32, position: Hex) -> i32 {
+        self.lawful_bonus_in_view(round, position, |_| true)
+    }
+
+    pub(super) fn lawful_bonus_in_view(&self, round: i32, position: Hex, visible: impl Fn(Hex) -> bool) -> i32 {
         let board = &self.scenario.board;
         let scheduled = self.scenario.schedule.at_hex(round, position).lawful_bonus;
         let base = board.map().terrain_at(position).map_or(scheduled, |code|
@@ -12,6 +16,7 @@ impl FixedMatch<'_> {
             return base;
         }
         let illuminated = std::iter::once(position).chain(position.neighbors())
+            .filter(|hex| visible(*hex))
             .any(|hex| board.unit_at(hex).is_some_and(|unit| unit.unit_type.illuminates));
         if illuminated { (base + 25).min(25) } else { base }
     }

@@ -20,6 +20,7 @@ use rustnoth_gui::{
 use crate::menu::Menu;
 
 pub mod objectives;
+pub mod attack_dialog;
 mod dialogue;
 pub use dialogue::draw_dialogue;
 mod transitions;
@@ -29,6 +30,7 @@ mod rules;
 mod reach;
 mod hover;
 
+const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -431,8 +433,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
-    if let Some(focus) = &hover { focus.draw(layout, false); }
+    let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
+    if let Some(focus) = &hover_art { focus.draw(layout, false); }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
@@ -498,7 +500,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat(global_color);
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
-    if let Some(focus) = &hover { focus.draw(layout, true); }
+    if let Some(focus) = &hover_art { focus.draw(layout, true); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {

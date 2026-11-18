@@ -59,6 +59,11 @@ impl Bundle {
         })
     }
 
+    /// Public unit-type data used by the recruit preview for a legal recruit.
+    pub fn unit_type(&self, id: &str) -> Option<&UnitType> {
+        self.unit_types.get(id)
+    }
+
     /// Start a fresh match, using the caller's resolver for a named map file.
     pub fn start(
         &self,
