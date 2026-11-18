@@ -165,7 +165,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
     if let Some(observation) = session.observation() {
-        art.load(observation, &data.assets);
+        art.load(observation, &data.assets, session.map_item_images());
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
@@ -268,7 +268,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                         if let Some(position) = reselect {
                             selection.select_own(position, observation);
                         }
-                        art.load(observation, &data.assets);
+                        art.load(observation, &data.assets, session.map_item_images());
                     }
                 }
                 Err(error) => message = Some(error.to_string()),

@@ -69,6 +69,7 @@ pub struct BoardArt {
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
+    map_items: Vec<(Hex, Texture2D)>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -114,6 +115,7 @@ impl BoardArt {
             flag_colors: palette(TeamColors::parse_flags),
             flags: BTreeMap::new(),
             periods,
+            map_items: Vec::new(),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
@@ -125,7 +127,18 @@ impl BoardArt {
         }
     }
 
-    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog) {
+    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+        self.map_items.clear();
+        for (position, image) in items {
+            let path = Path::new(image);
+            if !path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+                || path.extension().is_none_or(|ext| ext != "png") || image.contains(['~', ':', '\\']) {
+                continue;
+            }
+            if let Some(texture) = assets.resolve_image(path).and_then(|p| get_texture(&mut self.paths, p)) {
+                self.map_items.push((position, texture));
+            }
+        }
         self.cover = map_cover(observation);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
@@ -443,6 +456,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let size = layout.tile_size();
     let frame = village_flag_frame((get_time() * 1000.0) as u64);
     draw_terrain(view, layout, art, Some(frame));
+    for (position, texture) in &art.map_items {
+        let [x, y] = layout.tile_origin(*position);
+        draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
+    }
     let mut choices = BTreeMap::new();
     for action in movement.actions {
         match action {
