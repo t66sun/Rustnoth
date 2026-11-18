@@ -148,6 +148,15 @@ impl FixedMatch<'_> {
         }
     }
 
+    /// The viewing side's settled gold, displayed only after a won scenario with a successor.
+    pub fn retained_gold(&self, viewer: usize) -> Option<i64> {
+        let treasury = self.scenario.treasuries.get(viewer.checked_sub(1)?)?;
+        let id = treasury.save_id.as_ref()?;
+        let mut settlement = CampaignGold::default();
+        self.store_campaign_gold(&mut settlement);
+        settlement.0.get(id).map(|&(amount, _)| amount)
+    }
+
     /// Settle only when a player continues a won campaign scenario.
     pub fn store_campaign_gold(&self, campaign: &mut CampaignGold) {
         if self.next_scenario_after_victory().is_none() { return; }

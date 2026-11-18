@@ -39,6 +39,7 @@ mod plague;
 mod kill;
 mod retaliation;
 pub mod attack_preview;
+pub mod combat_display;
 pub mod move_preview;
 pub mod unit_report;
 
@@ -115,6 +116,7 @@ pub struct FixedMatch<'data> {
     rules: Rules<'data>,
     rng: ReplayRng,
     state: MatchState,
+    show_end_report: bool,
     current_round: i32,
     kill_stack: Vec<Hex>,
     village_owners: BTreeMap<Hex, usize>,
@@ -155,6 +157,7 @@ impl<'data> FixedMatch<'data> {
             }
         }
         let mut game = Self {
+            show_end_report: true,
             current_round: scenario.start_round,
             kill_stack: Vec::new(),
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
@@ -229,8 +232,9 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory, next_scenario, gold } => {
+                BoardChange::EndLevel { victory, report, next_scenario, gold } => {
                     if matches!(self.state, MatchState::Playing(_)) {
+                        self.show_end_report = report;
                         for (treasury, settings) in self.scenario.treasuries.iter_mut().zip(gold) {
                             treasury.override_with(settings);
                         }
@@ -302,6 +306,10 @@ impl<'data> FixedMatch<'data> {
         }
         if killed && self.kill_stack.is_empty() { self.check_victory(); }
         Ok(())
+    }
+
+    pub fn show_end_report(&self) -> bool {
+        self.show_end_report && !matches!(self.state, MatchState::Playing(_))
     }
 
     pub fn state(&self) -> MatchState {
@@ -419,7 +427,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn step(&mut self, action: Action) -> Result<MatchState, MatchError> {
-        self.step_with_choices(action, None, None)
+        self.step_with_choices(action, None, None, None, None)
     }
 
     /// Supported next types of an active-side unit, in WML declaration order.
@@ -441,11 +449,19 @@ impl<'data> FixedMatch<'data> {
     pub fn attack_with_advancements(
         &mut self, attack: AttackChoice, attacker: Option<&str>, defender: Option<&str>,
     ) -> Result<MatchState, MatchError> {
-        self.step_with_choices(Action::Attack(attack), attacker, defender)
+        self.step_with_choices(Action::Attack(attack), attacker, defender, None, None)
+    }
+
+    /// Execute this side's movement once, recording the reached route for presentation.
+    pub fn move_with_trace(&mut self, from: Hex, to: Hex, trace: &mut Vec<Hex>) -> Result<MatchState, MatchError> {
+        trace.clear();
+        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(trace))
     }
 
     fn step_with_choices(
         &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
+        display: Option<(usize, &mut Option<combat_display::VisibleCombat>)>,
+        movement_trace: Option<&mut Vec<Hex>>,
     ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
@@ -459,7 +475,7 @@ impl<'data> FixedMatch<'data> {
             return Err(MatchError::ActionUnavailable);
         }
         match action {
-            Action::Move { from, to } => self.walk(turn.side, from, to)?,
+            Action::Move { from, to } => self.walk(turn.side, from, to, movement_trace)?,
             Action::Attack(choice) => {
                 if self.scenario.board.unit_at(choice.to).is_some()
                     && !self.unit_visible_on_known_hex(turn.side, choice.to)
@@ -474,7 +490,7 @@ impl<'data> FixedMatch<'data> {
                     }
                 }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
-                if self.apply_scenario_attack(turn, attack)? {
+                if self.apply_scenario_attack(turn, attack, display)? {
                     let board = &mut self.scenario.board;
                     board.advance_after_combat(choice.from, attacker, supports_unit);
                     board.advance_after_combat(choice.to, defender, supports_unit);
@@ -570,7 +586,7 @@ impl<'data> FixedMatch<'data> {
         let villages = self
             .village_owners
             .values()
-            .filter(|&&side| side == side)
+            .filter(|&&owner| owner == side)
             .count();
         let upkeep = self
             .scenario

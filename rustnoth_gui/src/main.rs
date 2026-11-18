@@ -30,6 +30,7 @@ mod story;
 mod saved_game;
 mod save_dialog;
 mod unit_list;
+mod scenario_report;
 mod title_screen;
 mod tutorial;
 
@@ -270,11 +271,15 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
     let mut confirmed_recruit = None;
+    let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
+    session.enable_combat_playback();
     loop {
-        let dialogue_open = session.dialogue().is_some();
-        if !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
+        let now = (get_time() * 1000.0) as u64;
+        let walking = art.walk.advance(now, is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Space));
+        let dialogue_open = !walking && session.dialogue().is_some();
+        if !walking && !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
             return Ok(None);
         }
         let mut commands = map_menus::available(
@@ -286,8 +291,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             commands.insert(0, map_menus::Command::UnitList);
         }
         if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
-        let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
-        let input_blocked = dialogue_open || top.handled;
+        let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
+        let input_blocked = walking || dialogue_open || top.handled;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -364,6 +369,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
+            if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
             if !reset && !input_blocked {
                 if is_mouse_button_pressed(MouseButton::Left)
                     && let Some(point) = render::minimap_point(observation, pointer)
@@ -382,7 +388,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
-        let computer_acted = !top.handled && session.play_computer_action()?;
+        let computer_acted = !walking && !top.handled && session.play_computer_action()?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
         }
@@ -472,26 +478,30 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         };
         if let Some(action) = requested {
             let reselect = match &action {
-                Action::Move { to, .. } => Some(*to),
                 Action::Attack(attack) => Some(attack.from),
                 _ => None,
             };
             let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
-            match session.apply_with_advancement(action, advancement) {
+            let mut walk = Vec::new();
+            match session.apply_recording_walk(action, advancement, Some(&mut walk)) {
                 Ok(_) => {
                     if let Some(lesson) = &mut data.lesson { lesson.advance(&mut session); }
                     message = None;
                     menu = None;
                     selection.clear();
                     if let Some(observation) = session.observation() {
-                        if let Some(position) = reselect {
+                        if let Some(position) = walk.last().copied().or(reselect) {
                             selection.select_own(position, observation);
                         }
                         art.load(observation, &data.assets, session.map_item_images());
+                        art.start_walk(walk, observation, &data.assets);
                     }
                 }
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
+        }
+        if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
+            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets).await;
         }
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
@@ -536,13 +546,20 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 recruit_dialog::Result::Cancel => {}
             }
         }
-        if let Some(line) = session.dialogue() {
+        if !art.walk.active() && let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
             if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
                 || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
             {
                 if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
                 else { dialogue_page += 1; }
+            }
+        }
+        if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
+            end_report_shown = true;
+            if scenario_report::show(&data.wesnoth_root,&session,campaign).await {
+                if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
+                return Ok(if campaign { session.next_scenario().map(str::to_owned) } else { None });
             }
         }
         next_frame().await;
