@@ -345,7 +345,6 @@ impl<'data> FixedMatch<'data> {
         {
             return Err(MatchError::ActionUnavailable);
         }
-        let enemies = |first: usize, second: usize| sides[first - 1].is_enemy(&sides[second - 1]);
         match action {
             Action::Move { from, to } => self.walk(turn.side, from, to)?,
             Action::Attack(choice) => {
@@ -362,13 +361,8 @@ impl<'data> FixedMatch<'data> {
                     }
                 }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
-                board.apply_scenario_attack(
-                    turn.side,
-                    attack,
-                    enemies,
-                    self.rules.terrain,
-                    &mut self.rng,
-                )?;
+                self.apply_scenario_attack(turn.side, attack)?;
+                let board = &mut self.scenario.board;
                 board.advance_after_combat(choice.from, attacker, supports_unit);
                 board.advance_after_combat(choice.to, defender, supports_unit);
                 self.refog(defender_side);

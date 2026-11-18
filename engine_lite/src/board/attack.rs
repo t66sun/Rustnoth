@@ -109,6 +109,25 @@ impl Battlefield<'_> {
         sides_are_enemies: impl Fn(usize, usize) -> bool,
         rng: &mut ReplayRng,
     ) -> Result<CombatResult, AttackError> {
+        let (from, to) = (action.from, action.to);
+        let result = self.resolve_attack(active_side, action, sides_are_enemies, rng)?;
+        if result.attacker_hitpoints == 0 { self.remove_casualty(from); }
+        if result.defender_hitpoints == 0 { self.remove_casualty(to); }
+        Ok(result)
+    }
+
+    pub(crate) fn remove_casualty(&mut self, position: Hex) {
+        self.units.remove(&position);
+    }
+
+    /// Commit the exchange, retaining the dying unit for the scenario's die event.
+    pub(crate) fn resolve_attack(
+        &mut self,
+        active_side: usize,
+        action: Attack,
+        sides_are_enemies: impl Fn(usize, usize) -> bool,
+        rng: &mut ReplayRng,
+    ) -> Result<CombatResult, AttackError> {
         let from = action.from;
         let to = action.to;
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
@@ -184,12 +203,10 @@ impl Battlefield<'_> {
 
         self.resting.remove(&from);
         self.resting.remove(&to);
-        if result.attacker_hitpoints == 0 {
-            self.units.remove(&from);
-        } else {
-            let unit = self.units.get_mut(&from).expect("validated attacker");
+        let unit = self.units.get_mut(&from).expect("validated attacker");
+        unit.hitpoints = result.attacker_hitpoints as i32;
+        if result.attacker_hitpoints > 0 {
             unit.uncovered = true;
-            unit.hitpoints = result.attacker_hitpoints as i32;
             unit.slowed = result.attacker_slowed;
             unit.poisoned = result.poisoned[0];
             unit.petrified |= result.petrified[0];
@@ -197,11 +214,9 @@ impl Battlefield<'_> {
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
         }
-        if result.defender_hitpoints == 0 {
-            self.units.remove(&to);
-        } else {
-            let unit = self.units.get_mut(&to).expect("validated defender");
-            unit.hitpoints = result.defender_hitpoints as i32;
+        let unit = self.units.get_mut(&to).expect("validated defender");
+        unit.hitpoints = result.defender_hitpoints as i32;
+        if result.defender_hitpoints > 0 {
             unit.slowed = result.defender_slowed;
             unit.poisoned = result.poisoned[1];
             unit.petrified |= result.petrified[1];
