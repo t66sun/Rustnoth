@@ -32,6 +32,8 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    poisoned: Option<Texture2D>,
+    slowed: Option<Texture2D>,
     team_colors: Option<TeamColors>,
     font: Option<Font>,
 }
@@ -50,6 +52,8 @@ impl BoardArt {
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
+            poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
+            slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             team_colors,
             font,
         }
@@ -194,6 +198,15 @@ pub fn draw(
         if let Some(moves) = unit.moves_left {
             label(&art.font, &format!("Moves {moves}"), inset, baseline + 181.0, 17, MUTED);
         }
+        let condition = match (unit.poisoned, unit.slowed) {
+            (true, true) => "Poisoned, Slowed",
+            (true, false) => "Poisoned",
+            (false, true) => "Slowed",
+            (false, false) => "",
+        };
+        if !condition.is_empty() {
+            label(&art.font, condition, inset, baseline + 195.0, 13, TEXT);
+        }
     }
     if let Some(message) = movement.message {
         label(&art.font, message, inset, height - 76.0, 16, ERROR);
@@ -276,6 +289,29 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_centered(texture, center, size);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
+        }
+    }
+
+    // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
+    for unit in &view.units {
+        let icons = [
+            art.poisoned.as_ref().filter(|_| unit.poisoned),
+            art.slowed.as_ref().filter(|_| unit.slowed),
+        ];
+        let count = icons.iter().flatten().count();
+        let [x, y] = layout.tile_origin(unit.position);
+        let spacing = (size * 0.30).max(10.0).min(size * 0.37);
+        for (index, icon) in icons.into_iter().flatten().enumerate() {
+            let slot = index as f32 + 0.5 - count as f32 * 0.5;
+            let center = vec2(x + size * 0.5 + slot * spacing, y + size * 0.81);
+            let original = vec2(icon.width(), icon.height());
+            let dimensions = original * (spacing * 0.80 / original.x.max(original.y));
+            let top = center - dimensions * 0.5;
+            draw_circle(center.x, center.y, spacing * 0.49, BACKGROUND);
+            draw_texture_ex(icon, top.x, top.y, WHITE, DrawTextureParams {
+                dest_size: Some(dimensions),
+                ..DrawTextureParams::default()
+            });
         }
     }
 }

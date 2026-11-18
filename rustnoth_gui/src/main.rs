@@ -291,6 +291,7 @@ mod tests {
             units: vec![ObservedUnit {
                 position: start, side: 1, type_id: "Bowman".into(),
                 hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),
+                poisoned: false, slowed: false,
             }],
         };
         let action = Action::Move { from: start, to: destination };
