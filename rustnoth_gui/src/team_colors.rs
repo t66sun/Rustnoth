@@ -19,20 +19,29 @@ struct TeamColor {
 impl TeamColors {
     /// Reads Wesnoth's core team-colors.cfg, including the magenta sprite palette.
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
+        Self::parse_palette(bytes, "magenta")
+    }
+
+    /// Reads the green source palette used by the original village flag frames.
+    pub fn parse_flags(bytes: &[u8]) -> io::Result<Self> {
+        Self::parse_palette(bytes, "flag_green")
+    }
+
+    fn parse_palette(bytes: &[u8], name: &str) -> io::Result<Self> {
         let config = wml::parse(bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let magenta = config
+        let source = config
             .children
             .iter()
             .filter(|(tag, _)| tag == "color_palette")
-            .find_map(|(_, palette)| palette.attribute("magenta"))
-            .ok_or_else(|| invalid_data("missing magenta sprite palette"))?;
-        let magenta = parse_colors(magenta)?;
-        let reference = magenta
+            .find_map(|(_, palette)| palette.attribute(name))
+            .ok_or_else(|| invalid_data(format!("missing {name} palette")))?;
+        let source = parse_colors(source)?;
+        let reference = source
             .first()
             .copied()
             .map(shade)
-            .ok_or_else(|| invalid_data("magenta sprite palette is empty"))?;
+            .ok_or_else(|| invalid_data(format!("{name} palette is empty")))?;
 
         let mut sides = Vec::new();
         for (tag, range) in &config.children {
@@ -48,7 +57,7 @@ impl TeamColors {
             let midpoint = colors.first().copied().unwrap_or([128; 3]);
             let maximum = colors.get(1).copied().unwrap_or([255; 3]);
             let minimum = colors.get(2).copied().unwrap_or([0; 3]);
-            let replacements = magenta
+            let replacements = source
                 .iter()
                 .copied()
                 .map(|base| {
@@ -129,6 +138,16 @@ fn recolor_shade(shade: f32, reference: f32, midpoint: Rgb, minimum: Rgb, maximu
 #[cfg(test)]
 mod tests {
     use super::TeamColors;
+
+    #[test]
+    fn village_flags_recolor_green_cloth_and_preserve_pole_and_alpha() {
+        let cfg = b"[color_range]\nid=blue\ndefault=yes\nrgb=2255AA\n[/color_range]\n\
+            [color_palette]\nmagenta=F49AC1\nflag_green=00C800,006400\n[/color_palette]";
+        let palette = TeamColors::parse_flags(cfg).unwrap();
+        let mut pixels = [0, 200, 0, 180, 0, 100, 0, 255, 92, 62, 41, 255];
+        palette.recolor(1, &mut pixels);
+        assert_eq!(pixels, [34, 85, 170, 180, 17, 42, 85, 255, 92, 62, 41, 255]);
+    }
 
     #[test]
     fn uses_default_side_order_and_recolors_only_visible_palette_pixels() {
