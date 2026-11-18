@@ -57,6 +57,11 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
         let (x, y) = wml_position(position)?;
         writeln!(out, "village\t{x}\t{y}\t{side}")?;
     }
+    for view in &snapshot.views {
+        for (y, tiles) in view.rows.iter().enumerate() {
+            writeln!(out, "view\t{}\t{}\t{tiles}", view.side, y + 1)?;
+        }
+    }
     writeln!(out, "end\t{step}")
 }
 
@@ -123,6 +128,7 @@ mod tests {
                 },
             ],
             villages: vec![(Hex { x: 0, y: 1 }, 1), (Hex { x: 4, y: 0 }, 2)],
+            views: Vec::new(),
         };
         let mut output = Vec::new();
         write_snapshot(&mut output, 3, &snapshot).unwrap();
@@ -153,6 +159,7 @@ mod tests {
                 gold: vec![0, 9],
                 units: Vec::new(),
                 villages: Vec::new(),
+                views: Vec::new(),
             };
             write_snapshot(&mut output, step, &snapshot).unwrap();
         }
@@ -170,6 +177,7 @@ mod tests {
                 gold: vec![0, 0],
                 units: Vec::new(),
                 villages: vec![(position, 1)],
+                views: Vec::new(),
             };
             assert_eq!(
                 write_snapshot(Vec::new(), 0, &snapshot).unwrap_err().kind(),

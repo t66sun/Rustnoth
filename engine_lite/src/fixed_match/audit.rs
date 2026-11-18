@@ -2,7 +2,7 @@
 
 use std::mem;
 
-use crate::{hex::Hex, rng::ReplayRng};
+use crate::{hex::Hex, observation::Observation, rng::ReplayRng};
 
 use super::{Action, FixedMatch, MatchError, MatchState};
 
@@ -16,6 +16,29 @@ pub struct Snapshot {
     pub units: Vec<SnapshotUnit>,
     /// Owned village hexes and their owners in hex order.
     pub villages: Vec<(Hex, usize)>,
+    /// Playable visibility rows for sides that use fog or shroud, in side order.
+    pub views: Vec<SnapshotView>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct SnapshotView {
+    pub side: usize,
+    /// One row per playable y, containing V (visible), F (fogged), or S (shrouded).
+    pub rows: Vec<String>,
+}
+
+impl SnapshotView {
+    fn from_observation(view: Observation) -> Self {
+        let mut rows = vec![vec!['S'; view.width as usize]; view.height as usize];
+        for tile in view.tiles {
+            rows[tile.position.y as usize][tile.position.x as usize] =
+                if tile.visible { 'V' } else { 'F' };
+        }
+        Self {
+            side: view.side,
+            rows: rows.into_iter().map(|row| row.into_iter().collect()).collect(),
+        }
+    }
 }
 
 /// Comparable values for a unit on the referee board.
@@ -82,6 +105,12 @@ impl FixedMatch<'_> {
                 .iter()
                 .map(|(&hex, &side)| (hex, side))
                 .collect(),
+            views: self.scenario.sides.iter()
+                .filter(|side| side.fog || side.shroud)
+                .map(|side| SnapshotView::from_observation(
+                    self.observation_for(side.side).expect("scenario side has an observation"),
+                ))
+                .collect(),
         }
     }
 }
@@ -103,6 +132,38 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn traces_each_playable_row_of_a_sides_map_after_villages() {
+        let tile = |x, y, visible| crate::observation::ObservedTile {
+            position: Hex { x, y },
+            terrain: "Gg".to_owned(),
+            visible,
+            village_owner: None,
+        };
+        let view = SnapshotView::from_observation(Observation {
+            side: 2,
+            allied_sides: vec![2],
+            gold: Some(9),
+            width: 3,
+            height: 2,
+            tiles: vec![tile(2, 1, true), tile(0, 0, false), tile(1, 0, true)],
+            units: Vec::new(),
+        });
+        let snapshot = Snapshot {
+            state: MatchState::Draw,
+            gold: vec![0, 9],
+            units: Vec::new(),
+            villages: vec![(Hex { x: 0, y: 0 }, 1)],
+            views: vec![view],
+        };
+        let mut output = Vec::new();
+        crate::audit_trace::write_snapshot(&mut output, 4, &snapshot).unwrap();
+        assert_eq!(output, concat!(
+            "step\t4\tdraw\ngold\t1\t0\ngold\t2\t9\nvillage\t1\t1\t1\n",
+            "view\t2\t1\tFVS\nview\t2\t2\tSSV\nend\t4\n",
+        ).as_bytes());
+    }
 
     #[test]
     fn scoped_rng_uses_the_given_draw_offset_and_restores_the_normal_stream() {
@@ -261,6 +322,7 @@ Xv,Xv,Xv,Xv,Xv"
         assert_eq!(before.gold, [17, 41]);
         assert_eq!(before.units, [fighter(west, 1), fighter(east, 2)]);
         assert_eq!(before.villages, [(village, 2)]);
+        assert!(before.views.is_empty());
         let (observation, _) = game.decision().unwrap();
         assert_eq!(observation.gold, Some(17));
 
