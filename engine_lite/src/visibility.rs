@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::hex::Hex;
+use crate::{
+    hex::Hex,
+    scenario_sides::{ShareVision, SideConfig},
+};
 
 /// What one side can see at a playable hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +17,7 @@ pub enum HexVisibility {
 }
 
 /// A side's current sight and its exploration of the playable map.
+#[derive(Clone)]
 pub struct VisibilityMask {
     width: i32,
     height: i32,
@@ -39,6 +43,11 @@ impl VisibilityMask {
     /// Updates current sight and preserves the terrain uncovered by earlier sight.
     pub fn replace_sight(&mut self, sight: impl IntoIterator<Item = Hex>) {
         self.sight.clear();
+        self.add_sight(sight);
+    }
+
+    /// Uncovers tiles while keeping earlier sight from this turn, including a moving unit's trail.
+    pub fn add_sight(&mut self, sight: impl IntoIterator<Item = Hex>) {
         for hex in sight {
             if self.is_playable(hex) {
                 if self.fog {
@@ -49,6 +58,29 @@ impl VisibilityMask {
                 }
             }
         }
+    }
+
+    /// Builds the viewer's effective mask from sides' individual, unshared masks.
+    /// The roster may include the viewer and enemies. An ally contributes only the layers
+    /// it has enabled and offers through its own `share_vision` setting.
+    pub fn with_allied_vision<'a>(
+        &self,
+        viewer: &SideConfig,
+        sides: impl IntoIterator<Item = (&'a SideConfig, &'a VisibilityMask)>,
+    ) -> Self {
+        let mut view = self.clone();
+        for (donor, mask) in sides {
+            if donor.side == viewer.side || viewer.is_enemy(donor) {
+                continue;
+            }
+            if view.shroud && mask.shroud && donor.share_vision != ShareVision::None {
+                view.explored.extend(&mask.explored);
+            }
+            if view.fog && mask.fog && donor.share_vision == ShareVision::All {
+                view.sight.extend(&mask.sight);
+            }
+        }
+        view
     }
 
     /// Returns the visibility of a playable tile. Map borders lie outside this mask.
@@ -73,6 +105,7 @@ impl VisibilityMask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{scenario_sides::read_sides, wml};
 
     const LEFT: Hex = Hex { x: 0, y: 0 };
     const RIGHT: Hex = Hex { x: 1, y: 0 };
@@ -91,6 +124,67 @@ mod tests {
         assert_eq!(mask.at(LEFT), Some(HexVisibility::Fogged));
         assert_eq!(mask.at(RIGHT), Some(HexVisibility::Visible));
         assert_eq!(mask.at(BORDER), None);
+    }
+
+    #[test]
+    fn movement_trail_stays_in_sight_until_refogging() {
+        let mut mask = VisibilityMask::new(2, 1, true, true);
+        mask.add_sight([LEFT]);
+        mask.add_sight([RIGHT]);
+        assert_eq!(mask.at(LEFT), Some(HexVisibility::Visible));
+        assert_eq!(mask.at(RIGHT), Some(HexVisibility::Visible));
+
+        mask.replace_sight([RIGHT]);
+        assert_eq!(mask.at(LEFT), Some(HexVisibility::Fogged));
+        assert_eq!(mask.at(RIGHT), Some(HexVisibility::Visible));
+    }
+
+    #[test]
+    fn only_allied_donors_share_the_enabled_layers_they_offer() {
+        let roster = wml::parse(
+            "[side]\nteam_name=red\nshare_vision=none\n[/side]\n\
+             [side]\nteam_name=red\nshare_vision=shroud\n[/side]\n\
+             [side]\nteam_name=red\nshare_vision=all\n[/side]\n\
+             [side]\nteam_name=blue\nshare_vision=all\n[/side]",
+        )
+        .unwrap();
+        let sides = read_sides(&roster);
+        let viewer = &sides[0];
+        let raw = VisibilityMask::new(2, 1, true, true);
+        let mut donor = VisibilityMask::new(2, 1, true, true);
+        donor.add_sight([LEFT]);
+        donor.replace_sight([RIGHT]);
+
+        let only_map = raw.with_allied_vision(viewer, [(&sides[1], &donor)]);
+        assert_eq!(only_map.at(LEFT), Some(HexVisibility::Fogged));
+        assert_eq!(only_map.at(RIGHT), Some(HexVisibility::Fogged));
+        let full = raw.with_allied_vision(viewer, [(&sides[2], &donor)]);
+        assert_eq!(full.at(LEFT), Some(HexVisibility::Fogged));
+        assert_eq!(full.at(RIGHT), Some(HexVisibility::Visible));
+        let enemy = raw.with_allied_vision(viewer, [(&sides[3], &donor)]);
+        assert_eq!(enemy.at(RIGHT), Some(HexVisibility::Shrouded));
+        let none = raw.with_allied_vision(&sides[2], [(viewer, &donor)]);
+        assert_eq!(none.at(RIGHT), Some(HexVisibility::Shrouded));
+        assert_eq!(raw.at(RIGHT), Some(HexVisibility::Shrouded));
+
+        let mut fog_only = VisibilityMask::new(2, 1, true, false);
+        fog_only.add_sight([RIGHT]);
+        let with_fog_only = raw.with_allied_vision(viewer, [(&sides[2], &fog_only)]);
+        assert_eq!(with_fog_only.at(RIGHT), Some(HexVisibility::Shrouded));
+        let mut shroud_only = VisibilityMask::new(2, 1, false, true);
+        shroud_only.add_sight([RIGHT]);
+        let with_shroud_only = raw.with_allied_vision(viewer, [(&sides[2], &shroud_only)]);
+        assert_eq!(with_shroud_only.at(RIGHT), Some(HexVisibility::Fogged));
+        let both =
+            raw.with_allied_vision(viewer, [(&sides[1], &shroud_only), (&sides[2], &fog_only)]);
+        assert_eq!(both.at(RIGHT), Some(HexVisibility::Visible));
+        let view_without_shroud = VisibilityMask::new(2, 1, true, false)
+            .with_allied_vision(viewer, [(&sides[2], &fog_only)]);
+        assert_eq!(view_without_shroud.at(LEFT), Some(HexVisibility::Fogged));
+        assert_eq!(view_without_shroud.at(RIGHT), Some(HexVisibility::Visible));
+        let view_without_fog = VisibilityMask::new(2, 1, false, true)
+            .with_allied_vision(viewer, [(&sides[1], &shroud_only)]);
+        assert_eq!(view_without_fog.at(RIGHT), Some(HexVisibility::Visible));
     }
 
     #[test]
