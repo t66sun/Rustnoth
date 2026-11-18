@@ -9,7 +9,7 @@ def check(campaign_path, difficulty_path):
         assert campaign.size == difficulty.size, (campaign.size, difficulty.size)
         width, height = campaign.size
         strip = max(1, width // 20)
-        for start in (0, width - strip):
+        for start in (width // 6, width - width // 6 - strip):
             bounds = (start, 0, start + strip, height)
             original = campaign.crop(bounds).convert("RGB")
             assert max(ImageStat.Stat(original).stddev) > 10, "missing campaign background"

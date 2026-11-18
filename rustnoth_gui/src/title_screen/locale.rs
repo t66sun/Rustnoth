@@ -12,9 +12,24 @@ pub(crate) struct Locale {
 }
 
 #[derive(Default)]
-struct Catalog(HashMap<String, String>);
+pub(super) struct Catalog(HashMap<String, String>);
 
 impl Catalog {
+    pub(super) fn installed(root: &Path, language: &str, domain: &str) -> io::Result<Self> {
+        let identifier = |name: &str| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b));
+        if !identifier(language) || !identifier(domain) || matches!(language, "en_US" | "C") {
+            return Ok(Self::default());
+        }
+        for id in candidates(language) {
+            let path = root.join("translations").join(id).join("LC_MESSAGES").join(format!("{domain}.mo"));
+            match fs::read(path) {
+                Ok(bytes) => return Self::read(&bytes),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Self::default())
+    }
     fn read(bytes: &[u8]) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "Invalid gettext catalog");
         let little = match bytes.get(..4) {
@@ -60,7 +75,7 @@ impl Catalog {
         Ok(Self(catalog))
     }
 
-    fn text<'a>(&'a self, key: &'a str) -> &'a str {
+    pub(super) fn text<'a>(&'a self, key: &'a str) -> &'a str {
         self.0.get(key).map(String::as_str).unwrap_or(key)
     }
 }
@@ -158,23 +173,6 @@ pub(crate) fn font_name(id: &str) -> &'static str {
     }
 }
 
-fn load_domain(root: &Path, language: &str, domain: &str) -> io::Result<Catalog> {
-    let identifier = |s: &str| !s.is_empty() && s.bytes().all(|b|
-        b.is_ascii_alphanumeric() || b"_@-".contains(&b));
-    if matches!(language, "en_US" | "C") || !identifier(language) || !identifier(domain) {
-        return Ok(Catalog::default());
-    }
-    for id in candidates(language) {
-        let path = root.join("translations").join(id).join("LC_MESSAGES").join(format!("{domain}.mo"));
-        match fs::read(path) {
-            Ok(bytes) => return Catalog::read(&bytes),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(Catalog::default())
-}
-
 impl Locale {
     pub fn attribute(&mut self, root: &Path, node: &wml::Node, key: &str, fallback: &str) -> String {
         let Some(value) = node.attributes.get(key).filter(|v| !v.text.is_empty()) else {
@@ -189,7 +187,7 @@ impl Locale {
                 "wesnoth" => &self.game,
                 "wesnoth-lib" => &self.interface,
                 domain => self.domains.entry(domain.to_owned()).or_insert_with(|| {
-                    load_domain(root, &self.effective, domain).unwrap_or_default()
+                    Catalog::installed(root, &self.effective, domain).unwrap_or_default()
                 }),
             };
             let translated = catalog.text(original);
@@ -211,8 +209,8 @@ impl Locale {
             effective,
             ..Default::default()
         };
-        locale.game = load_domain(root, &locale.effective, "wesnoth")?;
-        locale.interface = load_domain(root, &locale.effective, "wesnoth-lib")?;
+        locale.game = Catalog::installed(root, &locale.effective, "wesnoth")?;
+        locale.interface = Catalog::installed(root, &locale.effective, "wesnoth-lib")?;
         Ok(locale)
     }
 

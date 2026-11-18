@@ -586,7 +586,7 @@ impl<'data> FixedMatch<'data> {
         let villages = self
             .village_owners
             .values()
-            .filter(|&&side| side == side)
+            .filter(|&&owner| owner == side)
             .count();
         let upkeep = self
             .scenario
