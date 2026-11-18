@@ -16,7 +16,7 @@ use crate::{
     rng::ReplayRng,
     starting_units::{AuthoredStartingUnit, StartingUnit},
     terrain_aliases::TerrainAliases,
-    trait_effects::RecruitStats,
+    trait_effects::{RecruitStats, increase_percent},
     turn::Turn,
     unit_type::UnitType,
     wml::Node,
@@ -56,6 +56,7 @@ pub struct UnitState<'rules> {
     pub(crate) slowed: bool,
     uncovered: bool,
     base_max_experience: i32,
+    default_amlas: u8,
     pub moves_left: i32,
     pub attacks_left: i32,
     pub can_recruit: bool,
@@ -86,7 +87,8 @@ impl<'rules> UnitTraits<'rules> {
 
 impl UnitState<'_> {
     pub fn max_hitpoints(&self) -> i32 {
-        self.traits.as_ref().map_or(self.unit_type.hitpoints, |traits| traits.stats.max_hitpoints)
+        let base = self.traits.as_ref().map_or(self.unit_type.hitpoints, |traits| traits.stats.max_hitpoints);
+        base.saturating_add(3 * i32::from(self.default_amlas))
     }
 
     pub fn max_movement(&self) -> i32 {
@@ -100,7 +102,8 @@ impl UnitState<'_> {
     }
 
     pub fn max_experience(&self) -> i32 {
-        self.traits.as_ref().map_or(self.base_max_experience, |traits| traits.stats.max_experience)
+        let base = self.traits.as_ref().map_or(self.base_max_experience, |traits| traits.stats.max_experience);
+        (0..self.default_amlas).fold(base, |experience, _| increase_percent(experience, 20, 1))
     }
 
     pub fn traits(&self) -> impl Iterator<Item = &Node> {
@@ -142,6 +145,7 @@ impl<'rules> Battlefield<'rules> {
     ) -> Result<Self, BoardError> {
         let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
             placement,
+            default_amlas: 0,
             upkeep: None,
             traits: Vec::new(),
             hitpoints: None,
@@ -177,6 +181,7 @@ impl<'rules> Battlefield<'rules> {
         };
         for AuthoredStartingUnit {
             placement: start,
+            default_amlas,
             upkeep,
             traits: authored_traits,
             hitpoints,
@@ -207,13 +212,13 @@ impl<'rules> Battlefield<'rules> {
                 }
             }
             let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
-            let max_hp = traits.as_ref().map_or(unit_type.hitpoints, |t| t.stats.max_hitpoints);
             let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
-            tile.insert(UnitState {
+            let unit = tile.insert(UnitState {
                 side: start.side,
                 id: start.id,
                 unit_type,
-                hitpoints: hitpoints.unwrap_or(max_hp),
+                hitpoints: 0,
+                default_amlas,
                 poisoned,
                 unplagueable,
                 undead_variation,
@@ -227,6 +232,7 @@ impl<'rules> Battlefield<'rules> {
                 upkeep_override: upkeep,
                 traits,
             });
+            unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
         }
         Ok(board)
     }
@@ -267,6 +273,14 @@ impl<'rules> Battlefield<'rules> {
             let required = unit.max_experience().max(1);
             if unit.experience < required {
                 break;
+            }
+            if unit.unit_type.advances_to.is_empty() && unit.unit_type.default_amla && unit.default_amlas < 100 {
+                unit.experience -= required;
+                unit.default_amlas += 1;
+                unit.hitpoints = unit.max_hitpoints();
+                unit.slowed = false;
+                unit.poisoned = false;
+                continue;
             }
             let Some(next_type) = advancement_target(
                 self.unit_types, unit.unit_type, preferred.take(), &supports_type,
@@ -360,6 +374,7 @@ impl<'rules> Battlefield<'rules> {
             side,
             id: None,
             unit_type,
+            default_amlas: 0,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
             poisoned: false,
             experience: 0,
@@ -829,6 +844,7 @@ mod tests {
         let types = BTreeMap::from([("Guard".to_owned(), UnitType::from_wml(definition))]);
         let starts = [EAST, WEST].map(|position| AuthoredStartingUnit {
             traits: Vec::new(),
+            default_amlas: 0,
             upkeep: None,
             placement: StartingUnit { position, side: 1, id: None, type_id: "Guard".into(), can_recruit: position == EAST },
             hitpoints: (position == WEST).then_some(8),
