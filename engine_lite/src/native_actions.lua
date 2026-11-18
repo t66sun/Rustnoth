@@ -16,9 +16,13 @@ function actions.move(from_x, from_y, to_x, to_y)
 end
 
 function actions.attack(from_x, from_y, to_x, to_y, weapon)
+    local attacker = assert(wesnoth.units.get(from_x, from_y))
+    local target = assert(wesnoth.units.get(to_x, to_y))
+    local _, _, _, response = wesnoth.simulate_combat(attacker, weapon + 1, target)
     wesnoth.wml_actions.do_command {
         tag.attack {
             weapon = weapon,
+            defender_weapon = response.weapon and response.number - 1 or -1,
             tag.source { x = from_x, y = from_y },
             tag.destination { x = to_x, y = to_y },
         },
