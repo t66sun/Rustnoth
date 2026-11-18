@@ -17,12 +17,13 @@ enum SideAction {
 #[derive(Debug)]
 enum EventAction {
     Sides { sides: Vec<usize>, action: SideAction },
-    Map(MapChange),
+    Board(BoardChange),
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum MapChange {
-    Capture(VillageCapture),
+pub(crate) enum BoardChange {
+    CaptureVillage(VillageCapture),
+    PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Terrain { position: Hex, code: String },
 }
 
@@ -105,13 +106,17 @@ impl VillageCapture {
 pub(crate) struct EventState<'a> {
     pub(crate) gold: &'a mut [i64],
     pub(crate) sides: &'a mut [SideConfig],
-    pub(crate) captures: Vec<MapChange>,
+    pub(crate) board_changes: Vec<BoardChange>,
 }
 
 impl EventAction {
-    fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+    fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+        if opening && tag == "unit" {
+            return crate::starting_units::read_event_unit(cfg, side_count)
+                .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+        }
         if tag == "capture_village" {
-            return VillageCapture::read(cfg).map(|v| Self::Map(MapChange::Capture(v)));
+            return VillageCapture::read(cfg).map(|v| Self::Board(BoardChange::CaptureVillage(v)));
         }
         if tag == "terrain" {
             if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain")) {
@@ -120,7 +125,7 @@ impl EventAction {
             let position = Hex::from_wml(cfg.attribute("x")?.trim().parse().ok()?, cfg.attribute("y")?.trim().parse().ok()?)?;
             let code = cfg.attribute("terrain")?.trim();
             if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
-            return Some(Self::Map(MapChange::Terrain { position, code: code.into() }));
+            return Some(Self::Board(BoardChange::Terrain { position, code: code.into() }));
         }
         let types = |value: &str| {
             value.split(',').map(str::trim).filter(|id| !id.is_empty())
@@ -151,8 +156,8 @@ impl EventAction {
 
     fn apply(&self, state: &mut EventState<'_>) {
         let (sides, action) = match self {
-            Self::Map(capture) => {
-                state.captures.push(capture.clone());
+            Self::Board(change) => {
+                state.board_changes.push(change.clone());
                 return;
             }
             Self::Sides { sides, action } => (sides, action),
@@ -167,6 +172,19 @@ impl EventAction {
                 SideAction::DisallowRecruit(None) => state.sides[index].recruits.clear(),
             }
         }
+    }
+}
+
+/// Ignore display-only commands without descending through conditions or player choices.
+fn presentation_only(tag: &str, cfg: &Node) -> bool {
+    match tag {
+        "message" | "move_unit_fake" | "scroll_to" | "item" | "redraw" | "delay" | "remove_item" => {
+            cfg.children.is_empty()
+        }
+        "repeat" => cfg.children.iter().all(|(tag, body)| {
+            tag == "do" && body.children.iter().all(|(tag, child)| presentation_only(tag, child))
+        }),
+        _ => false,
     }
 }
 
@@ -247,16 +265,17 @@ impl ScenarioEvents {
             let Some(names) = event.attribute("name") else { continue };
             let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
                 .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
+            let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
-                vec![EventAction::Map(MapChange::Capture(capture))]
+                vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
                 let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
                     // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "filter" && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    tag != "filter" && !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
-                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
+                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count, opening))
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
             };
@@ -343,6 +362,113 @@ mod tests {
 
     fn event(name: &str, once: &str, side: &str, amount: &str) -> String {
         format!("[event]\nname={name}\nfirst_time_only={once}\n[gold]\nside={side}\namount={amount}\n[/gold]\n[/event]\n")
+    }
+
+    #[test]
+    fn opening_event_places_a_veteran_with_authored_traits_and_claims_its_village() {
+        let placement = |id: &str, x: i32| format!(r#"
+[unit]
+    side=1
+    type=Veteran
+    id={id}
+    x,y={x},1
+    [modifications]
+        [trait]
+            id=loyal
+            [effect]
+                apply_to=loyal
+            [/effect]
+        [/trait]
+        [trait]
+            id=resilient
+            [effect]
+                apply_to=hitpoints
+                increase_total=4
+            [/effect]
+            [effect]
+                apply_to=hitpoints
+                increase_total=1
+                times=per level
+            [/effect]
+        [/trait]
+    [/modifications]
+[/unit]"#);
+        let visible = placement("gatekeeper", 2);
+        let hidden = placement("conditional", 3);
+        let config = format!(r#"
+[terrain_type]
+    string=Vh
+    gives_income=yes
+[/terrain_type]
+[units]
+    [unit_type]
+        id=Veteran
+        level=2
+        hitpoints=55
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Vh,Vh,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+    [side]
+        type=Veteran
+    [/side]
+    [side]
+        type=Veteran
+    [/side]
+    [event]
+        name=start
+        [capture_village]
+            side=2
+            x,y=2,1
+        [/capture_village]
+        [message]
+            speaker=narrator
+            message=A veteran arrives.
+        [/message]
+        [move_unit_fake]
+            type=Veteran
+            side=1
+            x=1,2
+            y=1,1
+        [/move_unit_fake]
+        {visible}
+        [repeat]
+            times=3
+            [do]
+                [redraw]
+                [/redraw]
+            [/do]
+        [/repeat]
+    [/event]
+    [event]
+        name=start
+        [filter]
+            side=1
+        [/filter]
+        {hidden}
+    [/event]
+    [event]
+        name=prestart
+        [if]
+            [false]
+            [/false]
+            [then]
+                {hidden}
+            [/then]
+        [/if]
+    [/event]
+[/scenario]"#);
+        let bundle = Bundle::parse(config.as_bytes()).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        let snapshot = game.audit_snapshot();
+        let village = Hex { x: 1, y: 0 };
+        let veteran = snapshot.units.iter().find(|unit| unit.position == village).unwrap();
+        assert_eq!(snapshot.units.len(), 3);
+        assert_eq!((veteran.side, veteran.hitpoints), (1, 61));
+        assert_eq!(veteran.traits, ["loyal", "resilient"]);
+        assert_eq!(snapshot.villages, [(village, 1)]);
     }
 
     #[test]
@@ -551,7 +677,7 @@ type=Archer
         let mut events = ScenarioEvents::read(&wml::parse(text).unwrap(), 3);
         let mut gold = [0; 3];
         let mut sides = crate::scenario_sides::read_sides(&wml::parse("[side]\n[/side]\n".repeat(3)).unwrap());
-        let mut state = EventState { gold: &mut gold, sides: &mut sides, captures: Vec::new() };
+        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
         for side in 1..=2 {
             let turn = Turn { round: 1, side };
             events.begin_turn(turn, side == 1, &mut state);
