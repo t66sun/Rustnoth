@@ -345,7 +345,7 @@ impl<'rules> Battlefield<'rules> {
                 Some(_) => Occupancy::Ally,
                 None => Occupancy::Empty,
             };
-            let stops_movement = position.neighbors().any(|neighbor| {
+            let stops_movement = !unit.unit_type.skirmisher && position.neighbors().any(|neighbor| {
                 self.unit_at(neighbor)
                     .is_some_and(|unit| hostile(unit) && unit.unit_type.emits_zoc)
             });
@@ -708,6 +708,32 @@ mod tests {
             board.move_unit(1, controlled, corridor_hex(1), walking_cost, |side| side == 2),
             Err(MoveError::Unreachable(corridor_hex(1))),
         );
+    }
+
+    #[test]
+    fn skirmishers_pay_terrain_cost_through_controlled_hexes() {
+        let scenario = wml::parse(
+            "[side]\ntype=Fencer\n[/side]\n[side]\ntype=Spearman\n[/side]",
+        ).unwrap();
+        let map = ScenarioMap::parse(
+            "Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Hh,Gg,Gg,Xv\nXv,Gg,2 Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv",
+        ).unwrap();
+        let mut types = types();
+        let fencer = UnitType::from_wml(wml::parse(
+            "id=Fencer\nmovement=6\n[abilities]\n[skirmisher]\nid=skirmisher\naffect_self=yes\n[/skirmisher]\n[/abilities]",
+        ).unwrap());
+        types.insert(fencer.id.clone(), fencer);
+        let starts = read_starting_units(&scenario, &map).unwrap();
+        let mut board = Battlefield::new(map, starts, &types).unwrap();
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 3, y: 0 };
+        let enemy = Hex { x: 1, y: 1 };
+        let is_enemy = |side| side == 2;
+        let moves = board.move_destinations(1, from, walking_cost, is_enemy).unwrap();
+        assert!(!moves.contains_key(&enemy));
+        assert_eq!(moves.get(&to), Some(&2));
+        board.move_unit(1, from, to, walking_cost, is_enemy).unwrap();
+        assert_eq!(board.unit_at(to).unwrap().moves_left, 2);
     }
 
     #[test]

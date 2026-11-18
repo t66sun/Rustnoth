@@ -30,6 +30,7 @@ pub struct UnitType {
     /// Terrain defense that this unit type defines over its inherited movement type.
     pub defense_overrides: TerrainDefense,
     pub emits_zoc: bool,
+    pub(crate) skirmisher: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
@@ -111,6 +112,7 @@ impl UnitType {
             defense_overrides,
             resistance_overrides,
             emits_zoc,
+            skirmisher: false,
             advances_to,
             attacks: Vec::new(),
             traits: catalog.inherited_traits(&unit, alignment),
@@ -119,11 +121,24 @@ impl UnitType {
             match tag.as_str() {
                 "attack" => result.attacks.push(WeaponProfile::from_wml(child)),
                 "trait" => result.traits.available.push(Arc::new(child)),
+                "abilities" => result.skirmisher |= child.children.iter().any(|(tag, config)| {
+                    tag == "skirmisher" && is_stock_skirmisher(config)
+                }),
                 _ => {}
             }
         }
         result
     }
+}
+
+fn is_stock_skirmisher(ability: &Node) -> bool {
+    ability.attribute("id") == Some("skirmisher")
+        && ability.attribute("affect_self") == Some("yes")
+        && ability.children.is_empty()
+        && ability.attributes.keys().all(|key| matches!(
+            key.as_str(),
+            "id" | "affect_self" | "name" | "female_name" | "description" | "special_note"
+        ))
 }
 
 /// Indexes flat unit types and resolves their inherited traits from a preprocessed `[units]` body.
