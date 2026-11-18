@@ -38,7 +38,7 @@ impl Selection {
             Action::Move { from, to } => selected == Some(*from) && *to == position,
             Action::Attack(attack) => selected == Some(attack.from) && attack.to == position,
             Action::Recruit { to, .. } | Action::Recall { to, .. } => selected.is_none() && *to == position,
-            Action::EndTurn => false,
+            Action::Disband { .. } | Action::EndTurn => false,
         })
     }
 }

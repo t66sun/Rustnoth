@@ -302,6 +302,13 @@ impl<'rules> Battlefield<'rules> {
         self.recall.get(&side).map_or(&[], Vec::as_slice)
     }
 
+    pub(crate) fn disband(&mut self, side: usize, id: &str) -> Option<()> {
+        let roster = self.recall.get_mut(&side)?;
+        let slot = roster.iter().position(|unit| unit.id.as_deref() == Some(id))?;
+        roster.remove(slot);
+        Some(())
+    }
+
     /// Places the existing reserve unit without generating traits or healing it.
     pub(crate) fn place_recall(&mut self, side: usize, unit_id: &str, to: Hex) -> Option<()> {
         if !self.map.is_playable(to) {
