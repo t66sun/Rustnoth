@@ -1,6 +1,8 @@
-//! Scenario-wide time-of-day cycles.
+//! Global and regional scenario time-of-day cycles.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::RangeInclusive};
+
+use crate::hex::Hex;
 
 /// A scheduled time and its base lawful combat bonus, in percent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,11 +20,35 @@ pub enum Alignment {
     Liminal,
 }
 
-/// The global schedule anchored to the scenario's turn and time index.
 #[derive(Clone, Debug)]
-pub struct TimeSchedule {
+struct TimeCycle {
     entries: Vec<TimeOfDay>,
     turn_offset: i64,
+}
+
+impl TimeCycle {
+    fn index_at_turn(&self, turn: i32) -> usize {
+        (i64::from(turn) + self.turn_offset).rem_euclid(self.entries.len() as i64) as usize
+    }
+
+    fn at_turn(&self, turn: i32) -> &TimeOfDay {
+        &self.entries[self.index_at_turn(turn)]
+    }
+}
+
+pub(crate) type WmlRectangle = (RangeInclusive<i32>, RangeInclusive<i32>);
+
+#[derive(Clone, Debug)]
+struct TimeArea {
+    locations: Vec<WmlRectangle>,
+    cycle: TimeCycle,
+}
+
+/// The scenario's global cycle and its location-specific overrides.
+#[derive(Clone, Debug)]
+pub struct TimeSchedule {
+    global: TimeCycle,
+    areas: Vec<TimeArea>,
     liminal_bonus: i64,
 }
 
@@ -42,21 +68,53 @@ impl TimeSchedule {
 
         Self {
             liminal_bonus: default_liminal_bonus(&entries),
-            entries,
-            turn_offset: i64::from(current_time) - i64::from(turn_at),
+            global: TimeCycle {
+                entries,
+                turn_offset: i64::from(current_time) - i64::from(turn_at),
+            },
+            areas: Vec::new(),
         }
     }
 
     /// Returns the zero-based schedule index for an absolute turn number.
     /// Turn zero is the slot immediately before turn one.
     pub fn index_at_turn(&self, turn: i32) -> usize {
-        let index = i64::from(turn) + self.turn_offset;
-        index.rem_euclid(self.entries.len() as i64) as usize
+        self.global.index_at_turn(turn)
     }
 
     /// Returns the scheduled time for an absolute turn number.
     pub fn at_turn(&self, turn: i32) -> &TimeOfDay {
-        &self.entries[self.index_at_turn(turn)]
+        self.global.at_turn(turn)
+    }
+
+    pub(crate) fn add_area(
+        &mut self,
+        locations: Vec<WmlRectangle>,
+        entries: Vec<TimeOfDay>,
+        turn_at: i32,
+        current_time: i32,
+    ) {
+        if !entries.is_empty() && !locations.is_empty() {
+            self.areas.push(TimeArea {
+                locations,
+                cycle: TimeCycle {
+                    entries,
+                    turn_offset: i64::from(current_time) - i64::from(turn_at),
+                },
+            });
+        }
+    }
+
+    /// Returns the last matching area's time or the global time at this turn.
+    pub fn at_hex(&self, turn: i32, position: Hex) -> &TimeOfDay {
+        if let Some((x, y)) = position.to_wml()
+            && let Some(area) = self.areas.iter().rev().find(|area|
+                area.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))
+            )
+        {
+            return area.cycle.at_turn(turn);
+        }
+        self.at_turn(turn)
     }
 
     /// Sets the scenario's explicit liminal bonus instead of the schedule default.
