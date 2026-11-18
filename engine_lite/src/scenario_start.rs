@@ -126,6 +126,75 @@ mod tests {
     }
 
     #[test]
+    fn reserves_keep_authored_state_and_belong_only_to_their_side() {
+        let scenario = wml::parse(r#"
+            map_file=fixed.map
+            [side]
+                type=Fighter
+                persistent=no
+                recall_cost=23
+                [unit]
+                    id=veteran
+                    type=Fighter
+                    placement=recall
+                    x,y=1,1
+                    canrecruit=yes
+                    hitpoints=11
+                    experience=17
+                    recall_cost=6
+                    [modifications]
+                        [trait]
+                            id=sturdy
+                            [effect]
+                                apply_to=hitpoints
+                                increase_total=4
+                            [/effect]
+                        [/trait]
+                    [/modifications]
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x,y=recall,recall
+                    recall_cost=-1
+                [/unit]
+            [/side]
+            [side]
+                persistent=yes
+                [unit]
+                    id=veteran
+                    type=Fighter
+                    placement=recall
+                [/unit]
+            [/side]
+        "#).unwrap();
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter\nhitpoints=28\nrecall_cost=14").unwrap());
+        let types = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let start = load(&scenario, &types, |_| Ok(MAP.to_owned())).unwrap();
+        let side_cost = start.sides[0].recall_cost;
+        assert_eq!(start.board.units().count(), 1);
+        let leader = start.board.unit_at(Hex { x: 0, y: 0 }).unwrap();
+        assert!(leader.can_recruit);
+        assert_eq!(leader.id, None);
+        assert_eq!(leader.recall_cost(side_cost), 14);
+        let first = start.board.recall_roster(1);
+        assert_eq!(first.len(), 2);
+        let veteran = &first[0];
+        assert_eq!((veteran.side, veteran.id.as_deref()), (1, Some("veteran")));
+        assert_eq!(veteran.unit_type.id, "Fighter");
+        assert_eq!((veteran.hitpoints, veteran.max_hitpoints(), veteran.experience), (11, 32, 17));
+        assert!(veteran.can_recruit);
+        assert_eq!(veteran.traits().next().unwrap().attribute("id"), Some("sturdy"));
+        assert_eq!(veteran.recall_cost(side_cost), 6);
+        assert_eq!(first[1].id, None);
+        assert_eq!(first[1].recall_cost(side_cost), 23);
+        let other = start.board.recall_roster(2);
+        assert_eq!(other.len(), 1);
+        assert_eq!((other[0].side, other[0].id.as_deref()), (2, Some("veteran")));
+        assert_eq!(other[0].recall_cost(20), 14);
+        assert!(start.board.recall_roster(3).is_empty());
+    }
+
+    #[test]
     fn starting_units_use_authored_current_hitpoints_with_type_as_the_default() {
         let scenario = wml::parse(
             r#"

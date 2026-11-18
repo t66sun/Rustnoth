@@ -38,6 +38,7 @@ pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
     units: BTreeMap<Hex, UnitState<'rules>>,
+    recall: BTreeMap<usize, Vec<UnitState<'rules>>>,
     resting: BTreeSet<Hex>,
     unit_types: &'rules BTreeMap<String, UnitType>,
     experience_modifier: i32,
@@ -61,6 +62,7 @@ pub struct UnitState<'rules> {
     pub attacks_left: i32,
     pub can_recruit: bool,
     upkeep_override: Option<Upkeep>,
+    recall_cost: i32,
     traits: Option<UnitTraits<'rules>>,
 }
 
@@ -110,6 +112,10 @@ impl UnitState<'_> {
         self.traits.iter().flat_map(|traits| traits.definitions.iter().map(Cow::as_ref))
     }
 
+    pub fn recall_cost(&self, side_default: i32) -> i32 {
+        if self.recall_cost < 0 { side_default } else { self.recall_cost }
+    }
+
     pub(crate) fn upkeep(&self) -> i32 {
         if self.can_recruit {
             return 0;
@@ -143,8 +149,13 @@ impl<'rules> Battlefield<'rules> {
         starting_units: Vec<StartingUnit>,
         unit_types: &'rules BTreeMap<String, UnitType>,
     ) -> Result<Self, BoardError> {
-        let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
-            placement,
+        let starting_units = starting_units.into_iter().map(|unit| AuthoredStartingUnit {
+            position: Some(unit.position),
+            side: unit.side,
+            id: unit.id,
+            type_id: unit.type_id,
+            can_recruit: unit.can_recruit,
+            recall_cost: None,
             default_amlas: 0,
             upkeep: None,
             traits: Vec::new(),
@@ -175,12 +186,18 @@ impl<'rules> Battlefield<'rules> {
         let mut board = Self {
             map,
             units: BTreeMap::new(),
+            recall: BTreeMap::new(),
             resting: BTreeSet::new(),
             unit_types,
             experience_modifier,
         };
         for AuthoredStartingUnit {
-            placement: start,
+            position,
+            side,
+            id,
+            type_id,
+            can_recruit,
+            recall_cost,
             default_amlas,
             upkeep,
             traits: authored_traits,
@@ -195,15 +212,14 @@ impl<'rules> Battlefield<'rules> {
             uncovered,
         } in starting_units
         {
-            let position = start.position;
-            let tile = board.vacant_unit_slot(position)?;
-            let unit_type =
-                unit_types
-                    .get(&start.type_id)
-                    .ok_or_else(|| BoardError::UnknownUnitType {
-                        position,
-                        type_id: start.type_id,
-                    })?;
+            let tile = match position {
+                Some(hex) => Some(board.vacant_unit_slot(hex)?),
+                None => None,
+            };
+            let unit_type = unit_types.get(&type_id).ok_or_else(|| match position {
+                Some(position) => BoardError::UnknownUnitType { position, type_id },
+                None => BoardError::UnknownRecallType { side, type_id },
+            })?;
             let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
             let mut definitions: Vec<Cow<'_, Node>> = authored_traits.into_iter().map(Cow::Owned).collect();
             for mandatory in unit_type.traits.mandatory() {
@@ -213,9 +229,9 @@ impl<'rules> Battlefield<'rules> {
             }
             let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
             let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
-            let unit = tile.insert(UnitState {
-                side: start.side,
-                id: start.id,
+            let mut unit = UnitState {
+                side,
+                id,
                 unit_type,
                 hitpoints: 0,
                 default_amlas,
@@ -228,11 +244,17 @@ impl<'rules> Battlefield<'rules> {
                 base_max_experience,
                 moves_left: moves_left.unwrap_or(movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
-                can_recruit: start.can_recruit,
+                can_recruit,
                 upkeep_override: upkeep,
+                recall_cost: recall_cost.unwrap_or(unit_type.recall_cost),
                 traits,
-            });
+            };
             unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
+            if let Some(tile) = tile {
+                tile.insert(unit);
+            } else {
+                board.recall.entry(side).or_default().push(unit);
+            }
         }
         Ok(board)
     }
@@ -243,6 +265,11 @@ impl<'rules> Battlefield<'rules> {
 
     pub fn unit_at(&self, position: Hex) -> Option<&UnitState<'rules>> {
         self.units.get(&position)
+    }
+
+    /// Authored reserve units for the requested side, in creation order.
+    pub fn recall_roster(&self, side: usize) -> &[UnitState<'rules>] {
+        self.recall.get(&side).map_or(&[], Vec::as_slice)
     }
 
     pub fn unit_type(&self, id: &str) -> Option<&'rules UnitType> {
@@ -293,6 +320,7 @@ impl<'rules> Battlefield<'rules> {
             unit.unit_type = next_type;
             unit.undead_variation = None;
             unit.upkeep_override = None;
+            unit.recall_cost = next_type.recall_cost;
             unit.base_max_experience =
                 scaled_experience(next_type.experience, self.experience_modifier);
             if let Some(traits) = &mut unit.traits {
@@ -344,6 +372,7 @@ impl<'rules> Battlefield<'rules> {
         let variation = base.variation(victim_variation);
         if variation.variation_id != base.variation_id {
             raised.unit_type = variation;
+            raised.recall_cost = variation.recall_cost;
             raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
             if let Some(traits) = &mut raised.traits {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
@@ -387,6 +416,7 @@ impl<'rules> Battlefield<'rules> {
             attacks_left: 0,
             can_recruit: false,
             upkeep_override: None,
+            recall_cost: unit_type.recall_cost,
             traits,
         });
         Ok(())
@@ -704,6 +734,7 @@ pub enum BoardError {
     OutsideMap(Hex),
     Occupied(Hex),
     UnknownUnitType { position: Hex, type_id: String },
+    UnknownRecallType { side: usize, type_id: String },
 }
 
 impl fmt::Display for BoardError {
@@ -713,6 +744,9 @@ impl fmt::Display for BoardError {
             Self::Occupied(hex) => write!(f, "placement hex {hex:?} already has a unit"),
             Self::UnknownUnitType { position, type_id } => {
                 write!(f, "unknown unit type {type_id:?} at placement hex {position:?}")
+            }
+            Self::UnknownRecallType { side, type_id } => {
+                write!(f, "unknown unit type {type_id:?} in side {side}'s recall list")
             }
         }
     }
@@ -846,7 +880,12 @@ mod tests {
             traits: Vec::new(),
             default_amlas: 0,
             upkeep: None,
-            placement: StartingUnit { position, side: 1, id: None, type_id: "Guard".into(), can_recruit: position == EAST },
+            position: Some(position),
+            side: 1,
+            id: None,
+            type_id: "Guard".into(),
+            can_recruit: position == EAST,
+            recall_cost: None,
             hitpoints: (position == WEST).then_some(8),
             moves_left: (position == WEST).then_some(2),
             attacks_left: None,
