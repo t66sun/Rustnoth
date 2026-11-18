@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 mod endlevel;
 pub(crate) mod kill;
 mod items;
+mod personal_recruits;
+pub(crate) use personal_recruits::PersonalRecruits;
 use items::{ItemChange, MapItems};
 
 use crate::{
@@ -36,6 +38,7 @@ enum EventAction {
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
+    PersonalRecruits(PersonalRecruits),
     Kill(kill::KillAction, Option<Hex>),
     Sides(Vec<usize>, SideAction),
     TurnLimit(TurnLimitChange),
@@ -171,6 +174,9 @@ impl EventAction {
         if opening && tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+        }
+        if matches!(tag, "allow_extra_recruit" | "disallow_extra_recruit" | "set_extra_recruit") {
+            return PersonalRecruits::read(tag, cfg).map(|change| Self::Board(BoardChange::PersonalRecruits(change)));
         }
         if tag == "replace_schedule" {
             if cfg.attributes.keys().any(|k| k != "current_time") || cfg.children.iter().any(|(tag, time)| {

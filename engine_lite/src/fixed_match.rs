@@ -213,6 +213,10 @@ impl<'data> FixedMatch<'data> {
                     }
                     continue;
                 }
+                BoardChange::PersonalRecruits(change) => {
+                    self.scenario.board.change_personal_recruits(&change);
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::Schedule { entries, current_time } => {
                     self.scenario.schedule.replace_global(entries, self.current_round, current_time);
