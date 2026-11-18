@@ -65,8 +65,11 @@ function capture.snapshot(step, time_over)
         row("unit", unit.x, unit.y, unit.side, unit_type, unit.hitpoints,
             unit.moves, unit.attacks_left, unit.canrecruit and 1 or 0, unit.experience,
             table.unpack(traits))
-        if unit.status.slowed then
-            row("status", unit.x, unit.y, "slowed")
+        local statuses = {}
+        if unit.status.slowed then statuses[#statuses + 1] = "slowed" end
+        if unit.status.poisoned then statuses[#statuses + 1] = "poisoned" end
+        if #statuses > 0 then
+            row("status", unit.x, unit.y, table.unpack(statuses))
         end
     end
     for _, village in ipairs(owned_villages()) do
