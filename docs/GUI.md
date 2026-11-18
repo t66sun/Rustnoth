@@ -18,7 +18,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5489
 ```
 
-标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
+标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。右下角 **Language** 可切换标题菜单、提示、徽标和显示偏好的语言。简体中文使用原版字库，选择会保存在当前用户的 Rustnoth 配置中。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
 
 从 **Preferences → Display** 勾选或取消 **Full screen** 可立即切换显示模式。用 Tab 切换焦点，空格或 Enter 确认，Esc 关闭。Rustnoth 会在下次启动时恢复该选择。
 
