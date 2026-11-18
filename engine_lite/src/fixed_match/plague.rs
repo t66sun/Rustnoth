@@ -1,8 +1,7 @@
 use crate::{
-    board::{Attack, AttackError, Battlefield},
-    combat::CombatResult,
+    board::{Attack, Battlefield},
+    fixed_match::{FixedMatch, MatchError},
     hex::Hex,
-    rng::ReplayRng,
     terrain_aliases::TerrainAliases,
     unit_type::UnitType,
 };
@@ -13,31 +12,36 @@ struct Reanimation<'rules> {
     variation: String,
 }
 
-impl<'rules> Battlefield<'rules> {
-    /// Applies terrain-dependent plague to either side's lethal strike.
+impl FixedMatch<'_> {
+    /// Fire die with the casualty still present, then erase it and resolve plague.
     pub(super) fn apply_scenario_attack(
-        &mut self, side: usize, attack: Attack, enemies: impl Fn(usize, usize) -> bool,
-        terrain: &TerrainAliases, rng: &mut ReplayRng,
-    ) -> Result<CombatResult, AttackError> {
+        &mut self, side: usize, attack: Attack,
+    ) -> Result<(), MatchError> {
         let (from, to) = (attack.from, attack.to);
-        let on_defender_death = self.plague_reanimation(from, to, attack.weapon, terrain);
-        let on_attacker_death = attack.retaliation.as_ref().and_then(|(response, _)|
-            self.plague_reanimation(to, from, *response, terrain)
-        );
-        let result = self.apply_attack_with_relations(side, attack, enemies, rng)?;
-        let replacement = if result.defender_hitpoints == 0 && result.attacker_hitpoints > 0 {
-            on_defender_death.map(|raised| (to, raised))
-        } else if result.attacker_hitpoints == 0 && result.defender_hitpoints > 0 {
-            on_attacker_death.map(|raised| (from, raised))
-        } else {
-            None
-        };
-        if let Some((position, raised)) = replacement {
-            self.place_plague_unit(raised.side, raised.base, &raised.variation, position, rng);
+        let weapon = attack.weapon;
+        let retaliation = attack.retaliation.as_ref().map(|(index, _)| *index);
+        let sides = &self.scenario.sides;
+        let result = self.scenario.board.resolve_attack(side, attack,
+            |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng)?;
+        for (victim, killer, hp, killer_hp, strike) in [
+            (to, from, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
+            (from, to, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
+        ] {
+            if hp > 0 { continue; }
+            self.fire_unit_event("die", victim)?;
+            let board = &mut self.scenario.board;
+            let replacement = strike.filter(|_| killer_hp > 0).and_then(|index|
+                board.plague_reanimation(killer, victim, index, self.rules.terrain));
+            board.remove_casualty(victim);
+            if let Some(raised) = replacement {
+                board.place_plague_unit(raised.side, raised.base, &raised.variation, victim, &mut self.rng);
+            }
         }
-        Ok(result)
+        Ok(())
     }
+}
 
+impl<'rules> Battlefield<'rules> {
     fn plague_reanimation(
         &self, from: Hex, to: Hex, weapon: usize, terrain: &TerrainAliases,
     ) -> Option<Reanimation<'rules>> {
@@ -60,7 +64,7 @@ mod tests {
     use crate::{board::AttackChoice, fixed_match::{Action, MatchState}, scenario_bundle::Bundle};
     use super::*;
 
-    fn scenario(victim: &str, death_terrain: &str, retaliation: bool, special_type: &str) -> Bundle {
+    fn scenario(victim: &str, death_terrain: &str, retaliation: bool, special_type: &str, events: &str) -> Bundle {
         let (west, east) = if retaliation { ("Victim", "Soulless") } else { ("Soulless", "Victim") };
         let (west_tile, east_tile) = if retaliation { (death_terrain, "Gg") } else { ("Gg", death_terrain) };
         let (west_extra, east_extra) = if retaliation { (victim, "") } else { ("", victim) };
@@ -154,6 +158,7 @@ Xv,Xv,Xv,Xv"
         type={east}
         {east_extra}
     [/side]
+    {events}
 [/scenario]"#);
         Bundle::parse(text.as_bytes()).unwrap()
     }
@@ -168,7 +173,7 @@ Xv,Xv,Xv,Xv"
     #[test]
     fn plague_uses_the_killing_weapon_on_attack_and_retaliation() {
         for retaliation in [false, true] {
-            let bundle = scenario("", "Gg", retaliation, "type=Walking Corpse");
+            let bundle = scenario("", "Gg", retaliation, "type=Walking Corpse", "");
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             let (side, victim, killer) = if retaliation { (2, WEST, EAST) } else { (1, EAST, WEST) };
             assert_eq!(fight(&mut game), MatchState::Won(side));
@@ -183,6 +188,53 @@ Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn die_uses_the_fallen_units_identity_and_runs_before_plague_on_both_sides() {
+        for retaliation in [false, true] {
+            let victim_side = if retaliation { 1 } else { 2 };
+            let victim = if retaliation { WEST } else { EAST };
+            let events = format!(r#"
+[event]
+    name=die
+    [filter]
+        id=fallen
+        type=Victim
+        side={victim_side}
+        x,y={victim_side},1
+    [/filter]
+    [gold]
+        side=1
+        amount=17
+    [/gold]
+    [terrain]
+        x,y={victim_side},1
+        terrain=Gg^Vh
+    [/terrain]
+[/event]
+[event]
+    name=die
+    [filter]
+        type=Soulless
+    [/filter]
+    [gold]
+        side=1
+        amount=100
+    [/gold]
+[/event]"#);
+            let bundle = scenario("id=fallen", "Gg", retaliation, "type=Walking Corpse", &events);
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert_eq!(fight(&mut game), MatchState::Won(3 - victim_side));
+            assert_eq!(game.audit_snapshot().gold[0], 117);
+            assert_eq!(game.scenario.board.map().terrain_at(victim), Some("Gg^Vh"));
+            assert!(game.scenario.board.unit_at(victim).is_none());
+
+            let bundle = scenario("id=fallen\nhitpoints=30", "Gg", retaliation, "type=Walking Corpse", &events);
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert!(matches!(fight(&mut game), MatchState::Playing(_)));
+            assert_eq!(game.audit_snapshot().gold[0], 100);
+        }
+    }
+
+    #[test]
     fn plague_obeys_village_immunity_authored_status_and_victim_variation() {
         for (victim, terrain, special, expected) in [
             ("", "Gg^Vh", "type=Walking Corpse", None),
@@ -192,7 +244,7 @@ Xv,Xv,Xv,Xv"
             ("undead_variation=unknown", "Gg", "type=Walking Corpse", Some(("Walking Corpse", 18))),
             ("", "Gg", "", Some(("Soulless", 39))),
         ] {
-            let bundle = scenario(victim, terrain, false, special);
+            let bundle = scenario(victim, terrain, false, special, "");
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             fight(&mut game);
             assert_eq!(game.scenario.board.unit_at(EAST).map(|u| (&*u.unit_type.id, u.hitpoints)), expected);

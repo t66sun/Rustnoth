@@ -28,7 +28,7 @@ pub(crate) fn read_map_schedule(scenario: &Node, map: &ScenarioMap) -> TimeSched
     schedule
 }
 
-fn time_entries(node: &Node) -> Vec<TimeOfDay> {
+pub(crate) fn time_entries(node: &Node) -> Vec<TimeOfDay> {
     node.children
         .iter()
         .filter(|(tag, _)| tag == "time")

@@ -1,7 +1,7 @@
 //! Resolve desktop interface art and labels from Wesnoth's preprocessed WML.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -10,6 +10,8 @@ use engine_lite::wml::{self, Node};
 /// Original presentation data and local image paths indexed by WML identifier.
 #[derive(Debug, Default)]
 pub struct AssetCatalog {
+    image_dirs: Vec<PathBuf>,
+    fallback: PathBuf,
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
 }
@@ -23,18 +25,39 @@ struct UnitAssets {
 
 impl AssetCatalog {
     /// Reads core definitions before custom scenario definitions.
-    pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, wml::ParseError> {
-        let images = wesnoth_root.join("data/core/images");
+    pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut prefixes = BTreeSet::from([String::new(), "data/core".into()]);
         let mut catalog = Self::default();
+        let mut units = Node::default();
+        let mut document = Node::default();
         for input in [core, bundle] {
-            catalog.read_definitions(&wml::parse(input)?, &images);
+            for (tag, node) in wml::parse(input)?.children {
+                match tag.as_str() {
+                    "units" => units.children.extend(node.children),
+                    "terrain_type" => document.children.push((tag, node)),
+                    "binary_path" => {
+                        if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
+                            && !path.contains("..") && safe_relative_path(Path::new(path))
+                        {
+                            prefixes.insert(path.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
+        engine_lite::unit_type::resolve_base_units(&mut units)?;
+        document.children.push(("units".into(), units));
+        catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
+        catalog.image_dirs.push(wesnoth_root.to_owned());
+        catalog.fallback = wesnoth_root.join("data/core/images");
+        catalog.read_definitions(&document);
         Ok(catalog)
     }
 
     /// Returns the original sprite path of a unit type.
     pub fn unit_image(&self, id: &str) -> Option<PathBuf> {
-        self.units.get(id)?.image.clone()
+        self.resolve_image(self.units.get(id)?.image.as_deref()?)
     }
 
     /// Returns the unit type's display name from its WML definition.
@@ -50,7 +73,7 @@ impl AssetCatalog {
     /// Returns an exact terrain image or the known base and overlay in draw order.
     pub fn terrain_images(&self, code: &str) -> Vec<PathBuf> {
         if let Some(Some(image)) = self.terrain.get(code) {
-            return vec![image.clone()];
+            return self.resolve_image(image).into_iter().collect();
         }
         let Some(caret) = code.find('^') else {
             return Vec::new();
@@ -58,11 +81,20 @@ impl AssetCatalog {
         let (base, overlay) = code.split_at(caret);
         [base, overlay]
             .into_iter()
-            .filter_map(|layer| self.terrain.get(layer).and_then(Option::as_ref).cloned())
+            .filter_map(|layer| self.resolve_image(self.terrain.get(layer)?.as_deref()?))
             .collect()
     }
 
-    fn read_definitions(&mut self, document: &Node, images: &Path) {
+    pub fn resolve_image(&self, image: &Path) -> Option<PathBuf> {
+        // Native terrain image lookup treats "../" as a reset to the image directory.
+        let text = image.to_str()?;
+        let path = Path::new(text.rsplit("../").next()?);
+        if path.as_os_str().is_empty() || !safe_relative_path(path) { return None; }
+        Some(self.image_dirs.iter().map(|dir| dir.join(path)).find(|p| p.is_file())
+            .unwrap_or_else(|| self.fallback.join(path)))
+    }
+
+    fn read_definitions(&mut self, document: &Node) {
         for (tag, node) in &document.children {
             match tag.as_str() {
                 "terrain_type" => {
@@ -70,7 +102,7 @@ impl AssetCatalog {
                         continue;
                     };
                     self.terrain.entry(code.to_owned()).or_insert_with(|| {
-                        terrain_image(node).map(|image| images.join("terrain").join(image))
+                        terrain_image(node).map(|image| Path::new("terrain").join(image))
                     });
                 }
                 "units" => {
@@ -82,7 +114,7 @@ impl AssetCatalog {
                             image: unit
                                 .attribute("image")
                                 .and_then(image_filename)
-                                .map(|image| images.join(image)),
+                                .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
                             weapon_names: unit
                                 .children
@@ -101,6 +133,10 @@ impl AssetCatalog {
             }
         }
     }
+}
+
+fn safe_relative_path(path: &Path) -> bool {
+    path.components().all(|part| matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir))
 }
 
 fn display_name<'a>(node: &'a Node, attribute: &str) -> Option<&'a str> {
@@ -127,6 +163,29 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_campaign_art_is_resolved_from_the_declared_binary_path() {
+        use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("rustnoth-campaign-art-{}-{nonce}", std::process::id()));
+        let sprite = root.join("data/campaigns/Guard/images/units/veteran.png");
+        fs::create_dir_all(sprite.parent().unwrap()).unwrap();
+        fs::write(&sprite, []).unwrap();
+        let bundle = b"[binary_path]\npath=data/campaigns/Guard\n[/binary_path]\n[units]\n[unit_type]\nid=Veteran\nimage=units/veteran.png\n[/unit_type]\n[/units]";
+        let catalog = AssetCatalog::parse(&root, b"", bundle).unwrap();
+        assert_eq!(catalog.unit_image("Veteran"), Some(sprite));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn campaign_units_can_use_a_core_base_units_sprite_and_weapon_names() {
+        let core = b"[units]\n[unit_type]\nid=Bowman\nimage=units/human/bow.png\n[attack]\ndescription=longbow\n[/attack]\n[/unit_type]\n[/units]";
+        let scenario = b"[units]\n[unit_type]\nid=Hero\n[base_unit]\nid=Bowman\n[/base_unit]\n[/unit_type]\n[/units]";
+        let catalog = AssetCatalog::parse(Path::new("wesnoth"), core, scenario).unwrap();
+        assert_eq!(catalog.unit_image("Hero"), Some(Path::new("wesnoth/data/core/images/units/human/bow.png").into()));
+        assert_eq!(catalog.weapon_name("Hero", 0), Some("longbow"));
+    }
 
     #[test]
     fn preserves_original_unit_names_and_weapons_in_referee_order() {
