@@ -282,6 +282,8 @@ pub fn draw(
     }
     if let Some(message) = movement.message {
         label(&art.font, message, inset, height - 76.0, 16, ERROR);
+    } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
+        label(&art.font, "Dismiss veteran [D]", inset, height - 76.0, 14, TEXT);
     }
     if let Some(menu) = movement.menu {
         let area = menu_area();
@@ -304,7 +306,7 @@ pub fn draw(
             let fill = if highlighted { BUTTON_HIGHLIGHTED } else { BUTTON };
             draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, fill);
             draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, if highlighted { TEXT } else { BORDER });
-            if let Action::Recall { .. } = row.action {
+            if matches!(row.action, Action::Recall { .. } | Action::Disband { .. }) {
                 for (line, (baseline, size, color)) in row.label.lines().zip([(15.0, 15, TEXT), (28.0, 12, TEXT), (40.0, 12, MUTED)]) {
                     let available = bounds.w - 16.0;
                     let width = measure_text(line, art.font.as_ref(), size, 1.0).width;
@@ -434,8 +436,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let [x, y] = layout.tile_origin(selected);
         draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.48, 0.0, 2.0, SELECTED);
     }
-    if let Some(menu) = movement.menu {
-        let [x, y] = layout.tile_origin(menu.target);
+    if let Some(target) = movement.menu.and_then(|menu| menu.target) {
+        let [x, y] = layout.tile_origin(target);
         draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.42, 0.0, 2.0, SELECTED);
     }
     for unit in &view.units {
