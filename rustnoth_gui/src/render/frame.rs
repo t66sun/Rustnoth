@@ -61,7 +61,7 @@ pub(super) struct FrameArt {
     sidebar: Texture,
     minimap: [Texture; 2],
     buttons: [[Texture; 3]; 2],
-    reports: [Texture; 3],
+    reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
     status: [Texture; 9],
@@ -83,7 +83,7 @@ impl FrameArt {
             buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root),
-            reports: ["gold.png", "villages.png", "units.png"].map(theme),
+            reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: [
                 "border-topleft", "border-top", "border-topright", "border-left", "background",
                 "border-right", "border-botleft", "border-bottom", "border-botright",
@@ -153,7 +153,7 @@ pub fn draw(
     paint(&art.frame.sidebar, frame.sidebar);
     let s = frame.scale;
     if s <= 0.0 { return; }
-    draw_reports(frame, state, observation, art);
+    draw_reports(frame, state, observation, movement.session.economy(), art);
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
@@ -205,7 +205,7 @@ pub fn draw(
     }
 }
 
-fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Observation>, art: &mut BoardArt) {
+fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Observation>, economy: Option<engine_lite::income::EconomyReport>, art: &mut BoardArt) {
     let s = frame.scale;
     let rect = |x, w| Rect::new(x * s, 3.0 * s, w * s, 20.0 * s);
     let narrow = frame.compact;
@@ -219,8 +219,8 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
             });
             paint(flag, Rect::new((x + 6.0) * s, 5.0 * s, 25.0 * s, 17.0 * s));
             text_x += 35.0;
-            let side = if view.is_some_and(|v| v.side != turn.side) { "CPU" } else { "Side" };
-            format!("{}  {side} {}", turn.round, turn.side)
+            economy.and_then(|report| report.last_round).map_or_else(||turn.round.to_string(),
+                |limit| format!("{}/{limit}", turn.round))
         }
         MatchState::Won(side) => format!("Side {side} won"),
         MatchState::AlliedVictory(sides) => format!("Sides {} won", sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")),
@@ -228,17 +228,20 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
         MatchState::CampaignDefeat => "Campaign defeat".into(),
         MatchState::Draw => "Draw".into(),
     };
-    let icons = if narrow { [215.0, 282.0, 344.0] } else { [319.0, 407.0, 490.0] };
+    let icons = if narrow { [215.0, 282.0, 344.0, 400.0, 475.0] } else { [319.0, 407.0, 490.0, 568.0, 666.0] };
     text_in(&art.font, &status, rect(text_x, icons[0] - text_x - 6.0), 15, TEXT, false);
-    if let Some(view) = view {
-        let villages = view.tiles.iter().filter(|tile| tile.village_owner == Some(view.side)).count();
+    if let (Some(view), Some(economy)) = (view, economy) {
         let units = view.units.iter().filter(|unit| unit.side == view.side).count();
-        let values = [view.gold.map(|v| v.to_string()), Some(villages.to_string()), Some(units.to_string())];
+        let values = [view.gold.map(|v| v.to_string()), Some(format!("{}/{}",economy.villages,economy.known_villages)),
+            Some(units.to_string()), Some(format!("{} ({})",economy.expenses,economy.upkeep)), Some(economy.income.to_string())];
         for (index, value) in values.into_iter().enumerate() {
             if let Some(value) = value {
                 let left = icons[index];
-                paint(&art.frame.reports[index], Rect::new(left * s, 5.0 * s, 17.0 * s, 17.0 * s));
-                text_in(&art.font, &value, rect(left + 21.0, 42.0), 15, TEXT, false);
+                let icon_width = if index < 3 {17.0} else {25.0};
+                paint(&art.frame.reports[index], Rect::new(left * s, 5.0 * s, icon_width * s, 17.0 * s));
+                let text_width = icons.get(index+1).copied().unwrap_or(left+83.0)-left-icon_width-5.0;
+                let color = if matches!(index,0|4) && value.starts_with('-') { Color::from_rgba(255,96,96,255) } else {TEXT};
+                text_in(&art.font, &value, rect(left + icon_width + 4.0, text_width), 15, color, false);
             }
         }
     }
