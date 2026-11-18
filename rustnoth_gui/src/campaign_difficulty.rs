@@ -45,7 +45,12 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
     if choices.len() <= 1 {
         return Some(choices.first().map_or("NORMAL", |c| c.define).to_owned());
     }
-    let back = Texture2D::from_image(&get_screen_data());
+    let mut snapshot = get_screen_data();
+    // The framebuffer already contains the composited RGB values of the list.
+    for pixel in snapshot.bytes.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    let back = Texture2D::from_image(&snapshot);
     next_frame().await;
     let mut first = 0usize;
     let mut last_click = None;
