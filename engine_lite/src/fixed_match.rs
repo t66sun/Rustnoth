@@ -26,6 +26,7 @@ use crate::{
 
 pub mod audit;
 mod illumination;
+mod walk;
 mod vision;
 mod recruit;
 mod plague;
@@ -235,26 +236,7 @@ impl<'data> FixedMatch<'data> {
         }
         let enemies = |first: usize, second: usize| sides[first - 1].is_enemy(&sides[second - 1]);
         match action {
-            Action::Move { from, to } => {
-                let route = if viewer.fog || viewer.shroud {
-                    self.planned_route(turn.side, from, to)?
-                } else {
-                    Vec::new()
-                };
-                let board = &mut self.scenario.board;
-                let unit_type = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?.unit_type;
-                board.move_unit(
-                    turn.side,
-                    from,
-                    to,
-                    |terrain| self.rules.walking_cost(unit_type, terrain),
-                    |other| enemies(turn.side, other),
-                )?;
-                if self.capture_village(turn.side, to) {
-                    self.scenario.board.stop_movement(to);
-                }
-                self.reveal_travelled_hexes(to, route);
-            }
+            Action::Move { from, to } => self.walk(turn.side, from, to)?,
             Action::Attack(choice) => {
                 if self.scenario.board.unit_at(choice.to).is_some()
                     && !self.unit_visible_on_known_hex(turn.side, choice.to)
