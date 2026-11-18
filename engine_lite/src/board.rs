@@ -22,7 +22,7 @@ use crate::{
 
 mod attack;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
-pub(crate) use attack::{combatant, within_range};
+pub(crate) use attack::{StrikeRole, combatant, within_range};
 
 const REST_HEALING: i64 = 2;
 pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
