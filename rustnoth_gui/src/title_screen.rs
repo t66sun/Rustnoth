@@ -4,6 +4,8 @@ use std::{error::Error, fs, path::{Path, PathBuf}};
 use engine_lite::wml;
 use macroquad::prelude::*;
 
+mod preferences;
+
 use crate::{campaign_browser::Browser, dialog, read_file, setup::Setup};
 
 pub(super) struct TitleScreen {
@@ -14,13 +16,14 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Quit, Previous, Next }
+enum Command { Campaigns, Multiplayer, Preferences, Quit, Previous, Next }
 
 impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
+            Self::Preferences => "Preferences",
             Self::Quit => "Quit",
             Self::Previous => "Previous",
             Self::Next => "Next",
@@ -29,12 +32,12 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Preferences, Command::Quit] }
 }
 
 impl TitleScreen {
-    pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
         let art = Art::load(&self.root)?;
         let tips = tips(&fs::read_to_string(self.root.join("data/tips.cfg"))?)?;
         let actions = menu(self.campaign.is_some());
@@ -42,6 +45,7 @@ impl TitleScreen {
         let mut focus = 0;
         let mut pressed = None;
         let mut last_pointer = mouse_position();
+        let mut windowed_size = vec2(1200.0, 820.0);
         let mut error: Option<String> = None;
         loop {
             let scale = (screen_width() / 660.0).min(screen_height() / 460.0).clamp(0.01, 1.0);
@@ -85,6 +89,18 @@ impl TitleScreen {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::Previous) => { error = None; tip = (tip + tips.len() - 1) % tips.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % tips.len(); }
+                Some(Command::Preferences) => {
+                    next_frame().await;
+                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
+                        art.draw_background(w, h);
+                        let (body, source) = &tips[tip];
+                        for (command, bounds) in art.draw_panels(w, h, actions, body, source) {
+                            art.button(bounds, command.label(), command == Command::Preferences, false);
+                        }
+                        dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
+                    }).await;
+                    error = result.err().map(|cause| cause.to_string());
+                }
                 Some(command @ (Command::Campaigns | Command::Multiplayer)) => {
                     next_frame().await;
                     error = self.open(command).await.err().map(|cause| cause.to_string());
@@ -149,15 +165,17 @@ fn panel(rect: Rect) {
         Color::from_rgba(114, 79, 46, 255));
 }
 
+fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
+    let data = read_file(&root.join(name))?;
+    let image = Image::from_file_with_format(&data, None).map_err(|cause| format!("{name}: {cause}"))?;
+    let texture = Texture2D::from_image(&image);
+    texture.set_filter(FilterMode::Linear);
+    Ok(texture)
+}
+
 impl Art {
     fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
-        let texture = |name: &str| -> Result<Texture2D, Box<dyn Error>> {
-            let data = read_file(&root.join(name))?;
-            let image = Image::from_file_with_format(&data, None).map_err(|cause| format!("{name}: {cause}"))?;
-            let texture = Texture2D::from_image(&image);
-            texture.set_filter(FilterMode::Linear);
-            Ok(texture)
-        };
+        let texture = |name: &str| load_texture(root, name);
         let font = |name: &str| fs::read(root.join("fonts").join(name)).ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         Ok(Self {
@@ -280,8 +298,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Preferences, Command::Quit]);
     }
 
     #[test]
