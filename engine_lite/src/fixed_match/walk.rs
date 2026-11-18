@@ -5,6 +5,7 @@ impl FixedMatch<'_> {
     pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MatchError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
+        let mut facing = None;
         let mut discovered = Vec::new();
         let board = &self.scenario.board;
         let sides = &self.scenario.sides;
@@ -28,7 +29,10 @@ impl FixedMatch<'_> {
                     discovered.push(next);
                     break;
                 }
-                None => position = next,
+                None => {
+                    position = next;
+                    facing = previous.direction_to_neighbor(next).or(facing);
+                }
                 Some(_) => {}
             }
             moves_left = remaining;
@@ -59,7 +63,7 @@ impl FixedMatch<'_> {
         }
 
         let board = &mut self.scenario.board;
-        board.finish_walk(from, position, moves_left);
+        board.finish_walk(from, position, moves_left, facing);
         for hex in discovered {
             board.uncover_unit(hex);
         }
@@ -302,6 +306,7 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
             game.step(action).unwrap();
             let scout = game.scenario.board.unit_at(STOP).unwrap();
             assert_eq!((scout.unit_type.id.as_str(), scout.moves_left, scout.attacks_left), ("Elvish Scout", 0, 1));
+            assert_eq!(scout.facing, Some(crate::hex::Direction::SouthEast));
             assert!(!game.scenario.board.uncover_unit(enemy));
             assert_eq!(game.village_owners.get(&STOP), Some(&1));
             assert!(!game.village_owners.contains_key(&GOAL));
@@ -316,7 +321,9 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         let bundle = scenario(false, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg");
         let mut game = bundle.start(1, |_| unreachable!()).unwrap();
         game.step(Action::Move { from: START, to: GOAL }).unwrap();
-        assert_eq!(game.scenario.board.unit_at(GOAL).unwrap().moves_left, 3);
+        let scout = game.scenario.board.unit_at(GOAL).unwrap();
+        assert_eq!(scout.moves_left, 3);
+        assert_eq!(scout.facing, Some(crate::hex::Direction::NorthEast));
         assert_eq!(game.scenario.board.unit_at(Hex { x: 1, y: 0 }).unwrap().side, 1);
     }
 

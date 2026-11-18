@@ -29,6 +29,7 @@ struct UnitAssets {
     weapons: Vec<(Option<String>, Option<PathBuf>)>,
     ellipse: String,
     bars: UnitBars,
+    standing: Vec<Node>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,6 +100,10 @@ impl AssetCatalog {
         catalog.fallback = wesnoth_root.join("data/core/images");
         catalog.read_definitions(&document);
         Ok(catalog)
+    }
+
+    pub fn standing_animations(&self, id: &str) -> &[Node] {
+        self.units.get(id).map_or(&[], |unit| unit.standing.as_slice())
     }
 
     pub fn unit_bars(&self, id: &str) -> Option<UnitBars> {
@@ -217,6 +222,8 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
+                            standing: unit.children.iter().filter(|(tag, _)| tag == "standing_anim")
+                                .map(|(_, definition)| definition.clone()).collect(),
                             image: unit
                                 .attribute("image")
                                 .and_then(image_filename)
