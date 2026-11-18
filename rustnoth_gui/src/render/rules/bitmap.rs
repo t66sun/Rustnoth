@@ -114,18 +114,23 @@ impl Bitmaps {
         part: Option<Cut>,
     ) -> Option<Rc<RgbaImage>> {
         let data = self.read(catalog, &catalog.names[id])?;
-        let tile = if let Some(part) = part {
+        let mut tile = if let Some(part) = part {
             let [dx, dy] = part.center.map_or([0, 0], |[x, y]| {
                 [data.width() as i32 / 2 - x, data.height() as i32 / 2 - y]
             });
-            let mut tile = cut(&data, part.x + dx, part.y + dy, 72, 72);
-            if let Some(mask_image) = self.read(catalog, "alphamask.png") {
-                mask(&mut tile, &mask_image);
-            }
-            Rc::new(tile)
+            Rc::new(cut(&data, part.x + dx, part.y + dy, 72, 72))
         } else {
             data
         };
+        // Wesnoth requests HEXED images for local terrain and multi-hex fragments alike.
+        if let Some(stencil) = self.read(catalog, "alphamask.png") {
+            if tile.dimensions() != stencil.dimensions() {
+                let left = (tile.width() as i32 - stencil.width() as i32) / 2;
+                let top = (tile.height() as i32 - stencil.height() as i32) / 2;
+                tile = Rc::new(cut(&tile, left, top, stencil.width(), stencil.height()));
+            }
+            mask(Rc::make_mut(&mut tile), &stencil);
+        }
         tile.pixels().any(|pixel| pixel[3] != 0).then_some(tile)
     }
 
@@ -149,5 +154,30 @@ impl Bitmaps {
         });
         self.cropped.insert((id, part), result.clone());
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn local_water_frames_are_clipped_to_the_same_hex_as_rule_fragments() {
+        let mut catalog = crate::render::rules::compile::compile(&[], &[]);
+        catalog.names.push("water".into());
+        let mut bitmaps = Bitmaps::default();
+        bitmaps.sources.insert(
+            "water".into(),
+            Rc::new(RgbaImage::from_pixel(72, 72, Rgba([10, 20, 30, 255]))),
+        );
+        let mut stencil = RgbaImage::from_pixel(72, 72, Rgba([0, 0, 0, 255]));
+        stencil.get_pixel_mut(0, 0)[3] = 0;
+        bitmaps
+            .sources
+            .insert("alphamask.png".into(), Rc::new(stencil));
+        let frame = bitmaps.pixels(&catalog, 0, None).unwrap();
+        assert_eq!(frame.get_pixel(0, 0)[3], 0);
+        assert_eq!(frame.get_pixel(35, 35).0, [10, 20, 30, 255]);
     }
 }
