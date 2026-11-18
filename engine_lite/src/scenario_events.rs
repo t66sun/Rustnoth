@@ -11,6 +11,7 @@ use crate::{
 enum SideAction {
     Gold(i32),
     AllowRecruit(Vec<String>),
+    SetRecruit(Vec<String>),
     DisallowRecruit(Option<Vec<String>>),
 }
 
@@ -134,6 +135,7 @@ impl EventAction {
         let (value_field, action) = match tag {
             "gold" => ("amount", SideAction::Gold(cfg.attribute("amount")?.trim().parse().ok()?)),
             "allow_recruit" => ("type", SideAction::AllowRecruit(types(cfg.attribute("type")?))),
+            "set_recruit" => ("recruit", SideAction::SetRecruit(types(cfg.attribute("recruit")?))),
             "disallow_recruit" => ("type", SideAction::DisallowRecruit(cfg.attribute("type").map(types))),
             _ => return None,
         };
@@ -166,6 +168,7 @@ impl EventAction {
             match action {
                 SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
                 SideAction::AllowRecruit(types) => state.sides[index].recruits.extend(types.iter().cloned()),
+                SideAction::SetRecruit(types) => state.sides[index].recruits = types.iter().cloned().collect(),
                 SideAction::DisallowRecruit(Some(types)) => {
                     for id in types { state.sides[index].recruits.remove(id); }
                 }
@@ -591,6 +594,40 @@ gold=100
             game.step(Action::EndTurn).unwrap();
             assert_eq!(game.audit_snapshot().gold, expected);
         }
+    }
+
+    #[test]
+    fn set_recruit_replaces_only_selected_sides_in_command_order() {
+        let scenario = wml::parse(r#"
+[side]
+recruit=Guard
+[/side]
+[side]
+recruit=Scout
+[/side]
+[event]
+name=start
+[set_recruit]
+side=1
+recruit=Archer, White Mage
+[/set_recruit]
+[/event]
+[event]
+name=turn 2
+[set_recruit]
+side=1
+recruit=""
+[/set_recruit]
+[/event]"#).unwrap();
+        let mut events = ScenarioEvents::read(&scenario, 2);
+        let mut sides = crate::scenario_sides::read_sides(&scenario);
+        let mut gold = [0; 2];
+        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
+        events.fire("start", &mut state);
+        assert_eq!(state.sides[0].recruits.iter().map(String::as_str).collect::<Vec<_>>(), ["Archer", "White Mage"]);
+        events.fire("turn_2", &mut state);
+        assert!(state.sides[0].recruits.is_empty());
+        assert_eq!(state.sides[1].recruits, BTreeSet::from(["Scout".to_owned()]));
     }
 
     #[test]
