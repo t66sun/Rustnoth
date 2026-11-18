@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::movement_cost::MovementCosts;
+use crate::income::Upkeep;
 use crate::resistance::DamageTable;
 use crate::terrain_defense::TerrainDefense;
 use crate::time_of_day::Alignment;
@@ -23,6 +24,7 @@ pub struct UnitType {
     pub(crate) variation_id: String,
     variations: BTreeMap<String, UnitType>,
     pub level: i32,
+    pub(crate) upkeep: Upkeep,
     pub(crate) leadership: bool,
     pub(crate) illuminates: bool,
     pub hitpoints: i32,
@@ -125,6 +127,7 @@ impl UnitType {
             variation_id: text("variation_id").to_owned(),
             variations: variations::read(&unit, catalog),
             level,
+            upkeep: Upkeep::from_wml(&unit).unwrap_or_default(),
             leadership: unit.children.iter().any(|(tag, abilities)| {
                 tag == "abilities" && abilities.children.iter().any(|(tag, ability)| {
                     tag == "leadership" && stock_leadership(ability)

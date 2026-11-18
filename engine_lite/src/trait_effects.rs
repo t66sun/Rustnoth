@@ -1,6 +1,6 @@
 //! Apply ordinary recruit trait effects to base unit statistics.
 
-use crate::{scenario_time::integer, unit_type::UnitType, wml::Node};
+use crate::{income::Upkeep, scenario_time::integer, unit_type::UnitType, wml::Node};
 
 /// A recruit's effective maximum stats and weapon damage.
 #[derive(Debug, PartialEq, Eq)]
@@ -8,6 +8,7 @@ pub struct RecruitStats {
     pub max_hitpoints: i32,
     pub max_movement: i32,
     pub(crate) vision: i32,
+    pub(crate) upkeep: Upkeep,
     pub max_experience: i32,
     pub healthy: bool,
     /// Damage indexed in the same order as the unit type's attacks.
@@ -22,18 +23,19 @@ pub struct RecruitStats {
 impl RecruitStats {
     /// Applies direct HP, movement, experience and attack damage effects in trait order.
     pub fn from_traits(unit: &UnitType, traits: &[&Node]) -> Self {
-        Self::from_traits_with_base_experience(unit, traits, unit.experience)
+        Self::from_traits_with_base_experience(unit, traits.iter().copied(), unit.experience)
     }
 
-    pub(crate) fn from_traits_with_base_experience(
+    pub(crate) fn from_traits_with_base_experience<'a>(
         unit: &UnitType,
-        traits: &[&Node],
+        traits: impl IntoIterator<Item = &'a Node>,
         base_max_experience: i32,
     ) -> Self {
         let mut stats = Self {
             max_hitpoints: unit.hitpoints,
             max_movement: unit.movement,
             vision: unit.vision,
+            upkeep: unit.upkeep,
             max_experience: base_max_experience,
             healthy: false,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
@@ -63,6 +65,7 @@ impl RecruitStats {
 
     fn apply_effect(&mut self, unit: &UnitType, effect: &Node) {
         match effect.attribute("apply_to") {
+            Some("loyal") => self.upkeep = Upkeep::Fixed(0),
             Some("healthy") => self.healthy = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("hitpoints") => {
                 let base = set_relative(self.max_hitpoints, effect, "set_total");
