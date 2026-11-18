@@ -28,6 +28,7 @@ pub struct RecruitStats {
     pub(crate) upkeep: Upkeep,
     pub max_experience: i32,
     pub healthy: bool,
+    pub(crate) emits_zoc: bool,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
     pub undrainable: bool,
@@ -58,6 +59,7 @@ impl RecruitStats {
             upkeep: unit.upkeep,
             max_experience: base_max_experience,
             healthy: false,
+            emits_zoc: unit.emits_zoc,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
             undrainable: immunities.undrainable,
             unslowable: immunities.unslowable,
@@ -87,6 +89,9 @@ impl RecruitStats {
 
     fn apply_effect(&mut self, unit: &UnitType, effect: &Node) {
         match effect.attribute("apply_to") {
+            Some("zoc") if effect.attribute("value").is_some() => {
+                self.emits_zoc = crate::scenario_sides::bool_attribute(effect, "value", false);
+            }
             Some("loyal") => self.upkeep = Upkeep::Fixed(0),
             Some("healthy") => self.healthy = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("hitpoints") => {
