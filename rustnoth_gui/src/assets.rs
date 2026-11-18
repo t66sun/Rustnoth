@@ -20,6 +20,7 @@ pub struct AssetCatalog {
 struct UnitAssets {
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
+    dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
     weapon_names: Vec<Option<String>>,
 }
@@ -64,6 +65,11 @@ impl AssetCatalog {
     /// Original sidebar portrait. A missing profile or `unit_image` uses the team's board sprite.
     pub fn unit_portrait(&self, id: &str) -> Option<PathBuf> {
         self.resolve_image(self.units.get(id)?.portrait.as_deref()?)
+    }
+
+    /// Full-size portrait used when a campaign speaker has no explicit profile.
+    pub fn dialogue_portrait(&self, id: &str) -> Option<PathBuf> {
+        self.resolve_image(self.units.get(id)?.dialogue_portrait.as_deref()?)
     }
 
     /// Returns the unit type's display name from its WML definition.
@@ -121,6 +127,8 @@ impl AssetCatalog {
                                 .attribute("image")
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
+                            dialogue_portrait: display_name(unit, "profile")
+                                .filter(|value| *value != "unit_image").and_then(image_filename).map(PathBuf::from),
                             portrait: display_name(unit, "small_profile")
                                 .or_else(|| display_name(unit, "profile"))
                                 .filter(|value| *value != "unit_image")
