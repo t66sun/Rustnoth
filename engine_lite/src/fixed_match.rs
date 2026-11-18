@@ -182,8 +182,23 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) {
-        let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides };
+        let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, captures: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
+        for capture in state.captures {
+            let owner = usize::try_from(capture.side).ok().filter(|s| (1..=self.side_order.len()).contains(s));
+            if owner.is_some_and(|side| !self.side_survives(side)) {
+                continue;
+            }
+            let map = self.scenario.board.map();
+            capture.for_each_hex(map, |hex| {
+                if !map.terrain_at(hex).is_some_and(|code| self.rules.terrain.features(code).village) { return; }
+                if let Some(side) = owner {
+                    self.village_owners.insert(hex, side);
+                } else {
+                    self.village_owners.remove(&hex);
+                }
+            });
+        }
     }
 
     pub fn state(&self) -> MatchState {
