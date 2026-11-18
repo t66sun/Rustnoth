@@ -29,6 +29,7 @@ mod story;
 mod saved_game;
 mod save_dialog;
 mod title_screen;
+mod tutorial;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
 rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -188,7 +189,7 @@ impl Launch {
 struct BoardData {
     source: Vec<u8>,
     core: Vec<u8>,
-    restore: Option<saved_game::Restore>,
+    restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
     scenario: Bundle,
     story: Vec<story::Part>,
     assets: AssetCatalog,
@@ -214,6 +215,7 @@ impl BoardData {
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
             scenario,
+            lesson: None,
             story,
             assets,
             title,
@@ -245,6 +247,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         Ok(map)
     }, carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
+    if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root)?;
@@ -269,12 +272,15 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut top_menu = map_menus::State::default();
     loop {
         let dialogue_open = session.dialogue().is_some();
+        if !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
+            return Ok(None);
+        }
         let mut commands = map_menus::available(
             session.objectives().is_some(),
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
             session.legal_actions(),
         );
-        if !campaign { commands.insert(0, map_menus::Command::Save); }
+        if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
         let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = dialogue_open || top.handled;
         if !input_blocked && is_key_pressed(KeyCode::G)
@@ -306,7 +312,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
             _ => {}
         }
-        if !campaign && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
+        if !campaign && data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
             next_frame().await;
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(
@@ -365,7 +371,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             art.load(view, &data.assets, session.map_item_images());
         }
         let clicked = !input_blocked && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !input_blocked && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        if data.lesson.is_none() && !input_blocked && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -455,6 +461,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
             match session.apply_with_advancement(action, advancement) {
                 Ok(_) => {
+                    if let Some(lesson) = &mut data.lesson { lesson.advance(&mut session); }
                     message = None;
                     menu = None;
                     selection.clear();
@@ -482,6 +489,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
         );
+        if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
+            lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+        }
         if session.legal_actions().contains(&Action::EndTurn)
             && let Some(bounds) = button
         {
