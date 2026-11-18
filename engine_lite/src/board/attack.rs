@@ -34,6 +34,11 @@ pub struct StrikeModifiers {
     pub damage_multiplier: i32,
 }
 
+pub(crate) enum StrikeRole<'a> {
+    Attack,
+    Retaliate(&'a WeaponProfile),
+}
+
 impl Battlefield<'_> {
     /// Lists available attacks in origin, target, then weapon-index order.
     ///
@@ -104,13 +109,12 @@ impl Battlefield<'_> {
             }
             None => None,
         };
-        let charging = weapon.has_charge();
         let attacker_stats = combatant(
             attacker,
             action.weapon,
             &action.modifiers,
             retaliation.map_or(0, |(_, parry, _)| parry),
-            charging,
+            StrikeRole::Attack,
         );
         let defender_stats = retaliation.map_or(
             Combatant {
@@ -120,7 +124,9 @@ impl Battlefield<'_> {
                 hit_chance: 0,
                 firststrike: false,
             },
-            |(index, _, modifiers)| combatant(defender, index, modifiers, weapon.parry, charging),
+            |(index, _, modifiers)| {
+                combatant(defender, index, modifiers, weapon.parry, StrikeRole::Retaliate(weapon))
+            },
         );
         let movement_used = weapon.movement_used;
         let attacks_used = weapon.attacks_used;
@@ -170,16 +176,18 @@ pub(crate) fn combatant(
     weapon_index: usize,
     modifiers: &StrikeModifiers,
     opposing_parry: i32,
-    charging: bool,
+    role: StrikeRole<'_>,
 ) -> Combatant {
     let weapon = &unit.unit_type.attacks[weapon_index];
+    let charging = match role {
+        StrikeRole::Attack => weapon.has_charge(),
+        StrikeRole::Retaliate(attacking_weapon) => attacking_weapon.has_charge(),
+    };
     let base_damage = unit.attack_damage(weapon_index);
     let base_damage = if charging { base_damage.saturating_mul(2) } else { base_damage };
     let damage = strike_damage(base_damage, modifiers.damage_multiplier, false);
-    // Native applies the noncumulative magical replacement after accuracy and parry.
-    let hit_chance = weapon.magical_hit_chance().unwrap_or_else(|| {
-        base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry)
-    });
+    let base_chance = base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry);
+    let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack));
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,
@@ -251,6 +259,23 @@ mod tests {
             modifiers: StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 },
             retaliation: Some((0, StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 })),
         }
+    }
+
+    #[test]
+    fn marksman_applies_after_parry_on_the_attack_only() {
+        let mut types = unit_types();
+        let profile = wml::parse(
+            "range=melee\ndamage=1\nnumber=1\nparry=100\n\
+             [specials]\n[chance_to_hit]\nid=marksman\nvalue=60\ncumulative=yes\n\
+             active_on=offense\n[/chance_to_hit]\n[/specials]",
+        ).unwrap();
+        types.get_mut("Fighter").unwrap().attacks[0] = WeaponProfile::from_wml(profile);
+        let mut board = board(&types);
+        let mut rng = ReplayRng::new(5489);
+        // Native reference rolls are 12 and 2. The attack has 60% and retaliation has 0%.
+        let result = board.apply_attack(1, attack(0), |side| side == 2, &mut rng).unwrap();
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (10, 9));
+        assert_eq!(rng.seed_and_calls(), (5489, 2));
     }
 
     #[test]

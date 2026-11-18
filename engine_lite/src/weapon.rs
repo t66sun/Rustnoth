@@ -1,6 +1,7 @@
 use crate::wml::Node;
 
 const MAGICAL_HIT_CHANCE: u8 = 70;
+const MARKSMAN_HIT_CHANCE: u8 = 60;
 
 /// The combat fields of a preprocessed Wesnoth 1.18.8 `[attack]` tag.
 #[derive(Debug, PartialEq, Eq)]
@@ -68,7 +69,7 @@ impl WeaponProfile {
         })
     }
 
-    pub(crate) fn magical_hit_chance(&self) -> Option<u8> {
+    fn magical_hit_chance(&self) -> Option<u8> {
         self.specials.as_ref().and_then(|specials| {
             specials
                 .children
@@ -76,6 +77,18 @@ impl WeaponProfile {
                 .any(|(tag, definition)| is_unconditional_magical(tag, definition))
                 .then_some(MAGICAL_HIT_CHANCE)
         })
+    }
+
+    pub(crate) fn hit_chance(&self, base: u8, attacking: bool) -> u8 {
+        let chance = self.magical_hit_chance().unwrap_or(base);
+        if attacking && self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_marksman(tag, definition))
+        }) {
+            // Cumulative [chance_to_hit] retains the base even alongside a fixed value.
+            chance.max(base).max(MARKSMAN_HIT_CHANCE)
+        } else {
+            chance
+        }
     }
 
     pub(crate) fn has_charge(&self) -> bool {
@@ -89,10 +102,26 @@ impl WeaponProfile {
             specials.children.iter().all(|(tag, definition)| {
                 is_unconditional_firststrike(tag, definition)
                     || is_unconditional_magical(tag, definition)
+                    || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
             })
         })
     }
+}
+
+fn is_stock_marksman(tag: &str, definition: &Node) -> bool {
+    tag == "chance_to_hit"
+        && definition.children.is_empty()
+        && definition.attribute("id") == Some("marksman")
+        && definition.attribute("value").and_then(|value| value.parse().ok())
+            == Some(MARKSMAN_HIT_CHANCE)
+        && definition.attribute("cumulative") == Some("yes")
+        && definition.attribute("active_on") == Some("offense")
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "value" | "cumulative" | "active_on" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_unconditional_magical(tag: &str, definition: &Node) -> bool {
@@ -247,6 +276,29 @@ mod tests {
             let unsupported = weapon(fields);
             assert!(!unsupported.supports_specials());
             assert_eq!(unsupported.magical_hit_chance(), None);
+        }
+    }
+
+    #[test]
+    fn stock_marksman_sets_an_offensive_floor_and_rejects_modified_specials() {
+        let fields = "id=marksman\nvalue=60\ncumulative=yes\nactive_on=offense";
+        let weapon = |fields: &str| {
+            WeaponProfile::from_wml(wml::parse(format!(
+                "[specials]\n[chance_to_hit]\n{fields}\n[/chance_to_hit]\n[/specials]"
+            )).unwrap())
+        };
+        let stock = weapon(fields);
+        assert!(stock.supports_specials());
+        assert_eq!(stock.hit_chance(30, true), 60);
+        assert_eq!(stock.hit_chance(90, true), 90);
+        assert_eq!(stock.hit_chance(30, false), 30);
+        for modified in [
+            fields.replace("60", "70"),
+            fields.replace("offense", "defense"),
+            fields.replace("yes", "no"),
+            format!("{fields}\n[filter_opponent]\ntype=Fighter\n[/filter_opponent]"),
+        ] {
+            assert!(!weapon(&modified).supports_specials());
         }
     }
 
