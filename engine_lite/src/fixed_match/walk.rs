@@ -1,14 +1,17 @@
-use super::FixedMatch;
-use crate::{board::MoveError, hex::Hex};
+use super::{FixedMatch, vision::unit_sight};
+use crate::{board::MoveError, hex::Hex, visibility::HexVisibility};
 
 impl FixedMatch<'_> {
     pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MoveError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
-        let mut travelled = 1;
         let mut discovered = Vec::new();
         let board = &self.scenario.board;
         let sides = &self.scenario.sides;
+        let moving_side = &sides[side - 1];
+        let mover = board.unit_at(from).expect("validated route origin");
+        let mut view = (moving_side.fog || moving_side.shroud).then(|| self.effective_vision(side));
+        let mut sighted = false;
 
         // Native movement checks the plotted path for hidden units before moving the scout.
         // An allied occupant can be traversed but cannot become the scout's final location.
@@ -21,15 +24,30 @@ impl FixedMatch<'_> {
                 None => position = next,
                 Some(_) => {}
             }
-            travelled += 1;
             moves_left = remaining;
             discovered.extend(next.neighbors().filter(|&neighbor| {
                 board.unit_at(neighbor).is_some()
                     && !self.unit_visible_on_known_hex(side, neighbor)
             }));
+            if let Some(view) = &mut view {
+                let sight = unit_sight(board.map(), &self.rules, next, mover);
+                sighted |= sight.iter().any(|&hex| {
+                    view.at(hex) != Some(HexVisibility::Visible)
+                        && board.unit_at(hex).is_some_and(|unit| unit.side != side)
+                        && self.unit_visible_on_known_hex(side, hex)
+                });
+                self.vision[side - 1].add_sight(sight.iter().copied());
+                view.add_sight(sight);
+            }
             if !discovered.is_empty() {
                 moves_left = 0;
                 break;
+            }
+            if sighted && position == next {
+                let code = board.map().terrain_at(next).expect("route stays on the map");
+                if !self.rules.terrain.features(code).village || self.village_owners.get(&next) == Some(&side) {
+                    break;
+                }
             }
         }
 
@@ -41,7 +59,6 @@ impl FixedMatch<'_> {
         if self.capture_village(side, position) {
             self.scenario.board.stop_movement(position);
         }
-        self.reveal_travelled_hexes(position, route[..travelled].iter().map(|&(hex, _)| hex));
         Ok(())
     }
 }
@@ -60,7 +77,7 @@ mod tests {
         let enemy_row = if forest {
             "Gg,Gg,Gg,Gg,2 Gg^Fp,Gg,Gg,Gg"
         } else {
-            "Gg,Gg,Gg,Gg,Gg,Gg,Gg,2 Gg"
+            "Xv,Xv,Xv,Xv,Xv,Xv,Xv,2 Gg"
         };
         let wml = format!(r#"
 [terrain_type]
@@ -161,12 +178,99 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         let bundle = scenario(true, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg");
         let mut game = bundle.start(1, |_| unreachable!()).unwrap();
         let blocker = Hex { x: 4, y: 0 };
+        // The scout sights the blocker while passing through an ally and has no
+        // vacant tile to stop on before attempting to enter the blocker's tile.
+        game.scenario.board.place_recruit(1, "Elvish Scout", STOP).unwrap();
         game.scenario.board.place_recruit(2, "Elvish Scout", blocker).unwrap();
         let action = Action::Move { from: START, to: GOAL };
         assert!(game.decision().unwrap().1.contains(&action));
+        let route: Vec<_> = game.planned_route(1, START, GOAL).unwrap().into_iter().map(|(hex, _)| hex).collect();
+        assert_eq!(route, (0..=6).map(|x| Hex { x, y: 0 }).collect::<Vec<_>>());
         game.step(action).unwrap();
-        assert_eq!(game.scenario.board.unit_at(STOP).unwrap().moves_left, 6);
+        assert_eq!(game.scenario.board.unit_at(Hex { x: 2, y: 0 }).unwrap().moves_left, 6);
         assert_eq!(game.scenario.board.unit_at(blocker).unwrap().side, 2);
         assert!(!game.scenario.board.uncover_unit(blocker));
+    }
+
+    fn sighting_lane(third_tile: &str, concealment: &str) -> Bundle {
+        let border = ["Xv"; 19].join(",");
+        let mut row = ["Gg"; 19];
+        row[0] = "Xv";
+        row[1] = "1 Gg";
+        row[3] = third_tile;
+        row[13] = "2 Gg";
+        row[18] = "Xv";
+        let row = row.join(",");
+        let config = format!(r#"
+[terrain_type]
+    id=flat
+    string=Gg
+[/terrain_type]
+[terrain_type]
+    id=village
+    string=^Vh
+    aliasof=_bas
+    gives_income=yes
+[/terrain_type]
+[units]
+    [unit_type]
+        id=Scout
+        hitpoints=32
+        movement=9
+        [movement_costs]
+            flat=1
+        [/movement_costs]
+    [/unit_type]
+    [unit_type]
+        id=Lookout
+        hitpoints=33
+        {concealment}
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="{border}
+{row}
+{border}"
+    [side]
+        side=1
+        type=Scout
+        fog=yes
+    [/side]
+    [side]
+        side=2
+        type=Lookout
+        fog=yes
+    [/side]
+[/scenario]"#);
+        Bundle::parse(config.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn sighting_a_foreign_unit_stops_once_at_the_first_reasonable_hex_with_unspent_moves() {
+        let enemy = Hex { x: 12, y: 0 };
+        for (tile, stop_x, remaining) in [("Gg", 2, 7), ("Gg^Vh", 3, 6)] {
+            let bundle = sighting_lane(tile, "");
+            let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+            let stop = Hex { x: stop_x, y: 0 };
+            assert!(!game.observation_for(1).unwrap().units.iter().any(|u| u.position == enemy));
+            game.step(Action::Move { from: START, to: GOAL }).unwrap();
+            assert_eq!(game.scenario.board.unit_at(stop).unwrap().moves_left, remaining);
+            assert!(game.observation_for(1).unwrap().units.iter().any(|u| u.position == enemy));
+            assert!(game.village_owners.is_empty());
+            game.step(Action::Move { from: stop, to: GOAL }).unwrap();
+            assert_eq!(game.scenario.board.unit_at(GOAL).unwrap().moves_left, 3);
+        }
+    }
+
+    #[test]
+    fn revealing_the_terrain_of_a_concealed_unit_does_not_interrupt_a_move() {
+        let bundle = sighting_lane("Gg", "[abilities]\n[hides]\nid=hidden\n[/hides]\n[/abilities]");
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        game.step(Action::Move { from: START, to: GOAL }).unwrap();
+        assert_eq!(game.scenario.board.unit_at(GOAL).unwrap().moves_left, 3);
+        let view = game.observation_for(1).unwrap();
+        let enemy = Hex { x: 12, y: 0 };
+        assert!(view.tiles.iter().any(|tile| tile.position == enemy && tile.visible));
+        assert!(!view.units.iter().any(|unit| unit.position == enemy));
     }
 }
