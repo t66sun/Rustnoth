@@ -186,6 +186,10 @@ pub fn draw(
         MatchState::Won(side) => {
             label(&art.font, &format!("Side {side} won"), inset, baseline, 22, TEXT);
         }
+        MatchState::AlliedVictory(sides) => {
+            let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
+            label(&art.font, &format!("Sides {winners} won"), inset, baseline, 22, TEXT);
+        }
         MatchState::Draw => label(&art.font, "Draw", inset, baseline, 22, TEXT),
     }
     if let Some(unit) = observation
