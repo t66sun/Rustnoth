@@ -21,6 +21,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) can_recruit: bool,
     pub(crate) extra_recruits: Vec<String>,
     pub(crate) recall_cost: Option<i32>,
+    pub(crate) recall_filter: Option<Node>,
     pub(crate) upkeep: Option<Upkeep>,
     pub(crate) traits: Vec<Node>,
     pub(crate) default_amlas: u8,
@@ -113,6 +114,7 @@ pub(crate) fn read_authored_starting_units(
                 extra_recruits: crate::scenario_sides::names(unit.attribute("extra_recruit").unwrap_or_default()).collect(),
                 // team_builder strips side attributes, including recall_cost, from leaders.
                 recall_cost: if leader { None } else { integer(unit, "recall_cost") },
+                recall_filter: children_named(unit, "filter_recall").next().cloned(),
                 upkeep: Upkeep::from_wml(unit),
                 traits: children_named(unit, "modifications")
                     .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
