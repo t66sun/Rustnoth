@@ -65,6 +65,9 @@ function capture.snapshot(step, time_over)
         row("unit", unit.x, unit.y, unit.side, unit_type, unit.hitpoints,
             unit.moves, unit.attacks_left, unit.canrecruit and 1 or 0, unit.experience,
             table.unpack(traits))
+        if unit.status.slowed then
+            row("status", unit.x, unit.y, "slowed")
+        end
     end
     for _, village in ipairs(owned_villages()) do
         row("village", village.x, village.y, village.side)

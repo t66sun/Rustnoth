@@ -29,6 +29,7 @@ pub struct SnapshotUnit {
     pub attacks_left: i32,
     pub can_recruit: bool,
     pub experience: i32,
+    pub slowed: bool,
     /// Applied trait IDs in effect order.
     pub traits: Vec<String>,
 }
@@ -67,6 +68,7 @@ impl FixedMatch<'_> {
                     attacks_left: unit.attacks_left,
                     can_recruit: unit.can_recruit,
                     experience: unit.experience,
+                    slowed: unit.slowed,
                     traits: unit
                         .traits()
                         .map(|trait_| trait_.attribute("id").unwrap_or_default().to_owned())
@@ -125,6 +127,11 @@ mod tests {
                         range=melee
                         damage=3
                         number=1
+                        [specials]
+                            [slow]
+                                id=slow
+                            [/slow]
+                        [/specials]
                     [/attack]
                 [/unit_type]
             [/units]
@@ -169,6 +176,8 @@ Xv,Xv,Xv,Xv"
         let after = game.audit_snapshot();
         assert_eq!(after.units[0].hitpoints, 7);
         assert_eq!(after.units[1].hitpoints, 10);
+        assert!(after.units[0].slowed);
+        assert!(!after.units[1].slowed);
         assert_eq!(game.rng.next_u32(), ReplayRng::restore(22, 1).next_u32());
     }
 
@@ -237,6 +246,7 @@ Xv,Xv,Xv,Xv,Xv"
             attacks_left: 1,
             can_recruit: true,
             experience: 0,
+            slowed: false,
             traits: Vec::new(),
         };
         assert_eq!(before.state, MatchState::Playing(Turn { round: 1, side: 1 }));
