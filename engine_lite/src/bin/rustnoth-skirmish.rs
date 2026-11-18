@@ -1,11 +1,11 @@
 use std::{env, error::Error, ffi::OsString, fs, io, path::Path, process::ExitCode};
 
 use engine_lite::{
-    skirmish::{self, Faction},
+    skirmish::{self, Faction, Visibility},
     wml_emit,
 };
 
-const USAGE: &str = "rustnoth-skirmish <map> <turns> <faction.cfg> [--leader <unit-id>] <faction.cfg> [--leader <unit-id>] ...\nWrites a skirmish scenario bundle to standard output.";
+const USAGE: &str = "rustnoth-skirmish <map> <turns> [--visibility open|fog|shroud|both] <faction.cfg> [--leader <unit-id>] <faction.cfg> [--leader <unit-id>] ...\nWrites a skirmish scenario bundle to standard output. Visibility defaults to open.";
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -29,8 +29,15 @@ fn run(args: &[OsString]) -> Result<(), Box<dyn Error>> {
     let map_data = fs::read_to_string(map).map_err(|e| format!("{}: {e}", map.display()))?;
     let title = map.file_stem().ok_or("map needs a filename")?.to_string_lossy();
     let mut factions = Vec::new();
+    let mut visibility = None;
     let mut choices = choices.iter().peekable();
     while let Some(path) = choices.next() {
+        if path == "--visibility" {
+            if visibility.is_some() { return Err("--visibility may only be specified once".into()); }
+            let value = choices.next().and_then(|arg| arg.to_str()).ok_or(USAGE)?;
+            visibility = Some(value.parse::<Visibility>()?);
+            continue;
+        }
         if path == "--leader" {
             return Err(USAGE.into());
         }
@@ -45,6 +52,8 @@ fn run(args: &[OsString]) -> Result<(), Box<dyn Error>> {
         factions.push((faction, leader));
     }
     let sides: Vec<_> = factions.iter().map(|(faction, leader)| (faction, *leader)).collect();
-    let document = skirmish::scenario(&title, &map_data, turns, &sides)?;
+    let document = skirmish::scenario_with_visibility(
+        &title, &map_data, turns, &sides, visibility.unwrap_or_default(),
+    )?;
     Ok(wml_emit::write_config(io::stdout().lock(), &document)?)
 }
