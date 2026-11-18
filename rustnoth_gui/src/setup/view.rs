@@ -22,6 +22,24 @@ pub(super) enum Input {
 
 struct Picker { field: Field, cursor: usize, first: usize }
 
+fn setup_camera(width: f32, height: f32) -> Camera2D {
+    Camera2D {
+        target: vec2(width * 0.5, height * 0.5),
+        zoom: vec2(2.0 / width, 2.0 / height),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn setup_camera_places_the_top_left_control_at_the_top_left_of_the_screen() {
+    let projection = setup_camera(440.0, 520.0).matrix();
+    let top_left = projection.transform_point3(vec3(0.0, 0.0, 0.0));
+    let bottom_right = projection.transform_point3(vec3(440.0, 520.0, 0.0));
+    assert!(top_left.abs_diff_eq(vec3(-1.0, 1.0, 0.0), 0.00001));
+    assert!(bottom_right.abs_diff_eq(vec3(1.0, -1.0, 0.0), 0.00001));
+}
+
+
 pub(super) struct SetupView {
     font: Option<Font>,
     background: Option<Texture2D>,
@@ -48,7 +66,7 @@ impl SetupView {
         let mouse = vec2(mx / scale, my / scale);
         let clicked = is_mouse_button_pressed(MouseButton::Left);
         let confirm = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space);
-        set_camera(&Camera2D::from_display_rect(Rect::new(0.0, 0.0, w, h)));
+        set_camera(&setup_camera(w, h));
         clear_background(BACKDROP);
         if let Some(image) = &self.background {
             let cover = (w / image.width()).max(h / image.height());
