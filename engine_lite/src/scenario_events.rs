@@ -25,6 +25,7 @@ pub(crate) struct VillageCapture {
     pub(crate) side: i32,
     x: String,
     y: String,
+    start_radius: Option<(usize, u64)>,
 }
 
 impl VillageCapture {
@@ -38,10 +39,40 @@ impl VillageCapture {
         let side = cfg.attribute("side").unwrap_or("0").trim().parse().ok()?;
         let x = cfg.attribute("x").unwrap_or_default().trim().to_owned();
         let y = cfg.attribute("y").unwrap_or_default().trim().to_owned();
-        Some(Self { side, x, y })
+        Some(Self { side, x, y, start_radius: None })
+    }
+
+    /// The stock STARTING_VILLAGES macro scopes its saved coordinates to one event.
+    fn from_starting_location(children: &[(String, Node)]) -> Option<Self> {
+        let [(store_tag, store), (capture_tag, capture), (clear_tag, clear)] = children else { return None };
+        if store_tag != "store_starting_location" || capture_tag != "capture_village" || clear_tag != "clear_variable"
+            || !store.children.is_empty() || !clear.children.is_empty()
+            || store.attributes.keys().any(|k| k != "variable" && k != "side")
+            || clear.attributes.len() != 1 || capture.attribute("terrain") != Some("*^V*")
+            || capture.attributes.keys().any(|k| k != "side" && k != "terrain")
+        { return None; }
+        let variable = store.attribute("variable")?;
+        let [(tag, area)] = capture.children.as_slice() else { return None };
+        if variable.is_empty() || clear.attribute("name")? != variable || tag != "and"
+            || !area.children.is_empty() || area.attributes.len() != 3
+            || area.attribute("x")? != ["$", variable, ".x"].concat()
+            || area.attribute("y")? != ["$", variable, ".y"].concat()
+        { return None; }
+        let center = store.attribute("side")?.trim().parse().ok()?;
+        Some(Self {
+            side: capture.attribute("side")?.trim().parse().ok()?, x: String::new(), y: String::new(),
+            start_radius: Some((center, area.attribute("radius")?.trim().parse().ok()?)),
+        })
     }
 
     pub(crate) fn for_each_hex(&self, map: &ScenarioMap, mut visit: impl FnMut(Hex)) {
+        let center = match self.start_radius {
+            Some((side, radius)) => match map.special_location(&side.to_string()) {
+                Some(hex) => Some((hex, radius)),
+                None => return,
+            },
+            None => None,
+        };
         let rectangles = if self.x.is_empty() && self.y.is_empty() {
             vec![(1..=map.width(), 1..=map.height())]
         } else {
@@ -51,6 +82,11 @@ impl VillageCapture {
             for x in xs {
                 for y in ys.clone() {
                     let hex = Hex { x: x - 1, y: y - 1 };
+                    if let Some((origin, radius)) = center {
+                        if origin.distance(hex) > radius || !map.terrain_at(hex)
+                            .and_then(|code| code.split_once('^')).is_some_and(|(_, overlay)| overlay.starts_with('V'))
+                        { continue; }
+                    }
                     if map.is_playable(hex) {
                         visit(hex);
                     }
@@ -196,9 +232,14 @@ impl ScenarioEvents {
             let Some(names) = event.attribute("name") else { continue };
             let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
                 .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
-            let Some(changes) = event.children.iter().filter(|(tag, _)| tag != "filter")
-                .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
-                .collect::<Option<Vec<_>>>() else { continue };
+            let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
+                vec![EventAction::CaptureVillage(capture)]
+            } else {
+                let Some(changes) = event.children.iter().filter(|(tag, _)| tag != "filter")
+                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
+                    .collect::<Option<Vec<_>>>() else { continue };
+                changes
+            };
             let once = match event.attribute("first_time_only").unwrap_or("yes") {
                 "yes" | "true" | "1" => true,
                 "no" | "false" | "0" => false,
@@ -498,5 +539,23 @@ type=Archer
             events.end_turn(turn, side == 2, &mut state);
         }
         assert_eq!(gold, [-4, 1, 7]);
+    }
+}
+
+#[cfg(test)]
+mod starting_villages_test {
+    use super::*;
+
+    #[test]
+    fn assigns_only_village_overlays_within_the_stored_starting_radius() {
+        let event = crate::wml::parse("[store_starting_location]\nside=1\nvariable=origin\n[/store_starting_location]\n\
+            [capture_village]\nside=2\nterrain=*^V*\n[and]\nx=$origin.x\ny=$origin.y\nradius=2\n[/and]\n[/capture_village]\n\
+            [clear_variable]\nname=origin\n[/clear_variable]").unwrap();
+        let map = ScenarioMap::parse("Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Kh,Gg^Ve,Gg^Ff,Gg^Vh,Xv\nXv,Xv,Xv,Xv,Xv,Xv").unwrap();
+        let capture = VillageCapture::from_starting_location(&event.children).unwrap();
+        assert_eq!(capture.side, 2);
+        let mut tiles = Vec::new();
+        capture.for_each_hex(&map, |hex| tiles.push(hex));
+        assert_eq!(tiles, [Hex { x: 1, y: 0 }]);
     }
 }
