@@ -17,7 +17,7 @@ pub fn load(
     ScenarioMap::parse(&data).map_err(ScenarioMapError::Invalid)
 }
 
-pub(crate) fn read_data(
+pub fn read_data(
     scenario: &Node,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<Cow<'_, str>, ScenarioMapError> {

@@ -1,5 +1,12 @@
 # 逐步裁判对拍
 
+同一个原版战役预处理文件可以包含多个场景。先列出场景 ID，再按 ID 导出场景包。地图目录使用对应战役的 `maps`。导出的包保留场景事件、阵营和战役自定义单位，可直接用于桌面、无界面和对拍命令。Rust 的 WML 事件覆盖范围取决于场景实际使用的标签。
+
+```sh
+cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-campaign -- --list campaign.cfg
+cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-campaign -- campaign.cfg 01_Born_to_the_Banner ../wesnoth_src/data/campaigns/The_South_Guard/maps > scenario.cfg
+```
+
 使用原版 Wesnoth 1.18.8 可执行文件、固定场景 WML 和动作脚本。自带规则的场景使用与无界面命令相同的包格式。`map_file` 相对于包所在目录解析。对拍工具将原版裁判限制在本次运行目录的独立用户配置中。
 
 ```sh
