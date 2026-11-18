@@ -36,6 +36,9 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
             write!(out, "\t{}", escape_id(trait_id))?;
         }
         writeln!(out)?;
+        if unit.slowed {
+            writeln!(out, "status\t{x}\t{y}\tslowed")?;
+        }
     }
     for &(position, side) in &snapshot.villages {
         let (x, y) = wml_position(position)?;
@@ -88,6 +91,7 @@ mod tests {
                     attacks_left: 2,
                     can_recruit: true,
                     experience: 9,
+                    slowed: true,
                     traits: vec!["quick".to_owned(), "夜\tfighter".to_owned()],
                 },
                 SnapshotUnit {
@@ -99,6 +103,7 @@ mod tests {
                     attacks_left: 0,
                     can_recruit: false,
                     experience: 0,
+                    slowed: false,
                     traits: Vec::new(),
                 },
             ],
@@ -113,6 +118,7 @@ mod tests {
                 "gold\t1\t-4\n",
                 "gold\t2\t17\n",
                 "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\tquick\t夜\\tfighter\n",
+                "status\t1\t3\tslowed\n",
                 "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\t0\n",
                 "village\t1\t2\t1\n",
                 "village\t5\t1\t2\n",
