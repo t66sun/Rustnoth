@@ -13,7 +13,7 @@ struct Reanimation<'rules> {
 }
 
 impl FixedMatch<'_> {
-    /// Fire die with the casualty still present, then erase it and resolve plague.
+    /// Run death events while the casualty is still on the map, then resolve plague.
     pub(super) fn apply_scenario_attack(
         &mut self, side: usize, attack: Attack,
     ) -> Result<(), MatchError> {
@@ -29,7 +29,10 @@ impl FixedMatch<'_> {
             (from, to, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
         ] {
             if hp > 0 { continue; }
+            self.fire_units_event("last_breath", victim, Some(killer))?;
+            if self.scenario.board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
             self.fire_units_event("die", victim, Some(killer))?;
+            if self.scenario.board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
             let board = &mut self.scenario.board;
             let replacement = strike.filter(|_| killer_hp > 0).and_then(|index|
                 board.plague_reanimation(killer, victim, index, self.rules.terrain));
@@ -169,6 +172,38 @@ Xv,Xv,Xv,Xv"
 
     fn fight(game: &mut super::super::FixedMatch<'_>) -> MatchState {
         game.step(Action::Attack(AttackChoice { from: WEST, to: EAST, weapon: 0 })).unwrap()
+    }
+
+    #[test]
+    fn last_breath_precedes_die_and_only_runs_for_a_casualty() {
+        let events = r#"[event]
+name=last breath
+[filter]
+id=fallen
+[/filter]
+[filter_second]
+type=Soulless
+[/filter_second]
+[modify_side]
+side=1
+gold=3
+[/modify_side]
+[/event]
+[event]
+name=die
+[gold]
+side=1
+amount=7
+[/gold]
+[/event]"#;
+        for retaliation in [false, true] {
+            for (victim, expected) in [("id=fallen", 10), ("id=fallen\nhitpoints=30", 100)] {
+                let bundle = scenario(victim, "Gg", retaliation, "type=Walking Corpse", events);
+                let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+                fight(&mut game);
+                assert_eq!(game.audit_snapshot().gold[0], expected);
+            }
+        }
     }
 
     #[test]
