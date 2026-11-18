@@ -170,12 +170,17 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
+        self.apply_recording_walk(action, attacker, None)
+    }
+
+    pub fn apply_recording_walk(&mut self, action: Action, attacker: Option<&str>, trace: Option<&mut Vec<Hex>>) -> Result<MatchState, MatchError> {
         if self.computer_action.is_some() || self.dialogue().is_some() {
             return Err(MatchError::ActionUnavailable);
         }
-        let state = match action.clone() {
-            Action::Attack(attack) => self.game.attack_with_advancements(attack, attacker, None)?,
-            action => self.game.step(action)?,
+        let state = match (action.clone(), trace) {
+            (Action::Move { from, to }, Some(trace)) => self.game.move_with_trace(from, to, trace)?,
+            (Action::Attack(attack), _) => self.game.attack_with_advancements(attack, attacker, None)?,
+            (action, _) => self.game.step(action)?,
         };
         self.history.push(crate::save_replay::Event::Player(action, attacker.map(str::to_owned)));
         self.refresh();
