@@ -6,6 +6,7 @@ use crate::{movement_cost::MovementCosts, terrain_defense::TerrainDefense, wml::
 #[derive(Debug, Default)]
 pub struct MovementType {
     pub movement_costs: MovementCosts,
+    pub vision_costs: MovementCosts,
     pub defense: TerrainDefense,
 }
 
@@ -28,6 +29,9 @@ pub fn read_movement_types(units: &Node) -> BTreeMap<String, MovementType> {
             };
             MovementType {
                 movement_costs: table("movement_costs")
+                    .map(MovementCosts::from_wml)
+                    .unwrap_or_default(),
+                vision_costs: table("vision_costs")
                     .map(MovementCosts::from_wml)
                     .unwrap_or_default(),
                 defense: table("defense")
