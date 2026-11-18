@@ -322,7 +322,7 @@ impl UnitFilter {
         let Some((x, y)) = unit.position.to_wml() else { return false };
         (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
             && (self.sides.is_empty() || self.sides.contains(&unit.side))
-            && (self.ids.is_empty() || unit.id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
+            && (self.ids.is_empty() || unit.id.as_ref().is_some_and(|id| self.ids.contains(id)))
             && (self.types.is_empty() || self.types.iter().any(|id| id == unit.type_id))
     }
 }
@@ -330,11 +330,13 @@ impl UnitFilter {
 #[derive(Debug)]
 enum EventFilter {
     Unit(UnitFilter),
+    SecondUnit(UnitFilter),
     Side { numbers: Vec<usize>, team_name: Option<String> },
 }
 
 impl EventFilter {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "filter_second" { return UnitFilter::read(cfg).map(Self::SecondUnit); }
         if tag == "filter" {
             return UnitFilter::read(cfg).map(Self::Unit);
         }
@@ -364,9 +366,10 @@ impl EventFilter {
         })
     }
 
-    fn matches(&self, side: &SideConfig, unit: Option<&ArrivingUnit<'_>>) -> bool {
+    fn matches(&self, side: &SideConfig, unit: Option<&ArrivingUnit<'_>>, second: Option<&ArrivingUnit<'_>>) -> bool {
         match self {
             Self::Unit(filter) => unit.is_some_and(|unit| filter.matches(unit)),
+            Self::SecondUnit(filter) => second.is_some_and(|unit| filter.matches(unit)),
             Self::Side { numbers, team_name } => numbers.contains(&side.side)
                 && team_name.as_ref().is_none_or(|name| side.team_names.contains(name)),
         }
@@ -376,7 +379,7 @@ impl EventFilter {
 pub(crate) struct ArrivingUnit<'a> {
     pub(crate) position: Hex,
     pub(crate) side: usize,
-    pub(crate) id: Option<&'a str>,
+    pub(crate) id: Option<String>,
     pub(crate) type_id: &'a str,
 }
 
@@ -413,7 +416,7 @@ impl ScenarioEvents {
             }
             let Some(names) = event.attribute("name") else { continue };
             let (conditions, actions): (Vec<_>, Vec<_>) = event.children.iter()
-                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side"));
+                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side" | "filter_second"));
             let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
@@ -462,18 +465,14 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
-        self.dispatch(name, None, state);
+        self.dispatch(name, None, None, state);
     }
 
-    pub(crate) fn fire_for_unit(&mut self, name: &str, unit: ArrivingUnit<'_>, state: &mut EventState<'_>) {
-        self.dispatch(name, Some(unit), state);
-    }
-
-    fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
+    pub(crate) fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, second: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
         if state.board_changes.iter().any(|c| matches!(c, BoardChange::EndLevel { .. })) { return; }
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name)
-                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref()))
+                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref(), second.as_ref()))
             {
                 return true;
             }
@@ -566,14 +565,14 @@ amount=500
         let mut events = ScenarioEvents::read(&scenario, 2);
         let capture = |side| ArrivingUnit { position: Hex { x: 0, y: 0 }, side, id: None, type_id: "Guard" };
 
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 0);
         events.begin_turn(Turn { round: 1, side: 2 }, false, &mut state);
-        events.fire_for_unit("capture", capture(2), &mut state);
+        events.dispatch("capture", Some(capture(2)), None, &mut state);
         assert_eq!(state.gold[0], 0);
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 7);
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 7);
     }
 
