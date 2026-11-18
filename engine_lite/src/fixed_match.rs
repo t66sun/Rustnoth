@@ -39,6 +39,7 @@ mod plague;
 mod kill;
 mod retaliation;
 pub mod attack_preview;
+pub mod combat_display;
 pub mod move_preview;
 pub mod unit_report;
 
@@ -419,7 +420,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn step(&mut self, action: Action) -> Result<MatchState, MatchError> {
-        self.step_with_choices(action, None, None)
+        self.step_with_choices(action, None, None, None)
     }
 
     /// Supported next types of an active-side unit, in WML declaration order.
@@ -441,11 +442,12 @@ impl<'data> FixedMatch<'data> {
     pub fn attack_with_advancements(
         &mut self, attack: AttackChoice, attacker: Option<&str>, defender: Option<&str>,
     ) -> Result<MatchState, MatchError> {
-        self.step_with_choices(Action::Attack(attack), attacker, defender)
+        self.step_with_choices(Action::Attack(attack), attacker, defender, None)
     }
 
     fn step_with_choices(
         &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
+        display: Option<(usize, &mut Option<combat_display::VisibleCombat>)>,
     ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
@@ -474,7 +476,7 @@ impl<'data> FixedMatch<'data> {
                     }
                 }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
-                if self.apply_scenario_attack(turn, attack)? {
+                if self.apply_scenario_attack(turn, attack, display)? {
                     let board = &mut self.scenario.board;
                     board.advance_after_combat(choice.from, attacker, supports_unit);
                     board.advance_after_combat(choice.to, defender, supports_unit);

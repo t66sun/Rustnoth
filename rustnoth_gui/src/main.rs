@@ -272,6 +272,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut confirmed_recruit = None;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
+    session.enable_combat_playback();
     loop {
         let dialogue_open = session.dialogue().is_some();
         if !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
@@ -492,6 +493,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 }
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
+        }
+        if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
+            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets).await;
         }
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
