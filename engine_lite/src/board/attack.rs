@@ -219,7 +219,7 @@ fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
 
 impl UnitState<'_> {
     fn is_unslowable(&self) -> bool {
-        self.traits.as_ref().is_some_and(|traits| traits.stats.unslowable)
+        self.immunities.unslowable
     }
 
     fn is_unpetrifiable(&self) -> bool {
@@ -227,7 +227,7 @@ impl UnitState<'_> {
     }
 
     fn is_undrainable(&self) -> bool {
-        self.traits.as_ref().is_some_and(|traits| traits.stats.undrainable)
+        self.immunities.undrainable
     }
 }
 
@@ -239,7 +239,7 @@ impl UnitState<'_> {
     fn poison_in_combat(&self, inflicts: bool) -> Poison {
         Poison {
             active: self.poisoned,
-            immune: self.traits.as_ref().is_some_and(|traits| traits.stats.unpoisonable),
+            immune: self.immunities.unpoisonable,
             inflicts,
         }
     }
@@ -480,6 +480,33 @@ mod tests {
         assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 3);
         assert!(!board.unit_at(DEFENDER).unwrap().poisoned);
         assert!(board.unit_at(ATTACKER).unwrap().poisoned);
+    }
+
+    #[test]
+    fn authored_immunity_flags_apply_to_hits_and_retaliation_after_traits() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.hitpoints = 40;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=4\nnumber=1\n[specials]\n\
+             [drains]\nid=drains\n[/drains]\n[slow]\nid=slow\n[/slow]\n\
+             [poison]\nid=poison\n[/poison]\n[/specials]",
+        ).unwrap());
+
+        let statuses = "undrainable,unslowable,unpoisonable";
+        for (authored, effect, immune) in [("yes", "remove", true), ("no", "add", true), ("no", "remove", false)] {
+            let map = ScenarioMap::parse("Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv").unwrap();
+            let side = format!("[side]\ntype=Fighter\nhitpoints=20\n[status]\nundrainable={authored}\n\
+                unslowable={authored}\nunpoisonable={authored}\n[/status]\n[modifications]\n[trait]\n\
+                id=ward\n[effect]\napply_to=status\n{effect}={statuses}\n[/effect]\n[/trait]\n[/modifications]\n[/side]");
+            let scenario = wml::parse(format!("{side}\n{side}")).unwrap();
+            let starts = crate::starting_units::read_authored_starting_units(&scenario, &map).unwrap();
+            let mut board = Battlefield::from_authored_starting_units(map, starts, &types, 100).unwrap();
+            let result = board.apply_attack(1, attack(0), |side| side == 2, &mut ReplayRng::new(5489)).unwrap();
+            assert_eq!(result.poisoned, [!immune; 2]);
+            assert_eq!([result.attacker_slowed, result.defender_slowed], [!immune; 2]);
+            assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), if immune { (16, 16) } else { (20, 17) });
+        }
     }
 
     #[test]

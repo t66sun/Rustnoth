@@ -1,5 +1,6 @@
 use std::{collections::HashSet, error, fmt};
 
+use crate::trait_effects::CombatImmunities;
 use crate::{hex::Hex, income::Upkeep, map::ScenarioMap, scenario_time::integer, wml::Node};
 
 /// A fixed unit placement, in scenario side and creation order.
@@ -27,6 +28,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) experience: i32,
     pub(crate) moves_left: Option<i32>,
     pub(crate) attacks_left: Option<i32>,
+    pub(crate) immunities: CombatImmunities,
     pub(crate) poisoned: bool,
     pub(crate) petrified: bool,
     pub(crate) unpetrifiable: bool,
@@ -120,6 +122,11 @@ pub(crate) fn read_authored_starting_units(
                 experience: integer(unit, "experience").unwrap_or_default(),
                 moves_left: integer(unit, "moves"),
                 attacks_left: integer(unit, "attacks_left"),
+                immunities: CombatImmunities {
+                    undrainable: has_status("undrainable"),
+                    unslowable: has_status("unslowable"),
+                    unpoisonable: has_status("unpoisonable"),
+                },
                 poisoned: has_status("poisoned"),
                 petrified: has_status("petrified"),
                 unpetrifiable: has_status("unpetrifiable"),
