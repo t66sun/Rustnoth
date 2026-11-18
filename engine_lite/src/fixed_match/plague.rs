@@ -13,7 +13,7 @@ struct Reanimation<'rules> {
 }
 
 impl FixedMatch<'_> {
-    /// Fire die with the casualty still present, then erase it and resolve plague.
+    /// Run death events while the casualty is still on the map, then resolve plague.
     pub(super) fn apply_scenario_attack(
         &mut self, side: usize, attack: Attack,
     ) -> Result<(), MatchError> {
@@ -23,14 +23,17 @@ impl FixedMatch<'_> {
         let sides = &self.scenario.sides;
         let result = self.scenario.board.resolve_attack(side, attack,
             |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng)?;
+        self.fire_units_event("attack_end", from, Some(to))?;
         for (victim, killer, hp, killer_hp, strike) in [
             (to, from, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
             (from, to, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
         ] {
             if hp > 0 { continue; }
-            self.fire_unit_event("die", victim)?;
+            self.fire_units_event("last_breath", victim, Some(killer))?;
+            if self.scenario.board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
+            self.fire_units_event("die", victim, Some(killer))?;
+            if self.scenario.board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
             let board = &mut self.scenario.board;
-            if board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
             let replacement = strike.filter(|_| killer_hp > 0).and_then(|index|
                 board.plague_reanimation(killer, victim, index, self.rules.terrain));
             board.remove_casualty(victim);
@@ -172,6 +175,38 @@ Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn last_breath_precedes_die_and_only_runs_for_a_casualty() {
+        let events = r#"[event]
+name=last breath
+[filter]
+id=fallen
+[/filter]
+[filter_second]
+type=Soulless
+[/filter_second]
+[modify_side]
+side=1
+gold=3
+[/modify_side]
+[/event]
+[event]
+name=die
+[gold]
+side=1
+amount=7
+[/gold]
+[/event]"#;
+        for retaliation in [false, true] {
+            for (victim, expected) in [("id=fallen", 10), ("id=fallen\nhitpoints=30", 100)] {
+                let bundle = scenario(victim, "Gg", retaliation, "type=Walking Corpse", events);
+                let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+                fight(&mut game);
+                assert_eq!(game.audit_snapshot().gold[0], expected);
+            }
+        }
+    }
+
+    #[test]
     fn plague_uses_the_killing_weapon_on_attack_and_retaliation() {
         for retaliation in [false, true] {
             let bundle = scenario("", "Gg", retaliation, "type=Walking Corpse", "");
@@ -202,6 +237,9 @@ Xv,Xv,Xv,Xv"
         side={victim_side}
         x,y={victim_side},1
     [/filter]
+    [filter_second]
+        type=Soulless
+    [/filter_second]
     [gold]
         side=1
         amount=17
@@ -210,6 +248,26 @@ Xv,Xv,Xv,Xv"
         x,y={victim_side},1
         terrain=Gg^Vh
     [/terrain]
+[/event]
+[event]
+    name=attack end
+    [filter_second]
+        side=2
+    [/filter_second]
+    [gold]
+        side=1
+        amount=3
+    [/gold]
+[/event]
+[event]
+    name=attack end
+    [filter_second]
+        side=1
+    [/filter_second]
+    [gold]
+        side=1
+        amount=60
+    [/gold]
 [/event]
 [event]
     name=die
@@ -224,14 +282,14 @@ Xv,Xv,Xv,Xv"
             let bundle = scenario("id=fallen", "Gg", retaliation, "type=Walking Corpse", &events);
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             assert_eq!(fight(&mut game), MatchState::Won(3 - victim_side));
-            assert_eq!(game.audit_snapshot().gold[0], 117);
+            assert_eq!(game.audit_snapshot().gold[0], 120);
             assert_eq!(game.scenario.board.map().terrain_at(victim), Some("Gg^Vh"));
             assert!(game.scenario.board.unit_at(victim).is_none());
 
             let bundle = scenario("id=fallen\nhitpoints=30", "Gg", retaliation, "type=Walking Corpse", &events);
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             assert!(matches!(fight(&mut game), MatchState::Playing(_)));
-            assert_eq!(game.audit_snapshot().gold[0], 100);
+            assert_eq!(game.audit_snapshot().gold[0], 103);
         }
     }
 

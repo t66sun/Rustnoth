@@ -69,7 +69,7 @@ impl HealUnit {
         for (&position, unit) in &mut board.units {
             let matches = match &self.filter {
                 Some(filter) => filter.matches(&ArrivingUnit {
-                    position, side: unit.side, id: unit.id.as_deref(), type_id: &unit.unit_type.id,
+                    position, side: unit.side, id: unit.id.clone(), type_id: &unit.unit_type.id,
                 }),
                 None => Some(position) == primary,
             };
