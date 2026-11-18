@@ -99,7 +99,14 @@ function capture.snapshot(step, time_over)
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
     local sides = surviving_sides(units)
-    local terminal = time_over or not enemies_remain(sides)
+    local manual = false
+    for _, side in ipairs(sides) do
+        if capture.manual_victory_sides and capture.manual_victory_sides[side] then
+            manual = true
+            break
+        end
+    end
+    local terminal = time_over or (not manual and not enemies_remain(sides))
     if time_over or #sides == 0 then
         row("step", step, "draw")
     elseif terminal then

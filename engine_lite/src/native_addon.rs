@@ -77,6 +77,7 @@ fn prepare(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing [scenario] block"))?;
     let (tag, scenario) = &mut document.children[index];
 
+    let manual_victory_sides = crate::scenario_start::manual_victory_sides(scenario);
     let mut sides = Vec::new();
     for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
         let expected = sides.len() + 1;
@@ -101,7 +102,11 @@ fn prepare(
 
     let first_round = integer(scenario, "turn_at").unwrap_or(1);
     let last_round = integer(scenario, "turns").filter(|&turns| turns != -1);
+    fn modifies_turns(node: &Node) -> bool {
+        node.children.iter().any(|(tag, child)| tag == "modify_turns" || modifies_turns(child))
+    }
     let script = match driver {
+        Driver::Script(actions) if modifies_turns(scenario) => native_script::generate_with_turn_changes(actions, first_round, &sides)?,
         Driver::Script(actions) => native_script::generate_for_sides(actions, first_round, last_round, &sides)?,
         Driver::Explore { limit, .. } => native_script::generate_exploration(limit, seed),
     };
@@ -117,7 +122,14 @@ fn prepare(
     scenario
         .children
         .extend(script.events.into_iter().map(|event| ("event".to_owned(), event)));
-    Ok((document, script.lua))
+    let mut lua = String::new();
+    if !manual_victory_sides.is_empty() {
+        let indices = manual_victory_sides.iter().map(|side| format!("[{side}]=true"))
+            .collect::<Vec<_>>().join(",");
+        lua.push_str(&format!("wesnoth.require('~add-ons/RustnothAudit/capture.lua').manual_victory_sides = {{{indices}}}\n"));
+    }
+    lua.push_str(&script.lua);
+    Ok((document, lua))
 }
 
 fn unique_block(bundle: &Node, name: &str) -> io::Result<Option<usize>> {
@@ -150,6 +162,20 @@ mod tests {
     use super::*;
 
     const MAP: &str = "Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv";
+
+    #[test]
+    fn campaign_turn_changes_schedule_actual_refresh_and_expiration_events() {
+        let config = b"[scenario]\nturns=1\nmap_file=test.map\n[side]\n[/side]\n[side]\n[/side]\n\
+            [event]\nname=time over\n[modify_turns]\nadd=1\n[/modify_turns]\n[/event]\n[/scenario]";
+        let actions = vec![Action::EndTurn; 4];
+        let (document, lua) = prepare(config, Driver::Script(&actions), 1, |_| Ok(MAP.into())).unwrap();
+        let scenario = &document.children[0].1;
+        let hooks: Vec<_> = scenario.children.iter().filter(|(tag, _)| tag == "event")
+            .map(|(_, event)| event).collect();
+        assert!(hooks.iter().any(|e| e.attribute("name") == Some("side 1 turn 3 refresh")));
+        assert!(hooks.iter().any(|e| e.attribute("name") == Some("time over") && e.attribute("first_time_only") == Some("no")));
+        assert!(lua.contains("pending_end = 4"));
+    }
 
     #[test]
     fn installs_the_bounded_chooser_with_repeating_refresh_and_terminal_draw_hooks() {

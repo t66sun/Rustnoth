@@ -19,7 +19,7 @@ impl CombatImmunities {
     }
 }
 
-/// A recruit's effective maximum stats and weapon damage.
+/// A recruit's effective maximum stats and weapon values.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecruitStats {
     pub max_hitpoints: i32,
@@ -28,8 +28,10 @@ pub struct RecruitStats {
     pub(crate) upkeep: Upkeep,
     pub max_experience: i32,
     pub healthy: bool,
+    pub(crate) emits_zoc: bool,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
+    pub(crate) attack_strikes: Vec<i32>,
     pub undrainable: bool,
     pub unslowable: bool,
     pub unpoisonable: bool,
@@ -58,7 +60,9 @@ impl RecruitStats {
             upkeep: unit.upkeep,
             max_experience: base_max_experience,
             healthy: false,
+            emits_zoc: unit.emits_zoc,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
+            attack_strikes: unit.attacks.iter().map(|attack| attack.strikes).collect(),
             undrainable: immunities.undrainable,
             unslowable: immunities.unslowable,
             unpoisonable: immunities.unpoisonable,
@@ -87,6 +91,9 @@ impl RecruitStats {
 
     fn apply_effect(&mut self, unit: &UnitType, effect: &Node) {
         match effect.attribute("apply_to") {
+            Some("zoc") if effect.attribute("value").is_some() => {
+                self.emits_zoc = crate::scenario_sides::bool_attribute(effect, "value", false);
+            }
             Some("loyal") => self.upkeep = Upkeep::Fixed(0),
             Some("healthy") => self.healthy = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("hitpoints") => {
@@ -115,12 +122,15 @@ impl RecruitStats {
                 self.max_experience = increase(base, effect, "increase", 1);
             }
             Some("attack") => {
-                for (weapon, damage) in unit.attacks.iter().zip(&mut self.attack_damage) {
+                for (index, weapon) in unit.attacks.iter().enumerate() {
                     if matches_filter(effect, "range", &weapon.range)
                         && matches_filter(effect, "name", &weapon.id)
                         && matches_filter(effect, "type", &weapon.damage_type)
                     {
-                        *damage = increase(*damage, effect, "increase_damage", 0);
+                        self.attack_damage[index] = increase(self.attack_damage[index], effect, "increase_damage", 0);
+                        let strikes = integer(effect, "set_attacks")
+                            .map(|value| value.max(0)).unwrap_or(self.attack_strikes[index]);
+                        self.attack_strikes[index] = increase(strikes, effect, "increase_attacks", 1);
                     }
                 }
             }
