@@ -61,6 +61,22 @@ impl BoardCamera {
         }
     }
 
+    pub fn checkpoint(&self) -> Option<[f32; 3]> {
+        let (viewport, _, _) = self.last_fit?;
+        let layout = self.layout.as_ref()?;
+        let [left, top] = layout.tile_origin(Hex {x:0,y:0});
+        let size = layout.tile_size();
+        Some([(viewport.x + viewport.width/2.0-left)/size,
+              (viewport.y + viewport.height/2.0-top)/size, size])
+    }
+
+    pub fn restore(&mut self, [x,y,size]: [f32;3]) {
+        if let Some(layout)=self.layout.as_mut() {
+            *layout = layout.zoomed_at([0.0,0.0],size/layout.tile_size());
+        }
+        self.center_world([x,y]);
+    }
+
     /// Center the viewport on a point in map space, expressed in tile widths and heights.
     pub fn center_world(&mut self, [x, y]: [f32; 2]) {
         if let (Some((viewport, _, _)), Some(layout)) = (self.last_fit, self.layout.as_mut()) {
