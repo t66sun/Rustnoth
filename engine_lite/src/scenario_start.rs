@@ -143,6 +143,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_unit_variations_apply_on_the_map_and_in_reserve() {
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter\nhitpoints=12\n[variation]\nvariation_id=mounted\ninherit=yes\nhitpoints=31\nmovement=8\n[/variation]").unwrap());
+        let units = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let scenario = wml::parse("[side]\ntype=Fighter\nvariation=mounted\n[unit]\nplacement=recall\ntype=Fighter\nvariation=mounted\n[/unit]\n[/side]\n\
+            [side]\ntype=Fighter\nvariation=unknown\n[/side]\nmap_file=fixed.map").unwrap();
+        let start = load(&scenario, &units, |_| Ok(MAP.into())).unwrap();
+        let placed = start.board.unit_at(Hex { x: 0, y: 0 }).unwrap();
+        assert_eq!((placed.hitpoints, placed.max_movement()), (31, 8));
+        assert_eq!(start.board.recall_roster(1)[0].max_hitpoints(), 31);
+        assert_eq!(start.board.unit_at(Hex { x: 1, y: 0 }).unwrap().hitpoints, 12);
+    }
+
+    #[test]
     fn reserves_keep_authored_state_and_belong_only_to_their_side() {
         let scenario = wml::parse(r#"
             map_file=fixed.map

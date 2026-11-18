@@ -175,6 +175,7 @@ impl<'rules> Battlefield<'rules> {
             side: unit.side,
             id: unit.id,
             type_id: unit.type_id,
+            variation: String::new(),
             can_recruit: unit.can_recruit,
             extra_recruits: Vec::new(),
             recall_cost: None,
@@ -231,6 +232,7 @@ impl<'rules> Battlefield<'rules> {
             side,
             id,
             type_id,
+            variation,
             can_recruit,
             extra_recruits,
             recall_cost,
@@ -258,7 +260,7 @@ impl<'rules> Battlefield<'rules> {
         let unit_type = unit_types.get(&type_id).ok_or_else(|| match position {
             Some(position) => BoardError::UnknownUnitType { position, type_id },
             None => BoardError::UnknownRecallType { side, type_id },
-        })?;
+        })?.variation(&variation);
         let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
         let mut definitions: Vec<Modification<'rules>> = modifications;
         for mandatory in unit_type.traits.mandatory() {
@@ -984,6 +986,7 @@ mod tests {
             side: 1,
             id: None,
             type_id: "Guard".into(),
+            variation: String::new(),
             can_recruit: position == EAST,
             extra_recruits: Vec::new(),
             recall_cost: None,
