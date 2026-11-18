@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub mod audit;
+pub mod carryover;
 #[cfg(test)]
 mod amla_tests;
 mod illumination;
@@ -195,8 +196,11 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory, next_scenario } => {
+                BoardChange::EndLevel { victory, next_scenario, gold } => {
                     if matches!(self.state, MatchState::Playing(_)) {
+                        for (treasury, settings) in self.scenario.treasuries.iter_mut().zip(gold) {
+                            treasury.override_with(settings);
+                        }
                         if next_scenario.is_some() { self.scenario.next_scenario = next_scenario; }
                         self.state = if victory { MatchState::CampaignVictory } else { MatchState::CampaignDefeat };
                     }

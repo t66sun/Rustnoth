@@ -71,6 +71,10 @@ impl<'rules> Session<'rules> {
         Ok(true)
     }
 
+    pub fn store_campaign_gold(&self, gold: &mut engine_lite::fixed_match::carryover::CampaignGold) {
+        self.game.store_campaign_gold(gold);
+    }
+
     pub fn next_scenario(&self) -> Option<&str> {
         self.game.next_scenario_after_victory()
     }
