@@ -34,6 +34,7 @@ pub mod income;
 pub mod recruit_hexes;
 pub mod audit_trace;
 pub mod scenario_bundle;
+pub mod skirmish;
 pub mod wml_emit;
 pub mod native_addon;
 pub mod native_actions;
