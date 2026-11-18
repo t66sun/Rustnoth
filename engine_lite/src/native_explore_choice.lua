@@ -43,13 +43,29 @@ return function(seed, step, turn_action_count)
     end
     table.sort(recruits)
 
+    local veterans = {}
+    for _, veteran in ipairs(wesnoth.units.find_on_recall { side = side }) do
+        local cost = veteran.recall_cost
+        if cost < 0 then cost = team.recall_cost end
+        if cost <= team.gold then veterans[#veterans + 1] = veteran end
+    end
+    table.sort(veterans, function(a, b) return a.id < b.id end)
+
     local attacks, placements, moves = {}, {}, {}
     local best_distance = math.huge
     for _, unit in ipairs(own) do
         if not unit.status.petrified then
-            local on_keep = #recruits > 0 and recruiter and unit.x == recruiter.x and unit.y == recruiter.y
+            local on_keep = unit.canrecruit and (#recruits > 0 or #veterans > 0)
                 and not wesnoth.sides.is_shrouded(side, unit.x, unit.y)
                 and wesnoth.terrain_types[map[{ unit.x, unit.y }]].keep
+            local local_recalls = {}
+            if on_keep then
+                for _, veteran in ipairs(veterans) do
+                    if wesnoth.units.matches(veteran, unit.recall_filter) then
+                        local_recalls[#local_recalls + 1] = veteran.id
+                    end
+                end
+            end
             for x, y in map:iter_adjacent(unit) do
                 local target = occupied[position_key(x, y)]
                 if target then
@@ -65,8 +81,13 @@ return function(seed, step, turn_action_count)
                 elseif not wesnoth.sides.is_shrouded(side, x, y) then
                     if on_keep and not wesnoth.sides.is_fogged(side, x, y)
                         and wesnoth.terrain_types[map[{ x, y }]].castle then
-                        for _, id in ipairs(recruits) do
-                            placements[#placements + 1] = { "recruit", x, y, id }
+                        if recruiter and unit.x == recruiter.x and unit.y == recruiter.y then
+                            for _, id in ipairs(recruits) do
+                                placements[#placements + 1] = { "recruit", x, y, id }
+                            end
+                        end
+                        for _, id in ipairs(local_recalls) do
+                            placements[#placements + 1] = { "recall", x, y, id }
                         end
                     end
                     if unit.moves > 0 then

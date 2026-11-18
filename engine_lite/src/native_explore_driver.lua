@@ -31,6 +31,8 @@ local function run(time_over)
             marker("RECRUIT_BEGIN " .. step)
             local trait_draws = actions.recruit(table.unpack(command, 2))
             marker("RECRUIT_END " .. step .. " " .. trait_draws)
+        elseif kind == "recall" then
+            actions.recall(table.unpack(command, 2))
         elseif kind == "move" then
             actions.move(table.unpack(command, 2))
         else
