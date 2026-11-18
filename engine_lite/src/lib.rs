@@ -5,6 +5,7 @@ pub mod audit_replay;
 pub mod hex;
 pub mod time_of_day;
 pub mod scenario_time;
+mod scenario_events;
 pub mod map;
 pub mod weapon;
 pub mod movement_cost;

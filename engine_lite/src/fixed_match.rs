@@ -148,14 +148,20 @@ impl<'data> FixedMatch<'data> {
         for side in 1..=side_count {
             game.update_side_sight(side, false);
         }
+        game.scenario.events.fire("preload", &mut game.gold);
+        game.scenario.events.fire("prestart", &mut game.gold);
+        game.scenario.events.fire("start", &mut game.gold);
         game.check_leaders();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
                 game.state = MatchState::Draw;
             } else {
+                let new_round = game.scenario.events.new_round_at_start;
+                game.scenario.events.begin_turn(turn, new_round, &mut game.gold);
                 game.settle_income(turn);
                 game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
+                game.scenario.events.refresh(turn, &mut game.gold);
                 game.refog(turn.side);
             }
         }
@@ -291,17 +297,22 @@ impl<'data> FixedMatch<'data> {
                     .scenario
                     .board
                     .advance_turn(turn, &self.side_order, self.scenario.last_round);
+                let end_round = next.is_none_or(|next| next.round != turn.round);
+                self.scenario.events.end_turn(turn, end_round, &mut self.gold);
                 self.refog(turn.side);
                 self.state = if let Some(next) = next {
                     self.current_round = next.round;
+                    self.scenario.events.begin_turn(next, end_round, &mut self.gold);
                     self.settle_income(next);
                     let sides = &self.scenario.sides;
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
                         sides[a - 1].is_enemy(&sides[b - 1])
                     });
+                    self.scenario.events.refresh(next, &mut self.gold);
                     self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
+                    self.scenario.events.fire("time_over", &mut self.gold);
                     MatchState::Draw
                 };
             }
