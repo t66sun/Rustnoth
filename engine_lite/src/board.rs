@@ -49,6 +49,7 @@ pub struct UnitState<'rules> {
     pub poisoned: bool,
     pub(crate) experience: i32,
     pub(crate) slowed: bool,
+    uncovered: bool,
     base_max_experience: i32,
     pub moves_left: i32,
     pub attacks_left: i32,
@@ -129,6 +130,7 @@ impl<'rules> Battlefield<'rules> {
             attacks_left: None,
             poisoned: false,
             slowed: false,
+            uncovered: false,
         });
         Self::from_authored_starting_units(
             map,
@@ -159,6 +161,7 @@ impl<'rules> Battlefield<'rules> {
             attacks_left,
             poisoned,
             slowed,
+            uncovered,
         } in starting_units
         {
             let position = start.position;
@@ -184,6 +187,7 @@ impl<'rules> Battlefield<'rules> {
                 poisoned,
                 experience,
                 slowed,
+                uncovered,
                 base_max_experience,
                 moves_left: moves_left.unwrap_or(movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
@@ -298,6 +302,7 @@ impl<'rules> Battlefield<'rules> {
             experience: 0,
             base_max_experience,
             slowed: false,
+            uncovered: false,
             moves_left: 0,
             attacks_left: 0,
             can_recruit: false,
@@ -440,6 +445,7 @@ impl<'rules> Battlefield<'rules> {
             unit.slowed = false;
         }
         let next = current.next(active_sides, last_round)?;
+        self.refresh_concealment(next);
         self.resting.retain(|hex| {
             let unit = &self.units[hex];
             unit.side != current.side || unit.moves_left == unit.max_movement().max(0)
@@ -680,6 +686,7 @@ mod tests {
             experience: 0,
             poisoned: false,
             slowed: false,
+            uncovered: false,
         });
         let board = Battlefield::from_authored_starting_units(map(), starts, &types, 100).unwrap();
         for (position, hp, moves) in [(EAST, 13, 5), (WEST, 8, 2)] {
