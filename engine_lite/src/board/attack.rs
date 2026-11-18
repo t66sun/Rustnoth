@@ -460,12 +460,12 @@ mod tests {
             "[terrain_type]\nid=keep\nstring=Kh\nheals={heals}\n[/terrain_type]"
         )).unwrap());
         for expected in [20, 14, 8, 2, 1, 1] {
-            board.heal_at_turn_start(2, &terrain(0));
+            board.heal_at_turn_start(2, &terrain(0), |a, b| a != b);
             assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, expected);
             assert!(board.unit_at(DEFENDER).unwrap().poisoned);
             assert_eq!(board.unit_at(ATTACKER).unwrap().hitpoints, 28);
         }
-        board.heal_at_turn_start(2, &terrain(8));
+        board.heal_at_turn_start(2, &terrain(8), |a, b| a != b);
         assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 3);
         assert!(!board.unit_at(DEFENDER).unwrap().poisoned);
         assert!(board.unit_at(ATTACKER).unwrap().poisoned);
