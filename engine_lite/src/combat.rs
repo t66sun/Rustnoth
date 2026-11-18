@@ -9,6 +9,9 @@ pub struct Combatant {
     pub damage: u32,
     pub hit_chance: u8,
     pub firststrike: bool,
+    /// Maximum HP the striker can heal to with the stock drains special.
+    pub drain_healing_cap: Option<u32>,
+    pub undrainable: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,6 +31,16 @@ pub(crate) fn strike_order(attacker: &Combatant, defender: &Combatant) -> [usize
         [1, 0]
     } else {
         [0, 1]
+    }
+}
+
+/// Applies a successful strike before death checks and the next retaliation.
+pub(crate) fn apply_hit(units: &[Combatant; 2], hp: &mut [u32; 2], striker: usize) {
+    let target = 1 - striker;
+    let damage = hp[target].min(units[striker].damage);
+    hp[target] -= damage;
+    if let Some(cap) = units[striker].drain_healing_cap.filter(|_| !units[target].undrainable) {
+        hp[striker] = hp[striker].saturating_add(damage / 2).min(cap.max(1));
     }
 }
 
@@ -56,9 +69,8 @@ pub fn resolve_exchange(
                         continue;
                     }
                     if rng.next_u32() % 100 < u32::from(unit.hit_chance) {
-                        let target = &mut hp[1 - index];
-                        *target = target.saturating_sub(unit.damage);
-                        if *target == 0 {
+                        apply_hit(&participants, &mut hp, index);
+                        if hp[1 - index] == 0 {
                             break 'fight;
                         }
                     }
@@ -93,6 +105,8 @@ mod tests {
             damage,
             hit_chance,
             firststrike: false,
+            drain_healing_cap: None,
+            undrainable: false,
         }
     }
 
@@ -119,6 +133,31 @@ mod tests {
         assert_eq!(result.attacker_hitpoints, 0);
         assert_eq!(result.defender_hitpoints, 5);
         assert_eq!(rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn heals_from_actual_damage_before_retaliation_and_on_lethal_hits() {
+        let attacker = Combatant { drain_healing_cap: Some(10), ..unit(4, 2, 5, 100) };
+        let result = resolve_exchange(
+            attacker,
+            unit(8, 1, 5, 100),
+            NonZeroU32::MIN,
+            &mut ReplayRng::new(5489),
+        );
+        // 4 + floor(5/2) - 5 + floor(3/2).
+        assert_eq!(result, CombatResult { attacker_hitpoints: 2, defender_hitpoints: 0 });
+    }
+
+    #[test]
+    fn drains_on_retaliation_respects_max_hp_and_undrainable_targets() {
+        for (undrainable, expected_hp) in [(false, 10), (true, 9)] {
+            let attacker = Combatant { undrainable, ..unit(8, 1, 1, 100) };
+            let defender = Combatant { drain_healing_cap: Some(10), ..unit(10, 1, 9, 100) };
+            let result =
+                resolve_exchange(attacker, defender, NonZeroU32::MIN, &mut ReplayRng::new(5489));
+            assert_eq!(result.attacker_hitpoints, 0);
+            assert_eq!(result.defender_hitpoints, expected_hp);
+        }
     }
 
     #[test]
