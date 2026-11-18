@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::wml::Node;
+use crate::{scenario_time::integer, wml::Node};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AliasKind {
@@ -58,6 +58,34 @@ struct Definition {
     movement: Vec<String>,
     defense: Vec<String>,
     features: TerrainFeatures,
+    light: TerrainLight,
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+struct TerrainLight {
+    change: i32,
+    minimum: i32,
+    maximum: i32,
+}
+
+impl TerrainLight {
+    fn from_wml(terrain: &Node) -> Self {
+        let change = integer(terrain, "light").unwrap_or(0);
+        Self {
+            change,
+            minimum: integer(terrain, "min_light").unwrap_or(change),
+            maximum: integer(terrain, "max_light").unwrap_or(change),
+        }
+    }
+
+    fn apply(self, base: i32) -> i32 {
+        let adjusted = base.saturating_add(self.change);
+        if self.change >= 0 {
+            adjusted.min(base.max(self.maximum))
+        } else {
+            adjusted.max(base.min(self.minimum))
+        }
+    }
 }
 
 impl Definition {
@@ -87,6 +115,7 @@ impl TerrainAliases {
                     movement: read_alias(terrain.attribute("mvt_alias"), shared, code),
                     defense: read_alias(terrain.attribute("def_alias"), shared, code),
                     features: TerrainFeatures::from_wml(terrain),
+                    light: TerrainLight::from_wml(terrain),
                 }
             });
         }
@@ -116,6 +145,22 @@ impl TerrainAliases {
             };
         }
         TerrainFeatures::default()
+    }
+
+    /// Terrain-adjusted lawful bonus, before illumination from nearby units.
+    pub fn light_bonus(&self, code: &str, base_bonus: i32) -> i32 {
+        let code = canonical_code(code);
+        if let Some(definition) = self.definitions.get(code) {
+            return definition.light.apply(base_bonus);
+        }
+        if let Some((base, overlay)) = self.layers(code) {
+            return TerrainLight {
+                change: base.light.change.saturating_add(overlay.light.change),
+                minimum: base.light.minimum.min(overlay.light.minimum),
+                maximum: base.light.maximum.max(overlay.light.maximum),
+            }.apply(base_bonus);
+        }
+        base_bonus
     }
 
     /// Resolve one layer of aliasing. Callers can evaluate terrain references
@@ -190,6 +235,22 @@ mod tests {
 
     fn aliases(config: &str) -> TerrainAliases {
         TerrainAliases::from_wml(&wml::parse(config).unwrap())
+    }
+
+    #[test]
+    fn both_light_layers_contribute_with_directional_bounds() {
+        let catalog = aliases(concat!(
+            "[terrain_type]\nstring=Ql\nlight=25\nmax_light=35\n[/terrain_type]\n",
+            "[terrain_type]\nstring=^Ii\nlight=25\n[/terrain_type]\n",
+            "[terrain_type]\nstring=^Dm\nlight=-40\nmin_light=-50\n[/terrain_type]\n",
+            "[terrain_type]\nstring=Ql^Ex\nlight=-10\n[/terrain_type]",
+        ));
+        assert_eq!(catalog.light_bonus("Ql^Ii", -40), 10);
+        assert_eq!(catalog.light_bonus("Ql^Ii", 25), 35);
+        assert_eq!(catalog.light_bonus("Ql^Ii", 50), 50);
+        assert_eq!(catalog.light_bonus("Ql^Dm", -45), -50);
+        assert_eq!(catalog.light_bonus("Ql^Dm", -60), -60);
+        assert_eq!(catalog.light_bonus("Ql^Ex", 0), -10);
     }
 
     #[test]
