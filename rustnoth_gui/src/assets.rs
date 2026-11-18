@@ -15,6 +15,8 @@ pub struct AssetCatalog {
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
     terrain_names: BTreeMap<String, String>,
+    minimap_symbols: BTreeMap<String, PathBuf>,
+    villages: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -148,6 +150,20 @@ impl AssetCatalog {
             .collect()
     }
 
+    /// Native terrain symbols (distinct from editor previews) and village classification.
+    pub fn minimap_terrain(&self, code: &str) -> (Vec<PathBuf>, bool) {
+        let layers = if self.terrain.contains_key(code) {
+            vec![code]
+        } else if let Some(caret) = code.find('^') {
+            vec![&code[..caret], &code[caret..]]
+        } else {
+            vec![code]
+        };
+        let village = layers.iter().any(|layer| self.villages.contains(*layer));
+        let paths = layers.iter().map_while(|layer| self.resolve_image(self.minimap_symbols.get(*layer)?)).collect();
+        (paths, village)
+    }
+
     pub fn resolve_image(&self, image: &Path) -> Option<PathBuf> {
         // Native terrain image lookup treats "../" as a reset to the image directory.
         let text = image.to_str()?;
@@ -164,6 +180,14 @@ impl AssetCatalog {
                     let Some(code) = node.attribute("string").filter(|code| !code.is_empty()) else {
                         continue;
                     };
+                    if let Some(symbol) = node.attribute("symbol_image").and_then(image_filename) {
+                        let mut path = Path::new("terrain").join(symbol);
+                        if path.extension().is_none() { path.set_extension("png"); }
+                        self.minimap_symbols.entry(code.to_owned()).or_insert(path);
+                    }
+                    if matches!(node.attribute("gives_income"), Some("yes" | "true" | "on" | "1")) {
+                        self.villages.insert(code.to_owned());
+                    }
                     if let Some(name) = display_name(node, "name") {
                         self.terrain_names.entry(code.to_owned()).or_insert_with(|| name.to_owned());
                     }
@@ -238,6 +262,17 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimap_uses_symbol_art_and_identifies_neutral_village_overlays() {
+        let core = b"[terrain_type]\nstring=Gg\nsymbol_image=grass/green-symbol\neditor_image=grass/green\n[/terrain_type]\n[terrain_type]\nstring=^Vh\nsymbol_image=village/human\ngives_income=yes\n[/terrain_type]";
+        let root = Path::new("wesnoth");
+        let catalog = AssetCatalog::parse(root, core, b"").unwrap();
+        let terrain = root.join("data/core/images/terrain");
+        assert_eq!(catalog.minimap_terrain("Gg^Vh"),
+            (vec![terrain.join("grass/green-symbol.png"), terrain.join("village/human.png")], true));
+        assert_eq!(catalog.minimap_terrain("Gg"), (vec![terrain.join("grass/green-symbol.png")], false));
+    }
 
     #[test]
     fn original_campaign_art_is_resolved_from_the_declared_binary_path() {
