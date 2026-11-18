@@ -129,6 +129,12 @@ impl<'rules> Session<'rules> {
         self.game.store_campaign_gold(gold);
     }
 
+    pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
+
+    pub fn retained_gold(&self) -> Option<i64> {
+        self.game.retained_gold(self.observation.as_ref()?.side)
+    }
+
     pub fn next_scenario(&self) -> Option<&str> {
         self.game.next_scenario_after_victory()
     }
