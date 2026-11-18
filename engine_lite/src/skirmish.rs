@@ -86,8 +86,8 @@ pub fn scenario_with_visibility(
     sides: &[(&Faction, Option<&str>)],
     visibility: Visibility,
 ) -> Result<Node, Box<dyn Error>> {
-    if sides.len() < 2 || turns < 1 {
-        return Err("a skirmish requires at least two factions and a positive turn limit".into());
+    if sides.len() < 2 || turns < -1 || turns == 0 {
+        return Err("a skirmish requires at least two factions and a positive turn limit or -1 for unlimited play".into());
     }
     let map = ScenarioMap::parse(map_data)?;
     let turns = turns.to_string();
@@ -181,6 +181,16 @@ mod tests {
         let schedule = read_time_schedule(scenario);
         let bonuses: Vec<_> = (1..=7).map(|turn| schedule.at_turn(turn).lawful_bonus).collect();
         assert_eq!(bonuses, [0, 25, 25, 0, -25, -25, 0]);
+    }
+
+    #[test]
+    fn unlimited_skirmishes_use_the_wml_turn_sentinel() {
+        let faction = faction();
+        let sides = [(&faction, None); 3];
+        let root = scenario("River", MAP, -1, &sides).unwrap();
+        assert_eq!(root.children[0].1.attribute("turns"), Some("-1"));
+        assert!(scenario("River", MAP, 0, &sides).is_err());
+        assert!(scenario("River", MAP, -2, &sides).is_err());
     }
 
     #[test]

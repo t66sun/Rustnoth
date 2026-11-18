@@ -186,6 +186,10 @@ impl<'data> FixedMatch<'data> {
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::TurnLimit(change) => {
+                    self.scenario.last_round = change.apply(self.scenario.last_round);
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::Schedule { entries, current_time } => {
                     self.scenario.schedule.replace_global(entries, self.current_round, current_time);
@@ -194,7 +198,7 @@ impl<'data> FixedMatch<'data> {
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
                     let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
-                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind)) {
+                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind.variation(&unit.variation))) {
                         return Err(MatchError::UnsupportedScenario);
                     }
                     self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
@@ -202,9 +206,19 @@ impl<'data> FixedMatch<'data> {
                     self.update_side_sight(side, false);
                     continue;
                 }
-                BoardChange::Terrain { position, code } => {
-                    self.scenario.board.replace_terrain(position, &code);
-                    if !self.rules.terrain.features(&code).village { self.village_owners.remove(&position); }
+                BoardChange::Terrain { locations, code } => {
+                    let map = self.scenario.board.map();
+                    let (width, height) = (map.width(), map.height());
+                    let village = self.rules.terrain.features(&code).village;
+                    for (xs, ys) in locations {
+                        for x in (*xs.start()).max(1)..=(*xs.end()).min(width) {
+                            for y in (*ys.start()).max(1)..=(*ys.end()).min(height) {
+                                let position = Hex { x: x - 1, y: y - 1 };
+                                self.scenario.board.replace_terrain(position, &code);
+                                if !village { self.village_owners.remove(&position); }
+                            }
+                        }
+                    }
                     continue;
                 }
             };
@@ -245,6 +259,16 @@ impl<'data> FixedMatch<'data> {
             experience: unit.experience,
             cost: unit.recall_cost(self.scenario.sides[turn.side - 1].recall_cost),
         })
+    }
+
+    /// Original map item images visible to one side, in hex overlay draw order.
+    pub fn map_item_images(&self, side: usize) -> Vec<(Hex, &str)> {
+        let Some(settings) = side.checked_sub(1).and_then(|i| self.scenario.sides.get(i)) else {
+            return Vec::new();
+        };
+        let items = &self.scenario.events.items;
+        if items.is_empty() { return Vec::new(); }
+        items.visible_images(&self.effective_vision(side), &settings.team_names)
     }
 
     /// Projects the current board for a match side, including after the match ends.
@@ -382,10 +406,12 @@ impl<'data> FixedMatch<'data> {
             Action::Recruit { unit_type, to } => {
                 self.recruit(turn.side, &unit_type, to)?;
                 self.reveal_travelled_hexes(to, [to]);
+                self.fire_unit_event("recruit", to)?;
             }
             Action::Recall { unit_id, to } => {
                 self.recall(turn.side, &unit_id, to)?;
                 self.reveal_travelled_hexes(to, [to]);
+                self.fire_unit_event("recall", to)?;
             }
             Action::Disband { unit_id } => {
                 self.scenario.board.disband(turn.side, &unit_id).ok_or(MatchError::InvalidDisband)?;
@@ -393,12 +419,14 @@ impl<'data> FixedMatch<'data> {
             Action::EndTurn => {
                 let surviving_sides: BTreeSet<_> = self.surviving_sides().collect();
                 self.village_owners.retain(|_, side| surviving_sides.contains(side));
-                let next = self
-                    .scenario
-                    .board
-                    .advance_turn(turn, &self.side_order, self.scenario.last_round);
-                let end_round = next.is_none_or(|next| next.round != turn.round);
+                let candidate = turn.next(&self.side_order, None);
+                let end_round = candidate.is_none_or(|next| next.round != turn.round);
                 self.with_events(|events, state| events.end_turn(turn, end_round, state))?;
+                if end_round && candidate.is_some_and(|next| self.scenario.last_round.is_some_and(|limit| next.round > limit)) {
+                    self.with_events(|events, state| events.fire("time_over", state))?;
+                }
+                let limit = if end_round { self.scenario.last_round } else { None };
+                let next = self.scenario.board.advance_turn(turn, &self.side_order, limit);
                 self.refog(turn.side);
                 self.state = if let Some(next) = next {
                     self.current_round = next.round;
@@ -412,7 +440,6 @@ impl<'data> FixedMatch<'data> {
                     self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
-                    self.with_events(|events, state| events.fire("time_over", state))?;
                     MatchState::Draw
                 };
             }
@@ -551,11 +578,15 @@ impl<'data> FixedMatch<'data> {
             terrain,
             inherited_defense,
         );
-        let damage_taken = target.unit_type.combat_damage_taken(
-            &weapon.damage_type,
-            self.rules.resistance.get(target_movement),
-            target_defends,
-        );
+        let inherited_resistance = self.rules.resistance.get(target_movement);
+        let damage_taken_for = |damage_type: &str|
+            target.unit_type.combat_damage_taken(damage_type, inherited_resistance, target_defends);
+        let base_damage_taken = damage_taken_for(&weapon.damage_type);
+        let damage_taken = if weapon.has_arcane_alternative() {
+            base_damage_taken.max(damage_taken_for("arcane"))
+        } else {
+            base_damage_taken
+        };
         let schedule = &self.scenario.schedule;
         let alignment =
             schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, striker.is_fearless());
@@ -589,6 +620,9 @@ impl<'data> FixedMatch<'data> {
                 return;
             }
             winners.push(side);
+        }
+        if winners.iter().any(|side| self.scenario.manual_victory_sides.contains(side)) {
+            return;
         }
         self.state = match winners.as_slice() {
             [] => MatchState::Draw,
