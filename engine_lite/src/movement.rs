@@ -32,6 +32,20 @@ pub fn reachable_destinations(
     moves_left: u32,
     tile_at: impl Fn(Hex) -> Option<MovementTile>,
 ) -> BTreeMap<Hex, u32> {
+    reachable_with_teleports(origin, moves_left, &[], tile_at)
+}
+
+/// Sorted owned villages that the mover knows to be vacant (or occupies itself).
+pub(crate) fn teleport_exits(villages: &[Hex], at: Hex) -> &[Hex] {
+    if villages.binary_search(&at).is_ok() { villages } else { &[] }
+}
+
+pub(crate) fn reachable_with_teleports(
+    origin: Hex,
+    moves_left: u32,
+    villages: &[Hex],
+    tile_at: impl Fn(Hex) -> Option<MovementTile>,
+) -> BTreeMap<Hex, u32> {
     let mut frontier = BinaryHeap::from([(moves_left, origin)]);
     let mut reached = BTreeSet::from([origin]);
     let mut destinations = BTreeMap::new();
@@ -41,7 +55,7 @@ pub fn reachable_destinations(
             break;
         }
 
-        for next in current.neighbors() {
+        for next in current.neighbors().chain(teleport_exits(villages, current).iter().copied()) {
             if reached.contains(&next) {
                 continue;
             }
