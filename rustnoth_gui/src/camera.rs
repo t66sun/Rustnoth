@@ -1,7 +1,6 @@
 use engine_lite::hex::Hex;
 use rustnoth_gui::layout::{BoardLayout, Viewport};
 
-const BOARD_PADDING: f32 = 16.0;
 const ZOOM_PER_STEP: f32 = 1.25;
 // Miniquad forwards raw Windows wheel deltas and unit steps from X11.
 #[cfg(windows)]
@@ -33,16 +32,7 @@ impl BoardCamera {
         }
         self.last_fit = Some(fit);
         self.drag_position = None;
-        self.layout = BoardLayout::fit(
-            width,
-            height,
-            Viewport {
-                x: viewport.x + BOARD_PADDING,
-                y: viewport.y + BOARD_PADDING,
-                width: viewport.width - 2.0 * BOARD_PADDING,
-                height: viewport.height - 2.0 * BOARD_PADDING,
-            },
-        );
+        self.layout = BoardLayout::battlefield(width, height, viewport);
     }
 
     pub fn scroll(&mut self, point: [f32; 2], delta: f32) {
@@ -140,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn pans_the_hit_test_with_the_board_and_stops_at_the_padded_edges() {
+    fn pans_hit_testing_with_the_board_and_stops_at_the_native_half_hex_border() {
         let viewport = Viewport { x: 20.0, y: 68.0, width: 240.0, height: 200.0 };
         let mut camera = BoardCamera::default();
         let first = Hex { x: 0, y: 0 };
@@ -152,22 +142,22 @@ mod tests {
 
         camera.scroll([140.0, 168.0], 12.0 * WHEEL_STEP);
         camera.pan([2_000.0, 2_000.0]);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [36.0, 84.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 140.0]);
 
         camera.drag([19.0, 156.0], true, true);
         camera.drag([88.0, 136.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [36.0, 84.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 140.0]);
         camera.drag([108.0, 156.0], true, true);
         camera.drag([88.0, 136.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [16.0, 64.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [54.0, 120.0]);
         assert_eq!(camera.hex_at([88.0, 136.0]), Some(first));
         camera.drag([88.0, 136.0], false, false);
         camera.drag([68.0, 116.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [16.0, 64.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [54.0, 120.0]);
 
         camera.pan([-2_000.0, -2_000.0]);
         let [x, y] = camera.layout().unwrap().tile_origin(last);
-        assert_eq!([x + 144.0, y + 144.0], [244.0, 252.0]);
+        assert_eq!([x + 144.0, y + 144.0], [206.0, 196.0]);
     }
 
     #[test]
@@ -192,8 +182,8 @@ mod tests {
         camera.scroll([190.0, 180.0], 12.0 * WHEEL_STEP);
         camera.pan([25.0, 2_000.0]);
 
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 84.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 140.0]);
         camera.pan([-25.0, -20.0]);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 64.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 120.0]);
     }
 }
