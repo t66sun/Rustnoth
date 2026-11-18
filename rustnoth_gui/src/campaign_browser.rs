@@ -14,6 +14,7 @@ pub(super) struct Browser {
     core: Vec<u8>,
     root: PathBuf,
     seed: u32,
+    training: bool,
 }
 
 impl Browser {
@@ -24,7 +25,16 @@ impl Browser {
         if campaign::scenarios(&campaign).next().is_none() {
             return Err("campaign contains no scenarios with an ID".into());
         }
-        Ok(Self { campaign, maps, core, root, seed })
+        Ok(Self { campaign, maps, core, root, seed, training: false })
+    }
+
+    pub(super) fn include_installed_training(&mut self) -> Result<(), Box<dyn Error>> {
+        let file = self.root.join(crate::desktop::TUTORIAL).join("_main.cfg");
+        if file.is_file() {
+            crate::tutorial::insert_entry(&mut self.campaign, &fs::read_to_string(file)?)?;
+            self.training = true;
+        }
+        Ok(())
     }
 
     fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
@@ -59,7 +69,11 @@ impl Browser {
                 ListAction::Choose(index) => {
                     next_frame().await;
                     let (id, _) = scenarios[index];
-                    let result = self.play_from(id.to_owned()).await;
+                    let result = if self.training && id == crate::tutorial::FIRST_SCENARIO {
+                        crate::tutorial::run(&self.root, &self.core, self.seed).await
+                    } else {
+                        self.play_from(id.to_owned()).await
+                    };
                     error = result.err().map(|cause| format!("{id} — {cause}"));
                 }
                 ListAction::Back => return Ok(()),
