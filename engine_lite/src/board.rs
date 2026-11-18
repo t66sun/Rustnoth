@@ -420,13 +420,15 @@ impl<'rules> Battlefield<'rules> {
 
     /// Applies terrain, adjacent healers and rest before marking a new turn's rest.
     pub(crate) fn heal_at_turn_start(&mut self, side: usize, terrain: &TerrainAliases) {
-        let mut adjacent_healing = BTreeMap::<Hex, i32>::new();
+        let mut adjacent_healing = BTreeMap::<Hex, (i32, bool)>::new();
         for (&hex, healer) in &self.units {
             let amount = healer.unit_type.adjacent_healing;
-            if healer.side == side && amount > 0 {
+            let cures = healer.unit_type.cures_adjacent;
+            if healer.side == side && (amount > 0 || cures) {
                 for neighbor in hex.neighbors() {
-                    let best = adjacent_healing.entry(neighbor).or_default();
+                    let (best, can_cure) = adjacent_healing.entry(neighbor).or_default();
                     *best = (*best).max(amount);
+                    *can_cure |= cures;
                 }
             }
         }
@@ -434,9 +436,9 @@ impl<'rules> Battlefield<'rules> {
             let terrain_healing =
                 self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
             let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
-            let from_healer = adjacent_healing.get(&hex).copied().unwrap_or(0);
+            let (from_healer, can_cure) = adjacent_healing.get(&hex).copied().unwrap_or_default();
             let main_healing = if unit.poisoned {
-                if terrain_healing != 0 || unit.unit_type.regeneration > 0 {
+                if can_cure || terrain_healing != 0 || unit.unit_type.regeneration > 0 {
                     unit.poisoned = false;
                     0
                 } else if from_healer > 0 {
@@ -764,6 +766,25 @@ mod tests {
         board.units.get_mut(&corridor_hex(0)).unwrap().hitpoints = 10;
         board.heal_at_turn_start(1, &terrain);
         assert_eq!(board.unit_at(corridor_hex(0)).unwrap().hitpoints, 16);
+    }
+
+    #[test]
+    fn an_adjacent_curer_removes_poison_and_preserves_only_rest_healing() {
+        let config = wml::parse("id=Curer\nhitpoints=30\n[abilities]\n[heals]\n\
+            id=curing\naffect_allies=yes\naffect_self=no\npoison=cured\n\
+            [affect_adjacent]\n[/affect_adjacent]\n[/heals]\n[/abilities]").unwrap();
+        let mut types = types();
+        types.insert("Curer".into(), UnitType::from_wml(config));
+        let mut board = corridor(&types, &[(0, 1), (1, 1), (2, 2)]);
+        board.units.get_mut(&corridor_hex(0)).unwrap().unit_type = &types["Curer"];
+        for unit in board.units.values_mut() {
+            unit.poisoned = true;
+            unit.hitpoints = 10;
+        }
+        board.begin_resting(1);
+        board.heal_at_turn_start(1, &TerrainAliases::from_wml(&Node::default()));
+        let state: Vec<_> = board.units().map(|(_, u)| (u.poisoned, u.hitpoints)).collect();
+        assert_eq!(state, [(true, 4), (false, 12), (true, 10)]);
     }
 
     #[test]
