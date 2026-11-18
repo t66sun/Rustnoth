@@ -22,8 +22,23 @@ pub(super) fn initial(scenario: &Node) -> Scalars {
 
 #[derive(Debug)]
 pub(super) enum ScalarChange {
-    Set(String, String),
+    Set { name: String, initial: Option<String>, arithmetic: Vec<Arithmetic> },
     Clear(Vec<String>),
+}
+
+#[derive(Debug)]
+pub(super) enum Arithmetic { Add(f64), Subtract(f64), Multiply(f64), Divide(f64), Modulo(f64) }
+
+impl Arithmetic {
+    fn apply(&self, value: f64) -> f64 {
+        match *self {
+            Self::Add(n) => value + n,
+            Self::Subtract(n) => value - n,
+            Self::Multiply(n) => value * n,
+            Self::Divide(n) => value / n,
+            Self::Modulo(n) => value - n * (value / n).floor(),
+        }
+    }
 }
 
 impl ScalarChange {
@@ -39,20 +54,43 @@ impl ScalarChange {
             }
         }
         if tag != "set_variable" || !scalar_name(name)
-            || cfg.attributes.keys().any(|key| !matches!(key.as_str(), "name" | "value" | "literal"))
+            || cfg.attributes.keys().any(|key| !matches!(key.as_str(), "name" | "value" | "literal" | "add" | "sub" | "multiply" | "divide" | "modulo"))
         {
             return None;
         }
         // The literal assignment follows value in the original Lua action.
-        let text = cfg.attribute("literal").or_else(|| cfg.attribute("value").filter(|v| !v.contains('$')))?;
-        // The WML action writes Lua booleans back as yes/no.
-        let value = match text { "true" => "yes", "false" => "no", other => other };
-        Some(Self::Set(name.to_owned(), value.to_owned()))
+        let initial = cfg.attribute("literal").or_else(|| cfg.attribute("value"));
+        if cfg.attribute("literal").is_none() && initial.is_some_and(|v| v.contains('$')) { return None; }
+        let initial = initial.map(|text| match text { "true" => "yes", "false" => "no", other => other }.to_owned());
+        // set_variable.lua applies numeric attributes in this order regardless of their WML order.
+        let mut arithmetic = Vec::new();
+        for key in ["add", "sub", "multiply", "divide", "modulo"] {
+            let Some(operand) = cfg.attribute(key) else { continue };
+            if operand.contains('$') { return None; }
+            let n = number(operand);
+            let op = match key {
+                "add" => Arithmetic::Add(n),
+                "sub" => Arithmetic::Subtract(n),
+                "multiply" => Arithmetic::Multiply(n),
+                "divide" if n != 0.0 => Arithmetic::Divide(n),
+                "modulo" if n != 0.0 => Arithmetic::Modulo(n),
+                _ => return None,
+            };
+            arithmetic.push(op);
+        }
+        (initial.is_some() || !arithmetic.is_empty()).then(|| Self::Set { name: name.to_owned(), initial, arithmetic })
     }
 
     pub(super) fn apply(&self, variables: &mut Scalars) {
         match self {
-            Self::Set(name, value) => { variables.insert(name.clone(), value.clone()); }
+            Self::Set { name, initial, arithmetic } => {
+                if let Some(value) = initial { variables.insert(name.clone(), value.clone()); }
+                if !arithmetic.is_empty() {
+                    let mut value = variables.get(name).map_or(0.0, |s| number(s));
+                    for op in arithmetic { value = op.apply(value); }
+                    variables.insert(name.clone(), value.to_string());
+                }
+            }
             Self::Clear(names) => {
                 for name in names { variables.remove(name); }
             }
@@ -125,6 +163,60 @@ impl Comparison {
 #[cfg(test)]
 mod tests {
     use crate::{fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn campaign_counter_arithmetic_uses_lua_order_and_modulo() {
+        let config = br#"[units]
+[unit_type]
+id=Guard
+hitpoints=18
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[set_variable]
+name=score
+multiply=2
+add=3
+[/set_variable]
+[/event]
+[event]
+name=side 2 turn
+[set_variable]
+name=score
+modulo=4
+divide=2
+sub=11
+[/set_variable]
+[if]
+[variable]
+name=score
+numerical_equals=1.5
+[/variable]
+[then]
+[gold]
+side=1
+amount=17
+[/gold]
+[/then]
+[/if]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(config).unwrap();
+        let mut game = bundle.start(7, |_| unreachable!()).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 117);
+    }
 
     #[test]
     fn campaign_variables_choose_branches_in_command_order_across_events() {
