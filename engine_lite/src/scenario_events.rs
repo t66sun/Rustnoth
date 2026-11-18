@@ -23,8 +23,41 @@ enum EventAction {
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
+    TurnLimit(TurnLimitChange),
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Terrain { position: Hex, code: String },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TurnLimitChange {
+    Set(i32),
+    Add(i32),
+    Percent(i32),
+}
+
+impl TurnLimitChange {
+    fn read(cfg: &Node) -> Option<Self> {
+        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+            !matches!(key.as_str(), "value" | "add") || !value.translations.is_empty() || value.text.contains('$')
+        }) { return None; }
+        match cfg.attribute("add").map(str::trim).filter(|s| !s.is_empty()) {
+            Some(add) => match add.strip_suffix('%') {
+                Some(percent) => Some(Self::Percent(percent.parse().ok()?)),
+                None => Some(Self::Add(add.parse().ok()?)),
+            },
+            None => Some(Self::Set(cfg.attribute("value")?.trim().parse().ok()?)),
+        }
+    }
+
+    pub(crate) fn apply(&self, limit: Option<i32>) -> Option<i32> {
+        let old = limit.unwrap_or(-1);
+        let new = match *self {
+            Self::Set(value) => value,
+            Self::Add(amount) => old.saturating_add(amount),
+            Self::Percent(percent) => crate::trait_effects::increase_percent(old, percent, -1),
+        };
+        (new >= 0).then_some(new)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +144,9 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+        if tag == "modify_turns" {
+            return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
+        }
         if opening && tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
@@ -469,6 +505,42 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         assert_eq!((veteran.side, veteran.hitpoints), (1, 61));
         assert_eq!(veteran.traits, ["loyal", "resilient"]);
         assert_eq!(snapshot.villages, [(village, 1)]);
+    }
+
+    #[test]
+    fn campaign_can_extend_a_final_round_from_time_over() {
+        use crate::fixed_match::MatchState;
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+hitpoints=22
+[/unit_type]
+[/units]
+[scenario]
+turns=1
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=time over
+[modify_turns]
+add=100%
+[/modify_turns]
+[/event]
+[/scenario]"#).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.step(Action::EndTurn).unwrap(), MatchState::Playing(Turn { round: 2, side: 1 }));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.step(Action::EndTurn).unwrap(), MatchState::Draw);
+        assert_eq!(TurnLimitChange::Set(-1).apply(Some(4)), None);
+        assert_eq!(TurnLimitChange::Add(3).apply(Some(4)), Some(7));
     }
 
     #[test]
