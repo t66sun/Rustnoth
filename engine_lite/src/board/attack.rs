@@ -1,7 +1,7 @@
 use std::{error, fmt, num::NonZeroU32};
 
 use crate::{
-    combat::{CombatResult, Combatant, base_hit_chance, resolve_exchange},
+    combat::{CombatResult, Combatant, Poison, base_hit_chance, resolve_exchange},
     hex::Hex,
     rng::ReplayRng,
     strike_damage::strike_damage,
@@ -127,6 +127,7 @@ impl Battlefield<'_> {
                 unslowable: defender.is_unslowable(),
                 hit_chance: 0,
                 firststrike: false,
+                poison: defender.poison_in_combat(false),
                 drain_healing_cap: None,
                 undrainable: defender.is_undrainable(),
             },
@@ -153,6 +154,7 @@ impl Battlefield<'_> {
             let unit = self.units.get_mut(&from).expect("validated attacker");
             unit.hitpoints = result.attacker_hitpoints as i32;
             unit.slowed = result.attacker_slowed;
+            unit.poisoned = result.poisoned[0];
             unit.experience = unit.experience.saturating_add(attacker_experience);
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
@@ -163,6 +165,7 @@ impl Battlefield<'_> {
             let unit = self.units.get_mut(&to).expect("validated defender");
             unit.hitpoints = result.defender_hitpoints as i32;
             unit.slowed = result.defender_slowed;
+            unit.poisoned = result.poisoned[1];
             unit.experience = unit.experience.saturating_add(defender_experience);
         }
         Ok(result)
@@ -190,6 +193,16 @@ impl UnitState<'_> {
 
 pub(crate) fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
     (i64::from(weapon.min_range)..=i64::from(weapon.max_range)).contains(&distance)
+}
+
+impl UnitState<'_> {
+    fn poison_in_combat(&self, inflicts: bool) -> Poison {
+        Poison {
+            active: self.poisoned,
+            immune: self.traits.as_ref().is_some_and(|traits| traits.stats.unpoisonable),
+            inflicts,
+        }
+    }
 }
 
 pub(crate) fn combatant(
@@ -223,6 +236,7 @@ pub(crate) fn combatant(
         firststrike: weapon.has_firststrike(),
         drain_healing_cap: weapon.has_drains().then(|| unit.max_hitpoints().max(0) as u32),
         undrainable: unit.is_undrainable(),
+        poison: unit.poison_in_combat(weapon.has_poison()),
     }
 }
 
@@ -325,6 +339,33 @@ mod tests {
         assert_eq!((attacker.moves_left, defender.moves_left), (3, 5));
         assert!(attacker.slowed && defender.slowed);
         assert_eq!(rng.seed_and_calls(), (5489, 2));
+    }
+
+    #[test]
+    fn poison_from_attacks_and_replies_ticks_on_the_patients_turn_until_cured() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.hitpoints = 30;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=2\nnumber=1\n[specials]\n[poison]\nid=poison\n[/poison]\n[/specials]",
+        ).unwrap());
+        assert!(fighter.attacks[0].supports_specials());
+        let mut board = board(&types);
+        let result = board.apply_attack(1, attack(0), |side| side == 2, &mut ReplayRng::new(5489)).unwrap();
+        assert_eq!(result.poisoned, [true, true]);
+        let terrain = |heals| crate::terrain_aliases::TerrainAliases::from_wml(&wml::parse(format!(
+            "[terrain_type]\nid=keep\nstring=Kh\nheals={heals}\n[/terrain_type]"
+        )).unwrap());
+        for expected in [20, 14, 8, 2, 1, 1] {
+            board.heal_at_turn_start(2, &terrain(0));
+            assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, expected);
+            assert!(board.unit_at(DEFENDER).unwrap().poisoned);
+            assert_eq!(board.unit_at(ATTACKER).unwrap().hitpoints, 28);
+        }
+        board.heal_at_turn_start(2, &terrain(8));
+        assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 3);
+        assert!(!board.unit_at(DEFENDER).unwrap().poisoned);
+        assert!(board.unit_at(ATTACKER).unwrap().poisoned);
     }
 
     #[test]

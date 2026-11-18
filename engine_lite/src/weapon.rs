@@ -100,6 +100,10 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_poison(&self) -> bool {
+        self.has_status_special("poison")
+    }
+
     pub(crate) fn combat_rounds(&self) -> NonZeroU32 {
         if self.specials.as_ref().is_some_and(|specials| {
             specials.children.iter().any(|(tag, definition)| is_stock_berserk(tag, definition))
@@ -132,7 +136,7 @@ impl WeaponProfile {
                     || is_unconditional_magical(tag, definition)
                     || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
-                    || (matches!(tag.as_str(), "drains" | "slow") && is_status_special(tag, definition))
+                    || (matches!(tag.as_str(), "drains" | "slow" | "poison") && is_status_special(tag, definition))
             })
         })
     }
@@ -306,12 +310,15 @@ mod tests {
         for unsupported in [
             "[firststrike]\nid=firststrike\nactive_on=defense\n[/firststrike]",
             "[firststrike]\n[filter_opponent]\ntype=Fighter\n[/filter_opponent]\n[/firststrike]",
-            "[poison]\nid=poison\n[/poison]",
+            "[poison]\nid=poison\nactive_on=defense\n[/poison]",
         ] {
             let weapon = weapon(unsupported);
             assert!(!weapon.has_firststrike());
             assert!(!weapon.supports_specials());
         }
+        let poison = weapon("[poison]\nid=poison\n[/poison]");
+        assert!(poison.supports_specials());
+        assert!(!poison.has_firststrike());
     }
 
     #[test]
