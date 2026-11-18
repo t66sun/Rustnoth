@@ -12,6 +12,7 @@ pub struct RecruitStats {
     pub attack_damage: Vec<i32>,
     pub undrainable: bool,
     pub unslowable: bool,
+    pub unpoisonable: bool,
 }
 
 impl RecruitStats {
@@ -32,6 +33,7 @@ impl RecruitStats {
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
             undrainable: false,
             unslowable: false,
+            unpoisonable: false,
         };
         for trait_ in traits {
             for (tag, effect) in &trait_.children {
@@ -76,22 +78,15 @@ impl RecruitStats {
                 }
             }
             Some("status") => {
-                let lists_status = |key, id| {
-                    effect.attribute(key).is_some_and(|statuses| {
-                        statuses.split(',').any(|status| status.trim() == id)
-                    })
-                };
-                if lists_status("add", "undrainable") {
-                    self.undrainable = true;
-                }
-                if lists_status("remove", "undrainable") {
-                    self.undrainable = false;
-                }
-                if lists_status("add", "unslowable") {
-                    self.unslowable = true;
-                }
-                if lists_status("remove", "unslowable") {
-                    self.unslowable = false;
+                for (key, enabled) in [("add", true), ("remove", false)] {
+                    for status in effect.attribute(key).unwrap_or_default().split(',').map(str::trim) {
+                        match status {
+                            "undrainable" => self.undrainable = enabled,
+                            "unslowable" => self.unslowable = enabled,
+                            "unpoisonable" => self.unpoisonable = enabled,
+                            _ => {}
+                        }
+                    }
                 }
             }
             _ => {}
@@ -139,6 +134,15 @@ fn matches_filter(effect: &Node, key: &str, actual: &str) -> bool {
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn later_status_effects_can_remove_poison_immunity() {
+        let unit = UnitType::from_wml(wml::parse("id=Fighter").unwrap());
+        let grants = wml::parse("[effect]\napply_to=status\nadd=undrainable,unpoisonable\n[/effect]").unwrap();
+        let removes = wml::parse("[effect]\napply_to=status\nremove=unpoisonable\n[/effect]").unwrap();
+        assert!(RecruitStats::from_traits(&unit, &[&grants]).unpoisonable);
+        assert!(!RecruitStats::from_traits(&unit, &[&grants, &removes]).unpoisonable);
+    }
 
     #[test]
     fn calculates_native_bowman_stats_from_selected_traits() {

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 
 use crate::{
     board::StrikeModifiers,
-    combat::{Combatant, apply_hit, strike_order},
+    combat::{Combatant, POISON_AMOUNT, apply_hit, strike_order},
 };
 
 pub(super) fn select(
@@ -29,13 +29,16 @@ pub(super) fn select(
 struct Outcome {
     death: [f64; 2],
     average_hp: [f64; 2],
+    surviving_poison: [f64; 2],
 }
 
 impl Outcome {
-    fn add(&mut self, hitpoints: [u32; 2], probability: f64) {
+    fn add(&mut self, hitpoints: [u32; 2], poisoned: [bool; 2], probability: f64) {
         for (index, hp) in hitpoints.into_iter().enumerate() {
             if hp == 0 {
                 self.death[index] += probability;
+            } else if poisoned[index] {
+                self.surviving_poison[index] += probability;
             }
             self.average_hp[index] += probability * f64::from(hp);
         }
@@ -49,7 +52,10 @@ impl Outcome {
         if kill_difference.abs() > TOLERANCE {
             return kill_difference > 0.0;
         }
-        let health_margin = |outcome: &Self| outcome.average_hp[1] - outcome.average_hp[0];
+        let health_margin = |outcome: &Self| {
+            outcome.average_hp[1] - outcome.average_hp[0]
+                + (outcome.surviving_poison[0] - outcome.surviving_poison[1]) * f64::from(POISON_AMOUNT)
+        };
         let health_difference = health_margin(self) - health_margin(other);
         if health_difference.abs() > TOLERANCE {
             return health_difference > 0.0;
@@ -61,8 +67,9 @@ impl Outcome {
 fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Outcome {
     let mut outcome = Outcome::default();
     let starting_hp = [attacker.hitpoints, defender.hitpoints];
+    let starting_poison = [attacker.poison.active, defender.poison.active];
     if starting_hp.contains(&0) {
-        outcome.add(starting_hp, 1.0);
+        outcome.add(starting_hp, starting_poison, 1.0);
         return outcome;
     }
 
@@ -70,9 +77,9 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
     let order = strike_order(&attacker, &defender);
     let units = [attacker, defender];
     let strikes = units.each_ref().map(|unit| {
-        if (unit.damage == 0 && !unit.slows) || unit.hit_chance == 0 { 0 } else { unit.strikes }
+        if (unit.damage == 0 && !unit.slows && !unit.poison.inflicts) || unit.hit_chance == 0 { 0 } else { unit.strikes }
     });
-    let mut ongoing = BTreeMap::from([((starting_hp, starting_slow), 1.0)]);
+    let mut ongoing = BTreeMap::from([((starting_hp, starting_slow, starting_poison), 1.0)]);
     let strikes_per_round = strikes[0].max(strikes[1]);
     for strike in (0..rounds.get()).flat_map(|_| 0..strikes_per_round) {
         // Native stops prediction between rounds at a 99% combined probability of death.
@@ -87,24 +94,26 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
             let target = 1 - striker;
             let chance = f64::from(unit.hit_chance) / 100.0;
             let mut next = BTreeMap::new();
-            for ((hitpoints, slowed), probability) in ongoing {
+            for ((hitpoints, slowed, poisoned), probability) in ongoing {
                 if chance < 1.0 {
-                    *next.entry((hitpoints, slowed)).or_default() += probability * (1.0 - chance);
+                    *next.entry((hitpoints, slowed, poisoned)).or_default() += probability * (1.0 - chance);
                 }
                 let mut after_hit = hitpoints;
                 let mut after_slow = slowed;
                 apply_hit(&units, &mut after_hit, &mut after_slow, striker);
+                let mut after_poison = poisoned;
+                after_poison[target] |= unit.poison.affects(units[target].poison);
                 if after_hit[target] == 0 {
-                    outcome.add(after_hit, probability * chance);
+                    outcome.add(after_hit, after_poison, probability * chance);
                 } else {
-                    *next.entry((after_hit, after_slow)).or_default() += probability * chance;
+                    *next.entry((after_hit, after_slow, after_poison)).or_default() += probability * chance;
                 }
             }
             ongoing = next;
         }
     }
-    for ((hitpoints, _), probability) in ongoing {
-        outcome.add(hitpoints, probability);
+    for ((hitpoints, _, poisoned), probability) in ongoing {
+        outcome.add(hitpoints, poisoned, probability);
     }
     outcome
 }
@@ -126,6 +135,7 @@ mod tests {
             firststrike: false,
             drain_healing_cap: None,
             undrainable: false,
+            poison: Default::default(),
         }
     }
 
@@ -155,11 +165,24 @@ mod tests {
     fn predicted_slow_only_reduces_retaliation_on_successful_hits() {
         let slow = Combatant { slows: true, ..combatant(20, 1, 3, 50) };
         let response = || combatant(20, 1, 9, 100);
-        let outcome = exchange(slow, response());
+        let outcome = exchange(slow, response(), NonZeroU32::MIN);
         assert_eq!(outcome.average_hp, [13.0, 18.5]);
         let slow = Combatant { slows: true, ..combatant(20, 1, 3, 100) };
         let immune = Combatant { unslowable: true, ..response() };
-        assert_eq!(exchange(slow, immune).average_hp, [11.0, 17.0]);
+        assert_eq!(exchange(slow, immune, NonZeroU32::MIN).average_hp, [11.0, 17.0]);
+    }
+
+    #[test]
+    fn prefers_to_poison_a_susceptible_survivor_over_an_extra_point_of_damage() {
+        let outcome = |immune, poisons| {
+            let mut attacker = combatant(10, 1, 1, 100);
+            attacker.poison.immune = immune;
+            let mut defender = combatant(10, 1, if poisons { 1 } else { 2 }, 100);
+            defender.poison.inflicts = poisons;
+            exchange(attacker, defender, NonZeroU32::MIN)
+        };
+        assert!(outcome(false, true).better_for_defender_than(&outcome(false, false)));
+        assert!(outcome(true, false).better_for_defender_than(&outcome(true, true)));
     }
 
     #[test]
