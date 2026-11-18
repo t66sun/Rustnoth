@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{Node, UnitState, UnitType};
 
 /// The literal unit selectors used on recall leaders in the stock campaigns.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct RecallFilter(Vec<Selector>);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Selector {
     Id(BTreeSet<String>),
     Type(BTreeSet<String>),
