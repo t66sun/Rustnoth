@@ -6,13 +6,14 @@ use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 use engine_lite::wml::Node;
 use macroquad::prelude::*;
 use crate::dialog::{fit, setup_camera, text, ListAction};
+use crate::title_screen::locale::{self, Locale};
 
 const GOLD: Color = Color::from_rgba(186, 172, 125, 255);
 const LABEL: Color = Color::from_rgba(221, 221, 221, 255);
 const EDGE: Color = Color::from_rgba(114, 79, 46, 255);
 
 struct Entry<'a> {
-    name: &'a str,
+    name: String,
     description: String,
     icon: Option<&'a str>,
     image: Option<&'a str>,
@@ -29,23 +30,23 @@ fn plain(source: &str) -> String {
     }).collect::<String>().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
 }
 
-fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)]) -> (Vec<Entry<'a>>, Vec<Entry<'a>>) {
+fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Locale, install: &Path) -> (Vec<Entry<'a>>, Vec<Entry<'a>>) {
     let campaigns = root.children.iter().filter(|(tag, _)| tag == "campaign").filter_map(|(_, node)| {
         let id = node.attribute("first_scenario")?;
         let scenario = scenarios.iter().position(|(key, _)| *key == id)?;
         Some(Entry {
-            name: node.attribute("name").unwrap_or(id),
-            description: plain(node.attribute("description").unwrap_or_default()),
+            name: locale.attribute(install, node, "name", id),
+            description: plain(&locale.attribute(install, node, "description", "")),
             icon: node.attribute("icon"), image: node.attribute("image"),
             background: node.attribute("background"), scenario,
         })
     }).collect();
     let levels = root.children.iter().filter(|(tag, node)| tag == "scenario" && node.attribute("id").is_some())
-        .zip(scenarios).enumerate().map(|(scenario, ((_, node), &(id, name)))| {
+        .zip(scenarios).enumerate().map(|(scenario, ((_, node), &(id, _)))| {
             // Scenario bundles need not include a [campaign] descriptor or a description.
             Entry {
-                name: if name.is_empty() { id } else { name },
-                description: plain(node.attribute("description").filter(|s| !s.is_empty()).unwrap_or(id)),
+                name: locale.attribute(install, node, "name", id),
+                description: plain(&locale.attribute(install, node, "description", id)),
                 icon: None, image: None, background: None, scenario,
             }
         }).collect();
@@ -73,13 +74,15 @@ pub(super) struct Selector<'a> {
 }
 
 impl<'a> Selector<'a> {
-    pub fn new(root: &Path, campaign: &'a Node, scenarios: &[(&'a str, &'a str)]) -> Self {
-        let (campaigns, levels) = entries(campaign, scenarios);
-        Self {
+    pub fn new(root: &Path, campaign: &'a Node, scenarios: &[(&'a str, &'a str)]) -> std::io::Result<Self> {
+        let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
+        let mut language = Locale::load(root, selected)?;
+        let (campaigns, levels) = entries(campaign, scenarios, &mut language, root);
+        Ok(Self {
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
             query: String::new(), editing: false, description_offset: 0, last_click: None,
-            art: Art::new(root, campaign),
-        }
+            art: Art::new(root, campaign, language),
+        })
     }
 
     pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
@@ -173,11 +176,11 @@ impl<'a> Selector<'a> {
         };
 
         self.art.window(window);
-        self.art.label("Play a Campaign", panel.x, window.y+40.0, 28, GOLD);
+        self.art.label(self.art.locale.ui("Play a Campaign"), panel.x, window.y+40.0, 28, GOLD);
         fill(search, Color::from_rgba(10, 14, 21, 255));
         outline(search, if self.editing { GOLD } else { EDGE });
         let query_label = fit(self.art.font.as_ref(), self.query.clone(), search.w-16.0, 16);
-        self.art.label(if self.query.is_empty() { "Filter" } else { &query_label },
+        self.art.label(if self.query.is_empty() { self.art.locale.ui("Filter") } else { &query_label },
             search.x+8.0, search.y+22.0, 16, LABEL);
         fill(panel, BLACK);
         let backdrop = entry.and_then(|e| e.background).unwrap_or("story/landscape-battlefield_nohumans.webp");
@@ -191,7 +194,7 @@ impl<'a> Selector<'a> {
         outline(panel, EDGE);
         fill(list, Color::from_rgba(13, 17, 22, 142));
         fill(Rect::new(list.x, list.y, list.w, 30.0), Color::from_rgba(33, 43, 56, 210));
-        self.art.label("Name", list.x+10.0, list.y+21.0, 16, GOLD);
+        self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
         for (row, &index) in rows.iter().skip(self.first).take(visible).enumerate() {
             let rect = Rect::new(list.x, top+row as f32*row_h, list.w, row_h-1.0);
             let item = &entries[index];
@@ -208,15 +211,15 @@ impl<'a> Selector<'a> {
                 if let Some(icon) = item.icon.and_then(|id| self.art.get(id)) { contain(&icon, cell, false); }
                 label_x = cell.right()+5.0;
             }
-            let name = fit(self.art.font.as_ref(), item.name.into(), rect.right()-label_x-4.0, 17);
+            let name = fit(self.art.font.as_ref(), item.name.clone(), rect.right()-label_x-4.0, 17);
             self.art.label(&name, label_x, rect.center().y+6.0, 17, LABEL);
         }
-        if rows.is_empty() { self.art.label("No matches", list.x+12.0, top+28.0, 16, LABEL); }
+        if rows.is_empty() { self.art.label(self.art.locale.ui("No matches"), list.x+12.0, top+28.0, 16, LABEL); }
         if let Some(e) = entry {
             let font = self.art.font.as_ref();
-            let name = fit(font, e.name.into(), details.w-12.0, 21);
+            let name = fit(font, e.name.clone(), details.w-12.0, 21);
             text(font, &name, details.x+6.0, details.y+26.0, 21, GOLD);
-            let lines = wrapped(font, &e.description, details.w-12.0);
+            let lines = crate::title_screen::wrap(&e.description, font, details.w-12.0);
             let visible_lines = ((details.h-56.0)/20.0).floor().max(1.0) as usize;
             if details.contains(pointer) && wheel != 0.0 {
                 self.description_offset = self.description_offset.saturating_add_signed(if wheel > 0.0 {-3} else {3});
@@ -240,25 +243,10 @@ impl<'a> Selector<'a> {
             let message = fit(self.art.font.as_ref(), message.into(), play.x-left-8.0, 15);
             self.art.label(&message, left, bottom+24.0, 15, Color::from_rgba(255,180,146,255));
         }
-        self.art.button(play, "Play", pointer);
+        self.art.button(play, "game^Play", pointer);
         self.art.button(cancel, "Cancel", pointer);
         action
     }
-}
-
-fn wrapped(font: Option<&Font>, input: &str, width: f32) -> Vec<String> {
-    let mut lines = vec![];
-    for paragraph in input.lines() {
-        let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            let next = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
-            if !line.is_empty() && measure_text(&next, font, 16, 1.0).width > width {
-                lines.push(line); line = word.to_owned();
-            } else { line = next; }
-        }
-        lines.push(line);
-    }
-    lines
 }
 
 fn fill(rect: Rect, color: Color) { draw_rectangle(rect.x, rect.y, rect.w, rect.h, color); }
@@ -277,12 +265,13 @@ fn contain(tex: &Texture2D, rect: Rect, upscale: bool) {
 }
 
 struct Art {
+    locale: Locale,
     roots: Vec<PathBuf>,
     font: Option<Font>,
     textures: HashMap<String, Option<Texture2D>>,
 }
 impl Art {
-    fn new(root: &Path, campaign: &Node) -> Self {
+    fn new(root: &Path, campaign: &Node, locale: Locale) -> Self {
         let mut roots = vec![root.to_owned(), root.join("images")];
         for (_, node) in campaign.children.iter().filter(|(tag,_)| tag == "binary_path") {
             if let Some(path) = node.attribute("path").map(Path::new).filter(|p| relative(p)) {
@@ -290,8 +279,8 @@ impl Art {
             }
         }
         roots.push(root.join("data/core/images"));
-        let font = fs::read(root.join("fonts/Lato-Regular.ttf")).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Self { roots, font, textures: HashMap::new() }
+        let font = fs::read(root.join("fonts").join(locale::font_name(&locale.effective))).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        Self { locale, roots, font, textures: HashMap::new() }
     }
     fn get(&mut self, id: &str) -> Option<Texture2D> {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
@@ -331,6 +320,8 @@ impl Art {
         } else { "buttons/large-button.png" };
         fill(rect, Color::from_rgba(38,47,60,255));
         if let Some(image_asset) = self.get(asset) { image(&image_asset, rect); }
+        let label = self.locale.ui(label);
+        let label = label.split_once('^').map_or(label, |(_, display)| display);
         let size = measure_text(label, self.font.as_ref(), 17, 1.0);
         self.label(label, rect.center().x-size.width*0.5, rect.center().y+6.0, 17, GOLD);
     }
@@ -348,9 +339,9 @@ mod tests {
     fn campaign_selection_resolves_the_authored_opening_and_preserves_scenario_access() {
         let document = wml::parse("[campaign]\nname=The South Guard\nfirst_scenario=opening\nicon=data/icon.png\nimage=data/art.png\ndescription= _ \"<i>Deoran</i> rides south.\"\n[/campaign]\n[campaign]\nfirst_scenario=absent\n[/campaign]\n[scenario]\nid=side_route\nname=Crossroads\n[/scenario]\n[scenario]\nid=opening\nname=First Ride\n[/scenario]").unwrap();
         let scenarios: Vec<_> = campaign::scenarios(&document).collect();
-        let (campaigns, levels) = entries(&document,&scenarios);
+        let (campaigns, levels) = entries(&document,&scenarios, &mut Locale::default(), Path::new(""));
         assert_eq!(campaigns.len(), 1);
-        assert_eq!((campaigns[0].name, campaigns[0].scenario), ("The South Guard", 1));
+        assert_eq!((campaigns[0].name.as_str(), campaigns[0].scenario), ("The South Guard", 1));
         assert_eq!((campaigns[0].icon, campaigns[0].image), (Some("data/icon.png"), Some("data/art.png")));
         assert_eq!(campaigns[0].description, "Deoran rides south.");
         assert_eq!(levels[filtered(&levels,"CROSS")[0]].scenario, 0);

@@ -6,10 +6,11 @@ use macroquad::prelude::*;
 
 mod preferences;
 mod help;
-mod locale;
+pub(crate) mod locale;
 mod languages;
 mod credits;
 mod community;
+mod achievements;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -25,7 +26,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Community, Credits, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -35,6 +36,7 @@ impl Command {
             Self::Load => "Load",
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
+            Self::Achievements => "Achievements",
             Self::Credits => "Credits",
             Self::Community => "Community",
             Self::Quit => "Quit",
@@ -47,8 +49,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -144,6 +146,16 @@ impl TitleScreen {
                 Some(Command::Load) => {
                     next_frame().await;
                     error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
+                }
+                Some(Command::Achievements) => {
+                    next_frame().await;
+                    error = achievements::show(&self.root, &art, |w, h| {
+                        art.draw_background(w, h);
+                        let (body, source) = &entries[tip];
+                        for (cmd, rect) in art.draw_panels(w, h, actions, body, source) {
+                            art.command(rect, cmd, cmd == Command::Achievements, false);
+                        }
+                    }).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Preferences) => {
                     next_frame().await;
@@ -401,7 +413,7 @@ impl Art {
     }
 }
 
-fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
+pub(crate) fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
     let mut lines = Vec::new();
     let space = measure_text(" ", font, 16, 1.0).width;
     for paragraph in text.lines() {
@@ -444,8 +456,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
     }
 
     #[test]
