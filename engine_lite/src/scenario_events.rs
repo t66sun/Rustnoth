@@ -40,6 +40,7 @@ enum EventAction {
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
     HealUnit(crate::board::HealUnit),
+    Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool },
@@ -166,6 +167,9 @@ impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
         if tag == "heal_unit" {
             return crate::board::HealUnit::read(cfg).map(|heal| Self::Board(BoardChange::HealUnit(heal)));
+        }
+        if tag == "message" {
+            return crate::fixed_match::dialogue::Message::read(cfg).map(|message| Self::Board(BoardChange::Dialogue(message)));
         }
         if tag == "modify_turns" {
             return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
