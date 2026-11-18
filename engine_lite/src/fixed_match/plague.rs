@@ -17,6 +17,7 @@ impl FixedMatch<'_> {
     /// Run death events while the casualty is still on the map, then resolve plague.
     pub(super) fn apply_scenario_attack(
         &mut self, turn: Turn, mut attack: Attack,
+        display: Option<(usize, &mut Option<super::combat_display::VisibleCombat>)>,
     ) -> Result<bool, MatchError> {
         let (from, to) = (attack.from, attack.to);
         let weapon = attack.weapon;
@@ -44,9 +45,13 @@ impl FixedMatch<'_> {
             attack.modifiers = refresh(from, attacker, defender, weapon, to, true);
             attack.retaliation = retaliation.map(|i| (i, refresh(to, defender, attacker, i, from, false)));
         }
+        let display = display.and_then(|(viewer, slot)| {
+            *slot = self.visible_combat(viewer, &attack);
+            slot.as_mut().map(|fight| &mut fight.blows)
+        });
         let sides = &self.scenario.sides;
         let result = self.scenario.board.resolve_started_attack(attack,
-            |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng)?;
+            |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng, display)?;
         self.fire_units_event("attack_end", from, Some(to))?;
         for (victim, killer, serial, killer_serial, hp, killer_hp, strike) in [
             (to, from, defender_id, attacker_id, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
@@ -196,6 +201,26 @@ Xv,Xv,Xv,Xv"
 
     fn fight(game: &mut super::super::FixedMatch<'_>) -> MatchState {
         game.step(Action::Attack(AttackChoice { from: WEST, to: EAST, weapon: 0 })).unwrap()
+    }
+
+    #[test]
+    fn visible_strikes_survive_casualty_removal_and_a_blind_viewer_gets_no_combat() {
+        let bundle = scenario("id=fallen", "Gg", false, "type=Walking Corpse",
+            "[side]\nside=3\ncontroller=null\nno_leader=yes\nteam_name=neutral\nfog=yes\nshroud=yes\n[/side]");
+        let mut reference = bundle.start(3, |_| unreachable!()).unwrap();
+        fight(&mut reference);
+        for viewer in [1, 3] {
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            let (_, combat) = game.attack_for_display(AttackChoice { from: WEST, to: EAST, weapon: 0 }, None, viewer).unwrap();
+            assert_eq!(game.audit_snapshot(), reference.audit_snapshot());
+            if viewer == 1 {
+                let combat = combat.unwrap();
+                assert!(combat.opening.units.iter().any(|u| u.position == EAST && u.type_id == "Victim"));
+                assert_eq!(combat.blows.last().unwrap().remaining_hp[1], 0);
+            } else {
+                assert!(combat.is_none());
+            }
+        }
     }
 
     #[test]
