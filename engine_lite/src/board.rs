@@ -326,7 +326,7 @@ impl<'rules> Battlefield<'rules> {
             raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
             if let Some(traits) = &mut raised.traits {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
-                    variation, &traits.definitions, raised.base_max_experience,
+                    variation, traits.definitions.iter().map(Cow::as_ref), raised.base_max_experience,
                 );
             }
             raised.hitpoints = raised.max_hitpoints();
