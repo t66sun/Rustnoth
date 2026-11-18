@@ -29,14 +29,20 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
         let bad_row = |line, message| format!("step {step}, line {}: {message}", line + 1);
         let bad_header = || bad_row(line, "expected a step header with the next index");
         let fields: Vec<_> = header.split('\t').collect();
-        let header_side = match fields.as_slice() {
+        let highest_header_side = match fields.as_slice() {
             ["step", index, "playing", round, side]
                 if index.parse::<usize>() == Ok(step) && round.parse::<i32>().is_ok() =>
             {
                 Some(side_number(side).ok_or_else(&bad_header)?)
             }
-            ["step", index, "won", winner] if index.parse::<usize>() == Ok(step) => {
-                Some(side_number(winner).ok_or_else(&bad_header)?)
+            ["step", index, "won", winners @ ..]
+                if index.parse::<usize>() == Ok(step) && !winners.is_empty() =>
+            {
+                let mut last = 0;
+                for winner in winners {
+                    last = side_number(winner).filter(|&side| side > last).ok_or_else(&bad_header)?;
+                }
+                Some(last)
             }
             ["step", index, "draw"] if index.parse::<usize>() == Ok(step) => None,
             _ => return Err(bad_header()),
@@ -61,7 +67,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
             rows.push(row);
         }
         roster_size.get_or_insert(side_count);
-        if header_side.is_some_and(|side| side > side_count) {
+        if highest_header_side.is_some_and(|side| side > side_count) {
             return Err(bad_header());
         }
         let valid_side = |side: &str| side_number(side).is_some_and(|number| number <= side_count);
@@ -152,6 +158,17 @@ mod tests {
             compare(&rust, THREE_SIDES).unwrap_err(),
             "step 0 differs\n  expected native: gold\t3\t42\n  actual Rust:     gold\t3\t41",
         );
+    }
+
+    #[test]
+    fn compares_all_winning_sides_in_roster_order() {
+        let joint = THREE_SIDES.replace("won\t3", "won\t1\t3");
+        assert_eq!(compare(&joint, &joint), Ok(2));
+        assert!(compare(THREE_SIDES, &joint).unwrap_err().starts_with("step 1 differs"));
+        for header in ["won", "won\t3\t1", "won\t1\t1", "won\t1\t4", "won\t0\t3"] {
+            let malformed = THREE_SIDES.replace("won\t3", header);
+            assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+        }
     }
 
     #[test]
