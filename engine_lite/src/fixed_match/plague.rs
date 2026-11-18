@@ -30,6 +30,7 @@ impl FixedMatch<'_> {
             if hp > 0 { continue; }
             self.fire_unit_event("die", victim)?;
             let board = &mut self.scenario.board;
+            if board.unit_at(victim).is_none_or(|unit| unit.hitpoints > 0) { continue; }
             let replacement = strike.filter(|_| killer_hp > 0).and_then(|index|
                 board.plague_reanimation(killer, victim, index, self.rules.terrain));
             board.remove_casualty(victim);
@@ -231,6 +232,18 @@ Xv,Xv,Xv,Xv"
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             assert!(matches!(fight(&mut game), MatchState::Playing(_)));
             assert_eq!(game.audit_snapshot().gold[0], 100);
+        }
+    }
+
+    #[test]
+    fn healing_the_dying_primary_unit_cancels_removal_and_plague() {
+        let events = "[event]\nname=die\n[heal_unit]\namount=1\n[/heal_unit]\n[/event]";
+        for retaliation in [false, true] {
+            let bundle = scenario("id=fallen", "Gg", retaliation, "type=Walking Corpse", events);
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert!(matches!(fight(&mut game), MatchState::Playing(_)));
+            let victim = game.scenario.board.unit_at(if retaliation { WEST } else { EAST }).unwrap();
+            assert_eq!((victim.id.as_deref(), victim.hitpoints), (Some("fallen"), 1));
         }
     }
 
