@@ -408,6 +408,7 @@ mod tests {
             height: 2,
             tiles: Vec::new(),
             units: vec![ObservedUnit {
+                can_recruit: false, emits_zoc: true,
                 position: start, side: 1, type_id: "Bowman".into(),
                 experience: 0, max_experience: 35,
                 hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),
