@@ -19,6 +19,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) id: Option<String>,
     pub(crate) type_id: String,
     pub(crate) variation: String,
+    pub(crate) facing: Option<crate::hex::Direction>,
     pub(crate) display_name: Option<String>,
     pub(crate) portrait: Option<String>,
     /// None places the unit in its side's recall list.
@@ -146,6 +147,7 @@ fn authored_unit(
         type_id: type_id.to_owned(),
         display_name: nonempty(unit, "name").filter(|s| !s.contains('$')).map(str::to_owned),
         portrait: nonempty(unit, "profile").filter(|s| !s.contains('$')).map(str::to_owned),
+        facing: unit.attribute("facing").and_then(crate::hex::Direction::from_wml),
         variation: unit.attribute("variation").unwrap_or_default().to_owned(),
         position,
         can_recruit,
