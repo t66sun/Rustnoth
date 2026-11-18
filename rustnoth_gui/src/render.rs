@@ -26,7 +26,9 @@ mod transitions;
 mod unit_status;
 mod ground;
 mod rules;
+mod reach;
 
+const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -35,9 +37,6 @@ const MUTED: Color = Color::from_rgba(196, 195, 169, 255);
 const BUTTON: Color = Color::from_rgba(57, 68, 51, 255);
 const BUTTON_HIGHLIGHTED: Color = Color::from_rgba(79, 94, 68, 255);
 const UNKNOWN_TERRAIN: Color = Color::from_rgba(51, 65, 50, 255);
-const REACHABLE: Color = Color::from_rgba(240, 214, 106, 190);
-const ATTACKABLE: Color = Color::from_rgba(245, 127, 102, 225);
-const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const ART_HEX_SIZE: f32 = 72.0;
 const FLAG_FRAMES: usize = 4;
@@ -97,6 +96,7 @@ pub struct BoardArt {
     petrified: Option<Texture2D>,
     fog: Vec<Texture2D>,
     shroud: Option<Texture2D>,
+    unreachable: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
@@ -153,6 +153,7 @@ impl BoardArt {
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
+            unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
             font,
@@ -413,38 +414,24 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
     }
     art.lighting.flat([0; 3]);
-    let mut choices = BTreeMap::new();
-    let mut actionable = HashSet::new();
-    for action in movement.actions {
-        match action {
-            Action::Move { from, .. } => { actionable.insert(*from); }
-            Action::Attack(attack) => { actionable.insert(attack.from); }
-            _ => {}
+    let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
+        Action::Move { from, .. } => Some(*from),
+        Action::Attack(attack) => Some(attack.from),
+        _ => None,
+    }).collect();
+    let pointer: Vec2 = mouse_position().into();
+    let target = movement.menu.and_then(|menu| menu.target).or_else(|| {
+        let viewport = board_viewport();
+        (pointer.x >= viewport.x && pointer.x < viewport.x + viewport.width
+            && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
+            .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
+    });
+    if let Some(mask) = art.unreachable.as_ref()
+        && let Some(reachable) = reach::reachable(movement.selected, movement.actions, target) {
+        for tile in view.tiles.iter().filter(|tile| !reachable.contains(&tile.position)) {
+            let [x, y] = layout.tile_origin(tile.position);
+            draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size);
         }
-        match action {
-            Action::Move { from, to } if Some(*from) == movement.selected => {
-                choices.insert(*to, REACHABLE);
-            }
-            Action::Attack(attack) if Some(attack.from) == movement.selected => {
-                choices.insert(attack.to, ATTACKABLE);
-            }
-            Action::Recruit { to, .. } | Action::Recall { to, .. } if movement.selected.is_none() => {
-                choices.insert(*to, REACHABLE);
-            }
-            _ => {}
-        }
-    }
-    for (to, color) in choices {
-        let [x, y] = layout.tile_origin(to);
-        draw_circle(x + size / 2.0, y + size / 2.0, (size * 0.11).max(2.0), color);
-    }
-    if let Some(selected) = movement.selected {
-        let [x, y] = layout.tile_origin(selected);
-        draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.48, 0.0, 2.0, SELECTED);
-    }
-    if let Some(target) = movement.menu.and_then(|menu| menu.target) {
-        let [x, y] = layout.tile_origin(target);
-        draw_poly_lines(x + size / 2.0, y + size / 2.0, 6, size * 0.42, 0.0, 2.0, SELECTED);
     }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
