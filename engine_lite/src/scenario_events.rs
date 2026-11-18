@@ -22,6 +22,7 @@ enum SideAction {
     },
     AllowRecruit(Vec<String>),
     SetRecruit(Vec<String>),
+    Objectives(crate::scenario_sides::ScenarioObjectives),
     DisallowRecruit(Option<Vec<String>>),
 }
 
@@ -197,6 +198,21 @@ impl EventAction {
             if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
             return Some(Self::Board(BoardChange::Terrain { locations, code: code.into() }));
         }
+        if tag == "objectives" {
+            // Unknown side filters must not publish private objectives to other sides.
+            if cfg.attributes.keys().any(|key| !matches!(key.as_str(), "side" | "silent" | "summary" |
+                "victory_string" | "defeat_string" | "notes_string" | "note" | "gold_carryover_string" |
+                "bullet" | "delayed_variable_substitution"))
+                || cfg.children.iter().any(|(tag, _)| !matches!(tag.as_str(), "objective" | "note" | "gold_carryover"))
+            { return None; }
+            let action = SideAction::Objectives(crate::scenario_sides::ScenarioObjectives::read(cfg));
+            let mut command = Self::side_action(cfg, side_count, action)?;
+            // objectives.lua uses the global list when the side filter matches no side (including side=0).
+            if let Self::Sides { sides, .. } = &mut command && sides.is_empty() {
+                sides.extend(0..side_count);
+            }
+            return Some(command);
+        }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
                 !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support")
@@ -257,6 +273,7 @@ impl EventAction {
         };
         for &index in sides {
             match action {
+                SideAction::Objectives(objectives) => state.sides[index].objectives.clone_from(objectives),
                 SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
                 SideAction::Economy { gold, income, village_gold, village_support } => {
                     let side = &mut state.sides[index];
@@ -423,8 +440,7 @@ impl ScenarioEvents {
                 vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
                 let Some(changes) = actions.into_iter().filter(|(tag, cfg)| {
-                    // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
@@ -433,7 +449,7 @@ impl ScenarioEvents {
                             .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))),
                         _ => match EventAction::read(tag, cfg, side_count) {
                         Some(action) => Some(Some(action)),
-                        None if presentation_only(tag, cfg) => None,
+                        None if tag == "objectives" || presentation_only(tag, cfg) => None,
                         None => Some(None),
                         },
                     })
