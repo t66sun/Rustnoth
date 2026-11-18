@@ -104,6 +104,12 @@ impl WeaponProfile {
         self.has_status_special("poison")
     }
 
+    pub(crate) fn plague_type(&self) -> Option<&str> {
+        self.specials.as_ref()?.children.iter()
+            .find(|(tag, special)| is_plague(tag, special))
+            .map(|(_, special)| special.attribute("type").unwrap_or_default())
+    }
+
     pub(crate) fn combat_rounds(&self) -> NonZeroU32 {
         if self.specials.as_ref().is_some_and(|specials| {
             specials.children.iter().any(|(tag, definition)| is_stock_berserk(tag, definition))
@@ -158,9 +164,19 @@ impl WeaponProfile {
                     || (matches!(tag.as_str(), "drains" | "slow" | "poison") && is_status_special(tag, definition))
                     || (self.min_range == 1 && self.max_range == 1 && is_stock_backstab(tag, definition))
                     || is_stock_swarm(tag, definition)
+                    || is_plague(tag, definition)
             })
         })
     }
+}
+
+fn is_plague(tag: &str, special: &Node) -> bool {
+    tag == "plague" && special.children.is_empty()
+        && special.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "type" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_stock_swarm(tag: &str, definition: &Node) -> bool {

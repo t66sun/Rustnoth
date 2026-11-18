@@ -10,6 +10,7 @@ use crate::wml::Node;
 
 mod traits;
 mod hiding;
+mod variations;
 use traits::TraitCatalog;
 pub use traits::TraitPool;
 pub(crate) use hiding::Hiding;
@@ -18,6 +19,9 @@ pub(crate) use hiding::Hiding;
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnitType {
     pub id: String,
+    pub(crate) undead_variation: String,
+    pub(crate) variation_id: String,
+    variations: BTreeMap<String, UnitType>,
     pub level: i32,
     pub(crate) leadership: bool,
     pub hitpoints: i32,
@@ -116,6 +120,9 @@ impl UnitType {
         let (adjacent_healing, cures_adjacent) = stock_adjacent_healing(&unit);
         let mut result = Self {
             id: text("id").to_owned(),
+            undead_variation: catalog.undead_variation(&unit).to_owned(),
+            variation_id: text("variation_id").to_owned(),
+            variations: variations::read(&unit, catalog),
             level,
             leadership: unit.children.iter().any(|(tag, abilities)| {
                 tag == "abilities" && abilities.children.iter().any(|(tag, ability)| {

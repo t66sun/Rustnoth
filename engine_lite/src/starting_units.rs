@@ -19,6 +19,8 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) moves_left: Option<i32>,
     pub(crate) attacks_left: Option<i32>,
     pub(crate) poisoned: bool,
+    pub(crate) unplagueable: bool,
+    pub(crate) undead_variation: Option<String>,
     pub(crate) slowed: bool,
     pub(crate) uncovered: bool,
 }
@@ -94,6 +96,8 @@ pub(crate) fn read_authored_starting_units(
                 moves_left: integer(unit, "moves"),
                 attacks_left: integer(unit, "attacks_left"),
                 poisoned: has_status("poisoned"),
+                unplagueable: has_status("unplagueable"),
+                undead_variation: unit.attribute("undead_variation").map(str::to_owned),
                 slowed: has_status("slowed"),
                 uncovered: has_status("uncovered"),
             });
