@@ -27,11 +27,21 @@ pub struct BoardLayout {
     origin: [f32; 2],
     tile_size: f32,
     fitted_tile_size: f32,
+    border: f32,
 }
 
 impl BoardLayout {
     /// Centers the board at the largest fitting size, up to 144 pixels per tile.
     pub fn fit(width: i32, height: i32, viewport: Viewport) -> Option<Self> {
+        Self::fit_with_border(width, height, viewport, 0.0)
+    }
+
+    /// The default battlefield theme includes half a hex beyond each map edge.
+    pub fn battlefield(width: i32, height: i32, viewport: Viewport) -> Option<Self> {
+        Self::fit_with_border(width, height, viewport, 0.5)
+    }
+
+    fn fit_with_border(width: i32, height: i32, viewport: Viewport, border: f32) -> Option<Self> {
         let Viewport {
             x,
             y,
@@ -47,8 +57,8 @@ impl BoardLayout {
             return None;
         }
         let [board_width, board_height] = board_extent(width, height);
-        let tile_size = (available_width / board_width)
-            .min(available_height / board_height)
+        let tile_size = (available_width / (board_width + 2.0 * COLUMN_SPACING * border))
+            .min(available_height / (board_height + 2.0 * border))
             .min(MAX_TILE_SIZE);
         if tile_size <= 0.0 {
             return None;
@@ -63,6 +73,7 @@ impl BoardLayout {
             ],
             tile_size,
             fitted_tile_size: tile_size,
+            border,
         })
     }
 
@@ -103,8 +114,8 @@ impl BoardLayout {
         let viewport = self.viewport;
         Self {
             origin: [
-                pan_axis(self.origin[0] + dx, viewport.x, viewport.width, width * self.tile_size),
-                pan_axis(self.origin[1] + dy, viewport.y, viewport.height, height * self.tile_size),
+                pan_axis(self.origin[0] + dx, viewport.x, viewport.width, width * self.tile_size, self.tile_size * COLUMN_SPACING * self.border),
+                pan_axis(self.origin[1] + dy, viewport.y, viewport.height, height * self.tile_size, self.tile_size * self.border),
             ],
             ..*self
         }
@@ -160,12 +171,11 @@ impl BoardLayout {
     }
 }
 
-fn pan_axis(position: f32, start: f32, viewport: f32, board: f32) -> f32 {
-    let overflow = board - viewport;
-    if overflow <= 0.0 {
-        start - overflow / 2.0
+fn pan_axis(position: f32, start: f32, viewport: f32, board: f32, margin: f32) -> f32 {
+    if board + 2.0 * margin <= viewport {
+        start + (viewport - board) / 2.0
     } else {
-        position.clamp(start - overflow, start)
+        position.clamp(start + viewport - board - margin, start + margin)
     }
 }
 
@@ -210,6 +220,15 @@ mod tests {
         let restored = zoomed.zoomed_at(anchor, 0.25);
         assert_eq!(restored.tile_size(), fit.tile_size());
         assert_eq!(restored.tile_origin(hex), fit.tile_origin(hex));
+    }
+
+    #[test]
+    fn battlefield_fits_the_native_south_guard_map_export_and_half_hex_border() {
+        let viewport = Viewport { x: 0.0, y: 0.0, width: 1584.0, height: 1764.0 };
+        let map = BoardLayout::battlefield(28, 23, viewport).unwrap();
+        assert_eq!(map.tile_size(), 72.0);
+        assert_eq!(map.tile_origin(Hex { x: 0, y: 0 }), [27.0, 36.0]);
+        assert_eq!(map.hex_at([10.0, 20.0]), None);
     }
 
     #[test]
