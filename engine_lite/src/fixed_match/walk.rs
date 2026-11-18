@@ -77,7 +77,7 @@ mod tests {
         let enemy_row = if forest {
             "Gg,Gg,Gg,Gg,2 Gg^Fp,Gg,Gg,Gg"
         } else {
-            "Gg,Gg,Gg,Gg,Gg,Gg,Gg,2 Gg"
+            "Xv,Xv,Xv,Xv,Xv,Xv,Xv,2 Gg"
         };
         let wml = format!(r#"
 [terrain_type]
@@ -184,6 +184,8 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         game.scenario.board.place_recruit(2, "Elvish Scout", blocker).unwrap();
         let action = Action::Move { from: START, to: GOAL };
         assert!(game.decision().unwrap().1.contains(&action));
+        let route: Vec<_> = game.planned_route(1, START, GOAL).unwrap().into_iter().map(|(hex, _)| hex).collect();
+        assert_eq!(route, (0..=6).map(|x| Hex { x, y: 0 }).collect::<Vec<_>>());
         game.step(action).unwrap();
         assert_eq!(game.scenario.board.unit_at(Hex { x: 2, y: 0 }).unwrap().moves_left, 6);
         assert_eq!(game.scenario.board.unit_at(blocker).unwrap().side, 2);
