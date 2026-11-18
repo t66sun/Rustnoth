@@ -67,6 +67,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
         let valid_side = |side: &str| side_number(side).is_some_and(|number| number <= side_count);
 
         let mut last_unit = None;
+        let mut status_owner = None;
         let mut last_village = None;
         loop {
             let Some((line, row)) = lines.next() else {
@@ -84,11 +85,15 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         && mp.parse::<i32>().is_ok()
                         && attacks.parse::<i32>().is_ok()
                         && valid_unit_details(extra)
-                        && next_position(x, y, &mut last_unit) => {}
+                        && next_position(x, y, &mut last_unit) => {
+                        status_owner = Some((*x, *y));
+                    }
+                ["status", x, y, "slowed"]
+                    if last_village.is_none() && status_owner.take() == Some((*x, *y)) => {}
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
                 _ => {
-                    return Err(bad_row(line, "expected sorted unit/village rows or matching end"));
+                    return Err(bad_row(line, "expected sorted units, their status, villages or matching end"));
                 }
             }
             rows.push(row);
@@ -206,6 +211,26 @@ mod tests {
         assert!(compare(&rust, &native).unwrap_err().starts_with("step 1 differs"));
         let malformed = native.replace("\t1\t8\n", "\t1\tunknown\n");
         assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+    }
+
+    #[test]
+    fn compares_slowed_only_as_a_status_of_the_preceding_unit() {
+        let row = "status\t2\t1\tslowed\n";
+        let tagged = THREE_SIDES.replacen("village\t", &format!("{row}village\t"), 1);
+        assert_eq!(compare(&tagged, &tagged), Ok(2));
+        assert!(compare(THREE_SIDES, &tagged).unwrap_err().starts_with("step 0 differs"));
+        let trait_only = THREE_SIDES.replace("\t1\t0\nvillage", "\t1\t0\tslowed\nvillage");
+        assert!(compare(&trait_only, &tagged).unwrap_err().starts_with("step 0 differs"));
+
+        for malformed in [
+            tagged.replace(row, &format!("{row}{row}")),
+            tagged.replace(row, "status\t1\t1\tslowed\n"),
+            tagged.replace(row, "status\t2\t1\tunknown\n"),
+            THREE_SIDES.replacen("unit\t", &format!("{row}unit\t"), 1),
+            THREE_SIDES.replacen("end\t0", &format!("{row}end\t0"), 1),
+        ] {
+            assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+        }
     }
 
     #[test]
