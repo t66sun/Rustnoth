@@ -107,6 +107,28 @@ impl Bitmaps {
         Some(data)
     }
 
+    pub(super) fn pixels(
+        &mut self,
+        catalog: &Catalog,
+        id: usize,
+        part: Option<Cut>,
+    ) -> Option<Rc<RgbaImage>> {
+        let data = self.read(catalog, &catalog.names[id])?;
+        let tile = if let Some(part) = part {
+            let [dx, dy] = part.center.map_or([0, 0], |[x, y]| {
+                [data.width() as i32 / 2 - x, data.height() as i32 / 2 - y]
+            });
+            let mut tile = cut(&data, part.x + dx, part.y + dy, 72, 72);
+            if let Some(mask_image) = self.read(catalog, "alphamask.png") {
+                mask(&mut tile, &mask_image);
+            }
+            Rc::new(tile)
+        } else {
+            data
+        };
+        tile.pixels().any(|pixel| pixel[3] != 0).then_some(tile)
+    }
+
     pub(super) fn frame(
         &mut self,
         catalog: &Catalog,
@@ -116,23 +138,7 @@ impl Bitmaps {
         if let Some(texture) = self.cropped.get(&(id, part)) {
             return texture.clone();
         }
-        let result = (|| {
-            let data = self.read(catalog, &catalog.names[id])?;
-            let tile = if let Some(part) = part {
-                let [dx, dy] = part.center.map_or([0, 0], |[x, y]| {
-                    [data.width() as i32 / 2 - x, data.height() as i32 / 2 - y]
-                });
-                let mut tile = cut(&data, part.x + dx, part.y + dy, 72, 72);
-                if let Some(mask_image) = self.read(catalog, "alphamask.png") {
-                    mask(&mut tile, &mask_image);
-                }
-                Rc::new(tile)
-            } else {
-                data
-            };
-            if tile.pixels().all(|p| p[3] == 0) {
-                return None;
-            }
+        let result = self.pixels(catalog, id, part).and_then(|tile| {
             let texture = Texture2D::from_rgba8(
                 tile.width().try_into().ok()?,
                 tile.height().try_into().ok()?,
@@ -140,7 +146,7 @@ impl Bitmaps {
             );
             texture.set_filter(FilterMode::Linear);
             Some(texture)
-        })();
+        });
         self.cropped.insert((id, part), result.clone());
         result
     }
