@@ -212,6 +212,62 @@ Xv,Xv,Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn loads_each_starting_units_own_poison_and_slow_status() {
+        let scenario = wml::parse(
+            r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Fighter
+                [status]
+                    poisoned=yes
+                    slowed=false
+                [/status]
+                [leader]
+                    type=Fighter
+                    x,y=2,1
+                    [status]
+                        poisoned=no
+                        slowed=true
+                    [/status]
+                [/leader]
+                [unit]
+                    type=Fighter
+                    x,y=3,1
+                    [status]
+                        poisoned=true
+                        slowed=yes
+                    [/status]
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x,y=4,1
+                [/unit]
+                [unit]
+                    type=Fighter
+                    x,y=5,1
+                    [status]
+                        poisoned=1
+                        slowed=_ "yes"
+                    [/status]
+                [/unit]
+            [/side]
+            "#,
+        )
+        .unwrap();
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter").unwrap());
+        let types = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let start = load(&scenario, &types, |_| unreachable!()).unwrap();
+        let states: Vec<_> = start.board.units()
+            .map(|(_, unit)| (unit.poisoned, unit.slowed))
+            .collect();
+        assert_eq!(states, [
+            (true, false), (false, true), (true, true), (false, false), (false, false),
+        ]);
+    }
+
+    #[test]
     fn preserves_authored_starting_experience_and_defaults_to_zero() {
         let scenario = wml::parse(
             r#"
