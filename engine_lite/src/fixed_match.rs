@@ -327,6 +327,15 @@ impl<'data> FixedMatch<'data> {
         Ok(self.state())
     }
 
+    fn fire_unit_event(&mut self, name: &str, position: Hex) {
+        let unit = self.scenario.board.unit_at(position).expect("event location has its unit");
+        let id = unit.id.clone();
+        let arrival = crate::scenario_events::ArrivingUnit {
+            position, side: unit.side, id: id.as_deref(), type_id: &unit.unit_type.id,
+        };
+        self.with_events(|events, state| events.fire_for_unit(name, arrival, state));
+    }
+
     fn capture_village(&mut self, side: usize, to: Hex) -> bool {
         if self.village_owners.get(&to).copied() == Some(side)
             || !self
@@ -340,6 +349,7 @@ impl<'data> FixedMatch<'data> {
         }
         if leader_sides(&self.scenario.board).any(|leader_side| leader_side == side) {
             self.village_owners.insert(to, side);
+            self.fire_unit_event("capture", to);
         } else if self.village_owners.get(&to).is_some_and(|owner|
             self.scenario.sides[side - 1].is_enemy(&self.scenario.sides[*owner - 1])
         ) {

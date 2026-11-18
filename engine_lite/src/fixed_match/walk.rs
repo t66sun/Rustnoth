@@ -60,12 +60,7 @@ impl FixedMatch<'_> {
             self.scenario.board.stop_movement(position);
         }
         if position != from {
-            let unit = self.scenario.board.unit_at(position).expect("completed walk has a unit");
-            let id = unit.id.clone();
-            let arrival = crate::scenario_events::ArrivingUnit {
-                position, side, id: id.as_deref(), type_id: &unit.unit_type.id,
-            };
-            self.with_events(|events, state| events.moveto(arrival, state));
+            self.fire_unit_event("moveto", position);
         }
         Ok(())
     }
@@ -205,6 +200,54 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         assert_eq!(game.scenario.board.unit_at(STOP).unwrap().id.as_deref(), Some("scout"));
         assert_eq!(game.gold[0], initial + 7);
         assert!(game.scenario.sides[0].recruits.contains("Wose"));
+    }
+
+    #[test]
+    fn a_village_capture_rewards_its_unit_before_moveto_and_only_when_ownership_changes() {
+        let events = r#"
+            [event]
+                name=capture
+                first_time_only=no
+                [filter]
+                    side=1
+                    x,y=4,1
+                    id=scout
+                [/filter]
+                [gold]
+                    side=1
+                    amount=9
+                [/gold]
+                [allow_recruit]
+                    side=1
+                    type=Wose
+                [/allow_recruit]
+            [/event]
+            [event]
+                name=moveto
+                [filter]
+                    x,y=4,1
+                [/filter]
+                [disallow_recruit]
+                    side=1
+                    type=Wose
+                [/disallow_recruit]
+            [/event]"#;
+        let bundle = scenario_with_events(false, false, "1 Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg,Gg", events);
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        game.village_owners.insert(STOP, 2);
+        let initial = game.gold[0];
+        game.step(Action::Move { from: START, to: STOP }).unwrap();
+        assert_eq!(game.gold[0], initial + 9);
+        assert_eq!(game.village_owners.get(&STOP), Some(&1));
+        assert!(!game.scenario.sides[0].recruits.contains("Wose"));
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let gold = game.gold[0];
+        let next = Hex { x: 4, y: 0 };
+        game.step(Action::Move { from: STOP, to: next }).unwrap();
+        game.step(Action::Move { from: next, to: STOP }).unwrap();
+        assert_eq!(game.gold[0], gold);
+        assert!(!game.scenario.sides[0].recruits.contains("Wose"));
     }
 
     #[test]

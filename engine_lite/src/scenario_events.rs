@@ -170,8 +170,8 @@ impl ScenarioEvents {
         self.dispatch(name, None, state);
     }
 
-    pub(crate) fn moveto(&mut self, arrival: ArrivingUnit<'_>, state: &mut EventState<'_>) {
-        self.dispatch("moveto", Some(arrival), state);
+    pub(crate) fn fire_for_unit(&mut self, name: &str, unit: ArrivingUnit<'_>, state: &mut EventState<'_>) {
+        self.dispatch(name, Some(unit), state);
     }
 
     fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
