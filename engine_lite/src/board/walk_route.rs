@@ -7,6 +7,7 @@ use crate::{
 
 struct Visit {
     spent: f64,
+    moves_left: u32,
     estimate: f64,
     previous: Option<Hex>,
     open: bool,
@@ -63,12 +64,13 @@ pub(super) fn find(
     to: Hex,
     moves: u32,
     tile_at: impl Fn(Hex) -> Option<(MovementTile, u8)>,
-) -> Option<Vec<Hex>> {
+) -> Option<Vec<(Hex, u32)>> {
     if from == to || tile_at(to)?.0.occupancy != Occupancy::Empty {
         return None;
     }
     let mut visits = BTreeMap::from([(from, Visit {
         spent: 0.0,
+        moves_left: moves,
         estimate: heuristic(from, to),
         previous: None,
         open: true,
@@ -82,7 +84,7 @@ pub(super) fn find(
             break;
         }
         let spent = visit.spent;
-        let remaining = moves - spent as u32;
+        let remaining = visit.moves_left;
         for direction in Direction::CLOCKWISE.into_iter().rev() {
             let Some(next) = current.neighbor(direction) else { continue };
             let old = visits.get(&next);
@@ -105,6 +107,7 @@ pub(super) fn find(
             let was_open = old.is_some_and(|node| node.open);
             visits.insert(next, Visit {
                 spent: candidate,
+                moves_left: remaining - movement,
                 estimate: candidate + heuristic(next, to),
                 previous: Some(current),
                 open: true,
@@ -121,10 +124,12 @@ pub(super) fn find(
             sift_up(&mut open, index, &visits);
         }
     }
-    let mut route = vec![to];
+    let mut route = Vec::new();
     let mut current = to;
-    while let Some(previous) = visits.get(&current)?.previous {
-        route.push(previous);
+    loop {
+        let visit = visits.get(&current)?;
+        route.push((current, visit.moves_left));
+        let Some(previous) = visit.previous else { break };
         current = previous;
     }
     route.reverse();
@@ -151,8 +156,8 @@ mod tests {
             let hit_chance = if hex == south { south_hit_chance } else { 50 };
             Some((MovementTile { cost: NonZeroU32::MIN, occupancy, stops_movement: false }, hit_chance))
         }).unwrap();
-        assert_eq!(fork(50, Occupancy::Empty), [from, south, to]);
-        assert_eq!(fork(60, Occupancy::Empty), [from, north, to]);
-        assert_eq!(fork(50, Occupancy::Ally), [from, north, to]);
+        assert_eq!(fork(50, Occupancy::Empty), [(from, 2), (south, 1), (to, 0)]);
+        assert_eq!(fork(60, Occupancy::Empty), [(from, 2), (north, 1), (to, 0)]);
+        assert_eq!(fork(50, Occupancy::Ally), [(from, 2), (north, 1), (to, 0)]);
     }
 }
