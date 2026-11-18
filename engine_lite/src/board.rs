@@ -161,7 +161,13 @@ impl UnitState<'_> {
         self.unplagueable || self.traits.as_ref().is_some_and(|traits| traits.stats.unplagueable)
     }
 
-    fn attack_damage(&self, index: usize) -> i32 {
+    pub(crate) fn attack_strikes(&self, index: usize) -> u32 {
+        let weapon = &self.unit_type.attacks[index];
+        let base = self.traits.as_ref().map_or(weapon.strikes, |t| t.stats.attack_strikes[index]);
+        weapon.strikes_at_hp(base, self.hitpoints, self.max_hitpoints())
+    }
+
+    pub(crate) fn attack_damage(&self, index: usize) -> i32 {
         self.traits
             .as_ref()
             .map_or_else(

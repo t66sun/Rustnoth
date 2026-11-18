@@ -418,6 +418,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                     window.choose(attack_menu, &data.assets, || {
                         render::draw(&data.title, session.state(), Some(observation), camera.layout(), &mut art,
                             render::MovementView {
+                                session: &session,
                                 global_time: session.global_time_of_day(), has_objectives: session.objectives().is_some(),
                                 selected: selection.unit(), actions: session.legal_actions(), message: None,
                                 assets: &data.assets, menu: None,
@@ -460,6 +461,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             camera.layout(),
             &mut art,
             render::MovementView {
+                session: &session,
                 global_time: session.global_time_of_day(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),

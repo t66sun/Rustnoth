@@ -39,6 +39,7 @@ mod plague;
 mod kill;
 mod retaliation;
 pub mod attack_preview;
+pub mod unit_report;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {

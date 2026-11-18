@@ -26,6 +26,8 @@ struct UnitAssets {
     portrait: Option<PathBuf>,
     dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
+    race_name: Option<String>,
+    abilities: Vec<String>,
     weapons: Vec<(Option<String>, Option<PathBuf>)>,
     ellipse: String,
     bars: UnitBars,
@@ -99,6 +101,14 @@ impl AssetCatalog {
         catalog.fallback = wesnoth_root.join("data/core/images");
         catalog.read_definitions(&document);
         Ok(catalog)
+    }
+
+    pub fn unit_race_name(&self, id: &str) -> Option<&str> {
+        self.units.get(id)?.race_name.as_deref()
+    }
+
+    pub fn unit_ability_names(&self, id: &str) -> &[String] {
+        self.units.get(id).map_or(&[], |u| u.abilities.as_slice())
     }
 
     pub fn unit_bars(&self, id: &str) -> Option<UnitBars> {
@@ -212,6 +222,15 @@ impl AssetCatalog {
                     });
                 }
                 "units" => {
+                    let races: BTreeMap<_, _> = node.children.iter().filter(|(tag, _)| tag == "race")
+                        .filter_map(|(_, race)| {
+                            let label = |name| display_name(race, name).map(|s| s.rsplit('^').next().unwrap_or(s));
+                            let shared_name = label("name").or_else(|| {
+                                let male = label("male_name")?;
+                                label("female_name").is_none_or(|female| female == male).then_some(male)
+                            })?;
+                            Some((race.attribute("id")?, shared_name))
+                        }).collect();
                     for (_, unit) in node.children.iter().filter(|(tag, _)| tag == "unit_type") {
                         let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) else {
                             continue;
@@ -229,6 +248,11 @@ impl AssetCatalog {
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
+                            race_name: unit.attribute("race").and_then(|race| races.get(race)).map(|s| (*s).to_owned()),
+                            abilities: unit.children.iter().filter(|(tag, _)| tag == "abilities")
+                                .flat_map(|(_, list)| &list.children)
+                                .filter_map(|(_, ability)| display_name(ability, "name"))
+                                .map(|s| s.rsplit('^').next().unwrap_or(s).to_owned()).collect(),
                             bars: UnitBars::from_unit(unit),
                             ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
                             weapons: unit

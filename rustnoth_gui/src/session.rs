@@ -124,6 +124,10 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn unit_report(&self, position: Hex, pointer: Hex) -> Option<engine_lite::fixed_match::unit_report::UnitReport> {
+        self.game.unit_report(self.observation.as_ref()?.side, position, pointer)
+    }
+
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {
         if self.computer_action.is_some() { return Vec::new(); }
         self.game.attack_previews(from, to)
