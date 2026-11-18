@@ -77,6 +77,7 @@ fn prepare(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing [scenario] block"))?;
     let (tag, scenario) = &mut document.children[index];
 
+    let manual_victory_sides = crate::scenario_start::manual_victory_sides(scenario);
     let mut sides = Vec::new();
     for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
         let expected = sides.len() + 1;
@@ -117,7 +118,14 @@ fn prepare(
     scenario
         .children
         .extend(script.events.into_iter().map(|event| ("event".to_owned(), event)));
-    Ok((document, script.lua))
+    let mut lua = String::new();
+    if !manual_victory_sides.is_empty() {
+        let indices = manual_victory_sides.iter().map(|side| format!("[{side}]=true"))
+            .collect::<Vec<_>>().join(",");
+        lua.push_str(&format!("wesnoth.require('~add-ons/RustnothAudit/capture.lua').manual_victory_sides = {{{indices}}}\n"));
+    }
+    lua.push_str(&script.lua);
+    Ok((document, lua))
 }
 
 fn unique_block(bundle: &Node, name: &str) -> io::Result<Option<usize>> {

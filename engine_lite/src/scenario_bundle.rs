@@ -112,6 +112,37 @@ mod tests {
     use crate::fixed_match::Action;
 
     #[test]
+    fn campaign_victory_can_wait_for_an_explicit_objective() {
+        use crate::fixed_match::MatchState;
+        for (controller, expected) in [
+            ("human", MatchState::Playing(crate::turn::Turn { round: 1, side: 1 })),
+            ("ai", MatchState::Won(1)),
+        ] {
+            let config = format!(r#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+victory_when_enemies_defeated=no
+[side]
+type=Guard
+controller={controller}
+[/side]
+[side]
+no_leader=yes
+[/side]
+[/scenario]"#);
+            let bundle = Bundle::parse(config.as_bytes()).unwrap();
+            assert_eq!(bundle.start(1, |_| unreachable!()).unwrap().state(), expected);
+        }
+    }
+
+    #[test]
     fn a_parsed_bundle_starts_independent_matches() {
         let bundle = Bundle::parse(
             br#"
