@@ -411,6 +411,57 @@ mod tests {
     use super::*;
     use crate::{fixed_match::Action, scenario_bundle::Bundle, wml};
 
+    #[test]
+    fn side_filters_follow_the_turn_owner_independently_of_the_event_unit() {
+        let scenario = wml::parse(r#"
+[side]
+team_name=Knights
+[/side]
+[side]
+team_name=Allies,Scouts
+[/side]
+[event]
+name=capture
+[filter_side]
+side=1-3
+side_in=2
+team_name=Scouts
+[/filter_side]
+[gold]
+side=1
+amount=7
+[/gold]
+[filter]
+side=1
+[/filter]
+[/event]
+[event]
+name=capture
+[filter_side]
+controller=human
+[/filter_side]
+[gold]
+side=1
+amount=500
+[/gold]
+[/event]"#).unwrap();
+        let mut sides = crate::scenario_sides::read_sides(&scenario);
+        let mut gold = [0, 0];
+        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
+        let mut events = ScenarioEvents::read(&scenario, 2);
+        let capture = |side| ArrivingUnit { position: Hex { x: 0, y: 0 }, side, id: None, type_id: "Guard" };
+
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 0);
+        events.begin_turn(Turn { round: 1, side: 2 }, false, &mut state);
+        events.fire_for_unit("capture", capture(2), &mut state);
+        assert_eq!(state.gold[0], 0);
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 7);
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 7);
+    }
+
     fn event(name: &str, once: &str, side: &str, amount: &str) -> String {
         format!("[event]\nname={name}\nfirst_time_only={once}\n[gold]\nside={side}\namount={amount}\n[/gold]\n[/event]\n")
     }
@@ -714,57 +765,6 @@ type=Archer
         assert!(!actions.contains(&recruit("Guard", 4)));
         assert!(!actions.contains(&recruit("Scout Cavalry", 4)));
         game.step(recruit("Archer", 4)).unwrap();
-    }
-
-    #[test]
-    fn side_filters_follow_the_turn_owner_independently_of_the_event_unit() {
-        let scenario = wml::parse(r#"
-[side]
-team_name=Knights
-[/side]
-[side]
-team_name=Allies,Scouts
-[/side]
-[event]
-name=capture
-[filter_side]
-side=1-3
-side_in=2
-team_name=Scouts
-[/filter_side]
-[gold]
-side=1
-amount=7
-[/gold]
-[filter]
-side=1
-[/filter]
-[/event]
-[event]
-name=capture
-[filter_side]
-controller=human
-[/filter_side]
-[gold]
-side=1
-amount=500
-[/gold]
-[/event]"#).unwrap();
-        let mut sides = crate::scenario_sides::read_sides(&scenario);
-        let mut gold = [0, 0];
-        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
-        let mut events = ScenarioEvents::read(&scenario, 2);
-        let capture = |side| ArrivingUnit { position: Hex { x: 0, y: 0 }, side, id: None, type_id: "Guard" };
-
-        events.fire_for_unit("capture", capture(1), &mut state);
-        assert_eq!(state.gold[0], 0);
-        events.begin_turn(Turn { round: 1, side: 2 }, false, &mut state);
-        events.fire_for_unit("capture", capture(2), &mut state);
-        assert_eq!(state.gold[0], 0);
-        events.fire_for_unit("capture", capture(1), &mut state);
-        assert_eq!(state.gold[0], 7);
-        events.fire_for_unit("capture", capture(1), &mut state);
-        assert_eq!(state.gold[0], 7);
     }
 
     #[test]
