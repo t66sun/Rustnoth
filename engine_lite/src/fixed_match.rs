@@ -186,11 +186,19 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
+        self.with_events_at(None, handle)
+    }
+
+    fn with_events_at(&mut self, primary: Option<Hex>, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::HealUnit(heal) => {
+                    heal.apply(&mut self.scenario.board, primary);
+                    continue;
+                }
                 BoardChange::TurnLimit(change) => {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
@@ -479,7 +487,7 @@ impl<'data> FixedMatch<'data> {
         });
         let primary = context(position);
         let secondary = second.and_then(context);
-        self.with_events(|events, state| events.dispatch(name, primary, secondary, state))
+        self.with_events_at(Some(position), |events, state| events.dispatch(name, primary, secondary, state))
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> Result<bool, MatchError> {

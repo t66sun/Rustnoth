@@ -24,6 +24,8 @@ use crate::{
 
 mod attack;
 mod concealment;
+mod heal;
+pub(crate) use heal::HealUnit;
 mod recall_filter;
 mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
