@@ -17,7 +17,16 @@ pub struct BoardCamera {
 }
 
 impl BoardCamera {
-    pub fn fit(&mut self, viewport: Viewport, width: i32, height: i32, reset: bool) {
+    pub fn update(&mut self, viewport: Viewport, view: &engine_lite::observation::Observation, reset: bool) {
+        let opening = self.layout.is_none();
+        self.fit(viewport, view.width, view.height, reset);
+        if opening && !reset && let Some(layout) = self.layout.as_mut() {
+            let leader = view.units.iter().find(|unit| unit.side == view.side && unit.can_recruit);
+            *layout = layout.native_scale(leader.map(|unit| unit.position));
+        }
+    }
+
+    fn fit(&mut self, viewport: Viewport, width: i32, height: i32, reset: bool) {
         let fit = (viewport, width, height);
         if !reset && self.last_fit == Some(fit) {
             return;
@@ -52,6 +61,18 @@ impl BoardCamera {
         }
     }
 
+    /// Center the viewport on a point in map space, expressed in tile widths and heights.
+    pub fn center_world(&mut self, [x, y]: [f32; 2]) {
+        if let (Some((viewport, _, _)), Some(layout)) = (self.last_fit, self.layout.as_mut()) {
+            let [left, top] = layout.tile_origin(Hex { x: 0, y: 0 });
+            let size = layout.tile_size();
+            *layout = layout.panned([
+                viewport.x + viewport.width / 2.0 - left - size * x,
+                viewport.y + viewport.height / 2.0 - top - size * y,
+            ]);
+        }
+    }
+
     pub fn drag(&mut self, point: [f32; 2], pressed: bool, held: bool) {
         if !held {
             self.drag_position = None;
@@ -75,10 +96,7 @@ impl BoardCamera {
     }
 
     fn contains(&self, [x, y]: [f32; 2]) -> bool {
-        self.last_fit.is_some_and(|(viewport, _, _)| {
-            (viewport.x..viewport.x + viewport.width).contains(&x)
-                && (viewport.y..viewport.y + viewport.height).contains(&y)
-        })
+        self.last_fit.is_some_and(|(viewport, _, _)| viewport.contains([x, y]))
     }
 }
 
@@ -150,6 +168,19 @@ mod tests {
         camera.pan([-2_000.0, -2_000.0]);
         let [x, y] = camera.layout().unwrap().tile_origin(last);
         assert_eq!([x + 144.0, y + 144.0], [244.0, 252.0]);
+    }
+
+    #[test]
+    fn centering_a_minimap_point_keeps_the_zoom_and_places_its_hex_under_the_camera_center() {
+        let viewport = Viewport { x: 0.0, y: 20.0, width: 300.0, height: 240.0 };
+        let mut camera = BoardCamera::default();
+        camera.fit(viewport, 20, 20, false);
+        let center = [150.0, 140.0];
+        camera.scroll(center, WHEEL_STEP * 8.0);
+        let zoom = camera.layout().unwrap().tile_size();
+        camera.center_world([9.5, 7.5]);
+        assert_eq!(camera.hex_at(center), Some(Hex { x: 12, y: 7 }));
+        assert_eq!(camera.layout().unwrap().tile_size(), zoom);
     }
 
     #[test]
