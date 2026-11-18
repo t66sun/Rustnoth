@@ -88,8 +88,8 @@ pub fn project(
                 max_experience: unit.max_experience(),
                 poisoned: unit.poisoned,
                 slowed: unit.slowed,
-                moves_left: own.then_some(unit.moves_left),
-                attacks_left: own.then_some(unit.attacks_left),
+                moves_left: own.then_some(unit.movement_left()),
+                attacks_left: own.then_some(unit.attacks_left()),
             });
         }
     }

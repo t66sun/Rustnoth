@@ -53,7 +53,7 @@ impl Battlefield<'_> {
                 .find(|&direction| from.neighbor(direction) == Some(to))
                 .and_then(|direction| to.neighbor(direction))
                 .and_then(|opposite| self.unit_at(opposite))
-                .is_some_and(|flanker| enemy_of_defender(flanker.side))
+                .is_some_and(|flanker| !flanker.petrified && enemy_of_defender(flanker.side))
     }
 
     /// Lists available attacks in origin, target, then weapon-index order.
@@ -67,11 +67,11 @@ impl Battlefield<'_> {
     ) -> Vec<AttackChoice> {
         let mut choices = Vec::new();
         for (&from, attacker) in &self.units {
-            if attacker.side != active_side || attacker.attacks_left <= 0 {
+            if attacker.side != active_side || attacker.attacks_left() <= 0 {
                 continue;
             }
             for (&to, defender) in &self.units {
-                if defender.side == active_side || !is_enemy(defender.side) {
+                if defender.petrified || defender.side == active_side || !is_enemy(defender.side) {
                     continue;
                 }
                 let distance = from.distance(to) as i64;
@@ -112,10 +112,13 @@ impl Battlefield<'_> {
         let from = action.from;
         let to = action.to;
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
-        if attacker.side != active_side || attacker.attacks_left <= 0 {
+        if attacker.side != active_side || attacker.attacks_left() <= 0 {
             return Err(AttackError::AttackerUnavailable);
         }
         let defender = self.units.get(&to).ok_or(AttackError::MissingDefender)?;
+        if defender.petrified {
+            return Err(AttackError::PetrifiedTarget);
+        }
         if defender.side == active_side || !sides_are_enemies(active_side, defender.side) {
             return Err(AttackError::FriendlyTarget);
         }
@@ -279,6 +282,7 @@ pub enum AttackError {
     MissingAttacker,
     AttackerUnavailable,
     MissingDefender,
+    PetrifiedTarget,
     FriendlyTarget,
     UnavailableWeapon,
     UnavailableRetaliation,
@@ -290,6 +294,7 @@ impl fmt::Display for AttackError {
             Self::MissingAttacker => "attack origin has no unit",
             Self::AttackerUnavailable => "attack origin cannot act for this side",
             Self::MissingDefender => "attack target has no unit",
+            Self::PetrifiedTarget => "attack target is petrified",
             Self::FriendlyTarget => "attack target is friendly",
             Self::UnavailableWeapon => "attacking weapon is missing or out of range",
             Self::UnavailableRetaliation => "retaliation weapon is missing or has the wrong range",
@@ -363,8 +368,9 @@ mod tests {
         types.get_mut("Fighter").unwrap().attacks[0] = weapon(special);
         let from = Hex { x: 0, y: 1 };
         let to = Hex { x: 0, y: 2 };
-        for (opposite_side, defender_hp) in [
-            (None, 7), (Some(2), 7), (Some(1), 4), (Some(3), 4), (Some(4), 7),
+        for (opposite_side, petrified, defender_hp) in [
+            (None, false, 7), (Some(2), false, 7), (Some(1), false, 4), (Some(3), false, 4),
+            (Some(4), false, 7), (Some(1), true, 7),
         ] {
             let map = ScenarioMap::parse(
                 "Xv,Xv,Xv\nXv,Gg,Xv\nXv,1 Gg,Xv\nXv,2 Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
@@ -375,7 +381,9 @@ mod tests {
             // A defender with an ally behind the attacker still retaliates for base damage.
             board.place_recruit(2, "Fighter", Hex { x: 0, y: 0 }).unwrap();
             if let Some(side) = opposite_side {
-                board.place_recruit(side, "Fighter", Hex { x: 0, y: 3 }).unwrap();
+                let opposite = Hex { x: 0, y: 3 };
+                board.place_recruit(side, "Fighter", opposite).unwrap();
+                board.units.get_mut(&opposite).unwrap().petrified = petrified;
             }
             let result = board.apply_attack_with_relations(
                 1, Attack { from, to, ..attack(0) },

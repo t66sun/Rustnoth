@@ -94,8 +94,8 @@ impl FixedMatch<'_> {
                     side: unit.side,
                     type_id: unit.unit_type.id.clone(),
                     hitpoints: unit.hitpoints,
-                    moves_left: unit.moves_left,
-                    attacks_left: unit.attacks_left,
+                    moves_left: unit.movement_left(),
+                    attacks_left: unit.attacks_left(),
                     can_recruit: unit.can_recruit,
                     experience: unit.experience,
                     slowed: unit.slowed,
@@ -182,6 +182,67 @@ mod tests {
             "unit\t3\t2\t2\tFighter\t8\t3\t1\t0\t0\nvillage\t1\t1\t1\n",
             "view\t2\t1\tFVS\nview\t2\t2\tSSV\nseen\t2\t2,1\t3,2\nend\t4\n",
         ).as_bytes());
+    }
+
+    #[test]
+    fn statues_cannot_move_or_fight_and_keep_zero_usable_points_across_turns() {
+        let bundle = Bundle::parse(br#"
+[terrain_type]
+    string=Gg
+    id=flat
+[/terrain_type]
+[units]
+    [unit_type]
+        id=Guard
+        movement=5
+        hitpoints=16
+        [movement_costs]
+            flat=1
+        [/movement_costs]
+        [attack]
+            range=melee
+            damage=2
+            number=1
+        [/attack]
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+    [side]
+        side=1
+        type=Guard
+    [/side]
+    [side]
+        side=2
+        type=Guard
+        [status]
+            petrified=yes
+        [/status]
+    [/side]
+[/scenario]"#).unwrap();
+        let mut game = bundle.start(22, |_| unreachable!()).unwrap();
+        let west = Hex { x: 0, y: 0 };
+        let east = Hex { x: 1, y: 0 };
+        let attack = |from, to| Action::Attack(AttackChoice { from, to, weapon: 0 });
+        for _ in 0..2 {
+            assert!(!game.decision().unwrap().1.contains(&attack(west, east)));
+            let opening = game.audit_snapshot();
+            assert_eq!(game.step(attack(west, east)), Err(MatchError::Attack(AttackError::PetrifiedTarget)));
+            assert_eq!(opening, game.audit_snapshot());
+            game.step(Action::EndTurn).unwrap();
+            let (view, actions) = game.decision().unwrap();
+            assert_eq!(actions, [Action::EndTurn]);
+            let statue = view.units.iter().find(|unit| unit.position == east).unwrap();
+            assert_eq!((statue.moves_left, statue.attacks_left), (Some(0), Some(0)));
+            let before = game.audit_snapshot();
+            assert_eq!((before.units[1].moves_left, before.units[1].attacks_left), (0, 0));
+            assert_eq!(game.step(attack(east, west)), Err(MatchError::Attack(AttackError::AttackerUnavailable)));
+            assert!(game.step(Action::Move { from: east, to: Hex { x: 2, y: 0 } }).is_err());
+            assert_eq!(before, game.audit_snapshot());
+            game.step(Action::EndTurn).unwrap();
+        }
     }
 
     #[test]
