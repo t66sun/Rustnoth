@@ -14,6 +14,7 @@ pub enum Players {
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
+    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     computer_action: Option<Action>,
     observation: Option<Observation>,
@@ -27,7 +28,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
+            dialogue: Default::default(), game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
         session
@@ -50,10 +51,22 @@ impl<'rules> Session<'rules> {
                 self.observation = self.game.observation_for(viewer);
             }
         }
+        if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
+            self.dialogue.extend(self.game.take_dialogue(viewer));
+        }
+    }
+
+    pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
+        self.dialogue.front()
+    }
+
+    pub fn dismiss_dialogue(&mut self) {
+        self.dialogue.pop_front();
     }
 
     /// Apply at most one computer command per desktop frame.
     pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
+        if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
         match self.game.step(action.clone()) {
             Ok(_) => {}
@@ -110,7 +123,7 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
-        if self.computer_action.is_some() {
+        if self.computer_action.is_some() || self.dialogue().is_some() {
             return Err(MatchError::ActionUnavailable);
         }
         let state = match action {
@@ -150,6 +163,85 @@ fn computer_choice(view: &Observation, actions: &[Action]) -> Action {
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn shows_only_the_human_viewers_messages_in_authored_order() {
+        let bundle = Bundle::parse(br#"
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=0
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+id=captain
+name=Captain Arin
+profile=portraits/captain.webp
+fog=yes
+[/side]
+[side]
+type=Guard
+id=bandit
+[/side]
+[event]
+name=start
+[message]
+speaker=narrator
+side_for=2
+message=Second side only
+[/message]
+[message]
+speaker=bandit
+message=Hidden enemy
+[/message]
+[message]
+speaker=narrator
+image=wesnoth-icon.png
+message=On arrival
+[/message]
+[message]
+speaker=captain
+message=Defend the fort
+[/message]
+[/event]
+[event]
+name=side 2 turn
+[message]
+speaker=narrator
+side_for=2
+message=Enemy orders
+[/message]
+[message]
+speaker=narrator
+side_for=1
+message=Nightfall
+[/message]
+[/event]
+[/scenario]"#).unwrap();
+        let mut session = Session::with_players(bundle.start(1, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        let line = session.dialogue().unwrap();
+        assert_eq!(line.text, "On arrival");
+        assert_eq!(line.image.as_deref(), Some("wesnoth-icon.png"));
+        assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
+        session.dismiss_dialogue();
+        let line = session.dialogue().unwrap();
+        assert_eq!(line.text, "Defend the fort");
+        assert_eq!(line.caption.as_deref(), Some("Captain Arin"));
+        assert_eq!(line.image.as_deref(), Some("portraits/captain.webp"));
+        session.dismiss_dialogue();
+        assert!(session.dialogue().is_none());
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.dialogue().unwrap().text, "Nightfall");
+        assert!(!session.play_computer_action().unwrap());
+        session.dismiss_dialogue();
+        assert!(session.play_computer_action().unwrap());
+    }
 
     #[test]
     fn computer_recruits_or_scouts_when_no_enemy_is_visible() {
