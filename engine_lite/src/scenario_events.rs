@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::{scenario_sides::SideConfig, turn::Turn, wml::Node};
+use crate::{
+    hex::Hex, scenario_sides::SideConfig, scenario_time::coordinate_ranges,
+    time_of_day::WmlRectangle, turn::Turn, wml::Node,
+};
 
 #[derive(Debug)]
 enum SideAction {
@@ -66,9 +69,55 @@ impl EventAction {
 }
 
 #[derive(Debug)]
+struct UnitFilter {
+    locations: Vec<WmlRectangle>,
+    sides: Vec<usize>,
+    ids: Vec<String>,
+    types: Vec<String>,
+}
+
+impl UnitFilter {
+    fn read(cfg: &Node) -> Option<Self> {
+        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+            !matches!(key.as_str(), "x" | "y" | "side" | "id" | "type")
+                || !value.translations.is_empty() || value.text.contains('$')
+        }) {
+            return None;
+        }
+        let values = |key| cfg.attribute(key).unwrap_or_default().split(',')
+            .map(str::trim).filter(|item| !item.is_empty());
+        let x = cfg.attribute("x").unwrap_or_default();
+        let y = cfg.attribute("y").unwrap_or_default();
+        let locations = coordinate_ranges(x, y, i32::MAX, i32::MAX);
+        Some(Self {
+            locations,
+            sides: values("side").map(str::parse).collect::<Result<_, _>>().ok()?,
+            ids: values("id").map(str::to_owned).collect(),
+            types: values("type").map(str::to_owned).collect(),
+        })
+    }
+
+    fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
+        let Some((x, y)) = unit.position.to_wml() else { return false };
+        (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
+            && (self.sides.is_empty() || self.sides.contains(&unit.side))
+            && (self.ids.is_empty() || unit.id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
+            && (self.types.is_empty() || self.types.iter().any(|id| id == unit.type_id))
+    }
+}
+
+pub(crate) struct ArrivingUnit<'a> {
+    pub(crate) position: Hex,
+    pub(crate) side: usize,
+    pub(crate) id: Option<&'a str>,
+    pub(crate) type_id: &'a str,
+}
+
+#[derive(Debug)]
 struct Handler {
     names: Vec<String>,
     once: bool,
+    filters: Vec<UnitFilter>,
     changes: Vec<EventAction>,
 }
 
@@ -94,7 +143,10 @@ impl ScenarioEvents {
                 continue;
             }
             let Some(names) = event.attribute("name") else { continue };
-            let Some(changes) = event.children.iter().map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
+            let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
+                .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
+            let Some(changes) = event.children.iter().filter(|(tag, _)| tag != "filter")
+                .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
             let once = match event.attribute("first_time_only").unwrap_or("yes") {
                 "yes" | "true" | "1" => true,
@@ -104,6 +156,7 @@ impl ScenarioEvents {
             handlers.push(Handler {
                 names: names.split(',').map(|name| name.trim().replace(' ', "_")).collect(),
                 once,
+                filters,
                 changes,
             });
         }
@@ -114,8 +167,18 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
+        self.dispatch(name, None, state);
+    }
+
+    pub(crate) fn moveto(&mut self, arrival: ArrivingUnit<'_>, state: &mut EventState<'_>) {
+        self.dispatch("moveto", Some(arrival), state);
+    }
+
+    fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
         self.handlers.retain(|handler| {
-            if !handler.names.iter().any(|n| n == name) {
+            if !handler.names.iter().any(|n| n == name)
+                || !handler.filters.iter().all(|f| unit.as_ref().is_some_and(|u| f.matches(u)))
+            {
                 return true;
             }
             for change in &handler.changes {
