@@ -184,7 +184,15 @@ impl<'data> FixedMatch<'data> {
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) {
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, captures: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
-        for capture in state.captures {
+        for change in state.captures {
+            let capture = match change {
+                crate::scenario_events::MapChange::Terrain { position, code } => {
+                    self.scenario.board.replace_terrain(position, &code);
+                    if !self.rules.terrain.features(&code).village { self.village_owners.remove(&position); }
+                    continue;
+                }
+                crate::scenario_events::MapChange::Capture(capture) => capture,
+            };
             let owner = usize::try_from(capture.side).ok().filter(|s| (1..=self.side_order.len()).contains(s));
             if owner.is_some_and(|side| !self.side_survives(side)) {
                 continue;

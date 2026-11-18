@@ -107,6 +107,13 @@ impl ScenarioMap {
         Some(&self.terrain[row * self.columns as usize + column])
     }
 
+    pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
+        if self.is_playable(hex) {
+            let index = ((hex.y + BORDER) * self.columns + hex.x + BORDER) as usize;
+            self.terrain[index] = code.into();
+        }
+    }
+
     /// Finds the first occurrence of a starting side number or named location.
     pub fn special_location(&self, id: &str) -> Option<Hex> {
         self.special_locations.get(id).copied()
