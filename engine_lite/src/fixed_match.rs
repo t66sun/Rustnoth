@@ -131,9 +131,7 @@ impl<'data> FixedMatch<'data> {
         }
         let mut game = Self {
             current_round: scenario.start_round,
-            vision: scenario.sides.iter().map(|side|
-                VisibilityMask::new(map.width(), map.height(), side.fog, side.shroud)
-            ).collect(),
+            vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
                 side: 1,
@@ -146,7 +144,7 @@ impl<'data> FixedMatch<'data> {
             gold,
         };
         for side in 1..=side_count {
-            game.refog(side);
+            game.update_side_sight(side, false);
         }
         game.check_leaders();
         if let MatchState::Playing(turn) = game.state {
@@ -156,6 +154,7 @@ impl<'data> FixedMatch<'data> {
                 game.settle_income(turn);
                 game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
+                game.refog(turn.side);
             }
         }
         Ok(game)
