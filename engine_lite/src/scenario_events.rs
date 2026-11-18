@@ -411,15 +411,19 @@ impl ScenarioEvents {
                 "no" | "false" | "0" => false,
                 _ => continue,
             };
-            handlers.push(Handler {
+            let priority = event.attribute("priority").and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|value| value.is_finite()).unwrap_or(0.0);
+            handlers.push((priority, Handler {
                 names: names.split(',').map(|name| name.trim().replace(' ', "_")).collect(),
                 once,
                 filters,
                 changes,
-            });
+            }));
         }
+        // Equal priorities retain registration order.
+        handlers.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
         Self {
-            handlers,
+            handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
             active_side: 1,
             new_round_at_start: !matches!(scenario.attribute("it_is_a_new_turn"), Some("no" | "false" | "0")),
         }
@@ -542,6 +546,25 @@ amount=500
 
     fn event(name: &str, once: &str, side: &str, amount: &str) -> String {
         format!("[event]\nname={name}\nfirst_time_only={once}\n[gold]\nside={side}\namount={amount}\n[/gold]\n[/event]\n")
+    }
+
+    #[test]
+    fn higher_priority_handlers_run_first_and_equal_priorities_keep_document_order() {
+        let mut source = String::from("[side]\nrecruit=Guard\n[/side]\n");
+        for (priority, tag, kind) in [
+            ("-1", "disallow_recruit", "Archer"),
+            ("0", "allow_recruit", "Scout"),
+            ("0", "disallow_recruit", "Scout"),
+            ("2.5", "allow_recruit", "Archer"),
+        ] {
+            source.push_str(&format!("[event]\nname=start\npriority={priority}\n[{tag}]\ntype={kind}\n[/{tag}]\n[/event]\n"));
+        }
+        let config = wml::parse(source).unwrap();
+        let mut events = ScenarioEvents::read(&config, 1);
+        let mut sides = crate::scenario_sides::read_sides(&config);
+        let mut gold = [0];
+        events.fire("start", &mut EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() });
+        assert_eq!(sides[0].recruits, BTreeSet::from(["Guard".into()]));
     }
 
     #[test]
