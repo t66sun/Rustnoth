@@ -124,6 +124,11 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {
+        if self.computer_action.is_some() { return Vec::new(); }
+        self.game.attack_previews(from, to)
+    }
+
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
         if self.computer_action.is_some() { return Vec::new(); }
         self.game.advancement_choices(position)
