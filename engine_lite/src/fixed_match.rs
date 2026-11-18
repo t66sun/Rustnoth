@@ -202,6 +202,10 @@ impl<'data> FixedMatch<'data> {
                     continue;
                 }
                 BoardChange::CaptureVillage(capture) => capture,
+                BoardChange::TimeArea(area) => {
+                    area.apply(&mut self.scenario.schedule, self.current_round);
+                    continue;
+                }
                 BoardChange::Schedule { entries, current_time } => {
                     self.scenario.schedule.replace_global(entries, self.current_round, current_time);
                     continue;
