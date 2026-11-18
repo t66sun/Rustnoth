@@ -222,15 +222,17 @@ impl<'data> FixedMatch<'data> {
                     }
                     continue;
                 }
-                BoardChange::Terrain { locations, code } => {
+                BoardChange::Terrain { locations, code, layer, fallback } => {
                     let map = self.scenario.board.map();
                     let (width, height) = (map.width(), map.height());
-                    let village = self.rules.terrain.features(&code).village;
                     for (xs, ys) in locations {
                         for x in (*xs.start()).max(1)..=(*xs.end()).min(width) {
                             for y in (*ys.start()).max(1)..=(*ys.end()).min(height) {
                                 let position = Hex { x: x - 1, y: y - 1 };
-                                self.scenario.board.replace_terrain(position, &code);
+                                let old = self.scenario.board.map().terrain_at(position).expect("clipped map location");
+                                let Some(merged) = self.rules.terrain.merge_terrain(old, &code, layer, fallback) else { continue };
+                                let village = self.rules.terrain.features(&merged).village;
+                                self.scenario.board.replace_terrain(position, &merged);
                                 if !village { self.village_owners.remove(&position); }
                             }
                         }
