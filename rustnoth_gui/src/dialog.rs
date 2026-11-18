@@ -11,7 +11,7 @@ pub const PALE: Color = Color::from_rgba(241, 236, 220, 255);
 pub const MUTED: Color = Color::from_rgba(194, 197, 177, 255);
 pub const WARNING: Color = Color::from_rgba(252, 185, 143, 255);
 
-fn setup_camera(width: f32, height: f32) -> Camera2D {
+pub(super) fn setup_camera(width: f32, height: f32) -> Camera2D {
     Camera2D {
         target: vec2(width * 0.5, height * 0.5),
         zoom: vec2(2.0 / width, 2.0 / height),
