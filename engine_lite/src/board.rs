@@ -101,7 +101,7 @@ impl UnitState<'_> {
         base.saturating_add(3 * i32::from(self.default_amlas))
     }
 
-    fn emits_zoc(&self) -> bool {
+    pub(crate) fn emits_zoc(&self) -> bool {
         !self.petrified && self.traits.as_ref().map_or(self.unit_type.emits_zoc, |t| t.stats.emits_zoc)
     }
 

@@ -66,6 +66,8 @@ pub struct BoardArt {
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    ellipse_colors: Option<TeamColors>,
+    ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
@@ -113,6 +115,8 @@ impl BoardArt {
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
+            ellipse_colors: palette(TeamColors::parse_ellipses),
+            ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
             flag_colors: palette(TeamColors::parse_flags),
             flags: BTreeMap::new(),
@@ -161,6 +165,17 @@ impl BoardArt {
             });
         }
         for unit in &observation.units {
+            if let Some(prefix) = assets.ellipse_prefix(&unit.type_id) {
+                for selected in [false, true] {
+                    let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
+                    self.ellipses.entry(prefix.to_owned()).or_default().entry(key).or_insert_with(|| {
+                        ellipse_files(prefix, unit.can_recruit, unit.emits_zoc, selected).map(|file| {
+                            let path = assets.resolve_image(Path::new(&file))?;
+                            load_texture(&path, self.ellipse_colors.as_ref().map(|colors| (colors, unit.side)))
+                        })
+                    });
+                }
+            }
             self.units
                 .entry(unit.type_id.clone())
                 .or_default()
@@ -518,7 +533,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
-        draw_ellipse(center.x, center.y + size * 0.24, size * 0.23, size * 0.10, 0.0, marker);
+        if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
+            let selected = movement.selected == Some(unit.position);
+            let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
+            if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
+                for texture in halves.iter().flatten() { draw_centered(texture, center, size); }
+            }
+        }
         let texture = art
             .units
             .get(&unit.type_id)
@@ -555,6 +576,26 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     draw_cover(layout, art);
+}
+
+fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
+    let leader = if leader { "leader-" } else { "" };
+    let zoc = if zoc { "" } else { "nozoc-" };
+    let selected = if selected { "selected-" } else { "" };
+    ["top", "bottom"].map(|half| format!("{prefix}-{leader}{zoc}{selected}{half}.png"))
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    use super::ellipse_files;
+
+    #[test]
+    fn picks_the_original_selected_leader_halves_and_non_zoc_variant() {
+        assert_eq!(ellipse_files("misc/ellipse-hero", true, false, true),
+            ["misc/ellipse-hero-leader-nozoc-selected-top.png", "misc/ellipse-hero-leader-nozoc-selected-bottom.png"]);
+        assert_eq!(ellipse_files("misc/ellipse", false, true, false),
+            ["misc/ellipse-top.png", "misc/ellipse-bottom.png"]);
+    }
 }
 
 fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {

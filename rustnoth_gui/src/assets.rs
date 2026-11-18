@@ -22,6 +22,7 @@ struct UnitAssets {
     portrait: Option<PathBuf>,
     name: Option<String>,
     weapon_names: Vec<Option<String>>,
+    ellipse: String,
 }
 
 impl AssetCatalog {
@@ -54,6 +55,11 @@ impl AssetCatalog {
         catalog.fallback = wesnoth_root.join("data/core/images");
         catalog.read_definitions(&document);
         Ok(catalog)
+    }
+
+    pub fn ellipse_prefix(&self, id: &str) -> Option<&str> {
+        let prefix = self.units.get(id)?.ellipse.as_str();
+        (prefix != "none" && safe_relative_path(Path::new(prefix))).then_some(prefix)
     }
 
     /// Returns the original sprite path of a unit type.
@@ -127,6 +133,7 @@ impl AssetCatalog {
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
+                            ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
                             weapon_names: unit
                                 .children
                                 .iter()
