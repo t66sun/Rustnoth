@@ -13,7 +13,13 @@ pub struct StartingUnit {
 }
 
 pub(crate) struct AuthoredStartingUnit {
-    pub(crate) placement: StartingUnit,
+    pub(crate) side: usize,
+    pub(crate) id: Option<String>,
+    pub(crate) type_id: String,
+    /// None places the unit in its side's recall list.
+    pub(crate) position: Option<Hex>,
+    pub(crate) can_recruit: bool,
+    pub(crate) recall_cost: Option<i32>,
     pub(crate) upkeep: Option<Upkeep>,
     pub(crate) traits: Vec<Node>,
     pub(crate) default_amlas: u8,
@@ -32,14 +38,20 @@ pub(crate) struct AuthoredStartingUnit {
 ///
 /// Each side contributes its inline leader, then its `[leader]` children,
 /// then its `[unit]` children. The owning side comes from the roster order.
-/// The fixed placement path reports requests that need recall or relocation.
+/// Units destined for a side's recall list have no map position and are omitted.
 pub fn read_starting_units(
     scenario: &Node,
     map: &ScenarioMap,
 ) -> Result<Vec<StartingUnit>, PlacementError> {
     Ok(read_authored_starting_units(scenario, map)?
         .into_iter()
-        .map(|unit| unit.placement)
+        .filter_map(|unit| Some(StartingUnit {
+            position: unit.position?,
+            side: unit.side,
+            id: unit.id,
+            type_id: unit.type_id,
+            can_recruit: unit.can_recruit,
+        }))
         .collect())
 }
 
@@ -75,11 +87,13 @@ pub(crate) fn read_authored_starting_units(
 
             let can_recruit = nonempty(unit, "canrecruit").map_or(leader, wml_true);
             let position = fixed_position(unit, map, side, leader, leader_hex, type_id)?;
-            if !occupied.insert(position) {
-                return Err(PlacementError::Occupied { side, position });
-            }
-            if can_recruit && leader_hex.is_none() {
-                leader_hex = Some(position);
+            if let Some(hex) = position {
+                if !occupied.insert(hex) {
+                    return Err(PlacementError::Occupied { side, position: hex });
+                }
+                if can_recruit && leader_hex.is_none() {
+                    leader_hex = Some(hex);
+                }
             }
             let status = children_named(unit, "status").next();
             let has_status = |name: &str| {
@@ -87,13 +101,13 @@ pub(crate) fn read_authored_starting_units(
                     .is_some_and(|value| value.translations.is_empty() && wml_true(&value.text))
             };
             result.push(AuthoredStartingUnit {
-                placement: StartingUnit {
-                    side,
-                    id: id.map(str::to_owned),
-                    type_id: type_id.to_owned(),
-                    position,
-                    can_recruit,
-                },
+                side,
+                id: id.map(str::to_owned),
+                type_id: type_id.to_owned(),
+                position,
+                can_recruit,
+                // team_builder strips side attributes, including recall_cost, from leaders.
+                recall_cost: if leader { None } else { integer(unit, "recall_cost") },
                 upkeep: Upkeep::from_wml(unit),
                 traits: children_named(unit, "modifications")
                     .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
@@ -136,20 +150,14 @@ fn fixed_position(
     leader: bool,
     leader_hex: Option<Hex>,
     type_id: &str,
-) -> Result<Hex, PlacementError> {
-    if unit.attribute("passable").is_some_and(wml_true) {
-        return Err(PlacementError::Unsupported {
-            side,
-            directive: "passable=yes".to_owned(),
-        });
-    }
-
+) -> Result<Option<Hex>, PlacementError> {
     let placement = nonempty(unit, "placement").unwrap_or(if leader { "map,leader" } else { "" });
     let places = placement.split(',').map(str::trim).filter(|s| !s.is_empty());
     for place in places.chain(std::iter::once("map")) {
         let candidate = match place {
             "map" => map_target(unit, map),
             "leader" => leader_hex.or_else(|| map.special_location(&side.to_string())),
+            "recall" => return Ok(None),
             _ => {
                 return Err(PlacementError::Unsupported {
                     side,
@@ -158,8 +166,17 @@ fn fixed_position(
             }
         };
         if let Some(position) = candidate.filter(|&hex| map.is_playable(hex)) {
-            return Ok(position);
+            if unit.attribute("passable").is_some_and(wml_true) {
+                return Err(PlacementError::Unsupported {
+                    side,
+                    directive: "passable=yes".to_owned(),
+                });
+            }
+            return Ok(Some(position));
         }
+    }
+    if ["x", "y"].iter().all(|key| unit.attribute(key).map(str::trim) == Some("recall")) {
+        return Ok(None);
     }
     Err(PlacementError::NoPlayableLocation {
         side,
@@ -303,16 +320,19 @@ mod tests {
     }
 
     #[test]
-    fn reports_placements_that_need_the_recall_queue() {
-        let scenario = wml::parse(
-            "[side]\n[unit]\ntype=Spearman\nplacement=recall\nx,y=1,1\n[/unit]\n[/side]",
-        )
-        .unwrap();
+    fn tries_placement_directives_in_order_before_storing_a_reserve() {
+        let scenario = |placement: &str, coordinates: &str| wml::parse(format!(
+            "[side]\n[unit]\ntype=Spearman\nplacement={placement}\nx,y={coordinates}\n[/unit]\n[/side]",
+        )).unwrap();
+        for (placement, coordinates) in [("recall,map", "1,1"), ("map,recall", "0,1"), ("map", "recall,recall")] {
+            assert!(read_starting_units(&scenario(placement, coordinates), &map()).unwrap().is_empty());
+        }
+        assert_eq!(read_starting_units(&scenario("map,recall", "1,1"), &map()).unwrap().len(), 1);
         assert_eq!(
-            read_starting_units(&scenario, &map()),
+            read_starting_units(&scenario("map_passable,recall", "1,1"), &map()),
             Err(PlacementError::Unsupported {
                 side: 1,
-                directive: "recall".to_owned(),
+                directive: "map_passable".to_owned(),
             })
         );
     }
