@@ -7,14 +7,14 @@ use crate::wml::Node;
 const UNREACHABLE: u32 = 99;
 const MAX_ALIAS_DEPTH: usize = 100;
 
-/// A movetype's configured walking costs, keyed by WML terrain id.
+/// Walking or vision costs keyed by WML terrain id.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct MovementCosts {
     costs: BTreeMap<String, u32>,
 }
 
 impl MovementCosts {
-    /// Read the contents of a preprocessed `[movement_costs]` tag.
+    /// Read the contents of a preprocessed terrain cost table.
     pub fn from_wml(table: &Node) -> Self {
         Self::from_wml_tables([table])
     }
@@ -45,7 +45,6 @@ impl MovementCosts {
         self.cost_with_fallback(aliases, code, slowed, None)
     }
 
-    /// Inherit missing terrain IDs before applying the terrain's aliases.
     pub(crate) fn cost_with_fallback(
         &self,
         aliases: &TerrainAliases,
@@ -53,19 +52,27 @@ impl MovementCosts {
         slowed: bool,
         fallback: Option<&Self>,
     ) -> Option<NonZeroU32> {
-        let base = self.base_cost(aliases, code, &mut Vec::new(), fallback);
-        if base == UNREACHABLE {
-            return None;
-        }
-        NonZeroU32::new(if slowed { 2 * base } else { base })
+        let cost = Self::layered_cost(aliases, code, slowed, &[Some(self), fallback]);
+        (cost.get() != UNREACHABLE).then_some(cost)
+    }
+
+    /// Resolve each alias leaf against the tables in order of precedence.
+    pub(crate) fn layered_cost(
+        aliases: &TerrainAliases,
+        code: &str,
+        slowed: bool,
+        layers: &[Option<&Self>],
+    ) -> NonZeroU32 {
+        let base = Self::base_cost(aliases, code, &mut Vec::new(), layers);
+        let cost = if slowed && base != UNREACHABLE { 2 * base } else { base };
+        NonZeroU32::new(cost).expect("terrain costs are at least one")
     }
 
     fn base_cost<'a>(
-        &self,
         aliases: &'a TerrainAliases,
         code: &'a str,
         ancestors: &mut Vec<&'a str>,
-        fallback: Option<&Self>,
+        layers: &[Option<&Self>],
     ) -> u32 {
         if ancestors.len() > MAX_ALIAS_DEPTH || ancestors.contains(&code) {
             return UNREACHABLE;
@@ -74,7 +81,8 @@ impl MovementCosts {
         if terms.is_empty() || terms.as_slice() == [AliasTerm::Terrain(code)] {
             return aliases
                 .terrain_id(code)
-                .and_then(|id| self.costs.get(id).or_else(|| fallback?.costs.get(id)).copied())
+                .and_then(|id| layers.iter().flatten().find_map(|table| table.costs.get(id)))
+                .copied()
                 .unwrap_or(UNREACHABLE);
         }
 
@@ -90,7 +98,7 @@ impl MovementCosts {
                 AliasTerm::Best => prefer_worst = false,
                 AliasTerm::Worst => prefer_worst = true,
                 AliasTerm::Terrain(terrain) => {
-                    let next = self.base_cost(aliases, terrain, ancestors, fallback);
+                    let next = Self::base_cost(aliases, terrain, ancestors, layers);
                     cost = if prefer_worst {
                         cost.max(next)
                     } else {

@@ -85,6 +85,12 @@ impl UnitState<'_> {
         self.traits.as_ref().map_or(self.unit_type.movement, |traits| traits.stats.max_movement)
     }
 
+    /// Sight points before terrain costs, independent of moves left this turn.
+    pub fn vision_range(&self) -> u32 {
+        let vision = self.traits.as_ref().map_or(self.unit_type.vision, |traits| traits.stats.vision);
+        if vision < 0 { self.max_movement().max(0) as u32 } else { vision as u32 }
+    }
+
     pub fn max_experience(&self) -> i32 {
         self.traits.as_ref().map_or(self.base_max_experience, |traits| traits.stats.max_experience)
     }
@@ -557,6 +563,44 @@ mod tests {
     }
 
     #[test]
+    fn sight_uses_vision_and_walking_tables_at_each_terrain_alias_leaf() {
+        use crate::{fixed_match::Rules, movement_types::read_movement_types};
+
+        let falconer = UnitType::from_wml(wml::parse(
+            "id=Dune Falconer\nmovement_type=duneelusivefoot\nmovement=6\nvision=8\n\
+             [movement_costs]\ndeep_water=99\nhills=5\nforest=4\n[/movement_costs]\n\
+             [vision_costs]\ndeep_water=1\n[/vision_costs]",
+        ).unwrap());
+        let types = BTreeMap::from([(falconer.id.clone(), falconer)]);
+        let mut board = Battlefield::new(map(), Vec::new(), &types).unwrap();
+        board.place_recruit(1, "Dune Falconer", EAST).unwrap();
+        let movement = read_movement_types(&wml::parse(
+            "[movetype]\nname=duneelusivefoot\n\
+             [movement_costs]\nflat=2\nforest=90\n[/movement_costs]\n\
+             [vision_costs]\nhills=3\ndeep_water=7\n[/vision_costs]\n[/movetype]",
+        ).unwrap());
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nid=deep_water\nstring=Wo\n[/terrain_type]\n\
+             [terrain_type]\nid=hills\nstring=Hh\n[/terrain_type]\n\
+             [terrain_type]\nid=forest\nstring=Ft\n[/terrain_type]\n\
+             [terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+             [terrain_type]\nstring=Mx\nmvt_alias=\"-,Wo,Hh,Ft,Gg\"\n[/terrain_type]",
+        ).unwrap());
+        let resistance = BTreeMap::new();
+        let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+        let unit = board.units.get_mut(&EAST).unwrap();
+        assert_eq!(unit.moves_left, 0);
+        assert_eq!(unit.vision_range(), 8);
+        for (code, cost) in [("Wo", 1), ("Hh", 3), ("Ft", 4), ("Gg", 2), ("Mx", 4)] {
+            assert_eq!(rules.sight_cost(unit, code).get(), cost, "{code}");
+        }
+        unit.slowed = true;
+        assert_eq!(unit.vision_range(), 8);
+        assert_eq!(rules.sight_cost(unit, "Mx").get(), 8);
+        assert_eq!(rules.sight_cost(unit, "Xu").get(), 99);
+    }
+
+    #[test]
     fn advancing_to_a_new_type_cures_poison() {
         let mut types = types();
         types.get_mut("Spearman").unwrap().advances_to.push("Pikeman".into());
@@ -617,6 +661,7 @@ mod tests {
             let unit = board.unit_at(position).unwrap();
             assert_eq!((unit.hitpoints, unit.moves_left), (hp, moves));
             assert_eq!((unit.max_hitpoints(), unit.max_movement()), (13, 5));
+            assert_eq!(unit.vision_range(), 5);
             assert_eq!(unit.traits().map(|t| t.attribute("id")).collect::<Vec<_>>(), [Some("sturdy")]);
         }
     }
@@ -662,6 +707,7 @@ mod tests {
 
         board.place_recruit(2, "Spearman", EAST).unwrap();
         let recruit = board.unit_at(EAST).unwrap();
+        assert_eq!(recruit.vision_range(), 5);
         assert_eq!(recruit.side, 2);
         assert!(recruit.id.is_none());
         assert!(std::ptr::eq(recruit.unit_type, &unit_types["Spearman"]));
