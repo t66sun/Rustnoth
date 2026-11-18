@@ -53,6 +53,7 @@ pub struct UnitState<'rules> {
     pub poisoned: bool,
     pub petrified: bool,
     unpetrifiable: bool,
+    unhealable: bool,
     pub(crate) unplagueable: bool,
     pub(crate) undead_variation: Option<String>,
     pub(crate) experience: i32,
@@ -170,6 +171,7 @@ impl<'rules> Battlefield<'rules> {
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
+            unhealable: false,
             unplagueable: false,
             undead_variation: None,
             slowed: false,
@@ -215,6 +217,7 @@ impl<'rules> Battlefield<'rules> {
             poisoned,
             petrified,
             unpetrifiable,
+            unhealable,
             unplagueable,
             undead_variation,
             slowed,
@@ -247,6 +250,7 @@ impl<'rules> Battlefield<'rules> {
                 poisoned,
                 petrified,
                 unpetrifiable,
+                unhealable,
                 unplagueable,
                 undead_variation,
                 experience,
@@ -420,6 +424,7 @@ impl<'rules> Battlefield<'rules> {
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
+            unhealable: false,
             experience: 0,
             unplagueable: false,
             undead_variation: None,
@@ -707,6 +712,9 @@ impl<'rules> Battlefield<'rules> {
             }
         }
         for (&hex, unit) in &mut self.units {
+            if unit.petrified || unit.unhealable || unit.traits.as_ref().is_some_and(|t| t.stats.unhealable) {
+                continue;
+            }
             let active = unit.side == side;
             let treatment = treatments.remove(&hex).unwrap_or_default();
             let (terrain_healing, regeneration) = if active {
@@ -925,6 +933,7 @@ mod tests {
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
+            unhealable: false,
             unplagueable: false,
             undead_variation: None,
             slowed: false,
@@ -1001,6 +1010,27 @@ mod tests {
             (recruit.hitpoints, recruit.moves_left, recruit.attacks_left),
             (36, 5, 2)
         );
+    }
+
+    #[test]
+    fn stone_and_unhealable_patients_skip_regeneration_poison_and_rest() {
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nstring=Kh\nheals=8\n[/terrain_type]").unwrap());
+        for (status, effects) in [
+            ("petrified=yes", ""),
+            ("unhealable=yes", ""),
+            ("", "[modifications]\n[trait]\nid=ward\n[effect]\napply_to=status\nadd=unhealable\n[/effect]\n[/trait]\n[/modifications]"),
+        ] {
+            let units = types();
+            let scenario = wml::parse(format!("[side]\ntype=Spearman\nhitpoints=8\n[status]\npoisoned=yes\n{status}\n[/status]\n{effects}\n[/side]")).unwrap();
+            let starts = crate::starting_units::read_authored_starting_units(&scenario, &map()).unwrap();
+            let mut board = Battlefield::from_authored_starting_units(map(), starts, &units, 100).unwrap();
+            board.begin_resting(1);
+            board.heal_at_turn_start(1, &terrain, |a,b| a!=b);
+            let unit = board.units.values().next().unwrap();
+            assert_eq!(unit.hitpoints, 8);
+            assert!(unit.poisoned);
+        }
     }
 
     #[test]
