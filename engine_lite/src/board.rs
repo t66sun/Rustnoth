@@ -288,6 +288,21 @@ impl<'rules> Battlefield<'rules> {
         self.recall.get(&side).map_or(&[], Vec::as_slice)
     }
 
+    /// Places the existing reserve unit without generating traits or healing it.
+    pub(crate) fn place_recall(&mut self, side: usize, unit_id: &str, to: Hex) -> Option<()> {
+        if !self.map.is_playable(to) {
+            return None;
+        }
+        let Entry::Vacant(tile) = self.units.entry(to) else { return None };
+        let roster = self.recall.get_mut(&side)?;
+        let index = roster.iter().position(|unit| unit.id.as_deref() == Some(unit_id))?;
+        let mut unit = roster.remove(index);
+        unit.moves_left = 0;
+        unit.attacks_left = 0;
+        tile.insert(unit);
+        Some(())
+    }
+
     pub fn unit_type(&self, id: &str) -> Option<&'rules UnitType> {
         self.unit_types.get(id)
     }
