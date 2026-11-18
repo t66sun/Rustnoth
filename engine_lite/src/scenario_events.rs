@@ -2,6 +2,9 @@
 
 use std::collections::BTreeSet;
 
+mod items;
+use items::{ItemChange, MapItems};
+
 use crate::{
     hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
@@ -18,6 +21,7 @@ enum SideAction {
 enum EventAction {
     Sides { sides: Vec<usize>, action: SideAction },
     Board(BoardChange),
+    Item(ItemChange),
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +115,9 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+        if matches!(tag, "item" | "remove_item") {
+            return ItemChange::read(tag, cfg).map(Self::Item);
+        }
         if opening && tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
@@ -154,8 +161,12 @@ impl EventAction {
         Some(Self::Sides { sides, action })
     }
 
-    fn apply(&self, state: &mut EventState<'_>) {
+    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems) {
         let (sides, action) = match self {
+            Self::Item(change) => {
+                items.apply(change);
+                return;
+            }
             Self::Board(change) => {
                 state.board_changes.push(change.clone());
                 return;
@@ -244,6 +255,7 @@ struct Handler {
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
     handlers: Vec<Handler>,
+    pub(crate) items: MapItems,
     pub(crate) new_round_at_start: bool,
 }
 
@@ -271,11 +283,15 @@ impl ScenarioEvents {
             } else {
                 let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
                     // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "filter" && !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    tag != "filter" && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
-                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count, opening))
+                    .filter_map(|(tag, cfg)| match EventAction::read(tag, cfg, side_count, opening) {
+                        Some(action) => Some(Some(action)),
+                        None if opening && presentation_only(tag, cfg) => None,
+                        None => Some(None),
+                    })
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
             };
@@ -293,6 +309,7 @@ impl ScenarioEvents {
         }
         Self {
             handlers,
+            items: MapItems::default(),
             new_round_at_start: !matches!(scenario.attribute("it_is_a_new_turn"), Some("no" | "false" | "0")),
         }
     }
@@ -313,7 +330,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state);
+                change.apply(state, &mut self.items);
             }
             !handler.once
         });

@@ -243,6 +243,16 @@ impl<'data> FixedMatch<'data> {
         })
     }
 
+    /// Original map item images visible to one side, in hex overlay draw order.
+    pub fn map_item_images(&self, side: usize) -> Vec<(Hex, &str)> {
+        let Some(settings) = side.checked_sub(1).and_then(|i| self.scenario.sides.get(i)) else {
+            return Vec::new();
+        };
+        let items = &self.scenario.events.items;
+        if items.is_empty() { return Vec::new(); }
+        items.visible_images(&self.effective_vision(side), &settings.team_names)
+    }
+
     /// Projects the current board for a match side, including after the match ends.
     pub fn observation_for(&self, side: usize) -> Option<Observation> {
         let gold = *self.gold.get(side.checked_sub(1)?)?;

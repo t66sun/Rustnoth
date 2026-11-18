@@ -32,6 +32,10 @@ impl<'rules> Session<'rules> {
         self.observation.as_ref()
     }
 
+    pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
+        self.observation.as_ref().map(|view| self.game.map_item_images(view.side)).unwrap_or_default()
+    }
+
     pub fn legal_actions(&self) -> &[Action] {
         &self.legal_actions
     }
