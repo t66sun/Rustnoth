@@ -16,11 +16,14 @@ use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selecti
 use camera::BoardCamera;
 
 mod camera;
+mod campaign_browser;
+mod dialog;
 mod menu;
 mod render;
 mod setup;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
@@ -50,6 +53,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
+            Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
         };
@@ -71,29 +75,35 @@ struct Options {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Source {
+    Campaign { file: PathBuf, maps: PathBuf },
     Bundle(PathBuf),
     Skirmish,
 }
 
 impl Options {
     fn parse(args: &[OsString]) -> Result<Self, Box<dyn Error>> {
-        let (bundle, core, seed, root) = match args {
-            [bundle, core, seed] => (bundle, core, seed, PathBuf::from("../wesnoth_src")),
-            [bundle, core, seed, flag, root] if flag == "--wesnoth-root" => {
-                (bundle, core, seed, PathBuf::from(root))
+        let (args, root) = match args {
+            [rest @ .., flag, root] if flag == "--wesnoth-root" => (rest, PathBuf::from(root)),
+            _ => (args, PathBuf::from("../wesnoth_src")),
+        };
+        let (source, core, seed) = match args {
+            [flag, file, maps, core, seed] if flag == "--campaign" => {
+                (Source::Campaign { file: file.into(), maps: maps.into() }, core, seed)
             }
+            [flag, core, seed] if flag == "--skirmish" => (Source::Skirmish, core, seed),
+            [file, core, seed] if file != "--campaign" => (Source::Bundle(file.into()), core, seed),
             _ => return Err(USAGE.into()),
         };
         let seed = seed
             .to_str()
             .and_then(|seed| seed.parse().ok())
             .ok_or("seed must be an unsigned 32-bit integer")?;
-        let source = if bundle == "--skirmish" { Source::Skirmish } else { Source::Bundle(bundle.into()) };
         Ok(Self { source, core: core.into(), seed, wesnoth_root: root })
     }
 }
 
 enum Launch {
+    Campaign(campaign_browser::Browser),
     Board(BoardData),
     Skirmish(setup::Setup),
 }
@@ -102,6 +112,9 @@ impl Launch {
     fn load(options: Options) -> Result<Self, Box<dyn Error>> {
         let core = read_file(&options.core)?;
         match options.source {
+            Source::Campaign { file, maps } => Ok(Self::Campaign(campaign_browser::Browser::load(
+                &file, maps, core, options.wesnoth_root, options.seed,
+            )?)),
             Source::Bundle(path) => {
                 let source = read_file(&path)?;
                 let directory = path.parent().unwrap_or_else(|| Path::new(".")).to_owned();
@@ -113,6 +126,7 @@ impl Launch {
 
     fn title(&self) -> &str {
         match self {
+            Self::Campaign(_) => "Campaign scenarios",
             Self::Board(data) => &data.title,
             Self::Skirmish(_) => "Skirmish",
         }
@@ -335,6 +349,11 @@ mod tests {
         assert_eq!(custom.seed, 0);
         let args = ["--skirmish", "core.cfg", "3"].map(OsString::from);
         assert_eq!(Options::parse(&args).unwrap().source, Source::Skirmish);
+        let args = ["--campaign", "story.cfg", "maps", "core.cfg", "3", "--wesnoth-root", "game"].map(OsString::from);
+        assert_eq!(Options::parse(&args).unwrap(), Options {
+            source: Source::Campaign { file: "story.cfg".into(), maps: "maps".into() },
+            core: "core.cfg".into(), seed: 3, wesnoth_root: "game".into(),
+        });
     }
 
     #[test]
