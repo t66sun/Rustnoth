@@ -24,6 +24,8 @@ use crate::{
 
 mod attack;
 mod concealment;
+mod heal;
+pub(crate) use heal::HealUnit;
 mod recall_filter;
 mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
@@ -52,6 +54,8 @@ pub struct UnitState<'rules> {
     pub side: usize,
     pub id: Option<String>,
     pub unit_type: &'rules UnitType,
+    pub(crate) display_name: Option<String>,
+    pub(crate) portrait: Option<String>,
     pub hitpoints: i32,
     immunities: CombatImmunities,
     pub poisoned: bool,
@@ -176,6 +180,8 @@ impl<'rules> Battlefield<'rules> {
             position: Some(unit.position),
             side: unit.side,
             id: unit.id,
+            display_name: None,
+            portrait: None,
             type_id: unit.type_id,
             variation: String::new(),
             can_recruit: unit.can_recruit,
@@ -234,6 +240,8 @@ impl<'rules> Battlefield<'rules> {
             position,
             side,
             id,
+            display_name,
+            portrait,
             type_id,
             variation,
             can_recruit,
@@ -278,6 +286,8 @@ impl<'rules> Battlefield<'rules> {
             serial,
             side,
             id,
+            display_name,
+            portrait,
             unit_type,
             hitpoints: 0,
             default_amlas: 0,
@@ -309,6 +319,43 @@ impl<'rules> Battlefield<'rules> {
         }
         self.units_created = serial;
         Ok(())
+    }
+
+    /// Place an event reinforcement, or store it for recall if the map has no vacancy.
+    pub(crate) fn place_event_unit(&mut self, mut unit: AuthoredStartingUnit) -> Result<Option<Hex>, BoardError> {
+        let destination = unit.position.and_then(|requested| self.event_vacancy(requested));
+        if let Some(index) = unit.id.as_ref().and_then(|id|
+            self.recall_roster(unit.side).iter().position(|u| u.id.as_ref() == Some(id))
+        ) {
+            if let Some(to) = destination {
+                let veteran = self.recall.get_mut(&unit.side).unwrap().remove(index);
+                self.units.insert(to, veteran);
+            }
+            return Ok(destination);
+        }
+        unit.position = destination;
+        if unit.id.is_none() {
+            unit.id = Some(format!("{}-{}", unit.type_id, self.units_created + 1));
+        }
+        self.add_authored_unit(unit)?;
+        Ok(destination)
+    }
+
+    fn event_vacancy(&self, requested: Hex) -> Option<Hex> {
+        if !self.map.is_playable(requested) { return None; }
+        if !self.units.contains_key(&requested) { return Some(requested); }
+        // find_vacant_tile checks each ring in x/y order, stopping before distance 50.
+        let mut frontier = BTreeSet::from([requested]);
+        let mut seen = frontier.clone();
+        for _ in 1..50 {
+            frontier = frontier.iter().flat_map(|hex| hex.neighbors())
+                .filter(|&hex| self.map.is_playable(hex) && seen.insert(hex)).collect();
+            if frontier.is_empty() { break; }
+            if let Some(vacant) = frontier.iter().copied().find(|hex| !self.units.contains_key(hex)) {
+                return Some(vacant);
+            }
+        }
+        None
     }
 
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
@@ -492,6 +539,8 @@ impl<'rules> Battlefield<'rules> {
             serial,
             side,
             id: None,
+            display_name: None,
+            portrait: None,
             unit_type,
             default_amlas: 0,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
@@ -998,6 +1047,8 @@ mod tests {
             position: Some(position),
             side: 1,
             id: None,
+            display_name: None,
+            portrait: None,
             type_id: "Guard".into(),
             variation: String::new(),
             can_recruit: position == EAST,
