@@ -1,5 +1,6 @@
 use crate::{
     board::{Attack, Battlefield},
+    turn::Turn,
     fixed_match::{FixedMatch, MatchError},
     hex::Hex,
     terrain_aliases::TerrainAliases,
@@ -15,16 +16,37 @@ struct Reanimation<'rules> {
 impl FixedMatch<'_> {
     /// Fire die with the casualty still present, then erase it and resolve plague.
     pub(super) fn apply_scenario_attack(
-        &mut self, side: usize, attack: Attack,
-    ) -> Result<(), MatchError> {
+        &mut self, turn: Turn, mut attack: Attack,
+    ) -> Result<bool, MatchError> {
         let (from, to) = (attack.from, attack.to);
         let weapon = attack.weapon;
-        let retaliation = attack.retaliation.as_ref().map(|(index, _)| *index);
         let sides = &self.scenario.sides;
-        let result = self.scenario.board.resolve_attack(side, attack,
+        let (attacker_id, defender_id) = self.scenario.board.begin_attack(turn.side, &attack,
+            |first, second| sides[first - 1].is_enemy(&sides[second - 1]))?;
+        let retaliation = attack.retaliation.as_ref().map(|(index, _)| *index);
+        if self.scenario.events.has_handler("attack") {
+            self.fire_units_event("attack", from, Some(to))?;
+            let board = &self.scenario.board;
+            if !matches!(self.state(), crate::fixed_match::MatchState::Playing(_))
+                || board.unit_at(from).is_none_or(|u| u.serial != attacker_id)
+                || board.unit_at(to).is_none_or(|u| u.serial != defender_id)
+            {
+                self.fire_units_event("attack_end", from, Some(to))?;
+                return Ok(false);
+            }
+            // The original refreshes both weapons' modifiers after attack handlers.
+            let attacker = board.unit_at(from).unwrap();
+            let defender = board.unit_at(to).unwrap();
+            let refresh = |origin, unit: &crate::board::UnitState<'_>, target: &crate::board::UnitState<'_>, index: usize, dest, offense| {
+                self.modifiers(self.lawful_bonus_at(turn.round, origin), unit, target, &unit.unit_type.attacks[index],
+                    dest, self.leadership_bonus(origin, unit), offense)
+            };
+            attack.modifiers = refresh(from, attacker, defender, weapon, to, true);
+            attack.retaliation = retaliation.map(|i| (i, refresh(to, defender, attacker, i, from, false)));
+        }
+        let sides = &self.scenario.sides;
+        let result = self.scenario.board.resolve_started_attack(attack,
             |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng)?;
-        let attacker_id = self.scenario.board.unit_at(from).expect("resolved attacker").serial;
-        let defender_id = self.scenario.board.unit_at(to).expect("resolved defender").serial;
         self.fire_units_event("attack_end", from, Some(to))?;
         for (victim, killer, serial, killer_serial, hp, killer_hp, strike) in [
             (to, from, defender_id, attacker_id, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
@@ -41,7 +63,7 @@ impl FixedMatch<'_> {
                 board.place_plague_unit(raised.side, raised.base, &raised.variation, victim, &mut self.rng);
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -172,6 +194,33 @@ Xv,Xv,Xv,Xv"
 
     fn fight(game: &mut super::super::FixedMatch<'_>) -> MatchState {
         game.step(Action::Attack(AttackChoice { from: WEST, to: EAST, weapon: 0 })).unwrap()
+    }
+
+    #[test]
+    fn valid_attack_spends_its_costs_before_a_campaign_handler_removes_the_target() {
+        let events = r#"[event]
+name=attack
+[filter_second]
+id=fallen
+[/filter_second]
+[gold]
+side=1
+amount=13
+[/gold]
+[kill]
+id=fallen
+[/kill]
+[/event]"#;
+        let bundle = scenario("id=fallen", "Gg", false, "type=Walking Corpse", events);
+        let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+        let illegal = Action::Attack(AttackChoice { from: EAST, to: WEST, weapon: 0 });
+        assert!(game.step(illegal).is_err());
+        assert_eq!(game.audit_snapshot().gold[0], 100);
+        assert_eq!(fight(&mut game), MatchState::Won(1));
+        let actor = game.scenario.board.unit_at(WEST).unwrap();
+        assert_eq!((actor.attacks_left(), actor.experience), (0, 0));
+        assert!(game.scenario.board.unit_at(EAST).is_none());
+        assert_eq!(game.audit_snapshot().gold[0], 113);
     }
 
     #[test]

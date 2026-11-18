@@ -110,7 +110,8 @@ impl Battlefield<'_> {
         rng: &mut ReplayRng,
     ) -> Result<CombatResult, AttackError> {
         let (from, to) = (action.from, action.to);
-        let result = self.resolve_attack(active_side, action, sides_are_enemies, rng)?;
+        self.begin_attack(active_side, &action, &sides_are_enemies)?;
+        let result = self.resolve_started_attack(action, sides_are_enemies, rng)?;
         if result.attacker_hitpoints == 0 { self.remove_casualty(from); }
         if result.defender_hitpoints == 0 { self.remove_casualty(to); }
         Ok(result)
@@ -121,14 +122,10 @@ impl Battlefield<'_> {
         self.resting.remove(&position);
     }
 
-    /// Commit the exchange, retaining the dying unit for the scenario's die event.
-    pub(crate) fn resolve_attack(
-        &mut self,
-        active_side: usize,
-        action: Attack,
-        sides_are_enemies: impl Fn(usize, usize) -> bool,
-        rng: &mut ReplayRng,
-    ) -> Result<CombatResult, AttackError> {
+    /// Commit the attacker's action costs before WML attack handlers run.
+    pub(crate) fn begin_attack(
+        &mut self, active_side: usize, action: &Attack, sides_are_enemies: impl Fn(usize, usize) -> bool,
+    ) -> Result<(u64, u64), AttackError> {
         let from = action.from;
         let to = action.to;
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
@@ -142,25 +139,25 @@ impl Battlefield<'_> {
         if defender.side == active_side || !sides_are_enemies(active_side, defender.side) {
             return Err(AttackError::FriendlyTarget);
         }
-        let distance = from.distance(to) as i64;
-        let weapon = attacker
-            .unit_type
-            .attacks
-            .get(action.weapon)
-            .filter(|weapon| within_range(weapon, distance))
-            .ok_or(AttackError::UnavailableWeapon)?;
-        let retaliation = match &action.retaliation {
-            Some((index, modifiers)) => {
-                let response = defender
-                    .unit_type
-                    .attacks
-                    .get(*index)
-                    .filter(|response| response.range == weapon.range && within_range(response, distance))
-                    .ok_or(AttackError::UnavailableRetaliation)?;
-                Some((*index, response, modifiers))
-            }
-            None => None,
-        };
+        let (weapon, _) = selected_weapons(attacker, defender, action)?;
+        let participants = (attacker.serial, defender.serial);
+        let (moves, attacks) = (weapon.movement_used, weapon.attacks_used);
+        self.resting.remove(&from);
+        self.resting.remove(&to);
+        let unit = self.units.get_mut(&from).expect("validated attacker");
+        unit.uncovered = true;
+        unit.moves_left = unit.moves_left.saturating_sub(moves).max(0);
+        unit.attacks_left = unit.attacks_left.saturating_sub(attacks).max(0);
+        Ok(participants)
+    }
+
+    pub(crate) fn resolve_started_attack(
+        &mut self, action: Attack, sides_are_enemies: impl Fn(usize, usize) -> bool, rng: &mut ReplayRng,
+    ) -> Result<CombatResult, AttackError> {
+        let (from, to) = (action.from, action.to);
+        let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
+        let defender = self.units.get(&to).ok_or(AttackError::MissingDefender)?;
+        let (weapon, retaliation) = selected_weapons(attacker, defender, &action)?;
         let attacker_stats = combatant(
             attacker,
             action.weapon,
@@ -191,8 +188,6 @@ impl Battlefield<'_> {
                 combatant(defender, index, modifiers, weapon.parry, StrikeRole::Retaliate(weapon))
             },
         );
-        let movement_used = weapon.movement_used;
-        let attacks_used = weapon.attacks_used;
         let rounds = weapon.combat_rounds().max(
             retaliation.map_or(NonZeroU32::MIN, |(_, response, _)| response.combat_rounds()),
         );
@@ -202,18 +197,13 @@ impl Battlefield<'_> {
         let defender_experience =
             combat_experience(attacker.unit_type.level, result.attacker_hitpoints == 0);
 
-        self.resting.remove(&from);
-        self.resting.remove(&to);
         let unit = self.units.get_mut(&from).expect("validated attacker");
         unit.hitpoints = result.attacker_hitpoints as i32;
         if result.attacker_hitpoints > 0 {
-            unit.uncovered = true;
             unit.slowed = result.attacker_slowed;
             unit.poisoned = result.poisoned[0];
             unit.petrified |= result.petrified[0];
             unit.experience = unit.experience.saturating_add(attacker_experience);
-            unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
-            unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
         }
         let unit = self.units.get_mut(&to).expect("validated defender");
         unit.hitpoints = result.defender_hitpoints as i32;
@@ -225,6 +215,31 @@ impl Battlefield<'_> {
         }
         Ok(result)
     }
+}
+
+fn selected_weapons<'rules, 'act>(
+    attacker: &UnitState<'rules>, defender: &UnitState<'rules>, action: &'act Attack,
+) -> Result<(&'rules WeaponProfile, Option<(usize, &'rules WeaponProfile, &'act StrikeModifiers)>), AttackError> {
+    let distance = action.from.distance(action.to) as i64;
+    let weapon = attacker
+        .unit_type
+        .attacks
+        .get(action.weapon)
+        .filter(|weapon| within_range(weapon, distance))
+        .ok_or(AttackError::UnavailableWeapon)?;
+    let retaliation = match &action.retaliation {
+        Some((index, modifiers)) => {
+            let response = defender
+                .unit_type
+                .attacks
+                .get(*index)
+                .filter(|response| response.range == weapon.range && within_range(response, distance))
+                .ok_or(AttackError::UnavailableRetaliation)?;
+            Some((*index, response, modifiers))
+        }
+        None => None,
+    };
+    Ok((weapon, retaliation))
 }
 
 fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
