@@ -90,7 +90,7 @@ impl VillageCapture {
     }
 
     /// The stock STARTING_VILLAGES macro scopes its saved coordinates to one event.
-    fn from_starting_location(children: &[(String, Node)]) -> Option<Self> {
+    fn from_starting_location(children: &[&(String, Node)]) -> Option<Self> {
         let [(store_tag, store), (capture_tag, capture), (clear_tag, clear)] = children else { return None };
         if store_tag != "store_starting_location" || capture_tag != "capture_village" || clear_tag != "clear_variable"
             || !store.children.is_empty() || !clear.children.is_empty()
@@ -304,6 +304,52 @@ impl UnitFilter {
     }
 }
 
+#[derive(Debug)]
+enum EventFilter {
+    Unit(UnitFilter),
+    Side { numbers: Vec<usize>, team_name: Option<String> },
+}
+
+impl EventFilter {
+    fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "filter" {
+            return UnitFilter::read(cfg).map(Self::Unit);
+        }
+        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+            !matches!(key.as_str(), "side" | "side_in" | "team_name")
+                || !value.translations.is_empty() || value.text.contains('$')
+        }) {
+            return None;
+        }
+        let mut numbers: Vec<_> = (1..=side_count).collect();
+        for selector in ["side", "side_in"].into_iter().filter_map(|key| cfg.attribute(key)) {
+            let mut ranges = Vec::new();
+            for part in selector.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let (start, end) = part.split_once('-').unwrap_or((part, part));
+                let start = start.trim().parse::<usize>().ok()?;
+                let end = match end.trim() {
+                    "infinity" => usize::MAX,
+                    value => value.parse::<usize>().ok()?.max(start),
+                };
+                ranges.push(start..=end);
+            }
+            numbers.retain(|side| ranges.iter().any(|range| range.contains(side)));
+        }
+        Some(Self::Side {
+            numbers,
+            team_name: cfg.attribute("team_name").filter(|s| !s.is_empty()).map(str::to_owned),
+        })
+    }
+
+    fn matches(&self, side: &SideConfig, unit: Option<&ArrivingUnit<'_>>) -> bool {
+        match self {
+            Self::Unit(filter) => unit.is_some_and(|unit| filter.matches(unit)),
+            Self::Side { numbers, team_name } => numbers.contains(&side.side)
+                && team_name.as_ref().is_none_or(|name| side.team_names.contains(name)),
+        }
+    }
+}
+
 pub(crate) struct ArrivingUnit<'a> {
     pub(crate) position: Hex,
     pub(crate) side: usize,
@@ -315,13 +361,14 @@ pub(crate) struct ArrivingUnit<'a> {
 struct Handler {
     names: Vec<String>,
     once: bool,
-    filters: Vec<UnitFilter>,
+    filters: Vec<EventFilter>,
     changes: Vec<EventAction>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
     handlers: Vec<Handler>,
+    active_side: usize,
     pub(crate) new_round_at_start: bool,
 }
 
@@ -341,15 +388,17 @@ impl ScenarioEvents {
                 continue;
             }
             let Some(names) = event.attribute("name") else { continue };
-            let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
-                .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
+            let (conditions, actions): (Vec<_>, Vec<_>) = event.children.iter()
+                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side"));
+            let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
+                .collect::<Option<Vec<_>>>() else { continue };
             let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
-            let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
+            let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
                 vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
-                let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
+                let Some(changes) = actions.into_iter().filter(|(tag, cfg)| {
                     // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "filter" && !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
@@ -371,6 +420,7 @@ impl ScenarioEvents {
         }
         Self {
             handlers,
+            active_side: 1,
             new_round_at_start: !matches!(scenario.attribute("it_is_a_new_turn"), Some("no" | "false" | "0")),
         }
     }
@@ -386,7 +436,7 @@ impl ScenarioEvents {
     fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name)
-                || !handler.filters.iter().all(|f| unit.as_ref().is_some_and(|u| f.matches(u)))
+                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref()))
             {
                 return true;
             }
@@ -398,6 +448,7 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn begin_turn(&mut self, turn: Turn, new_round: bool, state: &mut EventState<'_>) {
+        self.active_side = turn.side;
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
         if new_round {
@@ -437,6 +488,57 @@ impl ScenarioEvents {
 mod tests {
     use super::*;
     use crate::{fixed_match::Action, scenario_bundle::Bundle, wml};
+
+    #[test]
+    fn side_filters_follow_the_turn_owner_independently_of_the_event_unit() {
+        let scenario = wml::parse(r#"
+[side]
+team_name=Knights
+[/side]
+[side]
+team_name=Allies,Scouts
+[/side]
+[event]
+name=capture
+[filter_side]
+side=1-3
+side_in=2
+team_name=Scouts
+[/filter_side]
+[gold]
+side=1
+amount=7
+[/gold]
+[filter]
+side=1
+[/filter]
+[/event]
+[event]
+name=capture
+[filter_side]
+controller=human
+[/filter_side]
+[gold]
+side=1
+amount=500
+[/gold]
+[/event]"#).unwrap();
+        let mut sides = crate::scenario_sides::read_sides(&scenario);
+        let mut gold = [0, 0];
+        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
+        let mut events = ScenarioEvents::read(&scenario, 2);
+        let capture = |side| ArrivingUnit { position: Hex { x: 0, y: 0 }, side, id: None, type_id: "Guard" };
+
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 0);
+        events.begin_turn(Turn { round: 1, side: 2 }, false, &mut state);
+        events.fire_for_unit("capture", capture(2), &mut state);
+        assert_eq!(state.gold[0], 0);
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 7);
+        events.fire_for_unit("capture", capture(1), &mut state);
+        assert_eq!(state.gold[0], 7);
+    }
 
     fn event(name: &str, once: &str, side: &str, amount: &str) -> String {
         format!("[event]\nname={name}\nfirst_time_only={once}\n[gold]\nside={side}\namount={amount}\n[/gold]\n[/event]\n")
@@ -909,7 +1011,8 @@ mod starting_villages_test {
             [capture_village]\nside=2\nterrain=*^V*\n[and]\nx=$origin.x\ny=$origin.y\nradius=2\n[/and]\n[/capture_village]\n\
             [clear_variable]\nname=origin\n[/clear_variable]").unwrap();
         let map = ScenarioMap::parse("Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Kh,Gg^Ve,Gg^Ff,Gg^Vh,Xv\nXv,Xv,Xv,Xv,Xv,Xv").unwrap();
-        let capture = VillageCapture::from_starting_location(&event.children).unwrap();
+        let actions: Vec<_> = event.children.iter().collect();
+        let capture = VillageCapture::from_starting_location(&actions).unwrap();
         assert_eq!(capture.side, 2);
         let mut tiles = Vec::new();
         capture.for_each_hex(&map, |hex| tiles.push(hex));
