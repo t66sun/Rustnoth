@@ -190,7 +190,7 @@ impl<'data> FixedMatch<'data> {
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
                     let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
-                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind)) {
+                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind.variation(&unit.variation))) {
                         return Err(MatchError::UnsupportedScenario);
                     }
                     self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
