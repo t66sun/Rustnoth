@@ -2,7 +2,7 @@ use std::{error, fmt, num::NonZeroU32};
 
 use crate::{
     combat::{CombatResult, Combatant, base_hit_chance, resolve_exchange},
-    hex::Hex,
+    hex::{Direction, Hex},
     rng::ReplayRng,
     strike_damage::strike_damage,
     weapon::WeaponProfile,
@@ -34,12 +34,30 @@ pub struct StrikeModifiers {
     pub damage_multiplier: i32,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum StrikeRole<'a> {
-    Attack,
+    Attack { backstab: bool },
     Retaliate(&'a WeaponProfile),
 }
 
 impl Battlefield<'_> {
+    pub(crate) fn backstabs(
+        &self,
+        from: Hex,
+        to: Hex,
+        weapon: &WeaponProfile,
+        defender_side: usize,
+    ) -> bool {
+        // In the fixed match all distinct sides are mutually hostile. A third side
+        // can therefore flank the defender just as the attacker's own side can.
+        weapon.has_backstab()
+            && Direction::CLOCKWISE.into_iter()
+                .find(|&direction| from.neighbor(direction) == Some(to))
+                .and_then(|direction| to.neighbor(direction))
+                .and_then(|opposite| self.unit_at(opposite))
+                .is_some_and(|flanker| flanker.side != defender_side)
+    }
+
     /// Lists available attacks in origin, target, then weapon-index order.
     ///
     /// Call only for a fully visible battlefield. The returned choices
@@ -114,7 +132,7 @@ impl Battlefield<'_> {
             action.weapon,
             &action.modifiers,
             retaliation.map_or(0, |(_, parry, _)| parry),
-            StrikeRole::Attack,
+            StrikeRole::Attack { backstab: self.backstabs(from, to, weapon, defender.side) },
         );
         let defender_stats = retaliation.map_or(
             Combatant {
@@ -179,15 +197,17 @@ pub(crate) fn combatant(
     role: StrikeRole<'_>,
 ) -> Combatant {
     let weapon = &unit.unit_type.attacks[weapon_index];
-    let charging = match role {
-        StrikeRole::Attack => weapon.has_charge(),
-        StrikeRole::Retaliate(attacking_weapon) => attacking_weapon.has_charge(),
+    let factor = match role {
+        StrikeRole::Attack { backstab } => {
+            (if weapon.has_charge() { 2 } else { 1 }) * (if backstab { 2 } else { 1 })
+        }
+        StrikeRole::Retaliate(attacking_weapon) if attacking_weapon.has_charge() => 2,
+        StrikeRole::Retaliate(_) => 1,
     };
-    let base_damage = unit.attack_damage(weapon_index);
-    let base_damage = if charging { base_damage.saturating_mul(2) } else { base_damage };
+    let base_damage = unit.attack_damage(weapon_index).saturating_mul(factor);
     let damage = strike_damage(base_damage, modifiers.damage_multiplier, false);
     let base_chance = base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry);
-    let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack));
+    let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack { .. }));
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,
@@ -258,6 +278,50 @@ mod tests {
             weapon,
             modifiers: StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 },
             retaliation: Some((0, StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 })),
+        }
+    }
+
+    #[test]
+    fn backstab_doubles_only_the_attack_with_an_enemy_behind_the_defender() {
+        let special = r#"[specials]
+            [damage]
+                id=backstab
+                multiply=2
+                active_on=offense
+                [filter_opponent]
+                    formula="
+                        enemy_of(self, flanker) and not flanker.petrified
+                    where
+                        flanker = unit_at(direction_from(loc, other.facing))
+                    "
+                [/filter_opponent]
+            [/damage]
+        [/specials]"#;
+        let mut types = unit_types();
+        let weapon = |special: &str| WeaponProfile::from_wml(
+            wml::parse(format!("range=melee\ndamage=3\nnumber=1\n{special}")).unwrap(),
+        );
+        assert!(!weapon(&special.replace("enemy_of", "allied_with")).supports_specials());
+        assert!(weapon(special).supports_specials());
+        types.get_mut("Fighter").unwrap().attacks[0] = weapon(special);
+        let from = Hex { x: 0, y: 1 };
+        let to = Hex { x: 0, y: 2 };
+        for (opposite_side, defender_hp) in [(None, 7), (Some(2), 7), (Some(1), 4), (Some(3), 4)] {
+            let map = ScenarioMap::parse(
+                "Xv,Xv,Xv\nXv,Gg,Xv\nXv,1 Gg,Xv\nXv,2 Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
+            ).unwrap();
+            let scenario = wml::parse("[side]\ntype=Fighter\n[/side]\n[side]\ntype=Fighter\n[/side]").unwrap();
+            let starts = read_starting_units(&scenario, &map).unwrap();
+            let mut board = Battlefield::new(map, starts, &types).unwrap();
+            // A defender with an ally behind the attacker still retaliates for base damage.
+            board.place_recruit(2, "Fighter", Hex { x: 0, y: 0 }).unwrap();
+            if let Some(side) = opposite_side {
+                board.place_recruit(side, "Fighter", Hex { x: 0, y: 3 }).unwrap();
+            }
+            let result = board.apply_attack(
+                1, Attack { from, to, ..attack(0) }, |side| side != 1, &mut ReplayRng::new(0),
+            ).unwrap();
+            assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (7, defender_hp));
         }
     }
 
