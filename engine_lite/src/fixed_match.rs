@@ -187,6 +187,10 @@ impl<'data> FixedMatch<'data> {
         for change in state.board_changes {
             let capture = match change {
                 BoardChange::CaptureVillage(capture) => capture,
+                BoardChange::Schedule { entries, current_time } => {
+                    self.scenario.schedule.replace_global(entries, self.current_round, current_time);
+                    continue;
+                }
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
                     let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;

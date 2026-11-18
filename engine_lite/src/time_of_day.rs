@@ -87,6 +87,10 @@ impl TimeSchedule {
         self.global.at_turn(turn)
     }
 
+    pub(crate) fn replace_global(&mut self, entries: Vec<TimeOfDay>, turn: i32, current_time: i32) {
+        self.global = TimeCycle { entries, turn_offset: i64::from(current_time) - i64::from(turn) };
+    }
+
     pub(crate) fn add_area(
         &mut self,
         locations: Vec<WmlRectangle>,
