@@ -1,5 +1,6 @@
 //! Geometry and bitmaps of the default Wesnoth 1.18 battlefield theme.
 use super::*;
+mod unit_report;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -62,10 +63,13 @@ pub(super) struct FrameArt {
     buttons: [[Texture; 3]; 2],
     reports: [Texture; 3],
     side_flags: BTreeMap<usize, Texture>,
+    unit_report: unit_report::Art,
     status: [Texture; 9],
 }
 
 impl FrameArt {
+    pub fn clear_unit_report(&mut self) { self.unit_report.cached = None; }
+
     pub fn load(root: &Path) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
@@ -78,6 +82,7 @@ impl FrameArt {
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
             buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
             side_flags: BTreeMap::new(),
+            unit_report: unit_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png"].map(theme),
             status: [
                 "border-topleft", "border-top", "border-topright", "border-left", "background",
@@ -186,31 +191,10 @@ pub fn draw(
             text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
         art.frame.status_box(rect(0.0, 90.0, 78.0, 78.0), s);
-        if let Some(unit) = observation.and_then(|view| view.units.iter().find(|u| Some(u.position) == movement.selected)) {
-            let portrait = art.portraits.entry(unit.type_id.clone()).or_insert_with(|| {
-                let path = movement.assets.unit_portrait(&unit.type_id)?;
-                get_texture(&mut art.paths, path)
-            });
-            if let Some(image) = portrait.as_ref().or_else(|| art.units.get(&unit.type_id)?.get(&unit.side)?.as_ref()) {
-                let frame = rect(3.0, 93.0, 72.0, 72.0);
-                let fit = (frame.w / image.width()).min(frame.h / image.height());
-                let size = vec2(image.width(), image.height()) * fit;
-                let origin = frame.center() - size * 0.5;
-                draw_texture_ex(image, origin.x, origin.y, WHITE, DrawTextureParams {
-                    dest_size: Some(size), ..Default::default()
-                });
-            }
-            let stats = [Some(format!("HP   {}", unit.hitpoints)),
-                Some(format!("XP   {}/{}", unit.experience, unit.max_experience)),
-                unit.moves_left.map(|mp| format!("MP   {mp}"))];
-            for (row, stat) in stats.iter().flatten().enumerate() {
-                text_in(&art.font, stat, rect(83.0, 92.0 + row as f32 * 24.0, 84.0, 20.0), 14, TEXT, false);
-            }
-            let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
-            text_in(&art.font, name, rect(3.0, 173.0, 164.0, 23.0), 17, TEXT, false);
-            let conditions = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
-                .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
-            text_in(&art.font, &conditions, rect(3.0, 197.0, 164.0, 19.0), 14, MUTED, false);
+        if let Some(view) = observation
+            && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
+        {
+            unit_report::draw(frame, art, unit, hovered.unwrap_or(unit.position), movement);
         }
     }
     let hint = Rect::new(frame.sidebar.x + 8.0 * s, frame.end_turn.y - 22.0 * s, frame.sidebar.w - 16.0 * s, 19.0 * s);

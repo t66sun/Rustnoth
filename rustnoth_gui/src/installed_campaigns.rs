@@ -6,7 +6,6 @@ use std::{collections::HashMap, error::Error, fs, path::Path};
 pub(super) struct Campaign {
     pub folder: String,
     pub define: String,
-    pub difficulty: String,
 }
 
 fn folders_by_define(directory: &Path) -> std::io::Result<HashMap<String, String>> {
@@ -41,21 +40,6 @@ fn folders_by_define(directory: &Path) -> std::io::Result<HashMap<String, String
     Ok(folders)
 }
 
-fn default_difficulty(cfg: &Node) -> String {
-    let mut choices = cfg
-        .children
-        .iter()
-        .filter(|(tag, _)| tag == "difficulty")
-        .map(|(_, n)| n);
-    let first = choices.clone().next();
-    choices
-        .find(|n| matches!(n.attribute("default"), Some("yes" | "true" | "1")))
-        .or(first)
-        .and_then(|n| n.attribute("define"))
-        .unwrap_or("NORMAL")
-        .to_owned()
-}
-
 pub(super) fn catalog(
     config: Node,
     directory: &Path,
@@ -87,7 +71,6 @@ pub(super) fn catalog(
         let entry = Campaign {
             folder: folder.clone(),
             define: define.into(),
-            difficulty: default_difficulty(&cfg),
         };
         installed.insert(first.to_owned(), entry);
         if first == crate::tutorial::FIRST_SCENARIO {
@@ -122,7 +105,7 @@ pub(super) fn catalog(
 mod tests {
     use super::*;
     #[test]
-    fn installed_campaigns_follow_rank_and_use_the_actual_directory_and_default_define() {
+    fn installed_campaigns_follow_rank_and_use_the_actual_directory_and_campaign_define() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -141,7 +124,7 @@ mod tests {
         let (list, by_first) = catalog(engine_lite::wml::parse(source).unwrap(), &root).unwrap();
         assert_eq!(list.children[0].1.attribute("id"), Some("Liberty"));
         assert_eq!(by_first["LOW_first"].folder, "Legend_of_Wesmere");
-        assert_eq!(by_first["LOW_first"].difficulty, "NORMAL");
+        assert_eq!(by_first["LOW_first"].define, "CAMPAIGN_LOW");
         fs::remove_dir_all(root).unwrap();
     }
 }
