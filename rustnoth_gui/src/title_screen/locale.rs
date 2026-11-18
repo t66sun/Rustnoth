@@ -3,11 +3,12 @@ use engine_lite::wml;
 use std::{collections::HashMap, env, fs, io, path::Path};
 
 #[derive(Default)]
-pub(super) struct Locale {
+pub(crate) struct Locale {
     pub selected: String,
     pub effective: String,
     game: Catalog,
     interface: Catalog,
+    domains: HashMap<String, Catalog>,
 }
 
 #[derive(Default)]
@@ -146,7 +147,7 @@ fn candidates(id: &str) -> Vec<String> {
     result
 }
 
-pub(super) fn font_name(id: &str) -> &'static str {
+pub(crate) fn font_name(id: &str) -> &'static str {
     match id.split(['_', '@']).next().unwrap_or("") {
         "zh" | "ko" => "DroidSansFallbackFull.ttf",
         "ja" => "NotoSansJP-VariableFont_wght.ttf",
@@ -157,7 +158,48 @@ pub(super) fn font_name(id: &str) -> &'static str {
     }
 }
 
+fn load_domain(root: &Path, language: &str, domain: &str) -> io::Result<Catalog> {
+    let identifier = |s: &str| !s.is_empty() && s.bytes().all(|b|
+        b.is_ascii_alphanumeric() || b"_@-".contains(&b));
+    if matches!(language, "en_US" | "C") || !identifier(language) || !identifier(domain) {
+        return Ok(Catalog::default());
+    }
+    for id in candidates(language) {
+        let path = root.join("translations").join(id).join("LC_MESSAGES").join(format!("{domain}.mo"));
+        match fs::read(path) {
+            Ok(bytes) => return Catalog::read(&bytes),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Catalog::default())
+}
+
 impl Locale {
+    pub fn attribute(&mut self, root: &Path, node: &wml::Node, key: &str, fallback: &str) -> String {
+        let Some(value) = node.attributes.get(key).filter(|v| !v.text.is_empty()) else {
+            return fallback.to_owned();
+        };
+        let mut text = String::new();
+        let mut previous = 0;
+        for segment in &value.translations {
+            text.push_str(&value.text[previous..segment.bytes.start]);
+            let original = &value.text[segment.bytes.clone()];
+            let catalog = match segment.domain.as_str() {
+                "wesnoth" => &self.game,
+                "wesnoth-lib" => &self.interface,
+                domain => self.domains.entry(domain.to_owned()).or_insert_with(|| {
+                    load_domain(root, &self.effective, domain).unwrap_or_default()
+                }),
+            };
+            let translated = catalog.text(original);
+            text.push_str(translated.split_once('^').map_or(translated, |(_, display)| display));
+            previous = segment.bytes.end;
+        }
+        text.push_str(&value.text[previous..]);
+        text
+    }
+
     pub fn load(root: &Path, selected: String) -> io::Result<Self> {
         let effective = if selected.is_empty() {
             system_language()
@@ -169,34 +211,8 @@ impl Locale {
             effective,
             ..Default::default()
         };
-        if locale.effective == "en_US" || locale.effective == "C" {
-            return Ok(locale);
-        }
-        // Only locale identifiers, not paths, can come from the preference or environment.
-        if !locale
-            .effective
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b))
-        {
-            return Ok(locale);
-        }
-        let read = |domain| -> io::Result<Catalog> {
-            for id in candidates(&locale.effective) {
-                let path = root
-                    .join("translations")
-                    .join(id)
-                    .join("LC_MESSAGES")
-                    .join(format!("{domain}.mo"));
-                match fs::read(path) {
-                    Ok(bytes) => return Catalog::read(&bytes),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(Catalog::default())
-        };
-        locale.game = read("wesnoth")?;
-        locale.interface = read("wesnoth-lib")?;
+        locale.game = load_domain(root, &locale.effective, "wesnoth")?;
+        locale.interface = load_domain(root, &locale.effective, "wesnoth-lib")?;
         Ok(locale)
     }
 
@@ -224,7 +240,7 @@ impl Locale {
     }
 }
 
-pub(super) fn saved(dir: &Path) -> io::Result<String> {
+pub(crate) fn saved(dir: &Path) -> io::Result<String> {
     match fs::read_to_string(dir.join("language")) {
         Ok(value) => Ok(value.trim().to_owned()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
@@ -267,6 +283,17 @@ mod tests {
             "images/misc/logo.png"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translates_only_authored_segments_using_each_campaign_domain() {
+        let mut locale = Locale::default();
+        locale.game.0.insert("Hard".into(), "困难".into());
+        locale.domains.insert("wesnoth-did".into(), Catalog(HashMap::from([
+            ("Descent".into(), "堕落".into()),
+        ])));
+        let data = wml::parse(b"#textdomain wesnoth-did\nname = _ \"Descent\" + \" / \" +\n\xFEtextdomain wesnoth\n_ \"Hard\"\n").unwrap();
+        assert_eq!(locale.attribute(Path::new(""), &data, "name", ""), "堕落 / 困难");
     }
 
     #[test]
