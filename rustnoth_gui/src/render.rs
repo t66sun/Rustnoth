@@ -28,6 +28,7 @@ mod transitions;
 mod unit_status;
 mod standing;
 pub(super) mod combat_motion;
+mod walking;
 mod ground;
 mod rules;
 pub(crate) use rules::{map_observation, map_png, Rules as EditorTerrain};
@@ -95,6 +96,8 @@ pub struct BoardArt {
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     combat_pose: Option<combat_motion::Pose>,
+    moving: HashMap<String, HashMap<usize, standing::Sprites>>,
+    pub(crate) walk: walking::Walk,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
@@ -117,6 +120,19 @@ pub struct BoardArt {
 }
 
 impl BoardArt {
+    pub fn start_walk(&mut self, route: Vec<Hex>, view: &Observation, assets: &AssetCatalog) {
+        if route.len() < 2 { return; }
+        let Some(unit) = view.units.iter().find(|u| Some(&u.position) == route.last() && u.side == view.side) else { return; };
+        let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
+        self.moving.entry(unit.type_id.clone()).or_default().entry(unit.side).or_insert_with(|| {
+            standing::Sprites::load(assets.movement_animations(&unit.type_id), |image| {
+                let path = assets.resolve_image(Path::new(image))?;
+                load_texture(&path, palette)
+            })
+        });
+        self.walk.start(route, (get_time() * 1000.0) as u64);
+    }
+
     pub fn new(wesnoth_root: &Path) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
@@ -157,6 +173,8 @@ impl BoardArt {
             units: BTreeMap::new(),
             standing: HashMap::new(),
             combat_pose: None,
+            moving: HashMap::new(),
+            walk: walking::Walk::default(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
@@ -476,9 +494,11 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let (pointer_x, pointer_y) = mouse_position();
     let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
+    let walking = art.walk.pose(now);
+    let origin = |at: Hex| walking.filter(|p| p.unit == at).map_or_else(
+        || Vec2::from_array(layout.tile_origin(at)), |p| p.origin(layout));
     for unit in &view.units {
-        let [x, y] = layout.tile_origin(unit.position);
-        let center = vec2(x + size / 2.0, y + size / 2.0);
+        let center = origin(unit.position) + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
             let selected = movement.selected == Some(unit.position);
@@ -492,7 +512,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             .get(&unit.type_id)
             .and_then(|sides| sides.get(&unit.side))
             .and_then(Option::as_ref);
-        let direction = standing::facing(unit);
+        let motion = walking.filter(|p| p.unit == unit.position);
+        let direction = motion.and_then(|p| p.direction).unwrap_or_else(|| standing::facing(unit));
+        let walking_frame = motion.and_then(|p| {
+            let terrain = view.tiles.binary_search_by_key(&(p.to.y, p.to.x), |tile| (tile.position.y, tile.position.x))
+                .ok().map(|index| view.tiles[index].terrain.as_str());
+            art.moving.get(&unit.type_id)?.get(&unit.side)?.frame(direction, terrain, p.elapsed)
+        });
         let standing_frame = art.standing.get(&unit.type_id).and_then(|teams| teams.get(&unit.side))
             .and_then(|sprites| {
                 if unit.petrified { return None; }
@@ -503,7 +529,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             });
         let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, layout));
         let (at, attack_frame) = posed.unwrap_or((center, None));
-        if let Some((texture, flipped)) = attack_frame.or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
+        if let Some((texture, flipped)) = attack_frame.or(walking_frame).or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
             draw_centered_flipped(texture, at, size, flipped);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
@@ -519,7 +545,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
             let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position));
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
-            let origin = Vec2::from_array(layout.tile_origin(unit.position));
+            let origin = origin(unit.position);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted);
         }
         let icons = [
@@ -528,7 +554,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             art.petrified.as_ref().filter(|_| unit.petrified),
         ];
         let count = icons.iter().flatten().count();
-        let [x, y] = layout.tile_origin(unit.position);
+        let [x, y] = origin(unit.position).to_array();
         let spacing = (size * 0.30).max(10.0).min(size * 0.37);
         for (index, icon) in icons.into_iter().flatten().enumerate() {
             let slot = index as f32 + 0.5 - count as f32 * 0.5;
