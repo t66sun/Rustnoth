@@ -466,10 +466,11 @@ impl<'data> FixedMatch<'data> {
                     }
                 }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
-                self.apply_scenario_attack(turn.side, attack)?;
-                let board = &mut self.scenario.board;
-                board.advance_after_combat(choice.from, attacker, supports_unit);
-                board.advance_after_combat(choice.to, defender, supports_unit);
+                if self.apply_scenario_attack(turn, attack)? {
+                    let board = &mut self.scenario.board;
+                    board.advance_after_combat(choice.from, attacker, supports_unit);
+                    board.advance_after_combat(choice.to, defender, supports_unit);
+                }
                 self.refog(defender_side);
                 self.reveal_travelled_hexes(choice.from, [choice.from]);
                 self.check_victory();
