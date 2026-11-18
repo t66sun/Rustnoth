@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, error, fmt, io};
 
 use crate::{
     board::{Battlefield, BoardError, DEFAULT_EXPERIENCE_MODIFIER},
+    scenario_events::ScenarioEvents,
     scenario_map::{self, ScenarioMapError},
     scenario_sides::{SideConfig, read_sides},
     scenario_time::{integer, read_map_schedule},
@@ -15,6 +16,7 @@ use crate::{
 #[derive(Debug)]
 pub struct ScenarioStart<'rules> {
     pub board: Battlefield<'rules>,
+    pub(crate) events: ScenarioEvents,
     pub sides: Vec<SideConfig>,
     pub schedule: TimeSchedule,
     pub start_round: i32,
@@ -36,9 +38,11 @@ pub fn load<'rules>(
     let board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
         .map_err(ScenarioStartError::Board)?;
 
+    let sides = read_sides(scenario);
     Ok(ScenarioStart {
         board,
-        sides: read_sides(scenario),
+        events: ScenarioEvents::read(scenario, sides.len()),
+        sides,
         schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
         last_round: integer(scenario, "turns").filter(|&turns| turns != -1),
