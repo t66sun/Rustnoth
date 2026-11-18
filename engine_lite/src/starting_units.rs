@@ -19,6 +19,8 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) id: Option<String>,
     pub(crate) type_id: String,
     pub(crate) variation: String,
+    pub(crate) display_name: Option<String>,
+    pub(crate) portrait: Option<String>,
     /// None places the unit in its side's recall list.
     pub(crate) position: Option<Hex>,
     pub(crate) can_recruit: bool,
@@ -112,9 +114,10 @@ pub(crate) fn read_authored_starting_units(
 /// A literal on-map [unit] command. Variable-driven placements need a WML interpreter.
 pub(crate) fn read_event_unit(unit: &Node, side_count: usize) -> Option<AuthoredStartingUnit> {
     let type_id = nonempty(unit, "type")?;
-    let id = nonempty(unit, "id")?;
-    let side: usize = unit.attribute("side")?.trim().parse().ok()?;
-    if !(1..=side_count).contains(&side) || type_id.contains('$') || id.contains('$')
+    let side: usize = unit.attribute("side").unwrap_or("1").trim().parse().ok()?;
+    if !(1..=side_count).contains(&side) || type_id.contains('$')
+        || unit.attribute("id").is_some_and(|id| id.contains('$'))
+        || unit.attribute("overwrite").is_some_and(wml_true)
         || unit.attribute("placement").is_some_and(|p| !p.is_empty() && p != "map")
         || unit.attribute("to_variable").is_some()
         || unit.attribute("passable").is_some_and(wml_true)
@@ -141,6 +144,8 @@ fn authored_unit(
         side,
         id: nonempty(unit, "id").map(str::to_owned),
         type_id: type_id.to_owned(),
+        display_name: nonempty(unit, "name").filter(|s| !s.contains('$')).map(str::to_owned),
+        portrait: nonempty(unit, "profile").filter(|s| !s.contains('$')).map(str::to_owned),
         variation: unit.attribute("variation").unwrap_or_default().to_owned(),
         position,
         can_recruit,

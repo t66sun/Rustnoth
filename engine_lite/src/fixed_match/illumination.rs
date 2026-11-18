@@ -223,3 +223,69 @@ Xv,Xv,Xv,Xv,Xv"
         }
     }
 }
+
+#[cfg(test)]
+mod regional_event_tests {
+    use crate::{fixed_match::Action, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn turn_events_place_and_remove_regional_schedules_by_id() {
+        let text = br#"[units]
+[unit_type]
+id=Guard
+hitpoints=24
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[time]
+id=global
+[/time]
+[time_area]
+id=old
+x,y=1,1
+[time]
+id=old_light
+[/time]
+[/time_area]
+[event]
+name=side 2 turn
+[time_area]
+id=torch
+x,y=1,1
+current_time=1
+[time]
+id=smoke
+[/time]
+[time]
+id=fire
+[/time]
+[/time_area]
+[/event]
+[event]
+name=turn 2
+[remove_time_area]
+id=old,torch
+[/remove_time_area]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(text).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let west = Hex { x: 0, y: 0 };
+        let east = Hex { x: 1, y: 0 };
+        assert_eq!(game.scenario.schedule.at_hex(1, west).id, "old_light");
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.scenario.schedule.at_hex(1, west).id, "fire");
+        assert_eq!(game.scenario.schedule.at_hex(1, east).id, "global");
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.scenario.schedule.at_hex(2, west).id, "global");
+    }
+}

@@ -18,6 +18,8 @@ pub struct ScenarioStart<'rules> {
     pub board: Battlefield<'rules>,
     pub(crate) events: ScenarioEvents,
     pub(crate) manual_victory_sides: Vec<usize>,
+    pub(crate) next_scenario: Option<String>,
+    pub(crate) treasuries: Vec<crate::fixed_match::carryover::Treasury>,
     pub sides: Vec<SideConfig>,
     pub schedule: TimeSchedule,
     pub start_round: i32,
@@ -44,6 +46,9 @@ pub fn load<'rules>(
         board,
         events: ScenarioEvents::read(scenario, sides.len()),
         manual_victory_sides: manual_victory_sides(scenario),
+        next_scenario: scenario.attribute("next_scenario").map(str::to_owned),
+        treasuries: scenario.children.iter().filter(|(tag, _)| tag == "side")
+            .map(|(_, side)| crate::fixed_match::carryover::Treasury::read(scenario, side)).collect(),
         sides,
         schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
