@@ -332,6 +332,7 @@ mod tests {
                 experience: 0, max_experience: 35,
                 hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),
                 poisoned: false, slowed: false,
+                petrified: false,
             }],
         };
         let action = Action::Move { from: start, to: destination };

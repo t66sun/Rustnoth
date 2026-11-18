@@ -61,6 +61,7 @@ pub struct BoardArt {
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
+    petrified: Option<Texture2D>,
     fog: Vec<Texture2D>,
     shroud: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
@@ -85,6 +86,7 @@ impl BoardArt {
             units: BTreeMap::new(),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
+            petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             cover: Vec::new(),
@@ -238,14 +240,10 @@ pub fn draw(
         if let Some(moves) = unit.moves_left {
             label(&art.font, &format!("Moves {moves}"), inset, baseline + 178.0, 17, MUTED);
         }
-        let condition = match (unit.poisoned, unit.slowed) {
-            (true, true) => "Poisoned, Slowed",
-            (true, false) => "Poisoned",
-            (false, true) => "Slowed",
-            (false, false) => "",
-        };
+        let condition = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
+            .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
         if !condition.is_empty() {
-            label(&art.font, condition, inset, baseline + 195.0, 13, TEXT);
+            label(&art.font, &condition, inset, baseline + 195.0, 13, TEXT);
         }
     }
     if movement.menu.is_none()
@@ -390,6 +388,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let icons = [
             art.poisoned.as_ref().filter(|_| unit.poisoned),
             art.slowed.as_ref().filter(|_| unit.slowed),
+            art.petrified.as_ref().filter(|_| unit.petrified),
         ];
         let count = icons.iter().flatten().count();
         let [x, y] = layout.tile_origin(unit.position);
