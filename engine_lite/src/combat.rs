@@ -37,6 +37,15 @@ pub struct Combatant {
     pub poison: Poison,
 }
 
+/// Public animation result of one completed blow. Contains no random draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedBlow {
+    pub retaliation: bool,
+    pub hit: bool,
+    pub lost_hp: u32,
+    pub remaining_hp: [u32; 2],
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct CombatResult {
     pub attacker_hitpoints: u32,
@@ -90,6 +99,16 @@ pub fn resolve_exchange(
     rounds: NonZeroU32,
     rng: &mut ReplayRng,
 ) -> CombatResult {
+    exchange_with_blows(attacker, defender, rounds, rng, None)
+}
+
+pub(crate) fn exchange_with_blows(
+    attacker: Combatant,
+    defender: Combatant,
+    rounds: NonZeroU32,
+    rng: &mut ReplayRng,
+    mut blows: Option<&mut Vec<ResolvedBlow>>,
+) -> CombatResult {
     let order = strike_order(&attacker, &defender);
     let strike_limit = attacker.strikes.max(defender.strikes);
     let mut hp = [attacker.hitpoints, defender.hitpoints];
@@ -106,12 +125,19 @@ pub fn resolve_exchange(
                     if strike >= unit.strikes {
                         continue;
                     }
-                    if rng.next_u32() % 100 < u32::from(unit.hit_chance) {
+                    let target = 1 - index;
+                    let before = hp[target];
+                    let hit = rng.next_u32() % 100 < u32::from(unit.hit_chance);
+                    if hit {
                         poisoned[1 - index] |= unit.poison.affects(participants[1 - index].poison);
                         petrified[1 - index] = apply_hit(&participants, &mut hp, &mut slowed, index);
-                        if hp[1 - index] == 0 || petrified[1 - index] {
-                            break 'fight;
-                        }
+                    }
+                    if let Some(trace) = blows.as_deref_mut() {
+                        trace.push(ResolvedBlow { retaliation: index == 1, hit,
+                            lost_hp: before - hp[target], remaining_hp: hp });
+                    }
+                    if hp[target] == 0 || petrified[target] {
+                        break 'fight;
                     }
                 }
             }
@@ -172,6 +198,19 @@ mod tests {
         assert_eq!(result.attacker_hitpoints, 14);
         assert_eq!(result.defender_hitpoints, 20);
         assert_eq!(rng.seed_and_calls(), (5489, 3));
+    }
+
+    #[test]
+    fn display_records_only_completed_blows_including_retaliation_and_misses() {
+        let mut trace = Vec::new();
+        let mut rng = ReplayRng::new(5489);
+        exchange_with_blows(unit(6, 4, 5, 0), unit(20, 2, 9, 100),
+            NonZeroU32::MIN, &mut rng, Some(&mut trace));
+        assert_eq!(trace, [
+            ResolvedBlow {retaliation:false,hit:false,lost_hp:0,remaining_hp:[6,20]},
+            ResolvedBlow {retaliation:true,hit:true,lost_hp:6,remaining_hp:[0,20]}
+        ]);
+        assert_eq!(rng.seed_and_calls(), (5489, 2));
     }
 
     #[test]

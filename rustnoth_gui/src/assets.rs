@@ -32,6 +32,8 @@ struct UnitAssets {
     ellipse: String,
     bars: UnitBars,
     standing: Vec<Node>,
+    combat: Vec<(String, Node)>,
+    moving: Vec<Node>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,6 +114,14 @@ impl AssetCatalog {
         catalog.fallback = wesnoth_root.join("data/core/images");
         catalog.read_definitions(&document);
         Ok(catalog)
+    }
+
+    pub fn combat_animations(&self, id: &str) -> &[(String, Node)] {
+        self.units.get(id).map_or(&[], |unit| &unit.combat)
+    }
+
+    pub fn movement_animations(&self, id: &str) -> &[Node] {
+        self.units.get(id).map_or(&[], |unit| unit.moving.as_slice())
     }
 
     pub fn standing_animations(&self, id: &str) -> &[Node] {
@@ -257,6 +267,10 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
+                            combat: unit.children.iter().filter(|(tag, _)| matches!(tag.as_str(), "attack_anim" | "defend"))
+                                .cloned().collect(),
+                            moving: unit.children.iter().filter(|(tag, _)| tag == "movement_anim")
+                                .map(|(_, definition)| definition.clone()).collect(),
                             standing: unit.children.iter().filter(|(tag, _)| tag == "standing_anim")
                                 .map(|(_, definition)| definition.clone()).collect(),
                             image: unit

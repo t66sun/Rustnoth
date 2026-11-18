@@ -8,6 +8,8 @@ mod preferences;
 mod help;
 mod locale;
 mod languages;
+mod credits;
+mod community;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -23,7 +25,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Community, Credits, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -33,6 +35,8 @@ impl Command {
             Self::Load => "Load",
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
+            Self::Credits => "Credits",
+            Self::Community => "Community",
             Self::Quit => "Quit",
             Self::Language => "Language",
             Self::Help => "Help",
@@ -43,8 +47,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -106,6 +110,10 @@ impl TitleScreen {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::Previous) => { error = None; tip = (tip + entries.len() - 1) % entries.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % entries.len(); }
+                Some(Command::Community) => {
+                    next_frame().await;
+                    community::show(&art).await;
+                }
                 Some(Command::Language) => {
                     next_frame().await;
                     let result = languages::show(&self.root, &art, |w,h| {
@@ -148,7 +156,7 @@ impl TitleScreen {
                     }).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
-                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help | Command::Editor)) => {
+                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help | Command::Editor | Command::Credits)) => {
                     next_frame().await;
                     error = self.open(command, &art).await.err().map(|cause| cause.to_string());
                 }
@@ -164,7 +172,7 @@ impl TitleScreen {
             Games::Prepared(data) => data,
             Games::Installed => {
                 let root = self.root.clone();
-                let worker = std::thread::spawn(move || desktop::prepare(&root, command == Command::Campaigns));
+                let worker = std::thread::spawn(move || desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits)));
                 while !worker.is_finished() {
                     art.draw_background(screen_width(), screen_height());
                     dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
@@ -183,6 +191,10 @@ impl TitleScreen {
                     Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?
                 };
                 browser.run().await
+            }
+            Command::Credits => {
+                let catalog = data.campaign.as_ref().map(|(file,_)|read_file(file)).transpose()?;
+                credits::show(&self.root,&data.core,catalog.as_deref(),art).await
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             Command::Help => help::show(&self.root, &data.core, art).await,
@@ -418,8 +430,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
     }
 
     #[test]
