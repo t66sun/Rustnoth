@@ -28,6 +28,21 @@ impl Upkeep {
     }
 }
 
+/// The viewing side's own economy and the village total on explored terrain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EconomyReport {
+    pub villages: usize,
+    pub known_villages: usize,
+    pub upkeep: i32,
+    pub expenses: i64,
+    pub income: i64,
+    pub last_round: Option<i32>,
+}
+
+pub(crate) fn expenses(side: &SideConfig, villages: usize, upkeep: i32) -> i64 {
+    (i64::from(upkeep) - villages as i64 * i64::from(side.village_support)).max(0)
+}
+
 /// Wesnoth's default global base income.
 pub const DEFAULT_BASE_INCOME: i32 = 2;
 
@@ -44,8 +59,7 @@ pub fn net_income(
 ) -> i64 {
     let villages = village_count as i64;
     let village_income = villages * i64::from(side.village_gold);
-    let village_support = villages * i64::from(side.village_support);
-    let expenses = (i64::from(total_upkeep) - village_support).max(0);
+    let expenses = expenses(side, village_count, total_upkeep);
     i64::from(base_income) + i64::from(side.income_bonus) + village_income - expenses
 }
 
@@ -99,6 +113,10 @@ Xv,Xv,Xv,Xv,Xv"
 [/scenario]"#);
             let bundle = Bundle::parse(source.as_bytes()).unwrap();
             let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+            let report = game.economy_for(&game.observation_for(1).unwrap()).unwrap();
+            assert_eq!(100 + report.income, expected, "{attributes}");
+            assert_eq!(report.expenses, i64::from(report.upkeep));
+            assert_eq!(report.known_villages, 0);
             game.step(Action::EndTurn).unwrap();
             game.step(Action::EndTurn).unwrap();
             let snapshot = game.audit_snapshot();
