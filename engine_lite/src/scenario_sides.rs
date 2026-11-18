@@ -19,6 +19,7 @@ pub struct SideConfig {
     pub fog: bool,
     pub shroud: bool,
     pub(crate) fog_data: String,
+    pub(crate) fog_override: Option<(String, String)>,
     pub(crate) shroud_data: String,
     pub share_vision: ShareVision,
     pub starting_gold: i32,
@@ -71,6 +72,11 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
         fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),
+        fog_override: cfg.children.iter().find(|(tag, _)| tag == "fog_override")
+            .map(|(_, locations)| (
+                locations.attribute("x").unwrap_or_default().to_owned(),
+                locations.attribute("y").unwrap_or_default().to_owned(),
+            )),
         shroud_data: cfg.attribute("shroud_data").unwrap_or_default().to_owned(),
         share_vision: read_share_vision(cfg),
         starting_gold,
