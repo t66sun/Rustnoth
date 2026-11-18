@@ -38,6 +38,7 @@ pub struct UnitType {
     /// Base experience requirement before applying the scenario's XP modifier.
     pub experience: i32,
     pub cost: i32,
+    pub(crate) recall_cost: i32,
     pub alignment: Alignment,
     pub movement_type: String,
     /// Terrain costs that this unit type defines over its inherited movement type.
@@ -141,6 +142,7 @@ impl UnitType {
             cures_adjacent,
             experience: int("experience", 500),
             cost: int("cost", 1),
+            recall_cost: int("recall_cost", -1),
             alignment,
             movement_type: text("movement_type").to_owned(),
             movement_cost_overrides: terrain_costs("movement_costs"),
