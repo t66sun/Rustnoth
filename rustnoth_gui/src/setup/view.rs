@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use macroquad::prelude::*;
 
 use super::{Field, Setup};
+use rustnoth_gui::session::Players;
 
 const BACKDROP: Color = Color::from_rgba(23, 27, 25, 255);
 const PANEL: Color = Color::from_rgba(25, 31, 28, 245);
@@ -15,7 +16,7 @@ const WARNING: Color = Color::from_rgba(252, 185, 143, 255);
 
 pub(super) enum Input {
     Choose(Field, usize),
-    Start,
+    Start(Players),
     Exit,
     Idle,
 }
@@ -143,8 +144,9 @@ impl SetupView {
             let reverse_tab = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             let move_up = is_key_pressed(KeyCode::Up) || (is_key_pressed(KeyCode::Tab) && reverse_tab);
             let move_down = is_key_pressed(KeyCode::Down) || (is_key_pressed(KeyCode::Tab) && !reverse_tab);
-            if move_up { self.focus = (self.focus + start_index) % (start_index + 1); }
-            if move_down { self.focus = (self.focus + 1) % (start_index + 1); }
+            let focus_count = start_index + 2;
+            if move_up { self.focus = (self.focus + focus_count - 1) % focus_count; }
+            if move_down { self.focus = (self.focus + 1) % focus_count; }
             for (n, field) in Field::ALL.into_iter().enumerate() {
                 let rect = Rect::new(left, y + 105.0 + n as f32 * 57.0, inner, 49.0);
                 let enabled = setup.count(field) > 0;
@@ -165,13 +167,18 @@ impl SetupView {
             if let Some(message) = error.or(map_error) {
                 wrap(font, message, left, y + 105.0 + Field::ALL.len() as f32 * 57.0 + 27.0, inner);
             }
-            let rect = Rect::new(left, y + height - 71.0, inner, 48.0);
-            let start = !setup.sides.is_empty()
-                && ((clicked && rect.contains(mouse)) || (confirm && self.focus == start_index));
-            button(rect, rect.contains(mouse) || start, self.focus == start_index);
-            text(font, if start { "Starting skirmish…" } else { "Start skirmish" },
-                rect.x + 14.0, rect.y + 31.0, 20, if setup.sides.is_empty() { MUTED } else { GOLD });
-            if start { result = Input::Start; }
+            let button_width = (inner - 8.0) / 2.0;
+            let modes = [(Players::HotSeat, "Play hot seat"), (Players::VersusComputer, "Play vs computer")];
+            for (index, (players, title)) in modes.into_iter().enumerate() {
+                let rect = Rect::new(left + index as f32 * (button_width + 8.0), y + height - 71.0, button_width, 48.0);
+                let focused = self.focus == start_index + index;
+                let enabled = !setup.sides.is_empty();
+                let start = enabled && ((clicked && rect.contains(mouse)) || (confirm && focused));
+                button(rect, enabled && (rect.contains(mouse) || start), focused);
+                text(font, if start { "Starting…" } else { title }, rect.x + 14.0, rect.y + 31.0,
+                    18, if enabled { GOLD } else { MUTED });
+                if start { result = Input::Start(players); }
+            }
             if is_key_pressed(KeyCode::Escape) { result = Input::Exit; }
         }
         set_default_camera();
