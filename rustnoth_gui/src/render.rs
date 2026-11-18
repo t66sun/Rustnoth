@@ -27,6 +27,7 @@ mod transitions;
 mod unit_status;
 mod ground;
 mod rules;
+mod border;
 mod reach;
 mod hover;
 
@@ -84,6 +85,7 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
+    border_background: Option<Texture2D>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -142,6 +144,7 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
+            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -288,6 +291,7 @@ pub fn draw(
 ) {
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
+    if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
     if let (Some(view), Some(layout)) = (observation, layout) {
         draw_board(view, layout, art, &movement);
     }
@@ -403,6 +407,14 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
+    let border_time = (get_time() * 1000.0) as u64;
+    let border_period = movement.global_time.map_or("", |t| t.id.as_str());
+    for hex in border::ring(view.width, view.height) {
+        let [x,y] = layout.tile_origin(hex);
+        let center = vec2(x + size / 2.0, y + size / 2.0);
+        art.rules.draw(hex, center, size, false, border_period, border_time);
+        art.rules.draw(hex, center, size, true, border_period, border_time);
+    }
     let frame = village_flag_frame((get_time() * 1000.0) as u64);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
