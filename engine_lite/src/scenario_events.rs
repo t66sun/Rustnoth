@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+mod endlevel;
+
 use crate::{
     hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
@@ -23,6 +25,7 @@ enum EventAction {
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
+    EndLevel { victory: bool },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Terrain { position: Hex, code: String },
 }
@@ -266,16 +269,24 @@ impl ScenarioEvents {
             let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
                 .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
             let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
+            let ends_level = event.children.iter().any(|(tag, _)| tag == "endlevel");
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
                 vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
                 let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
                     // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "filter" && !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    tag != "filter" && !((opening || ends_level) && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
-                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count, opening))
+                    .map(|(tag, cfg)| {
+                        if tag == "endlevel" {
+                            endlevel::player_victory(cfg, scenario)
+                                .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))
+                        } else {
+                            EventAction::read(tag, cfg, side_count, opening)
+                        }
+                    })
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
             };
@@ -306,6 +317,7 @@ impl ScenarioEvents {
     }
 
     fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
+        if state.board_changes.iter().any(|c| matches!(c, BoardChange::EndLevel { .. })) { return; }
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name)
                 || !handler.filters.iter().all(|f| unit.as_ref().is_some_and(|u| f.matches(u)))

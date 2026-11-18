@@ -60,6 +60,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
             println!("Sides {winners} won.");
         }
+        MatchState::CampaignVictory => println!("Campaign victory."),
+        MatchState::CampaignDefeat => println!("Campaign defeat."),
         MatchState::Draw => println!("Draw."),
         MatchState::Playing(_) => unreachable!("play_bundle returns a terminal match"),
     }

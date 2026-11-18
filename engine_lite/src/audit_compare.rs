@@ -46,7 +46,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                 }
                 Some(last)
             }
-            ["step", index, "draw"] if index.parse::<usize>() == Ok(step) => None,
+            ["step", index, "draw" | "campaign_victory" | "campaign_defeat"] if index.parse::<usize>() == Ok(step) => None,
             _ => return Err(bad_header()),
         };
 

@@ -60,6 +60,9 @@ pub enum MatchState {
     Won(usize),
     /// Surviving sides, in ascending order, when none are enemies of one another.
     AlliedVictory(Vec<usize>),
+    /// Local campaign outcome declared by WML instead of the surviving coalition.
+    CampaignVictory,
+    CampaignDefeat,
     Draw,
 }
 
@@ -171,6 +174,7 @@ impl<'data> FixedMatch<'data> {
                 game.state = MatchState::Draw;
             } else {
                 game.with_events(|events, state| events.begin_turn(turn, events.new_round_at_start, state))?;
+                if !matches!(game.state, MatchState::Playing(_)) { return Ok(game); }
                 game.settle_income(turn);
                 game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
@@ -182,10 +186,17 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
+        if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::EndLevel { victory } => {
+                    if matches!(self.state, MatchState::Playing(_)) {
+                        self.state = if victory { MatchState::CampaignVictory } else { MatchState::CampaignDefeat };
+                    }
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
@@ -396,9 +407,12 @@ impl<'data> FixedMatch<'data> {
                 let end_round = next.is_none_or(|next| next.round != turn.round);
                 self.with_events(|events, state| events.end_turn(turn, end_round, state))?;
                 self.refog(turn.side);
-                self.state = if let Some(next) = next {
+                if !matches!(self.state, MatchState::Playing(_)) { return Ok(self.state()); }
+                if let Some(next) = next {
+                    self.state = MatchState::Playing(next);
                     self.current_round = next.round;
                     self.with_events(|events, state| events.begin_turn(next, end_round, state))?;
+                    if !matches!(self.state, MatchState::Playing(_)) { return Ok(self.state()); }
                     self.settle_income(next);
                     let sides = &self.scenario.sides;
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
@@ -406,11 +420,10 @@ impl<'data> FixedMatch<'data> {
                     });
                     self.with_events(|events, state| events.refresh(next, state))?;
                     self.refog(next.side);
-                    MatchState::Playing(next)
                 } else {
                     self.with_events(|events, state| events.fire("time_over", state))?;
-                    MatchState::Draw
-                };
+                    if matches!(self.state, MatchState::Playing(_)) { self.state = MatchState::Draw; }
+                }
             }
         }
         Ok(self.state())
@@ -577,6 +590,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn check_victory(&mut self) {
+        if !matches!(self.state, MatchState::Playing(_)) { return; }
         let living: BTreeSet<_> = self.surviving_sides().collect();
         let sides = &self.scenario.sides;
         let mut winners: Vec<usize> = Vec::with_capacity(living.len());
