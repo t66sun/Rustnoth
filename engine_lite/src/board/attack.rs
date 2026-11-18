@@ -46,16 +46,14 @@ impl Battlefield<'_> {
         from: Hex,
         to: Hex,
         weapon: &WeaponProfile,
-        defender_side: usize,
+        enemy_of_defender: impl Fn(usize) -> bool,
     ) -> bool {
-        // In the fixed match all distinct sides are mutually hostile. A third side
-        // can therefore flank the defender just as the attacker's own side can.
         weapon.has_backstab()
             && Direction::CLOCKWISE.into_iter()
                 .find(|&direction| from.neighbor(direction) == Some(to))
                 .and_then(|direction| to.neighbor(direction))
                 .and_then(|opposite| self.unit_at(opposite))
-                .is_some_and(|flanker| flanker.side != defender_side)
+                .is_some_and(|flanker| enemy_of_defender(flanker.side))
     }
 
     /// Lists available attacks in origin, target, then weapon-index order.
@@ -98,6 +96,19 @@ impl Battlefield<'_> {
         is_enemy: impl Fn(usize) -> bool,
         rng: &mut ReplayRng,
     ) -> Result<CombatResult, AttackError> {
+        self.apply_attack_with_relations(active_side, action, |a, b| {
+            if a == active_side { is_enemy(b) } else { a != b }
+        }, rng)
+    }
+
+    /// Uses the defender's own enemy relations to resolve the flanking unit's allegiance.
+    pub fn apply_attack_with_relations(
+        &mut self,
+        active_side: usize,
+        action: Attack,
+        sides_are_enemies: impl Fn(usize, usize) -> bool,
+        rng: &mut ReplayRng,
+    ) -> Result<CombatResult, AttackError> {
         let from = action.from;
         let to = action.to;
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
@@ -105,7 +116,7 @@ impl Battlefield<'_> {
             return Err(AttackError::AttackerUnavailable);
         }
         let defender = self.units.get(&to).ok_or(AttackError::MissingDefender)?;
-        if defender.side == active_side || !is_enemy(defender.side) {
+        if defender.side == active_side || !sides_are_enemies(active_side, defender.side) {
             return Err(AttackError::FriendlyTarget);
         }
         let distance = from.distance(to) as i64;
@@ -132,7 +143,9 @@ impl Battlefield<'_> {
             action.weapon,
             &action.modifiers,
             retaliation.map_or(0, |(_, response, _)| response.parry),
-            StrikeRole::Attack { backstab: self.backstabs(from, to, weapon, defender.side) },
+            StrikeRole::Attack {
+                backstab: self.backstabs(from, to, weapon, |side| sides_are_enemies(defender.side, side)),
+            },
         );
         let defender_stats = retaliation.map_or(
             Combatant {
@@ -349,7 +362,9 @@ mod tests {
         types.get_mut("Fighter").unwrap().attacks[0] = weapon(special);
         let from = Hex { x: 0, y: 1 };
         let to = Hex { x: 0, y: 2 };
-        for (opposite_side, defender_hp) in [(None, 7), (Some(2), 7), (Some(1), 4), (Some(3), 4)] {
+        for (opposite_side, defender_hp) in [
+            (None, 7), (Some(2), 7), (Some(1), 4), (Some(3), 4), (Some(4), 7),
+        ] {
             let map = ScenarioMap::parse(
                 "Xv,Xv,Xv\nXv,Gg,Xv\nXv,1 Gg,Xv\nXv,2 Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
             ).unwrap();
@@ -361,8 +376,10 @@ mod tests {
             if let Some(side) = opposite_side {
                 board.place_recruit(side, "Fighter", Hex { x: 0, y: 3 }).unwrap();
             }
-            let result = board.apply_attack(
-                1, Attack { from, to, ..attack(0) }, |side| side != 1, &mut ReplayRng::new(0),
+            let result = board.apply_attack_with_relations(
+                1, Attack { from, to, ..attack(0) },
+                |a, b| a != b && !matches!((a, b), (2, 4) | (4, 2)),
+                &mut ReplayRng::new(0),
             ).unwrap();
             assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (7, defender_hp));
         }

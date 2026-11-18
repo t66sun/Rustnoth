@@ -65,6 +65,7 @@ mod tests {
         };
         let observation = Observation {
             side: 1,
+            allied_sides: vec![1],
             gold: Some(20),
             width: 2,
             height: 3,

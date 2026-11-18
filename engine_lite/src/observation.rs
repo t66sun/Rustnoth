@@ -8,6 +8,8 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 pub struct Observation {
     pub side: usize,
+    /// Side numbers that share a team with the viewer, including its own side.
+    pub allied_sides: Vec<usize>,
     /// Gold available to the observing side, when supplied by the referee.
     pub gold: Option<i64>,
     pub width: i32,
@@ -86,6 +88,7 @@ pub fn project(
 
     Observation {
         side,
+        allied_sides: vec![side],
         gold: None,
         width,
         height,

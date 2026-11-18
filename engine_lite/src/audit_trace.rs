@@ -9,11 +9,18 @@ use crate::{
 
 /// Writes one frame in the unit and village order supplied by the snapshot.
 pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> io::Result<()> {
-    match snapshot.state {
+    match &snapshot.state {
         MatchState::Playing(turn) => {
             writeln!(out, "step\t{step}\tplaying\t{}\t{}", turn.round, turn.side)?;
         }
         MatchState::Won(side) => writeln!(out, "step\t{step}\twon\t{side}")?,
+        MatchState::AlliedVictory(sides) => {
+            write!(out, "step\t{step}\twon")?;
+            for side in sides {
+                write!(out, "\t{side}")?;
+            }
+            writeln!(out)?;
+        }
         MatchState::Draw => writeln!(out, "step\t{step}\tdraw")?,
     }
     for (index, amount) in snapshot.gold.iter().enumerate() {

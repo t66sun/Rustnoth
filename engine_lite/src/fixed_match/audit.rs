@@ -53,7 +53,7 @@ impl FixedMatch<'_> {
     /// Records all sides for referee use, including after the match ends.
     pub fn audit_snapshot(&self) -> Snapshot {
         Snapshot {
-            state: self.state,
+            state: self.state(),
             gold: self.gold.clone(),
             units: self
                 .scenario

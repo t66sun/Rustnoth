@@ -74,6 +74,7 @@ mod tests {
         let keep = Hex { x: 0, y: 1 };
         let view = Observation {
             side: 1,
+            allied_sides: vec![1],
             gold: Some(25),
             width: 2,
             height: 2,
