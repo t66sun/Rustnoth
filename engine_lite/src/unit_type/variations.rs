@@ -37,7 +37,7 @@ fn rules_config(node: &Node) -> Node {
     }
 }
 
-fn merge(base: &mut Node, overlay: Node) {
+pub(super) fn merge(base: &mut Node, overlay: Node) {
     base.attributes.extend(overlay.attributes);
     let mut indices = BTreeMap::<String, Vec<usize>>::new();
     for (index, (tag, _)) in base.children.iter().enumerate().rev() {

@@ -60,7 +60,7 @@ impl SetupView {
 
     pub(super) fn frame(&mut self, setup: &Setup, error: Option<&str>) -> Input {
         // Keep every field reachable in short windows while preserving the layout aspect ratio.
-        let scale = (screen_width() / 440.0).min(screen_height() / 577.0).clamp(0.01, 1.0);
+        let scale = (screen_width() / 440.0).min(screen_height() / 634.0).clamp(0.01, 1.0);
         let w = screen_width() / scale;
         let h = screen_height() / scale;
         let (mx, my) = mouse_position();
@@ -139,7 +139,7 @@ impl SetupView {
             }
         } else {
             text(font, "Local skirmish", left, y + 56.0, 36, PALE);
-            text(font, "Default era   ·   30 rounds", left, y + 85.0, 17, MUTED);
+            text(font, "Default era", left, y + 85.0, 17, MUTED);
             let start_index = Field::ALL.len();
             let reverse_tab = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             let move_up = is_key_pressed(KeyCode::Up) || (is_key_pressed(KeyCode::Tab) && reverse_tab);

@@ -1,6 +1,30 @@
-//! Apply ordinary recruit trait effects to base unit statistics.
+//! Apply unit modification effects to base statistics.
 
 use crate::{income::Upkeep, scenario_time::integer, unit_type::UnitType, wml::Node};
+
+/// Modifications are replayed in WML child order when a unit changes type.
+#[derive(Clone, Debug)]
+pub(crate) enum Modification<'a> {
+    Trait(std::borrow::Cow<'a, Node>),
+    Object(Node),
+    DefaultAdvancement(Node),
+}
+
+impl Modification<'_> {
+    pub(crate) fn as_trait(&self) -> Option<&Node> {
+        match self {
+            Self::Trait(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn definition(&self) -> &Node {
+        match self {
+            Self::Trait(node) => node,
+            Self::Object(node) | Self::DefaultAdvancement(node) => node,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CombatImmunities {
@@ -19,7 +43,7 @@ impl CombatImmunities {
     }
 }
 
-/// A recruit's effective maximum stats and weapon damage.
+/// A recruit's effective maximum stats and weapon values.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecruitStats {
     pub max_hitpoints: i32,
@@ -28,8 +52,10 @@ pub struct RecruitStats {
     pub(crate) upkeep: Upkeep,
     pub max_experience: i32,
     pub healthy: bool,
+    pub(crate) emits_zoc: bool,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
+    pub(crate) attack_strikes: Vec<i32>,
     pub undrainable: bool,
     pub unslowable: bool,
     pub unpoisonable: bool,
@@ -42,12 +68,12 @@ pub struct RecruitStats {
 impl RecruitStats {
     /// Applies direct HP, movement, experience and attack damage effects in trait order.
     pub fn from_traits(unit: &UnitType, traits: &[&Node]) -> Self {
-        Self::from_traits_with_base_experience(unit, traits.iter().copied(), unit.experience, CombatImmunities::default())
+        Self::from_modifications(unit, traits.iter().copied(), unit.experience, CombatImmunities::default())
     }
 
-    pub(crate) fn from_traits_with_base_experience<'a>(
+    pub(crate) fn from_modifications<'a>(
         unit: &UnitType,
-        traits: impl IntoIterator<Item = &'a Node>,
+        modifications: impl IntoIterator<Item = &'a Node>,
         base_max_experience: i32,
         immunities: CombatImmunities,
     ) -> Self {
@@ -58,7 +84,9 @@ impl RecruitStats {
             upkeep: unit.upkeep,
             max_experience: base_max_experience,
             healthy: false,
+            emits_zoc: unit.emits_zoc,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
+            attack_strikes: unit.attacks.iter().map(|attack| attack.strikes).collect(),
             undrainable: immunities.undrainable,
             unslowable: immunities.unslowable,
             unpoisonable: immunities.unpoisonable,
@@ -67,8 +95,8 @@ impl RecruitStats {
             unplagueable: false,
             fearless: false,
         };
-        for trait_ in traits {
-            for (tag, effect) in &trait_.children {
+        for modification in modifications {
+            for (tag, effect) in &modification.children {
                 if tag != "effect" || !effect.children.is_empty() {
                     continue;
                 }
@@ -87,6 +115,9 @@ impl RecruitStats {
 
     fn apply_effect(&mut self, unit: &UnitType, effect: &Node) {
         match effect.attribute("apply_to") {
+            Some("zoc") if effect.attribute("value").is_some() => {
+                self.emits_zoc = crate::scenario_sides::bool_attribute(effect, "value", false);
+            }
             Some("loyal") => self.upkeep = Upkeep::Fixed(0),
             Some("healthy") => self.healthy = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("hitpoints") => {
@@ -115,12 +146,15 @@ impl RecruitStats {
                 self.max_experience = increase(base, effect, "increase", 1);
             }
             Some("attack") => {
-                for (weapon, damage) in unit.attacks.iter().zip(&mut self.attack_damage) {
+                for (index, weapon) in unit.attacks.iter().enumerate() {
                     if matches_filter(effect, "range", &weapon.range)
                         && matches_filter(effect, "name", &weapon.id)
                         && matches_filter(effect, "type", &weapon.damage_type)
                     {
-                        *damage = increase(*damage, effect, "increase_damage", 0);
+                        self.attack_damage[index] = increase(self.attack_damage[index], effect, "increase_damage", 0);
+                        let strikes = integer(effect, "set_attacks")
+                            .map(|value| value.max(0)).unwrap_or(self.attack_strikes[index]);
+                        self.attack_strikes[index] = increase(strikes, effect, "increase_attacks", 1);
                     }
                 }
             }

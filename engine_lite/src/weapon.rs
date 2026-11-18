@@ -144,9 +144,15 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_arcane_alternative(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials|
+            specials.children.iter().any(|(tag, definition)| is_stock_arcane(tag, definition))
+        )
+    }
+
     /// Swarm uses starting HP for the whole exchange, including repeated combat rounds.
-    pub(crate) fn strikes_at_hp(&self, hitpoints: i32, max_hitpoints: i32) -> u32 {
-        let strikes = self.strikes.max(0) as u32;
+    pub(crate) fn strikes_at_hp(&self, base_strikes: i32, hitpoints: i32, max_hitpoints: i32) -> u32 {
+        let strikes = base_strikes.max(0) as u32;
         let swarm = self.specials.as_ref().is_some_and(|specials| {
             specials.children.iter().any(|(tag, definition)| is_stock_swarm(tag, definition))
         });
@@ -165,6 +171,7 @@ impl WeaponProfile {
                     || is_unconditional_magical(tag, definition)
                     || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
+                    || is_stock_arcane(tag, definition)
                     || (matches!(tag.as_str(), "drains" | "slow" | "poison" | "petrifies") && is_status_special(tag, definition))
                     || (self.min_range == 1 && self.max_range == 1 && is_stock_backstab(tag, definition))
                     || is_stock_swarm(tag, definition)
@@ -172,6 +179,18 @@ impl WeaponProfile {
             })
         })
     }
+}
+
+fn is_stock_arcane(tag: &str, definition: &Node) -> bool {
+    tag == "damage_type"
+        && definition.attribute("id") == Some("arcane_damage")
+        && definition.attribute("alternative_type") == Some("arcane")
+        && definition.children.is_empty()
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "alternative_type" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_plague(tag: &str, special: &Node) -> bool {

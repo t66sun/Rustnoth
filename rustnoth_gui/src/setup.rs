@@ -7,7 +7,12 @@ use crate::{read_file, show_board, BoardData};
 
 mod view;
 
-const ROUND_LIMIT: i32 = 30;
+// The final position of the original 1..=100 turns control means unlimited play.
+const UNLIMITED_INDEX: usize = 99;
+
+fn round_limit(index: usize) -> i32 {
+    if index == UNLIMITED_INDEX { -1 } else { index as i32 + 1 }
+}
 const VISIBILITY_OPTIONS: [(Visibility, &str); 4] = [
     (Visibility::Open, "Open map"),
     (Visibility::Fog, "Fog of war"),
@@ -39,10 +44,10 @@ impl MapEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Field { Map, Side, Faction, Leader, Visibility }
+enum Field { Map, Side, Faction, Leader, Visibility, Rounds }
 
 impl Field {
-    const ALL: [Self; 5] = [Self::Map, Self::Side, Self::Faction, Self::Leader, Self::Visibility];
+    const ALL: [Self; 6] = [Self::Map, Self::Side, Self::Faction, Self::Leader, Self::Visibility, Self::Rounds];
 
     fn title(self) -> &'static str {
         match self {
@@ -51,6 +56,7 @@ impl Field {
             Self::Faction => "Faction",
             Self::Leader => "Leader",
             Self::Visibility => "Visibility",
+            Self::Rounds => "Rounds",
         }
     }
 }
@@ -71,6 +77,7 @@ pub(super) struct Setup {
     side: usize,
     sides: Vec<Side>,
     visibility: usize,
+    rounds_index: usize,
 }
 
 impl Setup {
@@ -97,7 +104,7 @@ impl Setup {
         }
         let first = maps.iter().position(|map| map.name == "2p Hamlets" && map.board.is_ok())
             .or_else(|| maps.iter().position(|map| map.board.is_ok())).unwrap_or(0);
-        let mut setup = Self { root, core, seed, maps, factions, map: first, side: 0, sides: Vec::new(), visibility: 0 };
+        let mut setup = Self { root, core, seed, maps, factions, map: first, side: 0, sides: Vec::new(), visibility: 0, rounds_index: 29 };
         setup.select(Field::Map, first);
         Ok(setup)
     }
@@ -107,6 +114,7 @@ impl Setup {
             Field::Map => self.maps.len(),
             Field::Side => self.sides.len(),
             Field::Visibility => VISIBILITY_OPTIONS.len(),
+            Field::Rounds => UNLIMITED_INDEX + 1,
             Field::Faction if !self.sides.is_empty() => self.factions.len(),
             Field::Leader if !self.sides.is_empty() => self.factions[self.sides[self.side].faction].leaders.len(),
             _ => 0,
@@ -120,6 +128,7 @@ impl Setup {
             Field::Faction => self.sides[self.side].faction,
             Field::Leader => self.sides[self.side].leader,
             Field::Visibility => self.visibility,
+            Field::Rounds => self.rounds_index,
         }
     }
 
@@ -130,6 +139,8 @@ impl Setup {
             Field::Faction => self.factions[index].id.clone(),
             Field::Leader => self.factions[self.sides[self.side].faction].leaders[index].clone(),
             Field::Visibility => VISIBILITY_OPTIONS[index].1.to_owned(),
+            Field::Rounds if index == UNLIMITED_INDEX => "Unlimited".into(),
+            Field::Rounds => round_limit(index).to_string(),
         }
     }
 
@@ -155,6 +166,7 @@ impl Setup {
             }
             Field::Leader => self.sides[self.side].leader = index,
             Field::Visibility => self.visibility = index,
+            Field::Rounds => self.rounds_index = index,
         }
     }
 
@@ -166,7 +178,7 @@ impl Setup {
             (faction, Some(faction.leaders[side.leader].as_str()))
         }).collect();
         let scenario = skirmish::scenario_with_visibility(
-            &map.name, data, ROUND_LIMIT, &sides, VISIBILITY_OPTIONS[self.visibility].0,
+            &map.name, data, round_limit(self.rounds_index), &sides, VISIBILITY_OPTIONS[self.visibility].0,
         )?;
         let mut bytes = Vec::new();
         wml_emit::write_config(&mut bytes, &scenario)?;
@@ -214,10 +226,14 @@ mod tests {
         let map = |n: usize| MapEntry { name: n.to_string(), board: Ok((String::new(), n)) };
         let mut setup = Setup {
             root: PathBuf::new(), core: Vec::new(), seed: 0, maps: vec![map(2usize), map(4)],
-            factions: vec![faction("Rebels"), faction("Loyalists")], map: 0, side: 0, sides: vec![], visibility: 0,
+            factions: vec![faction("Rebels"), faction("Loyalists")], map: 0, side: 0, sides: vec![], visibility: 0, rounds_index: 29,
         };
         setup.select(Field::Map, 0);
         assert_eq!(setup.label(Field::Visibility, setup.selected(Field::Visibility)), "Open map");
+        assert_eq!(setup.label(Field::Rounds, setup.selected(Field::Rounds)), "30");
+        setup.select(Field::Rounds, setup.count(Field::Rounds) - 1);
+        assert_eq!(round_limit(setup.selected(Field::Rounds)), -1);
+        assert_eq!(setup.label(Field::Rounds, setup.selected(Field::Rounds)), "Unlimited");
         setup.select(Field::Visibility, 3);
         assert_eq!(setup.label(Field::Faction, setup.selected(Field::Faction)), "Loyalists");
         setup.select(Field::Leader, 1);
