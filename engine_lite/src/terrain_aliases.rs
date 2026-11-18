@@ -17,6 +17,9 @@ pub enum AliasTerm<'a> {
     Terrain(&'a str),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TerrainLayer { Both, Base, Overlay }
+
 /// Game rules attached to a terrain code.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerrainFeatures {
@@ -59,6 +62,7 @@ struct Definition {
     defense: Vec<String>,
     features: TerrainFeatures,
     light: TerrainLight,
+    default_base: Option<String>,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -116,6 +120,7 @@ impl TerrainAliases {
                     defense: read_alias(terrain.attribute("def_alias"), shared, code),
                     features: TerrainFeatures::from_wml(terrain),
                     light: TerrainLight::from_wml(terrain),
+                    default_base: terrain.attribute("default_base").map(str::to_owned),
                 }
             });
         }
@@ -176,6 +181,25 @@ impl TerrainAliases {
         }
 
         vec![AliasTerm::Terrain(code)]
+    }
+
+    pub(crate) fn merge_terrain(&self, old: &str, new: &str, layer: TerrainLayer, fallback: bool) -> Option<String> {
+        let split = |code: &str| code.find('^').unwrap_or(code.len());
+        let (old_base, old_overlay) = old.split_at(split(old));
+        let (new_base, new_overlay) = new.split_at(split(new));
+        let merged = match layer {
+            TerrainLayer::Both => new.to_owned(),
+            TerrainLayer::Base => format!("{new_base}{old_overlay}"),
+            TerrainLayer::Overlay => format!("{old_base}{new_overlay}"),
+        };
+        let known = |code: &str| self.definitions.contains_key(code) || self.layers(code).is_some();
+        if !merged.is_empty() && !merged.starts_with('^') && known(&merged) {
+            return Some(merged);
+        }
+        if !fallback || !known(new) { return None; }
+        if !new_base.is_empty() { return Some(new.to_owned()); }
+        let base = self.definitions.get(new)?.default_base.as_deref()?;
+        Some(format!("{base}{new_overlay}"))
     }
 
     fn layers(&self, code: &str) -> Option<(&Definition, &Definition)> {

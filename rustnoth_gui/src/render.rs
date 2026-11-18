@@ -14,6 +14,10 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+pub mod objectives;
+mod dialogue;
+pub use dialogue::draw_dialogue;
+
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -198,6 +202,7 @@ fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Te
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
+    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -270,7 +275,13 @@ pub fn draw(
     } else {
         width
     };
-    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_space - 36.0);
+    let title_end = if movement.has_objectives && let Some(bounds) = objectives::button(width) {
+        objectives::draw_button(art, bounds, "Objectives");
+        bounds.x
+    } else {
+        title_space
+    };
+    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_end - 36.0);
     let inset = panel_x + 18.0;
     let baseline = HEADER_HEIGHT + 40.0;
     match state {

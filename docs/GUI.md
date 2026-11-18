@@ -10,6 +10,16 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+### 在窗口中选择战役场景
+
+给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：
+
+```sh
+cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
+```
+
+列表按战役文件中的顺序显示场景名称和 ID。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+
 ### 用原版地图建立遭遇战
 
 在窗口内选择地图和默认时代阵营，可从仓库根目录运行：
@@ -18,7 +28,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --skirmish core.cfg 5489
 ```
 
-点击地图、阵营编号、阵营或领袖以打开列表。每个地图起点可独立选择阵营和领袖。Visibility 可选择全图可见、战争迷雾、黑幕或两者并用。上下键和 Tab 可切换表单项目，Enter 打开列表或开始游戏。列表支持方向键、Page Up、Page Down、滚轮和鼠标选择。Esc 返回表单。Rounds 默认 30，可选 1 至 99 回合或 Unlimited。素材目录可通过 `--wesnoth-root` 指定。
+点击地图、阵营编号、阵营或领袖以打开列表。每个地图起点可独立选择阵营、领袖和 Team。默认每方自成一队，选择相同队伍的各方结盟并共享胜利。Visibility 可选择全图可见、战争迷雾、黑幕或两者并用。上下键和 Tab 可切换表单项目，Enter 打开列表或开始游戏。列表支持方向键、Page Up、Page Down、滚轮和鼠标选择。Esc 返回表单。Rounds 默认 30，可选 1 至 99 回合或 Unlimited。素材目录可通过 `--wesnoth-root` 指定。
 
 **Play hot seat** 让多位玩家轮流操作。**Play vs computer** 由玩家操作第 1 方，电脑操作其余各方。电脑可以招募、接敌和探索，棋盘始终显示第 1 方的视野。
 
@@ -43,6 +53,7 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 召回 | 点可召回的城堡格，在侧栏按兵种、老兵 ID、生命、经验和金币花费挑选召回对象 |
 | 遣散 | 按 D 打开本方预备兵名单，点击条目或用 Tab、Enter 选择。核对兵种和 ID 后再次点击或按 Enter 确认，按 Esc 或右键取消。遣散不消耗金币 |
 | 选择菜单项 | 左键点击，或按 Tab 切换、Enter 确认 |
+| 查看战役目标 | 点击 **Objectives** 或按 Ctrl+J 查看本方当前胜负目标，方向键、翻页键和滚轮可滚动，Esc 或 Enter 返回棋盘 |
 | 取消选择 | 右键 |
 | 结束回合 | 点击 **End turn**，或按空格 |
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |
