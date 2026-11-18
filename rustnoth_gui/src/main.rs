@@ -186,6 +186,11 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             let reset = is_key_pressed(KeyCode::Home);
             camera.fit(render::board_viewport(), observation.width, observation.height, reset);
             if !reset {
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && let Some(point) = render::minimap_point(observation, pointer)
+                {
+                    camera.center_world(point);
+                }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],

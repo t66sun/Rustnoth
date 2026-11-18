@@ -1,4 +1,5 @@
 mod frame;
+mod minimap;
 use frame::{BattlefieldFrame, FrameArt};
 
 use std::{
@@ -65,6 +66,7 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
 
 pub struct BoardArt {
     frame: FrameArt,
+    minimap: minimap::Art,
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
@@ -113,6 +115,7 @@ impl BoardArt {
         };
         Self {
             frame: FrameArt::load(wesnoth_root),
+            minimap: minimap::Art::new(wesnoth_root),
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
@@ -146,6 +149,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.minimap.load(observation, assets);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
@@ -306,14 +310,9 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
     }
 }
 
-fn draw_minimap(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
-    draw_terrain(view, layout, art, None);
-    let size = layout.tile_size();
-    for unit in &view.units {
-        let [x, y] = layout.tile_origin(unit.position);
-        draw_circle(x + size * 0.5, y + size * 0.5, size * 0.33, side_color(art.team_colors.as_ref(), unit.side));
-    }
-    draw_cover(layout, art);
+pub fn minimap_point(view: &Observation, pointer: Vec2) -> Option<[f32; 2]> {
+    let frame = BattlefieldFrame::new(screen_width(), screen_height());
+    minimap::Geometry::new(view.width, view.height, frame.minimap)?.world_point(pointer)
 }
 
 fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
