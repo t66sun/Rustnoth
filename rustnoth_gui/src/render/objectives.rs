@@ -23,6 +23,16 @@ pub fn button(width: f32, height: f32) -> Option<Rect> {
     ))
 }
 
+fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, color: Color, width: f32) {
+    if width > 0.0 && !text.is_empty() {
+        let measured = measure_text(text, font.as_ref(), size, 1.0).width;
+        draw_text_ex(text, x, y, TextParams {
+            font: font.as_ref(), font_size: size, font_scale: (width / measured).min(1.0),
+            color, ..TextParams::default()
+        });
+    }
+}
+
 fn wrap_entries(objectives: &ScenarioObjectives, font: Option<&Font>, width: f32) -> Vec<(String, bool)> {
     let mut lines = Vec::new();
     for (heading, entries) in [("Victory", &objectives.victory), ("Defeat", &objectives.defeat)] {
