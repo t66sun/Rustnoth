@@ -15,11 +15,11 @@ struct Variants {
     probability: Option<u32>,
 }
 
-fn fingerprint(name: &str) -> u32 {
+pub(super) fn fingerprint(name: &str) -> u32 {
     name.bytes().fold(0u32, |value, byte| value.rotate_left(9) ^ u32::from(byte))
 }
 
-fn noise(hex: Hex, fingerprint: u32) -> u32 {
+pub(super) fn noise(hex: Hex, fingerprint: u32) -> u32 {
     let x = (hex.x as u32).wrapping_add(92_872_973) ^ 918_273;
     let y = (hex.y as u32).wrapping_add(1_672_517) ^ 128_123;
     let seed = fingerprint.wrapping_add(127_390) ^ 13_923_787;

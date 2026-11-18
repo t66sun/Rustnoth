@@ -11,6 +11,7 @@ use engine_lite::wml::{self, Node};
 #[derive(Debug, Default)]
 pub struct AssetCatalog {
     image_dirs: Vec<PathBuf>,
+    terrain_rules: Vec<Node>,
     fallback: PathBuf,
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
@@ -68,11 +69,14 @@ impl AssetCatalog {
         let mut catalog = Self::default();
         let mut units = Node::default();
         let mut document = Node::default();
-        for input in [core, bundle] {
+        let mut core_graphics = Vec::new();
+        for (is_core, input) in [(true, core), (false, bundle)] {
             for (tag, node) in wml::parse(input)?.children {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" if is_core => core_graphics.push(node),
+                    "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
                         if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
                             && !path.contains("..") && safe_relative_path(Path::new(path))
@@ -84,6 +88,10 @@ impl AssetCatalog {
                 }
             }
         }
+        if core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
+            core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
+        }
+        catalog.terrain_rules.extend(core_graphics);
         engine_lite::unit_type::resolve_base_units(&mut units)?;
         document.children.push(("units".into(), units));
         catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
@@ -96,6 +104,10 @@ impl AssetCatalog {
     pub fn unit_bars(&self, id: &str) -> Option<UnitBars> {
         self.units.get(id).map(|unit| unit.bars)
     }
+
+    pub fn terrain_rules(&self) -> &[Node] { &self.terrain_rules }
+
+    pub fn image_roots(&self) -> &[PathBuf] { &self.image_dirs }
 
     pub fn ellipse_prefix(&self, id: &str) -> Option<&str> {
         let prefix = self.units.get(id)?.ellipse.as_str();
