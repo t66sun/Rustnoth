@@ -112,6 +112,7 @@ pub struct BoardArt {
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
+    dialogue_font: Option<Font>,
 }
 
 impl BoardArt {
@@ -172,6 +173,8 @@ impl BoardArt {
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
+            dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
+                .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
             font,
         })
     }

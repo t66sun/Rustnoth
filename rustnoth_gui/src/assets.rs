@@ -24,7 +24,7 @@ pub struct AssetCatalog {
 struct UnitAssets {
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
-    dialogue_portrait: Option<PathBuf>,
+    dialogue_profile: Option<String>,
     name: Option<String>,
     race_name: Option<String>,
     abilities: Vec<String>,
@@ -151,7 +151,13 @@ impl AssetCatalog {
 
     /// Full-size portrait used when a campaign speaker has no explicit profile.
     pub fn dialogue_portrait(&self, id: &str) -> Option<PathBuf> {
-        self.resolve_image(self.units.get(id)?.dialogue_portrait.as_deref()?)
+        let image = self.dialogue_profile(id).filter(|value| *value != "unit_image")?;
+        self.resolve_image(Path::new(image_filename(image)?))
+    }
+
+    /// The original WML expression, including the profile's default orientation.
+    pub fn dialogue_profile(&self, id: &str) -> Option<&str> {
+        self.units.get(id)?.dialogue_profile.as_deref()
     }
 
     /// Returns the unit type's display name from its WML definition.
@@ -257,8 +263,7 @@ impl AssetCatalog {
                                 .attribute("image")
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
-                            dialogue_portrait: display_name(unit, "profile")
-                                .filter(|value| *value != "unit_image").and_then(image_filename).map(PathBuf::from),
+                            dialogue_profile: display_name(unit, "profile").map(str::to_owned),
                             portrait: display_name(unit, "small_profile")
                                 .or_else(|| display_name(unit, "profile"))
                                 .filter(|value| *value != "unit_image")
