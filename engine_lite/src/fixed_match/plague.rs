@@ -14,7 +14,7 @@ struct Reanimation<'rules> {
 }
 
 impl FixedMatch<'_> {
-    /// Fire die with the casualty still present, then erase it and resolve plague.
+    /// Run death events while the casualty is still on the map, then resolve plague.
     pub(super) fn apply_scenario_attack(
         &mut self, turn: Turn, mut attack: Attack,
     ) -> Result<bool, MatchError> {
@@ -52,10 +52,12 @@ impl FixedMatch<'_> {
             (to, from, defender_id, attacker_id, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
             (from, to, attacker_id, defender_id, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
         ] {
-            if hp > 0 || self.scenario.board.unit_at(victim).is_none_or(|unit| unit.serial != serial) { continue; }
+            if hp > 0 || self.scenario.board.unit_at(victim).is_none_or(|unit| unit.serial != serial || unit.hitpoints > 0) { continue; }
+            self.fire_units_event("last_breath", victim, Some(killer))?;
+            if self.scenario.board.unit_at(victim).is_none_or(|unit| unit.serial != serial || unit.hitpoints > 0) { continue; }
             self.fire_units_event("die", victim, Some(killer))?;
             let board = &mut self.scenario.board;
-            if board.unit_at(victim).is_none_or(|unit| unit.serial != serial) { continue; }
+            if board.unit_at(victim).is_none_or(|unit| unit.serial != serial || unit.hitpoints > 0) { continue; }
             let replacement = strike.filter(|_| killer_hp > 0 && board.unit_at(killer).is_some_and(|unit| unit.serial == killer_serial)).and_then(|index|
                 board.plague_reanimation(killer, victim, index, self.rules.terrain));
             board.remove_casualty(victim);
@@ -197,6 +199,38 @@ Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn last_breath_precedes_die_and_only_runs_for_a_casualty() {
+        let events = r#"[event]
+name=last breath
+[filter]
+id=fallen
+[/filter]
+[filter_second]
+type=Soulless
+[/filter_second]
+[modify_side]
+side=1
+gold=3
+[/modify_side]
+[/event]
+[event]
+name=die
+[gold]
+side=1
+amount=7
+[/gold]
+[/event]"#;
+        for retaliation in [false, true] {
+            for (victim, expected) in [("id=fallen", 10), ("id=fallen\nhitpoints=30", 100)] {
+                let bundle = scenario(victim, "Gg", retaliation, "type=Walking Corpse", events);
+                let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+                fight(&mut game);
+                assert_eq!(game.audit_snapshot().gold[0], expected);
+            }
+        }
+    }
+
+    #[test]
     fn valid_attack_spends_its_costs_before_a_campaign_handler_removes_the_target() {
         let events = r#"[event]
 name=attack
@@ -307,6 +341,18 @@ id=fallen
             let mut game = bundle.start(3, |_| unreachable!()).unwrap();
             assert!(matches!(fight(&mut game), MatchState::Playing(_)));
             assert_eq!(game.audit_snapshot().gold[0], 103);
+        }
+    }
+
+    #[test]
+    fn healing_the_dying_primary_unit_cancels_removal_and_plague() {
+        let events = "[event]\nname=die\n[heal_unit]\namount=1\n[/heal_unit]\n[/event]";
+        for retaliation in [false, true] {
+            let bundle = scenario("id=fallen", "Gg", retaliation, "type=Walking Corpse", events);
+            let mut game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert!(matches!(fight(&mut game), MatchState::Playing(_)));
+            let victim = game.scenario.board.unit_at(if retaliation { WEST } else { EAST }).unwrap();
+            assert_eq!((victim.id.as_deref(), victim.hitpoints), (Some("fallen"), 1));
         }
     }
 

@@ -128,6 +128,38 @@ id=East
     }
 
     #[test]
+    fn outer_condition_sees_the_scalar_written_by_the_nested_death_handler() {
+        let bundle = scenario(r#"[event]
+name=start
+[kill]
+id=Victim
+fire_event=yes
+[/kill]
+[if]
+[variable]
+name=fell
+equals=yes
+[/variable]
+[then]
+[gold]
+side=1
+amount=23
+[/gold]
+[/then]
+[/if]
+[/event]
+[event]
+name=die
+[set_variable]
+name=fell
+value=yes
+[/set_variable]
+[/event]"#);
+        let game = bundle.start(4, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 123);
+    }
+
+    #[test]
     fn reentrant_kill_on_the_event_hex_stops_at_the_native_recursion_limit() {
         let bundle = scenario(r#"[event]
 name=start
