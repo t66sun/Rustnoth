@@ -420,7 +420,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn step(&mut self, action: Action) -> Result<MatchState, MatchError> {
-        self.step_with_choices(action, None, None, None)
+        self.step_with_choices(action, None, None, None, None)
     }
 
     /// Supported next types of an active-side unit, in WML declaration order.
@@ -442,12 +442,19 @@ impl<'data> FixedMatch<'data> {
     pub fn attack_with_advancements(
         &mut self, attack: AttackChoice, attacker: Option<&str>, defender: Option<&str>,
     ) -> Result<MatchState, MatchError> {
-        self.step_with_choices(Action::Attack(attack), attacker, defender, None)
+        self.step_with_choices(Action::Attack(attack), attacker, defender, None, None)
+    }
+
+    /// Execute this side's movement once, recording the reached route for presentation.
+    pub fn move_with_trace(&mut self, from: Hex, to: Hex, trace: &mut Vec<Hex>) -> Result<MatchState, MatchError> {
+        trace.clear();
+        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(trace))
     }
 
     fn step_with_choices(
         &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
         display: Option<(usize, &mut Option<combat_display::VisibleCombat>)>,
+        movement_trace: Option<&mut Vec<Hex>>,
     ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
@@ -461,7 +468,7 @@ impl<'data> FixedMatch<'data> {
             return Err(MatchError::ActionUnavailable);
         }
         match action {
-            Action::Move { from, to } => self.walk(turn.side, from, to)?,
+            Action::Move { from, to } => self.walk(turn.side, from, to, movement_trace)?,
             Action::Attack(choice) => {
                 if self.scenario.board.unit_at(choice.to).is_some()
                     && !self.unit_visible_on_known_hex(turn.side, choice.to)

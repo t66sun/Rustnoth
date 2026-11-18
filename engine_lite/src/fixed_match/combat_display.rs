@@ -29,6 +29,7 @@ impl FixedMatch<'_> {
             advancement,
             None,
             Some((viewer, &mut display)),
+            None,
         )?;
         Ok((state, display))
     }
