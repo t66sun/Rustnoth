@@ -8,6 +8,7 @@ pub struct RecruitStats {
     pub max_hitpoints: i32,
     pub max_movement: i32,
     pub max_experience: i32,
+    pub healthy: bool,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
     pub undrainable: bool,
@@ -30,6 +31,7 @@ impl RecruitStats {
             max_hitpoints: unit.hitpoints,
             max_movement: unit.movement,
             max_experience: base_max_experience,
+            healthy: false,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
             undrainable: false,
             unslowable: false,
@@ -55,6 +57,7 @@ impl RecruitStats {
 
     fn apply_effect(&mut self, unit: &UnitType, effect: &Node) {
         match effect.attribute("apply_to") {
+            Some("healthy") => self.healthy = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("hitpoints") => {
                 let base = set_relative(self.max_hitpoints, effect, "set_total");
                 self.max_hitpoints = increase(base, effect, "increase_total", 1).max(1);
