@@ -16,6 +16,7 @@ use crate::{
     observation::{Observation, project},
     resistance::DamageTable,
     rng::ReplayRng,
+    scenario_events::{EventState, ScenarioEvents},
     scenario_start::ScenarioStart,
     terrain_aliases::TerrainAliases,
     turn::Turn,
@@ -148,24 +149,30 @@ impl<'data> FixedMatch<'data> {
         for side in 1..=side_count {
             game.update_side_sight(side, false);
         }
-        game.scenario.events.fire("preload", &mut game.gold);
-        game.scenario.events.fire("prestart", &mut game.gold);
-        game.scenario.events.fire("start", &mut game.gold);
+        game.with_events(|events, state| {
+            events.fire("preload", state);
+            events.fire("prestart", state);
+            events.fire("start", state);
+        });
         game.check_leaders();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
                 game.state = MatchState::Draw;
             } else {
-                let new_round = game.scenario.events.new_round_at_start;
-                game.scenario.events.begin_turn(turn, new_round, &mut game.gold);
+                game.with_events(|events, state| events.begin_turn(turn, events.new_round_at_start, state));
                 game.settle_income(turn);
                 game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
-                game.scenario.events.refresh(turn, &mut game.gold);
+                game.with_events(|events, state| events.refresh(turn, state));
                 game.refog(turn.side);
             }
         }
         Ok(game)
+    }
+
+    fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) {
+        let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides };
+        handle(&mut self.scenario.events, &mut state);
     }
 
     pub fn state(&self) -> MatchState {
@@ -298,21 +305,21 @@ impl<'data> FixedMatch<'data> {
                     .board
                     .advance_turn(turn, &self.side_order, self.scenario.last_round);
                 let end_round = next.is_none_or(|next| next.round != turn.round);
-                self.scenario.events.end_turn(turn, end_round, &mut self.gold);
+                self.with_events(|events, state| events.end_turn(turn, end_round, state));
                 self.refog(turn.side);
                 self.state = if let Some(next) = next {
                     self.current_round = next.round;
-                    self.scenario.events.begin_turn(next, end_round, &mut self.gold);
+                    self.with_events(|events, state| events.begin_turn(next, end_round, state));
                     self.settle_income(next);
                     let sides = &self.scenario.sides;
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
                         sides[a - 1].is_enemy(&sides[b - 1])
                     });
-                    self.scenario.events.refresh(next, &mut self.gold);
+                    self.with_events(|events, state| events.refresh(next, state));
                     self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
-                    self.scenario.events.fire("time_over", &mut self.gold);
+                    self.with_events(|events, state| events.fire("time_over", state));
                     MatchState::Draw
                 };
             }

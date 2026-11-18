@@ -1,21 +1,44 @@
-//! Static gold actions on scenario and turn events.
+//! Static campaign actions on scenario and turn events.
 
 use std::collections::BTreeSet;
 
-use crate::{turn::Turn, wml::Node};
+use crate::{scenario_sides::SideConfig, turn::Turn, wml::Node};
 
 #[derive(Debug)]
-struct GoldChange {
-    sides: Vec<usize>,
-    amount: i32,
+enum SideAction {
+    Gold(i32),
+    AllowRecruit(Vec<String>),
+    DisallowRecruit(Option<Vec<String>>),
 }
 
-impl GoldChange {
-    fn read(cfg: &Node, side_count: usize) -> Option<Self> {
-        if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "side" | "amount")) {
+#[derive(Debug)]
+struct EventAction {
+    sides: Vec<usize>,
+    action: SideAction,
+}
+
+pub(crate) struct EventState<'a> {
+    pub(crate) gold: &'a mut [i64],
+    pub(crate) sides: &'a mut [SideConfig],
+}
+
+impl EventAction {
+    fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        let types = |value: &str| {
+            value.split(',').map(str::trim).filter(|id| !id.is_empty())
+                .map(str::to_owned).collect::<Vec<_>>()
+        };
+        let (value_field, action) = match tag {
+            "gold" => ("amount", SideAction::Gold(cfg.attribute("amount")?.trim().parse().ok()?)),
+            "allow_recruit" => ("type", SideAction::AllowRecruit(types(cfg.attribute("type")?))),
+            "disallow_recruit" => ("type", SideAction::DisallowRecruit(cfg.attribute("type").map(types))),
+            _ => return None,
+        };
+        if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| k != "side" && k != value_field)
+            || cfg.attribute(value_field).is_some_and(|v| v.contains('$'))
+        {
             return None;
         }
-        let amount = cfg.attribute("amount")?.trim().parse().ok()?;
         let mut sides: Vec<_> = (0..side_count).collect();
         if let Some(selector) = cfg.attribute("side") {
             let mut ranges = Vec::new();
@@ -25,7 +48,20 @@ impl GoldChange {
             }
             sides.retain(|index| ranges.iter().any(|r| r.contains(&(index + 1))));
         }
-        Some(Self { sides, amount })
+        Some(Self { sides, action })
+    }
+
+    fn apply(&self, state: &mut EventState<'_>) {
+        for &index in &self.sides {
+            match &self.action {
+                SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
+                SideAction::AllowRecruit(types) => state.sides[index].recruits.extend(types.iter().cloned()),
+                SideAction::DisallowRecruit(Some(types)) => {
+                    for id in types { state.sides[index].recruits.remove(id); }
+                }
+                SideAction::DisallowRecruit(None) => state.sides[index].recruits.clear(),
+            }
+        }
     }
 }
 
@@ -33,7 +69,7 @@ impl GoldChange {
 struct Handler {
     names: Vec<String>,
     once: bool,
-    changes: Vec<GoldChange>,
+    changes: Vec<EventAction>,
 }
 
 #[derive(Debug)]
@@ -52,14 +88,13 @@ impl ScenarioEvents {
             {
                 continue;
             }
-            // A filtered or scripted handler cannot be interpreted as unconditional gold.
+            // Filtered or scripted handlers cannot be interpreted as unconditional actions.
             if event.attributes.keys().any(|k| k.starts_with("filter")) || event.children.is_empty()
-                || !event.children.iter().all(|(tag, _)| tag == "gold")
             {
                 continue;
             }
             let Some(names) = event.attribute("name") else { continue };
-            let Some(changes) = event.children.iter().map(|(_, cfg)| GoldChange::read(cfg, side_count))
+            let Some(changes) = event.children.iter().map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
             let once = match event.attribute("first_time_only").unwrap_or("yes") {
                 "yes" | "true" | "1" => true,
@@ -78,52 +113,50 @@ impl ScenarioEvents {
         }
     }
 
-    pub(crate) fn fire(&mut self, name: &str, gold: &mut [i64]) {
+    pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name) {
                 return true;
             }
             for change in &handler.changes {
-                for &side in &change.sides {
-                    gold[side] += i64::from(change.amount);
-                }
+                change.apply(state);
             }
             !handler.once
         });
     }
 
-    pub(crate) fn begin_turn(&mut self, turn: Turn, new_round: bool, gold: &mut [i64]) {
+    pub(crate) fn begin_turn(&mut self, turn: Turn, new_round: bool, state: &mut EventState<'_>) {
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
         if new_round {
-            self.fire(&format!("turn_{round}"), gold);
-            self.fire("new_turn", gold);
+            self.fire(&format!("turn_{round}"), state);
+            self.fire("new_turn", state);
         }
-        self.fire("side_turn", gold);
-        self.fire(&format!("side_{side}_turn"), gold);
-        self.fire(&format!("side_turn_{round}"), gold);
-        self.fire(&format!("side_{side}_turn_{round}"), gold);
+        self.fire("side_turn", state);
+        self.fire(&format!("side_{side}_turn"), state);
+        self.fire(&format!("side_turn_{round}"), state);
+        self.fire(&format!("side_{side}_turn_{round}"), state);
     }
 
-    pub(crate) fn refresh(&mut self, turn: Turn, gold: &mut [i64]) {
+    pub(crate) fn refresh(&mut self, turn: Turn, state: &mut EventState<'_>) {
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
-        self.fire("turn_refresh", gold);
-        self.fire(&format!("side_{side}_turn_refresh"), gold);
-        self.fire(&format!("turn_{round}_refresh"), gold);
-        self.fire(&format!("side_{side}_turn_{round}_refresh"), gold);
+        self.fire("turn_refresh", state);
+        self.fire(&format!("side_{side}_turn_refresh"), state);
+        self.fire(&format!("turn_{round}_refresh"), state);
+        self.fire(&format!("side_{side}_turn_{round}_refresh"), state);
     }
 
-    pub(crate) fn end_turn(&mut self, turn: Turn, end_round: bool, gold: &mut [i64]) {
+    pub(crate) fn end_turn(&mut self, turn: Turn, end_round: bool, state: &mut EventState<'_>) {
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
-        self.fire("side_turn_end", gold);
-        self.fire(&format!("side_{side}_turn_end"), gold);
-        self.fire(&format!("side_turn_{round}_end"), gold);
-        self.fire(&format!("side_{side}_turn_{round}_end"), gold);
+        self.fire("side_turn_end", state);
+        self.fire(&format!("side_{side}_turn_end"), state);
+        self.fire(&format!("side_turn_{round}_end"), state);
+        self.fire(&format!("side_{side}_turn_{round}_end"), state);
         if end_round {
-            self.fire("turn_end", gold);
-            self.fire(&format!("turn_{round}_end"), gold);
+            self.fire("turn_end", state);
+            self.fire(&format!("turn_{round}_end"), state);
         }
     }
 }
@@ -174,6 +207,78 @@ gold=100
     }
 
     #[test]
+    fn campaign_events_change_recruit_choices_and_placement_in_command_order() {
+        let mut config = String::from("[units]\n");
+        for id in ["Guard", "Archer", "Scout Cavalry"] {
+            config.push_str(&format!("[unit_type]\nid={id}\nhitpoints=18\ncost=7\n[/unit_type]\n"));
+        }
+        config.push_str(r#"[/units]
+[terrain_type]
+string=Kh
+recruit_from=yes
+recruit_onto=yes
+[/terrain_type]
+[terrain_type]
+string=Ch
+recruit_onto=yes
+[/terrain_type]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,Ch,Gg,Ch,2 Kh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+recruit=Guard
+[/side]
+[side]
+type=Guard
+recruit=Guard
+[/side]
+[event]
+name=prestart
+[disallow_recruit]
+[/disallow_recruit]
+[allow_recruit]
+side=1
+type=Archer, Scout Cavalry
+[/allow_recruit]
+[disallow_recruit]
+side=1
+type=Archer
+[/disallow_recruit]
+[gold]
+side=1
+amount=5
+[/gold]
+[/event]
+[event]
+name=side 2 turn
+[allow_recruit]
+side=2
+type=Archer
+[/allow_recruit]
+[/event]
+[/scenario]"#);
+        let bundle = Bundle::parse(config.as_bytes()).unwrap();
+        let mut game = bundle.start(12, |_| unreachable!()).unwrap();
+        let recruit = |id: &str, x| Action::Recruit {
+            unit_type: id.to_owned(), to: crate::hex::Hex { x, y: 0 },
+        };
+        let actions = game.decision().unwrap().1;
+        assert!(actions.contains(&recruit("Scout Cavalry", 1)));
+        assert!(!actions.contains(&recruit("Archer", 1)));
+        assert!(game.step(recruit("Archer", 1)).is_err());
+        game.step(recruit("Scout Cavalry", 1)).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 98);
+        game.step(Action::EndTurn).unwrap();
+        let actions = game.decision().unwrap().1;
+        assert!(actions.contains(&recruit("Archer", 4)));
+        assert!(!actions.contains(&recruit("Guard", 4)));
+        assert!(!actions.contains(&recruit("Scout Cavalry", 4)));
+        game.step(recruit("Archer", 4)).unwrap();
+    }
+
+    #[test]
     fn refresh_and_end_events_match_only_their_sides_and_fire_once_across_names() {
         let text = event("turn refresh,side 1 turn end", "yes", "1,3", "2")
             + &event("side_turn_end", "no", "1-2", "-3")
@@ -184,11 +289,13 @@ gold=100
             + &event("side turn", "no", "1", "103").replace("[gold]", "[filter_condition]\n[false]\n[/false]\n[/filter_condition]\n[gold]");
         let mut events = ScenarioEvents::read(&wml::parse(text).unwrap(), 3);
         let mut gold = [0; 3];
+        let mut sides = crate::scenario_sides::read_sides(&wml::parse("[side]\n[/side]\n".repeat(3)).unwrap());
+        let mut state = EventState { gold: &mut gold, sides: &mut sides };
         for side in 1..=2 {
             let turn = Turn { round: 1, side };
-            events.begin_turn(turn, side == 1, &mut gold);
-            events.refresh(turn, &mut gold);
-            events.end_turn(turn, side == 2, &mut gold);
+            events.begin_turn(turn, side == 1, &mut state);
+            events.refresh(turn, &mut state);
+            events.end_turn(turn, side == 2, &mut state);
         }
         assert_eq!(gold, [-4, 1, 7]);
     }
