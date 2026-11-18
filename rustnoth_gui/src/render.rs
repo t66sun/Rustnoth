@@ -254,7 +254,6 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
-    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -280,7 +279,6 @@ pub fn menu_area() -> Rect {
 }
 
 pub fn draw(
-    title: &str,
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
@@ -292,10 +290,7 @@ pub fn draw(
     if let (Some(view), Some(layout)) = (observation, layout) {
         draw_board(view, layout, art, &movement);
     }
-    frame::draw(&frame, title, state, observation, layout, art, &movement);
-    if movement.has_objectives && let Some(bounds) = objectives::button(screen_width(), screen_height()) {
-        objectives::draw_button(art, bounds, "Objectives");
-    }
+    frame::draw(&frame, state, observation, layout, art, &movement);
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);

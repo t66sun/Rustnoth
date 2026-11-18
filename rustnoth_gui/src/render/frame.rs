@@ -139,7 +139,7 @@ pub fn turn_button(art: &BoardArt, bounds: Rect, highlighted: bool, title: &str)
 }
 
 pub fn draw(
-    frame: &BattlefieldFrame, title: &str, state: MatchState, observation: Option<&Observation>,
+    frame: &BattlefieldFrame, state: MatchState, observation: Option<&Observation>,
     board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>,
 ) {
     fill(frame.bar, PANEL);
@@ -148,7 +148,7 @@ pub fn draw(
     paint(&art.frame.sidebar, frame.sidebar);
     let s = frame.scale;
     if s <= 0.0 { return; }
-    draw_reports(frame, title, state, observation, art);
+    draw_reports(frame, state, observation, art);
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
@@ -221,13 +221,11 @@ pub fn draw(
     }
 }
 
-fn draw_reports(frame: &BattlefieldFrame, title: &str, state: MatchState, view: Option<&Observation>, art: &mut BoardArt) {
+fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Observation>, art: &mut BoardArt) {
     let s = frame.scale;
     let rect = |x, w| Rect::new(x * s, 3.0 * s, w * s, 20.0 * s);
-    let narrow = frame.map.width < 842.0 * s;
-    let title_width = if narrow { 110.0 } else { 200.0 };
-    text_in(&art.font, title, rect(6.0, title_width - 12.0), 16, TEXT, false);
-    let x = title_width + if narrow { 3.0 } else { 5.0 };
+    let narrow = frame.compact;
+    let x = if narrow { 113.0 } else { 205.0 };
     let mut text_x = x;
     let status = match state {
         MatchState::Playing(turn) => {
