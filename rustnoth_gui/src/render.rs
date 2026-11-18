@@ -237,9 +237,12 @@ pub fn draw(
     match state {
         MatchState::Playing(turn) => {
             label(&art.font, &format!("Round {}", turn.round), inset, baseline, 25, TEXT);
-            label(&art.font, &format!("Side {}", turn.side), inset, baseline + 38.0, 19, TEXT);
+            let computer = observation.is_some_and(|view| view.side != turn.side);
+            let controller = if computer { " (computer)" } else { "" };
+            label(&art.font, &format!("Side {}{controller}", turn.side), inset, baseline + 38.0, 19, TEXT);
             if let Some(gold) = observation.and_then(|view| view.gold) {
-                label(&art.font, &format!("Gold {gold}"), inset, baseline + 69.0, 18, MUTED);
+                let label_text = if computer { "Your gold" } else { "Gold" };
+                label(&art.font, &format!("{label_text} {gold}"), inset, baseline + 69.0, 18, MUTED);
             }
         }
         MatchState::Won(side) => {

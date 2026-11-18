@@ -28,6 +28,7 @@ pub mod visibility;
 pub mod starting_units;
 pub mod board;
 pub mod observation;
+pub mod opponent;
 pub mod resistance;
 pub mod scenario_start;
 pub mod fixed_match;

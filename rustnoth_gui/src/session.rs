@@ -2,22 +2,73 @@ use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
     hex::Hex,
     observation::Observation,
+    opponent::attack_or_approach,
 };
 
-/// The active side's decision and the last viewer's final board for a local match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Players {
+    HotSeat,
+    VersusComputer,
+}
+
+/// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
+    players: Players,
+    computer_action: Option<Action>,
     observation: Option<Observation>,
     legal_actions: Vec<Action>,
 }
 
 impl<'rules> Session<'rules> {
     pub fn new(game: FixedMatch<'rules>) -> Self {
-        let (observation, legal_actions) = match game.decision() {
-            Some((observation, actions)) => (Some(observation), actions),
-            None => (game.observation_for(1), Vec::new()),
+        Self::with_players(game, Players::HotSeat)
+    }
+
+    pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
+        let mut session = Self {
+            game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
         };
-        Self { game, observation, legal_actions }
+        session.refresh();
+        session
+    }
+
+    fn refresh(&mut self) {
+        self.computer_action = None;
+        self.legal_actions.clear();
+        match self.game.decision() {
+            Some((view, actions)) if self.players == Players::VersusComputer && view.side != 1 => {
+                self.computer_action = Some(computer_choice(&view, &actions));
+                self.observation = self.game.observation_for(1);
+            }
+            Some((view, actions)) => {
+                self.observation = Some(view);
+                self.legal_actions = actions;
+            }
+            None => {
+                let viewer = self.observation.as_ref().map_or(1, |view| view.side);
+                self.observation = self.game.observation_for(viewer);
+            }
+        }
+    }
+
+    /// Apply at most one computer command per desktop frame.
+    pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
+        let Some(action) = self.computer_action.take() else { return Ok(false) };
+        match self.game.step(action.clone()) {
+            Ok(_) => {}
+            // A castle hex offered through fog can turn out to be occupied.
+            Err(MatchError::InvalidRecruit) if matches!(action, Action::Recruit { .. }) => {
+                self.game.step(Action::EndTurn)?;
+            }
+            Err(error) => return Err(error),
+        }
+        self.refresh();
+        // A hidden occupant can block a teleport without revealing its location.
+        if matches!(action, Action::Move { .. }) && self.computer_action.as_ref() == Some(&action) {
+            self.computer_action = Some(Action::EndTurn);
+        }
+        Ok(true)
     }
 
     pub fn state(&self) -> MatchState {
@@ -37,10 +88,12 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
+        if self.computer_action.is_some() { return Vec::new(); }
         self.game.advancement_choices(position)
     }
 
     pub fn recall_info(&self, id: &str) -> Option<RecallInfo<'_>> {
+        if self.computer_action.is_some() { return None; }
         self.game.recall_info(id)
     }
 
@@ -49,28 +102,66 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
+        if self.computer_action.is_some() {
+            return Err(MatchError::ActionUnavailable);
+        }
         let state = match action {
             Action::Attack(attack) => self.game.attack_with_advancements(attack, attacker, None)?,
             action => self.game.step(action)?,
         };
-        if let Some((observation, actions)) = self.game.decision() {
-            self.observation = Some(observation);
-            self.legal_actions = actions;
-        } else {
-            self.observation = self
-                .observation
-                .as_ref()
-                .and_then(|view| self.game.observation_for(view.side));
-            self.legal_actions.clear();
-        }
+        self.refresh();
         Ok(state)
     }
+}
+
+fn computer_choice(view: &Observation, actions: &[Action]) -> Action {
+    let tactical = attack_or_approach(view, actions);
+    if let Some(attack @ Action::Attack(_)) = tactical {
+        return attack.clone();
+    }
+    if let Some(recruit) = actions.iter().find(|a| matches!(a, Action::Recruit { .. })) {
+        return recruit.clone();
+    }
+    if let Some(approach) = tactical {
+        return approach.clone();
+    }
+
+    // Scout towards an unseen neighbor using only the player's known board.
+    let visible: std::collections::HashSet<_> = view.tiles.iter()
+        .filter(|tile| tile.visible).map(|tile| tile.position).collect();
+    actions.iter().filter_map(|action| {
+        let Action::Move { from, to } = action else { return None };
+        let frontier = to.neighbors().filter(|hex| {
+            (0..view.width).contains(&hex.x) && (0..view.height).contains(&hex.y) && !visible.contains(hex)
+        }).count();
+        (frontier > 0).then_some(((frontier, from.distance(*to)), action))
+    }).max_by_key(|(score, _)| *score).map_or(Action::EndTurn, |(_, action)| action.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn computer_recruits_or_scouts_when_no_enemy_is_visible() {
+        use engine_lite::observation::ObservedTile;
+
+        let home = Hex { x: 0, y: 0 };
+        let edge = Hex { x: 1, y: 0 };
+        let view = Observation {
+            side: 2, allied_sides: vec![2], gold: Some(50), width: 3, height: 1,
+            tiles: [home, edge].into_iter().map(|position| ObservedTile {
+                position, terrain: "Kh".into(), visible: true, village_owner: None,
+            }).collect(),
+            units: vec![],
+        };
+        let scout = Action::Move { from: home, to: edge };
+        let recruit = Action::Recruit { unit_type: "Scout".into(), to: edge };
+        assert_eq!(computer_choice(&view, &[scout.clone(), recruit.clone(), Action::EndTurn]), recruit);
+        assert_eq!(computer_choice(&view, &[scout.clone(), Action::EndTurn]), scout);
+        assert_eq!(computer_choice(&view, &[Action::EndTurn]), Action::EndTurn);
+    }
 
     #[test]
     fn shows_the_current_global_period_across_side_and_round_changes() {
@@ -165,6 +256,19 @@ Xv,Xv,Xv,Xv"
         let mut session = Session::new(bundle.start(5489, |_| unreachable!()).unwrap());
         let west = Hex { x: 0, y: 0 };
         let east = Hex { x: 1, y: 0 };
+        let mut versus = Session::with_players(bundle.start(5489, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        assert!(!versus.play_computer_action().unwrap());
+        versus.apply(Action::EndTurn).unwrap();
+        assert_eq!(versus.observation().unwrap().side, 1);
+        assert_eq!(versus.observation().unwrap().gold, Some(17));
+        assert!(versus.legal_actions().is_empty());
+        assert_eq!(versus.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
+        assert!(versus.play_computer_action().unwrap());
+        assert_eq!(versus.state(), MatchState::Won(2));
+        let [guard] = versus.observation().unwrap().units.as_slice() else { panic!("expected only the guard") };
+        assert_eq!((guard.side, guard.attacks_left), (2, None));
+        assert!(!versus.play_computer_action().unwrap());
+
         let west_attack = Action::Attack(AttackChoice { from: west, to: east, weapon: 0 });
         let east_attack = Action::Attack(AttackChoice { from: east, to: west, weapon: 0 });
 

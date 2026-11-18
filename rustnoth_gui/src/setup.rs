@@ -182,11 +182,11 @@ impl Setup {
                     self.select(field, index);
                     error = None;
                 }
-                view::Input::Start => {
+                view::Input::Start(players) => {
                     // Present loading feedback before parsing the original core catalog.
                     next_frame().await;
                     let result = match self.build() {
-                        Ok(board) => show_board(board).await,
+                        Ok(board) => show_board(board, players).await,
                         Err(cause) => Err(cause),
                     };
                     match result {
