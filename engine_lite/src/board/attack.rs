@@ -183,6 +183,7 @@ impl Battlefield<'_> {
             self.units.remove(&from);
         } else {
             let unit = self.units.get_mut(&from).expect("validated attacker");
+            unit.uncovered = true;
             unit.hitpoints = result.attacker_hitpoints as i32;
             unit.slowed = result.attacker_slowed;
             unit.poisoned = result.poisoned[0];
