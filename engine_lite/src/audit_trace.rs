@@ -61,6 +61,12 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
         for (y, tiles) in view.rows.iter().enumerate() {
             writeln!(out, "view\t{}\t{}\t{tiles}", view.side, y + 1)?;
         }
+        write!(out, "seen\t{}", view.side)?;
+        for &hex in &view.units {
+            let (x, y) = wml_position(hex)?;
+            write!(out, "\t{x},{y}")?;
+        }
+        writeln!(out)?;
     }
     writeln!(out, "end\t{step}")
 }

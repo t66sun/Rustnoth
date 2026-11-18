@@ -73,6 +73,16 @@ local function capture_views()
                 end
                 row("view", side, y, table.concat(tiles))
             end
+            local visible = wesnoth.units.find_on_map {
+                wml.tag.filter_vision { side = side, visible = true },
+                wml.tag["or"] { side = side },
+            }
+            table.sort(visible, hex_order)
+            local seen = { "seen", side }
+            for _, unit in ipairs(visible) do
+                seen[#seen + 1] = unit.x .. "," .. unit.y
+            end
+            std_print(table.concat(seen, "\t"))
         end
     end
 end

@@ -25,6 +25,8 @@ pub struct SnapshotView {
     pub side: usize,
     /// One row per playable y, containing V (visible), F (fogged), or S (shrouded).
     pub rows: Vec<String>,
+    /// Positions of the units visible to this side, in hex order.
+    pub units: Vec<Hex>,
 }
 
 impl SnapshotView {
@@ -34,8 +36,11 @@ impl SnapshotView {
             rows[tile.position.y as usize][tile.position.x as usize] =
                 if tile.visible { 'V' } else { 'F' };
         }
+        let mut units: Vec<_> = view.units.into_iter().map(|unit| unit.position).collect();
+        units.sort_unstable();
         Self {
             side: view.side,
+            units,
             rows: rows.into_iter().map(|row| row.into_iter().collect()).collect(),
         }
     }
@@ -141,27 +146,38 @@ mod tests {
             visible,
             village_owner: None,
         };
-        let view = SnapshotView::from_observation(Observation {
+        let observed_unit = |x, y| crate::observation::ObservedUnit {
+            position: Hex { x, y }, side: 2, type_id: "Fighter".into(),
+            hitpoints: 8, poisoned: false, slowed: false, moves_left: Some(3), attacks_left: Some(1),
+        };
+        let observation = Observation {
             side: 2,
             allied_sides: vec![2],
             gold: Some(9),
             width: 3,
             height: 2,
             tiles: vec![tile(2, 1, true), tile(0, 0, false), tile(1, 0, true)],
-            units: Vec::new(),
-        });
+            units: vec![observed_unit(2, 1), observed_unit(1, 0)],
+        };
+        let units = observation.units.iter().rev().map(|unit| SnapshotUnit {
+            position: unit.position, side: unit.side, type_id: unit.type_id.clone(),
+            hitpoints: unit.hitpoints, moves_left: 3, attacks_left: 1,
+            can_recruit: false, experience: 0, slowed: false, poisoned: false, traits: Vec::new(),
+        }).collect();
         let snapshot = Snapshot {
             state: MatchState::Draw,
             gold: vec![0, 9],
-            units: Vec::new(),
+            units,
             villages: vec![(Hex { x: 0, y: 0 }, 1)],
-            views: vec![view],
+            views: vec![SnapshotView::from_observation(observation)],
         };
         let mut output = Vec::new();
         crate::audit_trace::write_snapshot(&mut output, 4, &snapshot).unwrap();
         assert_eq!(output, concat!(
-            "step\t4\tdraw\ngold\t1\t0\ngold\t2\t9\nvillage\t1\t1\t1\n",
-            "view\t2\t1\tFVS\nview\t2\t2\tSSV\nend\t4\n",
+            "step\t4\tdraw\ngold\t1\t0\ngold\t2\t9\n",
+            "unit\t2\t1\t2\tFighter\t8\t3\t1\t0\t0\n",
+            "unit\t3\t2\t2\tFighter\t8\t3\t1\t0\t0\nvillage\t1\t1\t1\n",
+            "view\t2\t1\tFVS\nview\t2\t2\tSSV\nseen\t2\t2,1\t3,2\nend\t4\n",
         ).as_bytes());
     }
 
