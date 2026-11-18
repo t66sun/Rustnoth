@@ -364,7 +364,7 @@ impl<'data> FixedMatch<'data> {
         let defense_leadership = self.leadership_bonus(choice.to, defender);
         let attack_light = self.lawful_bonus_at(turn.round, choice.from);
         let defense_light = self.lawful_bonus_at(turn.round, choice.to);
-        let modifiers = self.modifiers(attack_light, attacker, defender, weapon, choice.to, attack_leadership);
+        let modifiers = self.modifiers(attack_light, attacker, defender, weapon, choice.to, attack_leadership, true);
         let offensive_role = StrikeRole::Attack {
             backstab: board.backstabs(choice.from, choice.to, weapon, |side| {
                 self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
@@ -382,7 +382,7 @@ impl<'data> FixedMatch<'data> {
             })
             .map(|(index, response)| {
                 let response_modifiers = self.modifiers(
-                    defense_light, defender, attacker, response, choice.from, defense_leadership,
+                    defense_light, defender, attacker, response, choice.from, defense_leadership, false,
                 );
                 let attacker_stats = combatant(
                     attacker, choice.weapon, &modifiers, response.parry, offensive_role,
@@ -418,6 +418,7 @@ impl<'data> FixedMatch<'data> {
         weapon: &WeaponProfile,
         target_hex: Hex,
         leadership: i64,
+        target_defends: bool,
     ) -> StrikeModifiers {
         let terrain = self.scenario.board.map().terrain_at(target_hex).expect("unit on map");
         let target_movement = &target.unit_type.movement_type;
@@ -430,7 +431,7 @@ impl<'data> FixedMatch<'data> {
         let damage_taken = target.unit_type.combat_damage_taken(
             &weapon.damage_type,
             self.rules.resistance.get(target_movement),
-            target.side != turn.side,
+            target_defends,
         );
         let schedule = &self.scenario.schedule;
         let alignment =
