@@ -17,6 +17,11 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+pub mod objectives;
+mod dialogue;
+pub use dialogue::draw_dialogue;
+mod transitions;
+
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -68,7 +73,10 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
+    transitions: transitions::Transitions,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    ellipse_colors: Option<TeamColors>,
+    ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
@@ -81,7 +89,7 @@ pub struct BoardArt {
     shroud: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
-    font: Option<Font>,
+    pub(super) font: Option<Font>,
 }
 
 impl BoardArt {
@@ -116,7 +124,10 @@ impl BoardArt {
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
+            transitions: transitions::Transitions::default(),
             units: BTreeMap::new(),
+            ellipse_colors: palette(TeamColors::parse_ellipses),
+            ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
             flag_colors: palette(TeamColors::parse_flags),
             flags: BTreeMap::new(),
@@ -146,6 +157,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.transitions.load(observation, assets);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
@@ -165,6 +177,17 @@ impl BoardArt {
             });
         }
         for unit in &observation.units {
+            if let Some(prefix) = assets.ellipse_prefix(&unit.type_id) {
+                for selected in [false, true] {
+                    let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
+                    self.ellipses.entry(prefix.to_owned()).or_default().entry(key).or_insert_with(|| {
+                        ellipse_files(prefix, unit.can_recruit, unit.emits_zoc, selected).map(|file| {
+                            let path = assets.resolve_image(Path::new(&file))?;
+                            load_texture(&path, self.ellipse_colors.as_ref().map(|colors| (colors, unit.side)))
+                        })
+                    });
+                }
+            }
             self.units
                 .entry(unit.type_id.clone())
                 .or_default()
@@ -185,7 +208,7 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
         .clone()
 }
 
-fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
@@ -202,6 +225,7 @@ fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Te
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
+    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -218,8 +242,8 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w > 0.0 && bounds.h > 0.0).then_some(bounds)
 }
 
-pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
-    frame::turn_button(art, bounds, highlighted, "End Turn");
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str) {
+    frame::turn_button(art, bounds, highlighted, text);
 }
 
 pub fn menu_area() -> Rect {
@@ -240,6 +264,9 @@ pub fn draw(
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, title, state, observation, layout, art, &movement);
+    if movement.has_objectives && let Some(bounds) = objectives::button(screen_width(), screen_height()) {
+        objectives::draw_button(art, bounds, "Objectives");
+    }
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
@@ -283,12 +310,16 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let layers = &art.terrain[&tile.terrain];
-        if layers.is_empty() {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        if let Some(base) = layers.first() {
+            draw_centered(base, center, size);
         } else {
-            for texture in layers {
-                draw_centered(texture, center, size);
-            }
+            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        }
+        if flag_frame.is_some() {
+            art.transitions.draw(tile.position, center, size);
+        }
+        for overlay in layers.iter().skip(1) {
+            draw_centered(overlay, center, size);
         }
         if let Some(owner) = tile.village_owner {
             if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
@@ -381,7 +412,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
-        draw_ellipse(center.x, center.y + size * 0.24, size * 0.23, size * 0.10, 0.0, marker);
+        if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
+            let selected = movement.selected == Some(unit.position);
+            let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
+            if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
+                for texture in halves.iter().flatten() { draw_centered(texture, center, size); }
+            }
+        }
         let texture = art
             .units
             .get(&unit.type_id)
@@ -418,6 +455,26 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     draw_cover(layout, art);
+}
+
+fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
+    let leader = if leader { "leader-" } else { "" };
+    let zoc = if zoc { "" } else { "nozoc-" };
+    let selected = if selected { "selected-" } else { "" };
+    ["top", "bottom"].map(|half| format!("{prefix}-{leader}{zoc}{selected}{half}.png"))
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    use super::ellipse_files;
+
+    #[test]
+    fn picks_the_original_selected_leader_halves_and_non_zoc_variant() {
+        assert_eq!(ellipse_files("misc/ellipse-hero", true, false, true),
+            ["misc/ellipse-hero-leader-nozoc-selected-top.png", "misc/ellipse-hero-leader-nozoc-selected-bottom.png"]);
+        assert_eq!(ellipse_files("misc/ellipse", false, true, false),
+            ["misc/ellipse-top.png", "misc/ellipse-bottom.png"]);
+    }
 }
 
 fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {

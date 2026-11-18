@@ -66,6 +66,19 @@ impl BoardLayout {
         })
     }
 
+    /// Opens at the artwork's native resolution, with the focus hex in view.
+    pub fn native_scale(&self, focus: Option<Hex>) -> Self {
+        let viewport = self.viewport;
+        let center = [viewport.x + viewport.width / 2.0, viewport.y + viewport.height / 2.0];
+        let mut layout = *self;
+        layout.origin = [0.0, 0.0];
+        layout.tile_size = 72.0;
+        layout.fitted_tile_size = self.fitted_tile_size.min(layout.tile_size);
+        let focus = focus.unwrap_or(Hex { x: self.width / 2, y: self.height / 2 });
+        let [left, top] = layout.tile_origin(focus);
+        layout.panned([center[0] - left - 36.0, center[1] - top - 36.0])
+    }
+
     /// Scales around a screen point, between the fitted size and 144 pixels per tile.
     pub fn zoomed_at(&self, [x, y]: [f32; 2], factor: f32) -> Self {
         if factor <= 0.0 || ![x, y, factor].into_iter().all(f32::is_finite) {
@@ -197,6 +210,19 @@ mod tests {
         let restored = zoomed.zoomed_at(anchor, 0.25);
         assert_eq!(restored.tile_size(), fit.tile_size());
         assert_eq!(restored.tile_origin(hex), fit.tile_origin(hex));
+    }
+
+    #[test]
+    fn opens_on_the_leader_at_native_scale_and_centers_small_maps() {
+        let viewport = Viewport { x: 12.0, y: 20.0, width: 640.0, height: 480.0 };
+        let focus = Hex { x: 18, y: 21 };
+        let large = BoardLayout::fit(50, 50, viewport).unwrap().native_scale(Some(focus));
+        assert_eq!(large.tile_size(), 72.0);
+        assert_eq!(large.tile_origin(focus), [296.0, 224.0]);
+        assert_eq!(large.hex_at([332.0, 260.0]), Some(focus));
+        let small = BoardLayout::fit(2, 1, viewport).unwrap().native_scale(None);
+        assert_eq!(small.tile_size(), 72.0);
+        assert_eq!(small.tile_origin(Hex { x: 0, y: 0 }), [269.0, 206.0]);
     }
 
     #[test]

@@ -14,6 +14,7 @@ local function run(time_over)
     end
     local turn_action_count = 0
     while true do
+        if capture.campaign_pending() then return end
         -- End-turn commands reach this checkpoint on the next refresh or time over.
         local terminal = capture.snapshot(step, time_over)
         if terminal or step == limit then
