@@ -41,6 +41,7 @@ pub struct Battlefield<'rules> {
     units: BTreeMap<Hex, UnitState<'rules>>,
     recall: BTreeMap<usize, Vec<UnitState<'rules>>>,
     resting: BTreeSet<Hex>,
+    units_created: u64,
     unit_types: &'rules BTreeMap<String, UnitType>,
     experience_modifier: i32,
 }
@@ -215,6 +216,7 @@ impl<'rules> Battlefield<'rules> {
             units: BTreeMap::new(),
             recall: BTreeMap::new(),
             resting: BTreeSet::new(),
+            units_created: 0,
             unit_types,
             experience_modifier,
         };
@@ -302,7 +304,45 @@ impl<'rules> Battlefield<'rules> {
         } else {
             self.recall.entry(side).or_default().push(unit);
         }
+        self.units_created += 1;
         Ok(())
+    }
+
+    /// Place an event reinforcement, or store it for recall if the map has no vacancy.
+    pub(crate) fn place_event_unit(&mut self, mut unit: AuthoredStartingUnit) -> Result<Option<Hex>, BoardError> {
+        let destination = unit.position.and_then(|requested| self.event_vacancy(requested));
+        if let Some(index) = unit.id.as_ref().and_then(|id|
+            self.recall_roster(unit.side).iter().position(|u| u.id.as_ref() == Some(id))
+        ) {
+            if let Some(to) = destination {
+                let veteran = self.recall.get_mut(&unit.side).unwrap().remove(index);
+                self.units.insert(to, veteran);
+            }
+            return Ok(destination);
+        }
+        unit.position = destination;
+        if unit.id.is_none() {
+            unit.id = Some(format!("{}-{}", unit.type_id, self.units_created + 1));
+        }
+        self.add_authored_unit(unit)?;
+        Ok(destination)
+    }
+
+    fn event_vacancy(&self, requested: Hex) -> Option<Hex> {
+        if !self.map.is_playable(requested) { return None; }
+        if !self.units.contains_key(&requested) { return Some(requested); }
+        // find_vacant_tile checks each ring in x/y order, stopping before distance 50.
+        let mut frontier = BTreeSet::from([requested]);
+        let mut seen = frontier.clone();
+        for _ in 1..50 {
+            frontier = frontier.iter().flat_map(|hex| hex.neighbors())
+                .filter(|&hex| self.map.is_playable(hex) && seen.insert(hex)).collect();
+            if frontier.is_empty() { break; }
+            if let Some(vacant) = frontier.iter().copied().find(|hex| !self.units.contains_key(hex)) {
+                return Some(vacant);
+            }
+        }
+        None
     }
 
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
@@ -503,6 +543,7 @@ impl<'rules> Battlefield<'rules> {
             recall_filter: Default::default(),
             traits,
         });
+        self.units_created += 1;
         Ok(())
     }
 
