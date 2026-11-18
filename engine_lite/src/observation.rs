@@ -90,8 +90,8 @@ pub fn project(
                 poisoned: unit.poisoned,
                 slowed: unit.slowed,
                 petrified: unit.petrified,
-                moves_left: own.then_some(unit.moves_left),
-                attacks_left: own.then_some(unit.attacks_left),
+                moves_left: own.then_some(unit.movement_left()),
+                attacks_left: own.then_some(unit.attacks_left()),
             });
         }
     }
