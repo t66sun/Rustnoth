@@ -485,16 +485,23 @@ impl<'rules> Battlefield<'rules> {
             unit.slowed = false;
         }
         let next = current.next(active_sides, last_round)?;
-        self.refresh_concealment(next);
         self.resting.retain(|hex| {
             let unit = &self.units[hex];
             unit.side != current.side || unit.moves_left == unit.max_movement().max(0)
         });
-        for unit in self.units.values_mut().filter(|unit| unit.side == next.side) {
+        self.refresh_units(next);
+        Some(next)
+    }
+
+    pub(crate) fn refresh_units(&mut self, turn: Turn) {
+        if turn.round <= 1 {
+            return;
+        }
+        for unit in self.units.values_mut().filter(|unit| unit.side == turn.side) {
             unit.moves_left = unit.max_movement().max(0);
             unit.attacks_left = unit.unit_type.max_attacks.max(0);
+            unit.uncovered = false;
         }
-        Some(next)
     }
 
     pub(crate) fn begin_resting(&mut self, side: usize) {
@@ -789,10 +796,10 @@ mod tests {
         );
         assert!(!recruit.can_recruit);
 
-        let current = Turn { round: 1, side: 1 };
+        let current = Turn { round: 2, side: 1 };
         assert_eq!(
             board.advance_turn(current, &[1, 2], None),
-            Some(Turn { round: 1, side: 2 })
+            Some(Turn { round: 2, side: 2 })
         );
         let recruit = board.unit_at(EAST).unwrap();
         assert_eq!(
@@ -1243,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn advancing_refreshes_only_the_incoming_side() {
+    fn first_round_keeps_authored_actions_and_later_rounds_refresh_only_the_incoming_side() {
         let scenario = wml::parse(
             "[side]\ntype=Spearman\n[/side]\n[side]\ntype=Spearman\n[/side]",
         )
@@ -1260,14 +1267,16 @@ mod tests {
 
         let first = Turn { round: 1, side: 1 };
         let second = Turn { round: 1, side: 2 };
-        assert_eq!(board.advance_turn(first, &[1, 2], Some(1)), Some(second));
+        assert_eq!(board.advance_turn(first, &[1, 2], Some(2)), Some(second));
         let incoming = board.unit_at(WEST).unwrap();
         assert_eq!(
             (incoming.moves_left, incoming.attacks_left, incoming.hitpoints),
-            (5, 2, 17)
+            (0, 0, 17)
         );
         assert_eq!(board.unit_at(EAST).unwrap().moves_left, 0);
-        assert_eq!(board.advance_turn(second, &[1, 2], Some(1)), None);
-        assert_eq!(board.unit_at(EAST).unwrap().attacks_left, 0);
+        assert_eq!(board.advance_turn(second, &[1, 2], Some(2)), Some(Turn { round: 2, side: 1 }));
+        let refreshed = board.unit_at(EAST).unwrap();
+        assert_eq!((refreshed.moves_left, refreshed.attacks_left, refreshed.hitpoints), (5, 2, 17));
+        assert_eq!(board.unit_at(WEST).unwrap().attacks_left, 0);
     }
 }

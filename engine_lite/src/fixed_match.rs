@@ -151,7 +151,7 @@ impl<'data> FixedMatch<'data> {
                 game.state = MatchState::Draw;
             } else {
                 game.settle_income(turn);
-                game.scenario.board.refresh_concealment(turn);
+                game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
             }
         }
