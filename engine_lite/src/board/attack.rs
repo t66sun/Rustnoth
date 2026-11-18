@@ -156,6 +156,8 @@ impl Battlefield<'_> {
                 slows: false,
                 slowed: defender.slowed,
                 unslowable: defender.is_unslowable(),
+                petrifies: false,
+                unpetrifiable: defender.is_unpetrifiable(),
                 hit_chance: 0,
                 firststrike: false,
                 poison: defender.poison_in_combat(false),
@@ -187,6 +189,7 @@ impl Battlefield<'_> {
             unit.hitpoints = result.attacker_hitpoints as i32;
             unit.slowed = result.attacker_slowed;
             unit.poisoned = result.poisoned[0];
+            unit.petrified |= result.petrified[0];
             unit.experience = unit.experience.saturating_add(attacker_experience);
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
@@ -198,6 +201,7 @@ impl Battlefield<'_> {
             unit.hitpoints = result.defender_hitpoints as i32;
             unit.slowed = result.defender_slowed;
             unit.poisoned = result.poisoned[1];
+            unit.petrified |= result.petrified[1];
             unit.experience = unit.experience.saturating_add(defender_experience);
         }
         Ok(result)
@@ -216,6 +220,10 @@ fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
 impl UnitState<'_> {
     fn is_unslowable(&self) -> bool {
         self.traits.as_ref().is_some_and(|traits| traits.stats.unslowable)
+    }
+
+    fn is_unpetrifiable(&self) -> bool {
+        self.unpetrifiable || self.traits.as_ref().is_some_and(|traits| traits.stats.unpetrifiable)
     }
 
     fn is_undrainable(&self) -> bool {
@@ -266,6 +274,8 @@ pub(crate) fn combatant(
         slows: weapon.has_slow(),
         slowed: unit.slowed,
         unslowable: unit.is_unslowable(),
+        petrifies: weapon.has_petrifies(),
+        unpetrifiable: unit.is_unpetrifiable(),
         hit_chance,
         firststrike: weapon.has_firststrike(),
         drain_healing_cap: weapon.has_drains().then(|| unit.max_hitpoints().max(0) as u32),
@@ -470,6 +480,42 @@ mod tests {
         assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 3);
         assert!(!board.unit_at(DEFENDER).unwrap().poisoned);
         assert!(board.unit_at(ATTACKER).unwrap().poisoned);
+    }
+
+    #[test]
+    fn stone_strikes_persist_on_survivors_and_respect_authored_immunity() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.level = 2;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=2\nnumber=3\n[specials]\n[petrifies]\n[/petrifies]\n[/specials]",
+        ).unwrap());
+        assert!(fighter.attacks[0].supports_specials());
+        let grant = "[effect]\napply_to=status\nadd=unpetrifiable\n[/effect]";
+        let remove = "[effect]\napply_to=status\nremove=unpetrifiable\n[/effect]";
+        let trait_effects = |effects| format!("[modifications]\n[trait]\nid=ward\n{effects}\n[/trait]\n[/modifications]");
+        for (defender_cfg, immune) in [
+            (String::new(), false),
+            ("[status]\nunpetrifiable=yes\n[/status]".into(), true),
+            (trait_effects(grant.to_string()), true),
+            (trait_effects(format!("{grant}\n{remove}")), false),
+        ] {
+            let map = ScenarioMap::parse("Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv").unwrap();
+            let scenario = wml::parse(format!(
+                "[side]\ntype=Fighter\n[/side]\n[side]\ntype=Fighter\n{defender_cfg}\n[/side]"
+            )).unwrap();
+            let starts = crate::starting_units::read_authored_starting_units(&scenario, &map).unwrap();
+            let mut board = Battlefield::from_authored_starting_units(map, starts, &types, 100).unwrap();
+            let mut rng = ReplayRng::new(5489);
+            let result = board.apply_attack(1, attack(0), |side| side == 2, &mut rng).unwrap();
+            let attacker = board.unit_at(ATTACKER).unwrap();
+            let defender = board.unit_at(DEFENDER).unwrap();
+            assert_eq!((attacker.petrified, defender.petrified), (immune, !immune));
+            assert_eq!(result.petrified, [immune, !immune]);
+            assert_eq!((attacker.hitpoints, defender.hitpoints), (if immune { 8 } else { 10 }, 8));
+            assert_eq!((attacker.experience, defender.experience), (2, 2));
+            assert_eq!(rng.seed_and_calls(), (5489, if immune { 2 } else { 1 }));
+        }
     }
 
     #[test]
