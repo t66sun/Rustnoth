@@ -20,6 +20,8 @@ pub struct UnitType {
     pub hitpoints: i32,
     pub movement: i32,
     pub max_attacks: i32,
+    /// HP restored to adjacent friendly units at the start of this unit's turn.
+    pub adjacent_healing: i32,
     /// Base experience requirement before applying the scenario's XP modifier.
     pub experience: i32,
     pub cost: i32,
@@ -103,6 +105,7 @@ impl UnitType {
             hitpoints: int("hitpoints", 1),
             movement: int("movement", 1),
             max_attacks: int("attacks", 1),
+            adjacent_healing: stock_adjacent_healing(&unit),
             experience: int("experience", 500),
             cost: int("cost", 1),
             alignment,
@@ -124,6 +127,44 @@ impl UnitType {
         }
         result
     }
+}
+
+fn stock_adjacent_healing(unit: &Node) -> i32 {
+    unit.children
+        .iter()
+        .filter(|(tag, _)| tag == "abilities")
+        .flat_map(|(_, abilities)| &abilities.children)
+        .filter_map(|(tag, heal)| {
+            if tag != "heals"
+                || heal.attribute("id") != Some("healing")
+                || heal.attribute("affect_allies") != Some("yes")
+                || heal.attribute("affect_self") != Some("no")
+                || heal.attribute("poison") != Some("slowed")
+                || !heal.attributes.keys().all(|key| {
+                    matches!(key.as_str(),
+                        "id" | "value" | "affect_allies" | "affect_self" | "poison"
+                        | "name" | "female_name" | "description" | "special_note")
+                })
+            {
+                return None;
+            }
+            let [(tag, adjacent)] = heal.children.as_slice() else {
+                return None;
+            };
+            if tag != "affect_adjacent"
+                || !adjacent.attributes.is_empty()
+                || !adjacent.children.is_empty()
+            {
+                return None;
+            }
+            match heal.attribute("value") {
+                Some("4") => Some(4),
+                Some("8") => Some(8),
+                _ => None,
+            }
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Indexes flat unit types and resolves their inherited traits from a preprocessed `[units]` body.

@@ -387,13 +387,26 @@ impl<'rules> Battlefield<'rules> {
         );
     }
 
-    /// Applies terrain and rest healing together before marking a new turn's rest.
+    /// Applies terrain, adjacent healers and rest before marking a new turn's rest.
     pub(crate) fn heal_at_turn_start(&mut self, side: usize, terrain: &TerrainAliases) {
+        let mut adjacent_healing = BTreeMap::<Hex, i32>::new();
+        for (&hex, healer) in &self.units {
+            let amount = healer.unit_type.adjacent_healing;
+            if healer.side == side && amount > 0 {
+                for neighbor in hex.neighbors() {
+                    let best = adjacent_healing.entry(neighbor).or_default();
+                    *best = (*best).max(amount);
+                }
+            }
+        }
         for (&hex, unit) in self.units.iter_mut().filter(|(_, unit)| unit.side == side) {
             let terrain_healing =
                 self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
             let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
-            let healing = i64::from(terrain_healing) + rest_healing;
+            let from_healer = adjacent_healing.get(&hex).copied().unwrap_or(0);
+            let healing = i64::from(terrain_healing.max(from_healer))
+                + i64::from(terrain_healing.min(0))
+                + rest_healing;
             let hitpoints = i64::from(unit.hitpoints);
             let max_heal = (i64::from(unit.max_hitpoints()) - hitpoints).max(0);
             let min_heal = (1 - hitpoints).min(0);
@@ -606,6 +619,49 @@ mod tests {
 
     fn walking_cost(terrain: &str) -> Option<NonZeroU32> {
         NonZeroU32::new(if terrain == "Hh" { 2 } else { 1 })
+    }
+
+    #[test]
+    fn adjacent_healers_use_the_strongest_treatment_and_add_rest() {
+        let mut unit_types = types();
+        for (id, value) in [("Mage", 8), ("Herbalist", 4)] {
+            let config = wml::parse(format!(
+                "id={id}\nhitpoints=36\n[abilities]\n[heals]\nid=healing\nvalue={value}\n\
+                 affect_allies=yes\naffect_self=no\npoison=slowed\n[affect_adjacent]\n\
+                 [/affect_adjacent]\n[/heals]\n[/abilities]"
+            )).unwrap();
+            unit_types.insert(id.into(), UnitType::from_wml(config));
+        }
+        let map = ScenarioMap::parse(
+            "Xv,Xv,Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,Hh,Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
+        ).unwrap();
+        let roster = [(1, "Spearman"), (1, "Herbalist"), (1, "Spearman"), (1, "Mage"), (2, "Mage")];
+        let starts = roster
+            .into_iter()
+            .enumerate()
+            .map(|(y, (side, id))| StartingUnit {
+                position: corridor_hex(y as i32),
+                side,
+                type_id: id.into(),
+                id: None,
+                can_recruit: false,
+            })
+            .collect();
+        let mut board = Battlefield::new(map, starts, &unit_types).unwrap();
+        for unit in board.units.values_mut() {
+            unit.hitpoints = 10;
+        }
+        board.units.get_mut(&corridor_hex(0)).unwrap().hitpoints = 35;
+        let terrain = TerrainAliases::from_wml(
+            &wml::parse("[terrain_type]\nid=hills\nstring=Hh\nheals=6\n[/terrain_type]").unwrap(),
+        );
+        board.begin_resting(1);
+        board.heal_at_turn_start(1, &terrain);
+        let hp: Vec<_> = board.units().map(|(_, unit)| unit.hitpoints).collect();
+        assert_eq!(hp, [36, 12, 20, 12, 10]);
+        board.units.get_mut(&corridor_hex(0)).unwrap().hitpoints = 10;
+        board.heal_at_turn_start(1, &terrain);
+        assert_eq!(board.unit_at(corridor_hex(0)).unwrap().hitpoints, 16);
     }
 
     #[test]
