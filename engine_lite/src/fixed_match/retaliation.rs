@@ -77,7 +77,8 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
     let order = strike_order(&attacker, &defender);
     let units = [attacker, defender];
     let strikes = units.each_ref().map(|unit| {
-        if (unit.damage == 0 && !unit.slows && !unit.poison.inflicts) || unit.hit_chance == 0 { 0 } else { unit.strikes }
+        let no_effect = unit.damage == 0 && !unit.slows && !unit.poison.inflicts && !unit.petrifies;
+        if no_effect || unit.hit_chance == 0 { 0 } else { unit.strikes }
     });
     let mut ongoing = BTreeMap::from([((starting_hp, starting_slow, starting_poison), 1.0)]);
     let strikes_per_round = strikes[0].max(strikes[1]);
@@ -100,10 +101,10 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
                 }
                 let mut after_hit = hitpoints;
                 let mut after_slow = slowed;
-                apply_hit(&units, &mut after_hit, &mut after_slow, striker);
+                let petrified = apply_hit(&units, &mut after_hit, &mut after_slow, striker);
                 let mut after_poison = poisoned;
                 after_poison[target] |= unit.poison.affects(units[target].poison);
-                if after_hit[target] == 0 {
+                if after_hit[target] == 0 || petrified {
                     outcome.add(after_hit, after_poison, probability * chance);
                 } else {
                     *next.entry((after_hit, after_slow, after_poison)).or_default() += probability * chance;
@@ -131,6 +132,8 @@ mod tests {
             slowed: false,
             slows: false,
             unslowable: false,
+            petrifies: false,
+            unpetrifiable: false,
             hit_chance,
             firststrike: false,
             drain_healing_cap: None,
@@ -170,6 +173,17 @@ mod tests {
         let slow = Combatant { slows: true, ..combatant(20, 1, 3, 100) };
         let immune = Combatant { unslowable: true, ..response() };
         assert_eq!(exchange(slow, immune, NonZeroU32::MIN).average_hp, [11.0, 17.0]);
+    }
+
+    #[test]
+    fn predicted_stoning_stops_only_the_hit_branch_including_zero_damage() {
+        let stone = || Combatant { petrifies: true, ..combatant(10, 1, 0, 50) };
+        let reply = || combatant(10, 1, 10, 100);
+        let outcome = exchange(stone(), reply(), NonZeroU32::MIN);
+        assert_eq!(outcome.death, [0.5, 0.0]);
+        assert_eq!(outcome.average_hp, [5.0, 10.0]);
+        let immune = Combatant { unpetrifiable: true, ..reply() };
+        assert_eq!(exchange(stone(), immune, NonZeroU32::MIN).death, [1.0, 0.0]);
     }
 
     #[test]
