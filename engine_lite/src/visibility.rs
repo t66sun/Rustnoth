@@ -1,6 +1,38 @@
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
 
 use crate::hex::Hex;
+use crate::map::ScenarioMap;
+use crate::movement::{reachable_destinations, MovementTile, Occupancy};
+
+/// Playable hexes one viewer uncovers using its effective vision costs and range.
+/// A hex too costly to enter is still visible from an adjacent reached hex.
+pub fn sight_from(
+    map: &ScenarioMap,
+    origin: Hex,
+    budget: u32,
+    cost: impl Fn(&str) -> Option<NonZeroU32>,
+) -> BTreeSet<Hex> {
+    if !map.is_playable(origin) {
+        return BTreeSet::new();
+    }
+    let reached = reachable_destinations(origin, budget, |hex| {
+        if !map.is_playable(hex) {
+            return None;
+        }
+        Some(MovementTile {
+            cost: cost(map.terrain_at(hex)?)?,
+            occupancy: Occupancy::Empty,
+            stops_movement: false,
+        })
+    });
+
+    let mut sight = BTreeSet::from([origin]);
+    for hex in std::iter::once(origin).chain(reached.into_keys()) {
+        sight.extend(hex.neighbors().filter(|&next| map.is_playable(next)));
+    }
+    sight
+}
 
 /// What one side can see at a playable hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +109,50 @@ mod tests {
     const LEFT: Hex = Hex { x: 0, y: 0 };
     const RIGHT: Hex = Hex { x: 1, y: 0 };
     const BORDER: Hex = Hex { x: 2, y: 0 };
+
+    #[test]
+    fn sight_reveals_the_front_of_a_costly_or_impassable_tile() {
+        let map = ScenarioMap::parse(
+            "Xx,Xx,Xx,Xx,Xx,Xx\n\
+             Xx,Gg,Gg,Hh,Gg,Xx\n\
+             Xx,Xx,Xx,Xx,Xx,Xx",
+        )
+        .unwrap();
+        let hill = Hex { x: 2, y: 0 };
+        for hill_cost in [None, NonZeroU32::new(4)] {
+            let cost = |terrain: &str| match terrain {
+                "Hh" => hill_cost,
+                _ => NonZeroU32::new(1),
+            };
+            assert_eq!(
+                sight_from(&map, LEFT, 3, cost),
+                BTreeSet::from([LEFT, RIGHT, hill])
+            );
+            assert_eq!(
+                sight_from(&map, LEFT, 0, cost),
+                BTreeSet::from([LEFT, RIGHT])
+            );
+        }
+    }
+
+    #[test]
+    fn a_cheaper_route_reveals_the_fringe_beyond_its_last_tile() {
+        let map = ScenarioMap::parse(
+            "Xx,Xx,Xx,Xx,Xx,Xx,Xx\n\
+             Xx,Xx,Gg,Gg,Xx,Xx,Xx\n\
+             Xx,Gg,Hh,Gg,Gg,Gg,Xx\n\
+             Xx,Xx,Xx,Xx,Xx,Xx,Xx",
+        )
+        .unwrap();
+        let cost = |terrain: &str| match terrain {
+            "Hh" => NonZeroU32::new(3),
+            "Gg" => NonZeroU32::new(1),
+            _ => None,
+        };
+        let origin = Hex { x: 0, y: 1 };
+        assert!(sight_from(&map, origin, 3, cost).contains(&Hex { x: 4, y: 1 }));
+        assert!(!sight_from(&map, origin, 2, cost).contains(&Hex { x: 4, y: 1 }));
+    }
 
     #[test]
     fn refogging_preserves_earlier_exploration() {
