@@ -111,6 +111,14 @@ impl ScenarioMap {
     pub fn special_location(&self, id: &str) -> Option<Hex> {
         self.special_locations.get(id).copied()
     }
+
+    /// Numbered starting locations, in unspecified order, using WML side numbers.
+    pub fn numbered_starts(&self) -> impl Iterator<Item = (usize, Hex)> + '_ {
+        self.special_locations.iter().filter_map(|(id, &hex)| {
+            let side = id.parse::<usize>().ok()?;
+            (side > 0 && side.to_string() == *id).then_some((side, hex))
+        })
+    }
 }
 
 fn map_body(text: &str) -> &str {
