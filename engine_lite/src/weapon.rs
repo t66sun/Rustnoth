@@ -310,12 +310,15 @@ mod tests {
         for unsupported in [
             "[firststrike]\nid=firststrike\nactive_on=defense\n[/firststrike]",
             "[firststrike]\n[filter_opponent]\ntype=Fighter\n[/filter_opponent]\n[/firststrike]",
-            "[poison]\nid=poison\n[/poison]",
+            "[poison]\nid=poison\nactive_on=defense\n[/poison]",
         ] {
             let weapon = weapon(unsupported);
             assert!(!weapon.has_firststrike());
             assert!(!weapon.supports_specials());
         }
+        let poison = weapon("[poison]\nid=poison\n[/poison]");
+        assert!(poison.supports_specials());
+        assert!(!poison.has_firststrike());
     }
 
     #[test]
