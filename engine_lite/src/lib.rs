@@ -13,6 +13,7 @@ pub mod movement_types;
 pub mod terrain_aliases;
 pub mod scenario_sides;
 pub mod combat;
+pub mod campaign;
 pub mod scenario_map;
 pub mod terrain_defense;
 pub mod wml;

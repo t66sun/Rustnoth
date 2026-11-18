@@ -44,6 +44,7 @@ hitpoints=22
 [/units]
 [scenario]
 turns=1
+next_scenario=valley
 map_data="Xv,Xv,Xv,Xv
 Xv,1 Gg,2 Gg,Xv
 Xv,Xv,Xv,Xv"
@@ -67,6 +68,55 @@ message=The battle is over.
 [/event]
 [/scenario]"#);
         Bundle::parse(text.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn routes_only_a_winning_campaign_to_its_effective_successor() {
+        for (fields, expected) in [
+            ("", Some("valley")), ("next_scenario=harbor", Some("harbor")),
+            ("next_scenario=null", None), ("next_scenario=\"\"", None),
+            ("result=defeat\nnext_scenario=harbor", None),
+        ] {
+            let scenario = bundle("side 1 turn end", fields);
+            let mut game = scenario.start(1, |_| unreachable!()).unwrap();
+            assert_eq!(game.next_scenario_after_victory(), None);
+            game.step(Action::EndTurn).unwrap();
+            assert_eq!(game.next_scenario_after_victory(), expected);
+        }
+    }
+
+    #[test]
+    fn normal_victory_continues_only_for_surviving_human_sides() {
+        let source = r#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+next_scenario=fort
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+controller=human
+team_name=blue
+[/side]
+[side]
+type=Guard
+controller=ai
+team_name=blue
+[/side]
+[/scenario]"#;
+        for (config, target) in [
+            (source.to_owned(), Some("fort")),
+            (source.replace("controller=human", "controller=human\ndefeat_condition=always"), None),
+        ] {
+            let bundle = Bundle::parse(config.as_bytes()).unwrap();
+            let game = bundle.start(3, |_| unreachable!()).unwrap();
+            assert_eq!(game.next_scenario_after_victory(), target);
+        }
     }
 
     #[test]

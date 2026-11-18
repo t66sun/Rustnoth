@@ -14,6 +14,11 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+pub mod objectives;
+mod dialogue;
+pub use dialogue::draw_dialogue;
+mod transitions;
+
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -65,6 +70,7 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
+    transitions: transitions::Transitions,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -80,7 +86,7 @@ pub struct BoardArt {
     shroud: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
-    font: Option<Font>,
+    pub(super) font: Option<Font>,
 }
 
 impl BoardArt {
@@ -114,6 +120,7 @@ impl BoardArt {
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
+            transitions: transitions::Transitions::default(),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -146,6 +153,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.transitions.load(observation, assets);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
@@ -196,7 +204,7 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
         .clone()
 }
 
-fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
@@ -213,6 +221,7 @@ fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Te
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
+    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -239,7 +248,7 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w >= 112.0 && bounds.y >= HEADER_HEIGHT).then_some(bounds)
 }
 
-pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str, shortcut: &str) {
     let (background, outline) = if highlighted {
         (BUTTON_HIGHLIGHTED, TEXT)
     } else {
@@ -248,9 +257,9 @@ pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
     draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, background);
     draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, outline);
     let baseline = bounds.y + 28.0;
-    label(&art.font, "End turn", bounds.x + 10.0, baseline, 16, TEXT);
-    let hint_width = measure_text("Space", art.font.as_ref(), 12, 1.0).width;
-    label(&art.font, "Space", bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
+    label(&art.font, text, bounds.x + 10.0, baseline, 16, TEXT);
+    let hint_width = measure_text(shortcut, art.font.as_ref(), 12, 1.0).width;
+    label(&art.font, shortcut, bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
 }
 
 pub fn menu_area() -> Rect {
@@ -285,7 +294,13 @@ pub fn draw(
     } else {
         width
     };
-    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_space - 36.0);
+    let title_end = if movement.has_objectives && let Some(bounds) = objectives::button(width) {
+        objectives::draw_button(art, bounds, "Objectives");
+        bounds.x
+    } else {
+        title_space
+    };
+    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_end - 36.0);
     let inset = panel_x + 18.0;
     let baseline = HEADER_HEIGHT + 40.0;
     match state {
@@ -435,12 +450,16 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let layers = &art.terrain[&tile.terrain];
-        if layers.is_empty() {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        if let Some(base) = layers.first() {
+            draw_centered(base, center, size);
         } else {
-            for texture in layers {
-                draw_centered(texture, center, size);
-            }
+            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        }
+        if flag_frame.is_some() {
+            art.transitions.draw(tile.position, center, size);
+        }
+        for overlay in layers.iter().skip(1) {
+            draw_centered(overlay, center, size);
         }
         if let Some(owner) = tile.village_owner {
             if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
