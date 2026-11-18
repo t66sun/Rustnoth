@@ -38,7 +38,7 @@ impl Browser {
         let mut position = ListPosition::default();
         let mut error: Option<String> = None;
         loop {
-            let frame = dialog.begin();
+            let frame = dialog.begin(636.0);
             let action = dialog.choose(&frame, &mut position, scenarios.len(), None, "Campaign scenarios",
                 error.as_deref(), |index| {
                     let (id, name) = scenarios[index];

@@ -25,7 +25,7 @@ impl SetupView {
     }
 
     pub(super) fn frame(&mut self, setup: &Setup, error: Option<&str>) -> Input {
-        let frame = self.dialog.begin();
+        let frame = self.dialog.begin(294.0 + Field::ALL.len() as f32 * 57.0);
         let Rect { x, y, w: width, h: height } = frame.panel;
         let (mouse, clicked, confirm) = (frame.mouse, frame.clicked, frame.confirm);
         let left = x + 22.0;
