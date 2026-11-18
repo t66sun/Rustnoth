@@ -25,6 +25,8 @@ pub struct ObservedTile {
     pub terrain: String,
     pub visible: bool,
     pub village_owner: Option<usize>,
+    /// Scheduled terrain color at this explored location.
+    pub time_color: [i32; 3],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -68,6 +70,7 @@ pub fn project(
                     terrain: terrain.to_owned(),
                     visible: visibility == HexVisibility::Visible,
                     village_owner: None,
+                    time_color: [0; 3],
                 });
             }
         }

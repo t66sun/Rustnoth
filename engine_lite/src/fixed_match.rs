@@ -294,6 +294,7 @@ impl<'data> FixedMatch<'data> {
             .collect();
         observation.gold = Some(gold);
         for tile in &mut observation.tiles {
+            tile.time_color = self.scenario.schedule.at_hex(self.current_round, tile.position).color;
             tile.village_owner = self.village_owners.get(&tile.position).copied().filter(|owner|
                 tile.visible || observation.allied_sides.contains(owner)
             );

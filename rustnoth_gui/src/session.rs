@@ -156,7 +156,7 @@ mod tests {
         let view = Observation {
             side: 2, allied_sides: vec![2], gold: Some(50), width: 3, height: 1,
             tiles: [home, edge].into_iter().map(|position| ObservedTile {
-                position, terrain: "Kh".into(), visible: true, village_owner: None,
+                position, terrain: "Kh".into(), visible: true, village_owner: None, time_color: [0; 3],
             }).collect(),
             units: vec![],
         };
@@ -194,6 +194,8 @@ Xv,Xv,Xv,Xv"
                     x,y=1,1
                     [time]
                         id=local_cavern
+                        red=-31
+                        blue=16
                         lawful_bonus=-40
                     [/time]
                 [/time_area]
@@ -206,6 +208,9 @@ Xv,Xv,Xv,Xv"
             [/scenario]
         "#).unwrap();
         let mut session = Session::new(bundle.start(19, |_| unreachable!()).unwrap());
+        let observed_colors: Vec<_> = session.observation().unwrap().tiles.iter()
+            .map(|tile| (tile.position, tile.time_color)).collect();
+        assert_eq!(observed_colors, [(Hex { x: 0, y: 0 }, [-31, 0, 16]), (Hex { x: 1, y: 0 }, [0; 3])]);
         for expected in [("first_watch", -25), ("first_watch", -25), ("custom_light", 13), ("custom_light", 13)] {
             let period = session.global_time_of_day().unwrap();
             assert_eq!((period.id.as_str(), period.lawful_bonus), expected);

@@ -163,7 +163,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
-    let mut art = render::BoardArt::new(&data.wesnoth_root);
+    let mut art = render::BoardArt::new(&data.wesnoth_root)?;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
