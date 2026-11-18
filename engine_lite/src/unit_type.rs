@@ -47,6 +47,7 @@ pub struct UnitType {
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
     pub resistance_overrides: DamageTable,
+    steadfast: bool,
     pub traits: TraitPool,
 }
 
@@ -135,6 +136,7 @@ impl UnitType {
             vision_cost_overrides: terrain_costs("vision_costs"),
             defense_overrides,
             resistance_overrides,
+            steadfast: false,
             emits_zoc,
             regeneration: 0,
             skirmisher: false,
@@ -152,6 +154,9 @@ impl UnitType {
                     for (ability, cfg) in &child.children {
                         if ability == "hides" {
                             result.hiding.push(Hiding::from_wml(cfg));
+                        }
+                        if ability == "resistance" && stock_steadfast(cfg) {
+                            result.steadfast = true;
                         }
                         if ability == "regenerate"
                             && cfg.children.is_empty()
@@ -176,6 +181,32 @@ impl UnitType {
         }
         result
     }
+
+    pub(crate) fn combat_damage_taken(
+        &self, damage_type: &str, inherited: Option<&DamageTable>, defending: bool,
+    ) -> i32 {
+        let taken = self.resistance_overrides.damage_taken_with_fallback(damage_type, inherited);
+        if defending && self.steadfast && (51..100).contains(&taken) {
+            let resistance = 100 - taken;
+            100 - (2 * resistance).min(50)
+        } else {
+            taken
+        }
+    }
+}
+
+fn stock_steadfast(ability: &Node) -> bool {
+    let [(tag, base)] = ability.children.as_slice() else { return false };
+    tag == "filter_base_value" && base.children.is_empty() && base.attributes.len() == 2
+        && base.attribute("greater_than") == Some("0") && base.attribute("less_than") == Some("50")
+        && ability.attribute("id") == Some("steadfast")
+        && ability.attribute("active_on") == Some("defense")
+        && ability.attribute("affect_self") == Some("yes")
+        && ability.attribute("multiply") == Some("2") && ability.attribute("max_value") == Some("50")
+        && ability.attributes.keys().all(|key| matches!(key.as_str(),
+            "id" | "multiply" | "max_value" | "active_on" | "affect_self" |
+            "name" | "female_name" | "description" | "special_note"
+        ))
 }
 
 fn is_stock_skirmisher(ability: &Node) -> bool {

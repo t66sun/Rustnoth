@@ -100,6 +100,71 @@ mod tests {
     }
 
     #[test]
+    fn steadfast_doubles_only_partial_positive_resistance_for_the_defending_guard() {
+        for (base_damage_taken, attacker_hp, defender_hp) in [
+            (80, 34, 36), (60, 36, 37), (50, 37, 37),
+            (30, 39, 39), (100, 32, 32), (120, 30, 30),
+        ] {
+            let wml = format!(r#"
+                [units]
+                    [movetype]
+                        name=guardfoot
+                        [resistance]
+                            blade={base_damage_taken}
+                        [/resistance]
+                    [/movetype]
+                    [unit_type]
+                        id=Guard
+                        hitpoints=42
+                        movement_type=guardfoot
+                        [abilities]
+                            [resistance]
+                                id=steadfast
+                                multiply=2
+                                max_value=50
+                                affect_self=yes
+                                active_on=defense
+                                [filter_base_value]
+                                    greater_than=0
+                                    less_than=50
+                                [/filter_base_value]
+                            [/resistance]
+                        [/abilities]
+                        [attack]
+                            type=blade
+                            range=melee
+                            damage=10
+                            number=1
+                            accuracy=100
+                        [/attack]
+                    [/unit_type]
+                [/units]
+                [scenario]
+                    map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                    [side]
+                        side=1
+                        type=Guard
+                    [/side]
+                    [side]
+                        side=2
+                        type=Guard
+                    [/side]
+                [/scenario]
+            "#);
+            let bundle = Bundle::parse(wml.as_bytes()).unwrap();
+            let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+            let from = Hex { x: 0, y: 0 };
+            let to = Hex { x: 1, y: 0 };
+            game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })).unwrap();
+            let snapshot = game.audit_snapshot();
+            assert_eq!(snapshot.units[0].hitpoints, attacker_hp, "retaliation at {base_damage_taken}%");
+            assert_eq!(snapshot.units[1].hitpoints, defender_hp, "attack at {base_damage_taken}%");
+        }
+    }
+
+    #[test]
     fn combat_uses_unit_resistances_over_inherited_values() {
         let bundle = Bundle::parse(
             br#"
