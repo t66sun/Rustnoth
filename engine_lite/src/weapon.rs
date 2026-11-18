@@ -145,8 +145,8 @@ impl WeaponProfile {
     }
 
     /// Swarm uses starting HP for the whole exchange, including repeated combat rounds.
-    pub(crate) fn strikes_at_hp(&self, hitpoints: i32, max_hitpoints: i32) -> u32 {
-        let strikes = self.strikes.max(0) as u32;
+    pub(crate) fn strikes_at_hp(&self, base_strikes: i32, hitpoints: i32, max_hitpoints: i32) -> u32 {
+        let strikes = base_strikes.max(0) as u32;
         let swarm = self.specials.as_ref().is_some_and(|specials| {
             specials.children.iter().any(|(tag, definition)| is_stock_swarm(tag, definition))
         });

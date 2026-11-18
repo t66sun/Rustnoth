@@ -19,7 +19,7 @@ impl CombatImmunities {
     }
 }
 
-/// A recruit's effective maximum stats and weapon damage.
+/// A recruit's effective maximum stats and weapon values.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecruitStats {
     pub max_hitpoints: i32,
@@ -30,6 +30,7 @@ pub struct RecruitStats {
     pub healthy: bool,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
+    pub(crate) attack_strikes: Vec<i32>,
     pub undrainable: bool,
     pub unslowable: bool,
     pub unpoisonable: bool,
@@ -59,6 +60,7 @@ impl RecruitStats {
             max_experience: base_max_experience,
             healthy: false,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
+            attack_strikes: unit.attacks.iter().map(|attack| attack.strikes).collect(),
             undrainable: immunities.undrainable,
             unslowable: immunities.unslowable,
             unpoisonable: immunities.unpoisonable,
@@ -115,12 +117,15 @@ impl RecruitStats {
                 self.max_experience = increase(base, effect, "increase", 1);
             }
             Some("attack") => {
-                for (weapon, damage) in unit.attacks.iter().zip(&mut self.attack_damage) {
+                for (index, weapon) in unit.attacks.iter().enumerate() {
                     if matches_filter(effect, "range", &weapon.range)
                         && matches_filter(effect, "name", &weapon.id)
                         && matches_filter(effect, "type", &weapon.damage_type)
                     {
-                        *damage = increase(*damage, effect, "increase_damage", 0);
+                        self.attack_damage[index] = increase(self.attack_damage[index], effect, "increase_damage", 0);
+                        let strikes = integer(effect, "set_attacks")
+                            .map(|value| value.max(0)).unwrap_or(self.attack_strikes[index]);
+                        self.attack_strikes[index] = increase(strikes, effect, "increase_attacks", 1);
                     }
                 }
             }
