@@ -236,7 +236,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             } else {
                 menu::Menu::new(
                     position,
-                    options_at(&selection, position, observation, session.legal_actions(), &data.assets),
+                    options_at(&selection, position, observation, session.legal_actions(), &data.assets, |id| session.recall_info(id)),
                     |from| session.advancement_choices(from),
                 )
             };
