@@ -184,7 +184,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         let pointer = vec2(mouse_x, mouse_y);
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
-            camera.fit(render::board_viewport(), observation.width, observation.height, reset);
+            camera.update(render::board_viewport(), observation, reset);
             if !reset {
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
