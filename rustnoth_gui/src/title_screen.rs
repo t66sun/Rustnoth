@@ -9,6 +9,7 @@ mod help;
 mod locale;
 mod languages;
 mod credits;
+mod community;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -24,7 +25,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Credits, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Community, Credits, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -35,6 +36,7 @@ impl Command {
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
             Self::Credits => "Credits",
+            Self::Community => "Community",
             Self::Quit => "Quit",
             Self::Language => "Language",
             Self::Help => "Help",
@@ -45,8 +47,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Credits, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Credits, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -108,6 +110,10 @@ impl TitleScreen {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::Previous) => { error = None; tip = (tip + entries.len() - 1) % entries.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % entries.len(); }
+                Some(Command::Community) => {
+                    next_frame().await;
+                    community::show(&art).await;
+                }
                 Some(Command::Language) => {
                     next_frame().await;
                     let result = languages::show(&self.root, &art, |w,h| {
@@ -424,8 +430,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Credits, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Credits, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Community, Command::Credits, Command::Quit]);
     }
 
     #[test]
