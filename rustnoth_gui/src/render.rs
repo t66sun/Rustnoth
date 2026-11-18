@@ -1,5 +1,6 @@
 mod frame;
 mod minimap;
+pub(crate) use minimap::skirmish_preview;
 mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
@@ -29,7 +30,8 @@ mod standing;
 pub(super) mod combat_motion;
 mod ground;
 mod rules;
-pub(crate) use rules::map_png;
+pub(crate) use rules::{map_observation, map_png, Rules as EditorTerrain};
+pub(crate) use minimap::Art as EditorMinimap;
 mod border;
 mod reach;
 mod hover;

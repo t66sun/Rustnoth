@@ -1,7 +1,7 @@
 //! Compile [terrain_graphics] into per-hex sprites from the observed map.
 mod bitmap;
 mod export;
-pub(crate) use export::map_png;
+pub(crate) use export::{map_observation, map_png};
 mod compile;
 pub(super) mod pattern;
 mod plan;
@@ -11,7 +11,7 @@ use macroquad::prelude::{Texture2D, Vec2};
 use std::collections::HashMap;
 
 #[derive(Default)]
-pub(super) struct Rules {
+pub(crate) struct Rules {
     catalog: Option<compile::Catalog>,
     bitmaps: bitmap::Bitmaps,
     known: Vec<(Hex, String)>,
@@ -32,10 +32,18 @@ struct Animation {
 
 impl Rules {
     pub(super) fn load(&mut self, assets: &AssetCatalog, view: &Observation) {
+        self.build(assets, view, None);
+    }
+
+    pub(crate) fn load_editor(&mut self, assets: &AssetCatalog, view: &Observation, map: &engine_lite::map::ScenarioMap) {
+        self.build(assets, view, Some(map));
+    }
+
+    fn build(&mut self, assets: &AssetCatalog, view: &Observation, map: Option<&engine_lite::map::ScenarioMap>) {
         if assets.terrain_rules().is_empty() {
             return;
         }
-        if self.bounds == (view.width, view.height)
+        if map.is_none() && self.bounds == (view.width, view.height)
             && self.known.len() == view.tiles.len()
             && self
                 .known
@@ -55,7 +63,11 @@ impl Rules {
             .catalog
             .get_or_insert_with(|| compile::compile(assets.terrain_rules(), assets.image_roots()));
         self.tiles.clear();
-        for (hex, tile) in plan::build(catalog, view) {
+        let tiles = match map {
+            Some(map) => plan::map_tiles(catalog, view, map),
+            None => plan::build(catalog, view),
+        };
+        for (hex, tile) in tiles {
             let mut layers = Vec::new();
             for part in &tile.layers {
                 let mut animations = Vec::new();
@@ -108,7 +120,7 @@ impl Rules {
         self.tiles.get(&hex).is_some_and(|t| t.base)
     }
 
-    pub(super) fn draw(
+    pub(crate) fn draw(
         &self,
         hex: Hex,
         center: Vec2,

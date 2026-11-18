@@ -19,6 +19,7 @@ pub struct Session<'rules> {
     dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
+    economy: Option<engine_lite::income::EconomyReport>,
     hovered_move: Option<(Hex, Hex)>,
     route: Option<engine_lite::fixed_match::move_preview::MovePreview>,
     computer_action: Option<Action>,
@@ -33,6 +34,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
+            economy: None,
             animate_combat: false, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -60,6 +62,7 @@ impl<'rules> Session<'rules> {
                 self.observation = self.game.observation_for(viewer);
             }
         }
+        self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
             self.dialogue.extend(self.game.take_dialogue(viewer));
         }
@@ -68,6 +71,8 @@ impl<'rules> Session<'rules> {
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
         self.dialogue.front()
     }
+
+    pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
 
     pub fn history(&self) -> &[crate::save_replay::Event] { &self.history }
 
