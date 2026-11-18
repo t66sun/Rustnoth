@@ -189,12 +189,14 @@ set_no_flag=base
                     terrain: "Rr".into(),
                     visible: true,
                     village_owner: None,
+                    time_color: [0; 3],
                 },
                 ObservedTile {
                     position: Hex { x: 2, y: 1 },
                     terrain: "Gg^Fp".into(),
                     visible: true,
                     village_owner: None,
+                    time_color: [0; 3],
                 },
             ],
         };
