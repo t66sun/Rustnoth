@@ -56,6 +56,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     })?;
     match state {
         MatchState::Won(side) => println!("Side {side} won."),
+        MatchState::AlliedVictory(sides) => {
+            let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
+            println!("Sides {winners} won.");
+        }
         MatchState::Draw => println!("Draw."),
         MatchState::Playing(_) => unreachable!("play_bundle returns a terminal match"),
     }
@@ -93,7 +97,7 @@ fn choose_action(observation: &Observation, actions: Vec<Action>) -> Action {
         observation
             .units
             .iter()
-            .filter(|unit| unit.side != observation.side)
+            .filter(|unit| !observation.allied_sides.contains(&unit.side))
             .map(|unit| hex.distance(unit.position))
             .min()
     };

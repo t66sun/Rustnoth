@@ -14,7 +14,7 @@ Rustnoth 的目标是为《韦诺之战》1.18.8 训练对战智能体。Rust �
 
 ## 运行固定场景
 
-无界面命令支持两个及以上阵营相互敌对、全图可见的混战。输入为已预处理的 WML 文件，包含顶层 `[terrain_type]` 地形定义、一个含已展开单位类型和移动配置的 `[units]` 块，以及一个 `[scenario]` 块。`map_file` 路径以输入文件所在目录为基准。
+无界面命令支持两个及以上阵营的全图可见对局。共享 `team_name` 的阵营互为盟友。当存活阵营之间没有敌对关系时，它们共同获胜。输入为已预处理的 WML 文件，包含顶层 `[terrain_type]` 地形定义、一个含已展开单位类型和移动配置的 `[units]` 块，以及一个 `[scenario]` 块。`map_file` 路径以输入文件所在目录为基准。
 
 ```sh
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-headless -- bundle.cfg 5489 100

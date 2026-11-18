@@ -14,7 +14,7 @@ impl<'rules> Session<'rules> {
     pub fn new(game: FixedMatch<'rules>) -> Self {
         let (observation, legal_actions) = match game.decision() {
             Some((observation, actions)) => (Some(observation), actions),
-            None => (None, Vec::new()),
+            None => (game.observation_for(1), Vec::new()),
         };
         Self { game, observation, legal_actions }
     }
