@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 mod endlevel;
 mod items;
+mod variables;
 use items::{ItemChange, MapItems};
+use variables::{Comparison, ScalarChange, Scalars};
 
 use crate::{
     hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
@@ -31,6 +33,8 @@ enum EventAction {
     Sides { sides: Vec<usize>, action: SideAction },
     Board(BoardChange),
     Item(ItemChange),
+    Variable(ScalarChange),
+    If { tests: Vec<Comparison>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
 }
 
 #[derive(Clone, Debug)]
@@ -259,8 +263,17 @@ impl EventAction {
         Some(Self::Sides { sides, action })
     }
 
-    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems) {
+    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars) {
         let (sides, action) = match self {
+            Self::Variable(change) => {
+                change.apply(variables);
+                return;
+            }
+            Self::If { tests, on_match, otherwise } => {
+                let branch = if tests.iter().all(|test| test.matches(variables)) { on_match } else { otherwise };
+                for change in branch { change.apply(state, items, variables); }
+                return;
+            }
             Self::Item(change) => {
                 items.apply(change);
                 return;
@@ -293,10 +306,53 @@ impl EventAction {
     }
 }
 
+fn read_actions<'a>(
+    commands: impl IntoIterator<Item = &'a (String, Node)>,
+    scenario: &Node,
+    side_count: usize,
+) -> Option<Vec<EventAction>> {
+    let mut actions = Vec::new();
+    for (tag, cfg) in commands {
+        let action = match tag.as_str() {
+            "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
+            "if" => {
+                if !cfg.attributes.is_empty() { return None; }
+                let mut tests = Vec::new();
+                let mut on_match = Vec::new();
+                let mut otherwise = Vec::new();
+                let mut has_branch = false;
+                for (tag, child) in &cfg.children {
+                    match tag.as_str() {
+                        "variable" => tests.push(Comparison::read(child)?),
+                        "then" | "else" if child.attributes.is_empty() => {
+                            has_branch = true;
+                            let branch = if tag == "then" { &mut on_match } else { &mut otherwise };
+                            branch.extend(read_actions(&child.children, scenario, side_count)?);
+                        }
+                        _ => return None,
+                    }
+                }
+                if tests.is_empty() || !has_branch { return None; }
+                EventAction::If { tests, on_match, otherwise }
+            }
+            "endlevel" => EventAction::Board(BoardChange::EndLevel {
+                victory: endlevel::player_victory(cfg, scenario)?,
+            }),
+            _ => match EventAction::read(tag, cfg, side_count) {
+                Some(action) => action,
+                None if tag == "objectives" || presentation_only(tag, cfg) => continue,
+                None => return None,
+            },
+        };
+        actions.push(action);
+    }
+    Some(actions)
+}
+
 /// Ignore display-only commands without descending through conditions or player choices.
 fn presentation_only(tag: &str, cfg: &Node) -> bool {
     match tag {
-        "message" | "move_unit_fake" | "scroll_to" | "item" | "redraw" | "delay" | "remove_item" => {
+        "message" | "move_unit_fake" | "scroll_to" | "scroll_to_unit" | "item" | "redraw" | "delay" | "remove_item" => {
             cfg.children.is_empty()
         }
         "repeat" => cfg.children.iter().all(|(tag, body)| {
@@ -412,6 +468,7 @@ struct Handler {
 pub(crate) struct ScenarioEvents {
     handlers: Vec<Handler>,
     active_side: usize,
+    variables: Scalars,
     pub(crate) items: MapItems,
     pub(crate) new_round_at_start: bool,
 }
@@ -437,23 +494,15 @@ impl ScenarioEvents {
             let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
-                vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
+                let mut changes = vec![EventAction::Board(BoardChange::CaptureVillage(capture))];
+                if let Some((tag, clear)) = actions.last()
+                    && let Some(change) = ScalarChange::read(tag, clear)
+                {
+                    changes.push(EventAction::Variable(change));
+                }
+                changes
             } else {
-                let Some(changes) = actions.into_iter().filter(|(tag, cfg)| {
-                    !(tag == "set_variable" && cfg.children.is_empty()
-                        && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
-                        && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
-                })
-                    .filter_map(|(tag, cfg)| match tag.as_str() {
-                        "endlevel" => Some(endlevel::player_victory(cfg, scenario)
-                            .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))),
-                        _ => match EventAction::read(tag, cfg, side_count) {
-                        Some(action) => Some(Some(action)),
-                        None if tag == "objectives" || presentation_only(tag, cfg) => None,
-                        None => Some(None),
-                        },
-                    })
-                    .collect::<Option<Vec<_>>>() else { continue };
+                let Some(changes) = read_actions(actions, scenario, side_count) else { continue };
                 changes
             };
             let once = match event.attribute("first_time_only").unwrap_or("yes") {
@@ -475,6 +524,7 @@ impl ScenarioEvents {
         Self {
             handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
             active_side: 1,
+            variables: variables::initial(scenario),
             items: MapItems::default(),
             new_round_at_start: !matches!(scenario.attribute("it_is_a_new_turn"), Some("no" | "false" | "0")),
         }
@@ -493,7 +543,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items);
+                change.apply(state, &mut self.items, &mut self.variables);
             }
             !handler.once
         });
