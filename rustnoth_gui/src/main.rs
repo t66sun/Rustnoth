@@ -198,7 +198,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
-        if let Some(objectives) = session.objectives() {
+        if !dialogue_open && let Some(objectives) = session.objectives() {
             let opened = render::objectives::hotkey()
                 || (is_mouse_button_pressed(MouseButton::Left)
                     && render::objectives::button(screen_width()).is_some_and(|r| r.contains(pointer)));
