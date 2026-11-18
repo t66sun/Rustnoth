@@ -30,6 +30,8 @@ pub struct UnitType {
     /// Terrain defense that this unit type defines over its inherited movement type.
     pub defense_overrides: TerrainDefense,
     pub emits_zoc: bool,
+    /// HP restored each turn by the stock self-regeneration ability.
+    pub regeneration: i32,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
@@ -111,12 +113,30 @@ impl UnitType {
             defense_overrides,
             resistance_overrides,
             emits_zoc,
+            regeneration: 0,
             advances_to,
             attacks: Vec::new(),
             traits: catalog.inherited_traits(&unit, alignment),
         };
         for (tag, child) in unit.children {
             match tag.as_str() {
+                "abilities" => {
+                    for (ability, cfg) in &child.children {
+                        if ability == "regenerate"
+                            && cfg.children.is_empty()
+                            && cfg.attribute("id") == Some("regenerates")
+                            && cfg.attribute("affect_self") == Some("yes")
+                            && cfg.attribute("poison") == Some("cured")
+                            && cfg.attributes.keys().all(|k| matches!(k.as_str(),
+                                "id" | "value" | "affect_self" | "poison" | "name" |
+                                "female_name" | "description" | "special_note"
+                            ))
+                            && let Some(value) = crate::scenario_time::integer(cfg, "value")
+                        {
+                            result.regeneration = result.regeneration.max(value);
+                        }
+                    }
+                }
                 "attack" => result.attacks.push(WeaponProfile::from_wml(child)),
                 "trait" => result.traits.available.push(Arc::new(child)),
                 _ => {}
