@@ -299,7 +299,8 @@ impl<'data> FixedMatch<'data> {
                     combatant(attacker, choice.weapon, &modifiers, response.parry, charging);
                 let defender_stats =
                     combatant(defender, index, &response_modifiers, weapon.parry, charging);
-                ((index, response_modifiers), attacker_stats, defender_stats)
+                let rounds = weapon.combat_rounds().max(response.combat_rounds());
+                ((index, response_modifiers), attacker_stats, defender_stats, rounds)
             });
         Ok(Attack {
             from: choice.from,
@@ -1095,6 +1096,60 @@ Xv,Xv,Xv,Xv"
                 (board.unit_at(from).unwrap().hitpoints, board.unit_at(to).map(|unit| unit.hitpoints)),
                 hitpoints,
             );
+        }
+    }
+
+    #[test]
+    fn berserk_on_either_engaged_weapon_repeats_combat_up_to_thirty_rounds() {
+        let special = "[specials]\n[berserk]\nid=berserk\nvalue=30\n[/berserk]\n[/specials]";
+        let weapon = |range, damage, special| format!(
+            "[attack]\nrange={range}\ndamage={damage}\naccuracy=100\nnumber=1\n{special}\n[/attack]\n"
+        );
+        let defensive_choices = weapon("melee", 2, "") + &weapon("melee", 1, special);
+        let cases = [
+            // Offensive berserk runs all 30 rounds, even without retaliation.
+            (100, weapon("melee", 1, special), weapon("ranged", 1, ""), Some(100), 70, 30),
+            // Defender prefers the lethal berserk response over the stronger single strike.
+            (25, weapon("melee", 1, ""), defensive_choices, None, 75, 50),
+            // A berserk weapon outside the attack's range cannot prolong the exchange.
+            (25, weapon("ranged", 1, ""), weapon("melee", 1, special), Some(25), 99, 1),
+        ];
+        for (hp, attack, retaliation, attacker_hp, defender_hp, draws) in cases {
+            let scenario = format!(
+                r#"[units]
+                    [unit_type]
+                        id=Attacker
+                        hitpoints={hp}
+                        {attack}
+                    [/unit_type]
+                    [unit_type]
+                        id=Defender
+                        hitpoints=100
+                        {retaliation}
+                    [/unit_type]
+                [/units]
+                [scenario]
+                    map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                    [side]
+                        side=1
+                        type=Attacker
+                    [/side]
+                    [side]
+                        side=2
+                        type=Defender
+                    [/side]
+                [/scenario]"#,
+            );
+            let bundle = crate::scenario_bundle::Bundle::parse(scenario.as_bytes()).unwrap();
+            let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+            let from = Hex { x: 0, y: 0 };
+            let to = Hex { x: 1, y: 0 };
+            game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })).unwrap();
+            assert_eq!(game.scenario.board.unit_at(from).map(|unit| unit.hitpoints), attacker_hp);
+            assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, defender_hp);
+            assert_eq!(game.rng.seed_and_calls(), (5489, draws));
         }
     }
 

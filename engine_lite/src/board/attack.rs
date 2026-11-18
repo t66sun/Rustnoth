@@ -100,7 +100,7 @@ impl Battlefield<'_> {
                     .get(*index)
                     .filter(|response| response.range == weapon.range && within_range(response, distance))
                     .ok_or(AttackError::UnavailableRetaliation)?;
-                Some((*index, response.parry, modifiers))
+                Some((*index, response, modifiers))
             }
             None => None,
         };
@@ -109,7 +109,7 @@ impl Battlefield<'_> {
             attacker,
             action.weapon,
             &action.modifiers,
-            retaliation.map_or(0, |(_, parry, _)| parry),
+            retaliation.map_or(0, |(_, response, _)| response.parry),
             charging,
         );
         let defender_stats = retaliation.map_or(
@@ -124,7 +124,10 @@ impl Battlefield<'_> {
         );
         let movement_used = weapon.movement_used;
         let attacks_used = weapon.attacks_used;
-        let result = resolve_exchange(attacker_stats, defender_stats, NonZeroU32::MIN, rng);
+        let rounds = weapon.combat_rounds().max(
+            retaliation.map_or(NonZeroU32::MIN, |(_, response, _)| response.combat_rounds()),
+        );
+        let result = resolve_exchange(attacker_stats, defender_stats, rounds, rng);
         let attacker_experience =
             combat_experience(defender.unit_type.level, result.defender_hitpoints == 0);
         let defender_experience =
