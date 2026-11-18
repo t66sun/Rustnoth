@@ -27,12 +27,14 @@ impl FixedMatch<'_> {
         let unit_type = unit.unit_type;
         let inherited = self.rules.movement.get(&unit_type.movement_type).map(|m| &m.defense);
         let sides = &self.scenario.sides;
+        let known = |hex| matches!(vision.at(hex), Some(HexVisibility::Visible | HexVisibility::Fogged));
+        let visible = |hex| vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
+        let villages = self.teleport_villages(from, unit, known, visible);
         board.walk_steps_in_view(side, from, to,
             |terrain| self.rules.walking_cost(unit_type, terrain),
             |terrain| unit_type.defense_overrides.hit_chance_with_fallback(self.rules.terrain, terrain, inherited),
             |other| sides[side - 1].is_enemy(&sides[other - 1]),
-            |hex| matches!(vision.at(hex), Some(HexVisibility::Visible | HexVisibility::Fogged)),
-            |hex| vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex),
+            known, visible, &villages,
         )
     }
 

@@ -15,7 +15,13 @@ impl FixedMatch<'_> {
 
         // Native movement checks the plotted path for hidden units before moving the scout.
         // An allied occupant can be traversed but cannot become the scout's final location.
-        for &(next, remaining) in &route[1..] {
+        for steps in route.windows(2) {
+            let (previous, _) = steps[0];
+            let (next, remaining) = steps[1];
+            // A hidden occupant blocks a tunnel without revealing the remote exit.
+            if previous.distance(next) > 1 && (board.unit_at(next).is_some() || previous != position) {
+                break;
+            }
             match board.unit_at(next) {
                 Some(occupant) if sides[side - 1].is_enemy(&sides[occupant.side - 1]) => {
                     discovered.push(next);

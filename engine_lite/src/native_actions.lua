@@ -3,7 +3,7 @@ local tag = wml.tag
 
 function actions.move(from_x, from_y, to_x, to_y)
     local unit = assert(wesnoth.units.get(from_x, from_y), "move source has no unit")
-    local path = wesnoth.paths.find_path(unit, to_x, to_y, { ignore_teleport = true })
+    local path = wesnoth.paths.find_path(unit, to_x, to_y)
     assert(#path > 1, "native path has no move to the requested destination")
 
     local xs, ys = {}, {}

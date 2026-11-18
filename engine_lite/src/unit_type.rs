@@ -27,6 +27,7 @@ pub struct UnitType {
     pub(crate) upkeep: Upkeep,
     pub(crate) leadership: bool,
     pub(crate) illuminates: bool,
+    pub(crate) village_teleport: bool,
     pub hitpoints: i32,
     pub movement: i32,
     /// Negative values use the unit's maximum movement.
@@ -155,6 +156,7 @@ impl UnitType {
             regeneration: 0,
             skirmisher: false,
             illuminates: false,
+            village_teleport: false,
             hiding: Vec::new(),
             advances_to,
             default_amla: unit.children.iter().find(|(tag, _)| tag == "advancement")
@@ -169,6 +171,9 @@ impl UnitType {
                         tag == "skirmisher" && is_stock_skirmisher(config)
                     });
                     for (ability, cfg) in &child.children {
+                        if ability == "teleport" && is_stock_village_teleport(cfg) {
+                            result.village_teleport = true;
+                        }
                         if ability == "illuminates" && is_stock_illumination(cfg) {
                             result.illuminates = true;
                         }
@@ -246,6 +251,27 @@ fn stock_steadfast(ability: &Node) -> bool {
             "id" | "multiply" | "max_value" | "active_on" | "affect_self" |
             "name" | "female_name" | "description" | "special_note"
         ))
+}
+
+fn is_stock_village_teleport(ability: &Node) -> bool {
+    let [(tag, tunnel)] = ability.children.as_slice() else { return false };
+    if ability.attribute("id") != Some("teleport")
+        || !ability.attributes.keys().all(|key| matches!(key.as_str(),
+            "id" | "name" | "female_name" | "description" | "special_note"))
+        || tag != "tunnel" || tunnel.attribute("id") != Some("village_teleport")
+        || tunnel.attributes.len() != 1 || tunnel.children.len() != 3
+    {
+        return false;
+    }
+    let has_location = |tag: &str, formula: &str| tunnel.children.iter().any(|(name, cfg)| {
+        name == tag && cfg.children.is_empty() && cfg.attributes.len() == 2
+            && cfg.attribute("terrain") == Some("*^V*")
+            && cfg.attribute("formula").is_some_and(|value| value.split_whitespace().eq(formula.split_whitespace()))
+    });
+    has_location("source", "owner_side = teleport_unit.side_number and (unit = teleport_unit or not unit) where unit = unit_at(loc)")
+        && has_location("target", "owner_side = teleport_unit.side_number and not unit_at(loc)")
+        && tunnel.children.iter().any(|(tag, cfg)| tag == "filter"
+            && cfg.children.is_empty() && cfg.attributes.len() == 1 && cfg.attribute("ability") == Some("teleport"))
 }
 
 fn is_stock_illumination(ability: &Node) -> bool {
