@@ -272,6 +272,12 @@ impl<'data> FixedMatch<'data> {
         })
     }
 
+    /// Current WML objectives for the chosen side of the desktop match.
+    pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
+        self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
+            .filter(|objectives| !objectives.is_empty())
+    }
+
     /// Original map item images visible to one side, in hex overlay draw order.
     pub fn map_item_images(&self, side: usize) -> Vec<(Hex, &str)> {
         let Some(settings) = side.checked_sub(1).and_then(|i| self.scenario.sides.get(i)) else {

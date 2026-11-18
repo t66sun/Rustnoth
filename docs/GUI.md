@@ -43,6 +43,7 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 召回 | 点可召回的城堡格，在侧栏按兵种、老兵 ID、生命、经验和金币花费挑选召回对象 |
 | 遣散 | 按 D 打开本方预备兵名单，点击条目或用 Tab、Enter 选择。核对兵种和 ID 后再次点击或按 Enter 确认，按 Esc 或右键取消。遣散不消耗金币 |
 | 选择菜单项 | 左键点击，或按 Tab 切换、Enter 确认 |
+| 查看战役目标 | 点击 **Objectives** 或按 Ctrl+J 查看本方当前胜负目标，方向键、翻页键和滚轮可滚动，Esc 或 Enter 返回棋盘 |
 | 取消选择 | 右键 |
 | 结束回合 | 点击 **End turn**，或按空格 |
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |

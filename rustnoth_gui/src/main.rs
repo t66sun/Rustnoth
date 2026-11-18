@@ -182,6 +182,16 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
+        if let Some(objectives) = session.objectives() {
+            let opened = render::objectives::hotkey()
+                || (is_mouse_button_pressed(MouseButton::Left)
+                    && render::objectives::button(screen_width()).is_some_and(|r| r.contains(pointer)));
+            if opened {
+                render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
+                next_frame().await;
+                continue;
+            }
+        }
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.fit(render::board_viewport(), observation.width, observation.height, reset);
@@ -286,6 +296,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
+                has_objectives: session.objectives().is_some(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
