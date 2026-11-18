@@ -32,6 +32,7 @@ pub struct UnitType {
     pub emits_zoc: bool,
     /// HP restored each turn by the stock self-regeneration ability.
     pub regeneration: i32,
+    pub(crate) skirmisher: bool,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
@@ -114,6 +115,7 @@ impl UnitType {
             resistance_overrides,
             emits_zoc,
             regeneration: 0,
+            skirmisher: false,
             advances_to,
             attacks: Vec::new(),
             traits: catalog.inherited_traits(&unit, alignment),
@@ -121,6 +123,9 @@ impl UnitType {
         for (tag, child) in unit.children {
             match tag.as_str() {
                 "abilities" => {
+                    result.skirmisher |= child.children.iter().any(|(tag, config)| {
+                        tag == "skirmisher" && is_stock_skirmisher(config)
+                    });
                     for (ability, cfg) in &child.children {
                         if ability == "regenerate"
                             && cfg.children.is_empty()
@@ -139,11 +144,22 @@ impl UnitType {
                 }
                 "attack" => result.attacks.push(WeaponProfile::from_wml(child)),
                 "trait" => result.traits.available.push(Arc::new(child)),
+
                 _ => {}
             }
         }
         result
     }
+}
+
+fn is_stock_skirmisher(ability: &Node) -> bool {
+    ability.attribute("id") == Some("skirmisher")
+        && ability.attribute("affect_self") == Some("yes")
+        && ability.children.is_empty()
+        && ability.attributes.keys().all(|key| matches!(
+            key.as_str(),
+            "id" | "affect_self" | "name" | "female_name" | "description" | "special_note"
+        ))
 }
 
 /// Indexes flat unit types and resolves their inherited traits from a preprocessed `[units]` body.
