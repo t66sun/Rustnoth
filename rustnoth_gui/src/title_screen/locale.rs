@@ -11,9 +11,24 @@ pub(super) struct Locale {
 }
 
 #[derive(Default)]
-struct Catalog(HashMap<String, String>);
+pub(super) struct Catalog(HashMap<String, String>);
 
 impl Catalog {
+    pub(super) fn installed(root: &Path, language: &str, domain: &str) -> io::Result<Self> {
+        let identifier = |name: &str| name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b));
+        if !identifier(language) || !identifier(domain) || matches!(language, "en_US" | "C") {
+            return Ok(Self::default());
+        }
+        for id in candidates(language) {
+            let path = root.join("translations").join(id).join("LC_MESSAGES").join(format!("{domain}.mo"));
+            match fs::read(path) {
+                Ok(bytes) => return Self::read(&bytes),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Self::default())
+    }
     fn read(bytes: &[u8]) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "Invalid gettext catalog");
         let little = match bytes.get(..4) {
@@ -59,7 +74,7 @@ impl Catalog {
         Ok(Self(catalog))
     }
 
-    fn text<'a>(&'a self, key: &'a str) -> &'a str {
+    pub(super) fn text<'a>(&'a self, key: &'a str) -> &'a str {
         self.0.get(key).map(String::as_str).unwrap_or(key)
     }
 }
@@ -180,23 +195,8 @@ impl Locale {
         {
             return Ok(locale);
         }
-        let read = |domain| -> io::Result<Catalog> {
-            for id in candidates(&locale.effective) {
-                let path = root
-                    .join("translations")
-                    .join(id)
-                    .join("LC_MESSAGES")
-                    .join(format!("{domain}.mo"));
-                match fs::read(path) {
-                    Ok(bytes) => return Catalog::read(&bytes),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(Catalog::default())
-        };
-        locale.game = read("wesnoth")?;
-        locale.interface = read("wesnoth-lib")?;
+        locale.game = Catalog::installed(root, &locale.effective, "wesnoth")?;
+        locale.interface = Catalog::installed(root, &locale.effective, "wesnoth-lib")?;
         Ok(locale)
     }
 
