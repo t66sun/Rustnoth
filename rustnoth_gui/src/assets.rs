@@ -14,6 +14,7 @@ pub struct AssetCatalog {
     fallback: PathBuf,
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
+    terrain_names: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -88,6 +89,14 @@ impl AssetCatalog {
         self.units.get(id)?.weapon_names.get(index)?.as_deref()
     }
 
+    /// Name of the highlighted tile as displayed in the terrain report.
+    pub fn terrain_name(&self, code: &str) -> Option<&str> {
+        self.terrain_names.get(code).or_else(|| {
+            let (base, overlay) = code.split_at(code.find('^')?);
+            self.terrain_names.get(overlay).or_else(|| self.terrain_names.get(base))
+        }).map(String::as_str)
+    }
+
     /// Returns an exact terrain image or the known base and overlay in draw order.
     pub fn terrain_images(&self, code: &str) -> Vec<PathBuf> {
         if let Some(Some(image)) = self.terrain.get(code) {
@@ -119,6 +128,9 @@ impl AssetCatalog {
                     let Some(code) = node.attribute("string").filter(|code| !code.is_empty()) else {
                         continue;
                     };
+                    if let Some(name) = display_name(node, "name") {
+                        self.terrain_names.entry(code.to_owned()).or_insert_with(|| name.to_owned());
+                    }
                     self.terrain.entry(code.to_owned()).or_insert_with(|| {
                         terrain_image(node).map(|image| Path::new("terrain").join(image))
                     });
@@ -296,11 +308,13 @@ profile=portraits/scout.webp
         let core = br#"
 [terrain_type]
     string=Gg
+    name=Grassland
     editor_image=grass/green
     symbol_image=grass/green-symbol
 [/terrain_type]
 [terrain_type]
     string=^Vh
+    name=Village
     symbol_image="village/human-tile~O(0.5)"
 [/terrain_type]
 [terrain_type]
@@ -336,6 +350,8 @@ profile=portraits/scout.webp
 "#;
         let catalog = AssetCatalog::parse(root, core, bundle).unwrap();
 
+        assert_eq!(catalog.terrain_name("Gg"), Some("Grassland"));
+        assert_eq!(catalog.terrain_name("Gg^Vh"), Some("Village"));
         assert_eq!(
             catalog.unit_image("Bowman"),
             Some(images.join("units/human-loyalists/bowman.png")),

@@ -84,10 +84,7 @@ impl BoardCamera {
     }
 
     fn contains(&self, [x, y]: [f32; 2]) -> bool {
-        self.last_fit.is_some_and(|(viewport, _, _)| {
-            (viewport.x..viewport.x + viewport.width).contains(&x)
-                && (viewport.y..viewport.y + viewport.height).contains(&y)
-        })
+        self.last_fit.is_some_and(|(viewport, _, _)| viewport.contains([x, y]))
     }
 }
 

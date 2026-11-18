@@ -12,6 +12,12 @@ pub struct Viewport {
     pub height: f32,
 }
 
+impl Viewport {
+    pub fn contains(&self, [x, y]: [f32; 2]) -> bool {
+        (self.x..self.x + self.width).contains(&x) && (self.y..self.y + self.height).contains(&y)
+    }
+}
+
 /// A fitted board with Wesnoth's southward shift on odd columns.
 #[derive(Clone, Copy, Debug)]
 pub struct BoardLayout {
