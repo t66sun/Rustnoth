@@ -23,15 +23,18 @@ impl FixedMatch<'_> {
         let sides = &self.scenario.sides;
         let result = self.scenario.board.resolve_attack(side, attack,
             |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng)?;
+        let attacker_id = self.scenario.board.unit_at(from).expect("resolved attacker").serial;
+        let defender_id = self.scenario.board.unit_at(to).expect("resolved defender").serial;
         self.fire_units_event("attack_end", from, Some(to))?;
-        for (victim, killer, hp, killer_hp, strike) in [
-            (to, from, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
-            (from, to, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
+        for (victim, killer, serial, killer_serial, hp, killer_hp, strike) in [
+            (to, from, defender_id, attacker_id, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
+            (from, to, attacker_id, defender_id, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
         ] {
-            if hp > 0 { continue; }
+            if hp > 0 || self.scenario.board.unit_at(victim).is_none_or(|unit| unit.serial != serial) { continue; }
             self.fire_units_event("die", victim, Some(killer))?;
             let board = &mut self.scenario.board;
-            let replacement = strike.filter(|_| killer_hp > 0).and_then(|index|
+            if board.unit_at(victim).is_none_or(|unit| unit.serial != serial) { continue; }
+            let replacement = strike.filter(|_| killer_hp > 0 && board.unit_at(killer).is_some_and(|unit| unit.serial == killer_serial)).and_then(|index|
                 board.plague_reanimation(killer, victim, index, self.rules.terrain));
             board.remove_casualty(victim);
             if let Some(raised) = replacement {

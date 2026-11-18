@@ -39,6 +39,7 @@ pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
     units: BTreeMap<Hex, UnitState<'rules>>,
+    units_created: u64,
     recall: BTreeMap<usize, Vec<UnitState<'rules>>>,
     resting: BTreeSet<Hex>,
     unit_types: &'rules BTreeMap<String, UnitType>,
@@ -47,6 +48,7 @@ pub struct Battlefield<'rules> {
 
 #[derive(Debug)]
 pub struct UnitState<'rules> {
+    pub(crate) serial: u64,
     pub side: usize,
     pub id: Option<String>,
     pub unit_type: &'rules UnitType,
@@ -213,6 +215,7 @@ impl<'rules> Battlefield<'rules> {
         let mut board = Self {
             map,
             units: BTreeMap::new(),
+            units_created: 0,
             recall: BTreeMap::new(),
             resting: BTreeSet::new(),
             unit_types,
@@ -253,6 +256,7 @@ impl<'rules> Battlefield<'rules> {
             slowed,
             uncovered,
         } = starting_unit;
+        let serial = self.units_created + 1;
         let tile = match position {
             Some(hex) => Some(self.vacant_unit_slot(hex)?),
             None => None,
@@ -271,6 +275,7 @@ impl<'rules> Battlefield<'rules> {
         let traits = UnitModifications::from_definitions(unit_type, definitions, base_max_experience);
         let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
         let mut unit = UnitState {
+            serial,
             side,
             id,
             unit_type,
@@ -302,6 +307,7 @@ impl<'rules> Battlefield<'rules> {
         } else {
             self.recall.entry(side).or_default().push(unit);
         }
+        self.units_created = serial;
         Ok(())
     }
 
@@ -320,6 +326,10 @@ impl<'rules> Battlefield<'rules> {
     /// Authored reserve units for the requested side, in creation order.
     pub fn recall_roster(&self, side: usize) -> &[UnitState<'rules>] {
         self.recall.get(&side).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn retain_reserves(&mut self, mut keep: impl FnMut(&UnitState<'rules>) -> bool) {
+        for roster in self.recall.values_mut() { roster.retain(&mut keep); }
     }
 
     pub(crate) fn disband(&mut self, side: usize, id: &str) -> Option<()> {
@@ -470,6 +480,7 @@ impl<'rules> Battlefield<'rules> {
     ) -> Result<(), BoardError> {
         let experience_modifier = self.experience_modifier;
         let unit_type = self.unit_type(type_id);
+        let serial = self.units_created + 1;
         let tile = self.vacant_unit_slot(position)?;
         let unit_type = unit_type.ok_or_else(|| BoardError::UnknownUnitType {
             position,
@@ -478,6 +489,7 @@ impl<'rules> Battlefield<'rules> {
         let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
         let traits = select(unit_type, base_max_experience);
         tile.insert(UnitState {
+            serial,
             side,
             id: None,
             unit_type,
@@ -503,6 +515,7 @@ impl<'rules> Battlefield<'rules> {
             recall_filter: Default::default(),
             traits,
         });
+        self.units_created = serial;
         Ok(())
     }
 

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 mod endlevel;
+pub(crate) mod kill;
 mod items;
 use items::{ItemChange, MapItems};
 
@@ -11,8 +12,8 @@ use crate::{
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
 };
 
-#[derive(Debug)]
-enum SideAction {
+#[derive(Clone, Debug)]
+pub(crate) enum SideAction {
     Gold(i32),
     Economy {
         gold: Option<i32>,
@@ -35,6 +36,8 @@ enum EventAction {
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
+    Kill(kill::KillAction, Option<Hex>),
+    Sides(Vec<usize>, SideAction),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
@@ -158,6 +161,7 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+        if tag == "kill" { return kill::KillAction::read(cfg).map(|kill| Self::Board(BoardChange::Kill(kill, None))); }
         if tag == "modify_turns" {
             return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
         }
@@ -243,10 +247,14 @@ impl EventAction {
         Some(Self::Sides { sides, action })
     }
 
-    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems) {
+    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, primary: Option<Hex>) {
         let (sides, action) = match self {
             Self::Item(change) => {
                 items.apply(change);
+                return;
+            }
+            Self::Board(BoardChange::Kill(kill, _)) => {
+                state.board_changes.push(BoardChange::Kill(kill.clone(), primary));
                 return;
             }
             Self::Board(change) => {
@@ -255,22 +263,33 @@ impl EventAction {
             }
             Self::Sides { sides, action } => (sides, action),
         };
+        if state.board_changes.iter().any(|change| matches!(change, BoardChange::Kill(..))) {
+            // Death handlers run synchronously and can read or modify the same side.
+            state.board_changes.push(BoardChange::Sides(sides.clone(), action.clone()));
+        } else {
+            action.apply(sides, state.gold, state.sides);
+        }
+    }
+}
+
+impl SideAction {
+    pub(crate) fn apply(&self, sides: &[usize], funds: &mut [i64], teams: &mut [SideConfig]) {
         for &index in sides {
-            match action {
-                SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
+            match self {
+                SideAction::Gold(amount) => funds[index] += i64::from(*amount),
                 SideAction::Economy { gold, income, village_gold, village_support } => {
-                    let side = &mut state.sides[index];
-                    if let Some(value) = gold { state.gold[index] = i64::from(*value); }
+                    let side = &mut teams[index];
+                    if let Some(value) = gold { funds[index] = i64::from(*value); }
                     if let Some(value) = income { side.income_bonus = *value; }
                     if let Some(value) = village_gold { side.village_gold = *value; }
                     if let Some(value) = village_support { side.village_support = *value; }
                 }
-                SideAction::AllowRecruit(types) => state.sides[index].recruits.extend(types.iter().cloned()),
-                SideAction::SetRecruit(types) => state.sides[index].recruits = types.iter().cloned().collect(),
+                SideAction::AllowRecruit(types) => teams[index].recruits.extend(types.iter().cloned()),
+                SideAction::SetRecruit(types) => teams[index].recruits = types.iter().cloned().collect(),
                 SideAction::DisallowRecruit(Some(types)) => {
-                    for id in types { state.sides[index].recruits.remove(id); }
+                    for id in types { teams[index].recruits.remove(id); }
                 }
-                SideAction::DisallowRecruit(None) => state.sides[index].recruits.clear(),
+                SideAction::DisallowRecruit(None) => teams[index].recruits.clear(),
             }
         }
     }
@@ -289,7 +308,7 @@ fn presentation_only(tag: &str, cfg: &Node) -> bool {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct UnitFilter {
     locations: Vec<WmlRectangle>,
     sides: Vec<usize>,
@@ -321,9 +340,13 @@ impl UnitFilter {
     fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
         let Some((x, y)) = unit.position.to_wml() else { return false };
         (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
-            && (self.sides.is_empty() || self.sides.contains(&unit.side))
-            && (self.ids.is_empty() || unit.id.as_ref().is_some_and(|id| self.ids.contains(id)))
-            && (self.types.is_empty() || self.types.iter().any(|id| id == unit.type_id))
+            && self.matches_fields(unit.side, unit.id.as_deref(), unit.type_id)
+    }
+
+    fn matches_fields(&self, side: usize, id: Option<&str>, type_id: &str) -> bool {
+        (self.sides.is_empty() || self.sides.contains(&side))
+            && (self.ids.is_empty() || id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
+            && (self.types.is_empty() || self.types.iter().any(|kind| kind == type_id))
     }
 }
 
@@ -479,7 +502,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items);
+                change.apply(state, &mut self.items, unit.as_ref().map(|unit| unit.position));
             }
             !handler.once
         });

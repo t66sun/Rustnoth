@@ -34,6 +34,7 @@ mod walk;
 mod vision;
 mod recruit;
 mod plague;
+mod kill;
 mod retaliation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +111,7 @@ pub struct FixedMatch<'data> {
     rng: ReplayRng,
     state: MatchState,
     current_round: i32,
+    kill_stack: Vec<Hex>,
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     side_order: Vec<usize>,
@@ -148,6 +150,7 @@ impl<'data> FixedMatch<'data> {
         }
         let mut game = Self {
             current_round: scenario.start_round,
+            kill_stack: Vec::new(),
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
@@ -189,8 +192,17 @@ impl<'data> FixedMatch<'data> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
+        let mut killed = false;
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::Kill(kill, primary) => {
+                    killed |= self.kill_units(kill, primary)?;
+                    continue;
+                }
+                BoardChange::Sides(sides, action) => {
+                    action.apply(&sides, &mut self.gold, &mut self.scenario.sides);
+                    continue;
+                }
                 BoardChange::TurnLimit(change) => {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
@@ -247,6 +259,7 @@ impl<'data> FixedMatch<'data> {
                 }
             });
         }
+        if killed && self.kill_stack.is_empty() { self.check_victory(); }
         Ok(())
     }
 
