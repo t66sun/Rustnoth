@@ -406,12 +406,28 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
                     type=Guard
                     x,y=4,1
                     canrecruit=yes
+                    id=east_guard
                     extra_recruit=Bowman,Guard
                 [/unit]
             [/side]
             [side]
                 type=Guard
             [/side]
+            [event]
+                name=side 2 turn
+                [set_extra_recruit]
+                    id=east_guard
+                    extra_recruit=Bowman
+                [/set_extra_recruit]
+                [allow_extra_recruit]
+                    id=east_guard
+                    extra_recruit=Guard
+                [/allow_extra_recruit]
+                [disallow_extra_recruit]
+                    id=east_guard
+                    extra_recruit=Bowman
+                [/disallow_extra_recruit]
+            [/event]
         "#).unwrap();
         let types = read_unit_types(wml::parse(
             "[unit_type]\nid=Guard\nhitpoints=10\ncost=3\n[/unit_type]\n\
@@ -436,6 +452,10 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         assert_eq!(game.gold[0], 20);
         game.step(action("Bowman", right)).unwrap();
         assert_eq!(game.gold[0], 15);
+        game.step(Action::EndTurn).unwrap();
+        let captain = game.scenario.board.unit_at(Hex { x: 3, y: 0 }).unwrap();
+        assert_eq!(captain.extra_recruits, ["Guard"]);
+        assert!(game.scenario.board.unit_at(Hex { x: 0, y: 0 }).unwrap().extra_recruits.is_empty());
     }
 
     #[test]

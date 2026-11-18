@@ -78,12 +78,33 @@ pub fn scenario(
     scenario_with_visibility(name, map_data, turns, sides, Visibility::Open)
 }
 
+/// One player's choices for a numbered map start.
+pub struct SideChoice<'a> {
+    pub faction: &'a Faction,
+    pub leader: Option<&'a str>,
+    pub team: usize,
+}
+
 /// Build the same skirmish with the chosen fog and shroud settings on every side.
 pub fn scenario_with_visibility(
     name: &str,
     map_data: &str,
     turns: i32,
     sides: &[(&Faction, Option<&str>)],
+    visibility: Visibility,
+) -> Result<Node, Box<dyn Error>> {
+    let choices: Vec<_> = sides.iter().enumerate().map(|(index, &(faction, leader))| {
+        SideChoice { faction, leader, team: index + 1 }
+    }).collect();
+    scenario_with_teams(name, map_data, turns, &choices, visibility)
+}
+
+/// Build a skirmish with an explicit one-based team for each map start.
+pub fn scenario_with_teams(
+    name: &str,
+    map_data: &str,
+    turns: i32,
+    sides: &[SideChoice<'_>],
     visibility: Visibility,
 ) -> Result<Node, Box<dyn Error>> {
     if sides.len() < 2 || turns < -1 || turns == 0 {
@@ -96,11 +117,14 @@ pub fn scenario_with_visibility(
     ]);
 
     // Wesnoth 1.18.8 DEFAULT_SCHEDULE, starting at dawn.
-    for (id, bonus) in [
-        ("dawn", "0"), ("morning", "25"), ("afternoon", "25"),
-        ("dusk", "0"), ("first_watch", "-25"), ("second_watch", "-25"),
+    for (id, bonus, [red, green, blue]) in [
+        ("dawn", "0", ["-25", "-15", "0"]), ("morning", "25", ["0"; 3]),
+        ("afternoon", "25", ["0"; 3]), ("dusk", "0", ["10", "-20", "-35"]),
+        ("first_watch", "-25", ["-75", "-45", "-13"]), ("second_watch", "-25", ["-75", "-45", "-13"]),
     ] {
-        scenario.children.push(("time".into(), attributes(&[("id", id), ("lawful_bonus", bonus)])));
+        scenario.children.push(("time".into(), attributes(&[
+            ("id", id), ("lawful_bonus", bonus), ("red", red), ("green", green), ("blue", blue),
+        ])));
     }
     let (fog, shroud) = match visibility {
         Visibility::Open => ("no", "no"),
@@ -108,7 +132,11 @@ pub fn scenario_with_visibility(
         Visibility::Shroud => ("no", "yes"),
         Visibility::FogAndShroud => ("yes", "yes"),
     };
-    for (index, &(faction, selected_leader)) in sides.iter().enumerate() {
+    for (index, &SideChoice { faction, leader: selected_leader, team }) in sides.iter().enumerate() {
+        if !(1..=sides.len()).contains(&team) {
+            return Err(format!("side {} has invalid team {team}", index + 1).into());
+        }
+        let team = team.to_string();
         let number = (index + 1).to_string();
         let leader = match selected_leader {
             Some(id) if faction.leaders.iter().any(|listed| listed == id) => id,
@@ -117,7 +145,7 @@ pub fn scenario_with_visibility(
         };
         let recruits = faction.recruits.join(",");
         let side = attributes(&[
-            ("side", &number), ("team_name", &number), ("faction", &faction.id),
+            ("side", &number), ("team_name", &team), ("faction", &faction.id),
             ("type", leader), ("recruit", &recruits), ("controller", "human"),
             ("random_traits", "no"), ("fog", fog), ("shroud", shroud),
         ]);
@@ -181,6 +209,8 @@ mod tests {
         let schedule = read_time_schedule(scenario);
         let bonuses: Vec<_> = (1..=7).map(|turn| schedule.at_turn(turn).lawful_bonus).collect();
         assert_eq!(bonuses, [0, 25, 25, 0, -25, -25, 0]);
+        assert_eq!(schedule.at_turn(1).color, [-25, -15, 0]);
+        assert_eq!(schedule.at_turn(4).color, [10, -20, -35]);
     }
 
     #[test]

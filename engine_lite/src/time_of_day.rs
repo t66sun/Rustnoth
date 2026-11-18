@@ -9,6 +9,8 @@ use crate::hex::Hex;
 pub struct TimeOfDay {
     pub id: String,
     pub lawful_bonus: i32,
+    /// Additive red, green and blue shifts from the scenario WML.
+    pub color: [i32; 3],
 }
 
 /// A unit's response to time-of-day combat bonuses.
@@ -40,6 +42,7 @@ pub(crate) type WmlRectangle = (RangeInclusive<i32>, RangeInclusive<i32>);
 
 #[derive(Clone, Debug)]
 struct TimeArea {
+    id: String,
     locations: Vec<WmlRectangle>,
     cycle: TimeCycle,
 }
@@ -63,6 +66,7 @@ impl TimeSchedule {
             entries.push(TimeOfDay {
                 id: String::from("nulltod"),
                 lawful_bonus: 0,
+                color: [0; 3],
             });
         }
 
@@ -93,6 +97,7 @@ impl TimeSchedule {
 
     pub(crate) fn add_area(
         &mut self,
+        id: String,
         locations: Vec<WmlRectangle>,
         entries: Vec<TimeOfDay>,
         turn_at: i32,
@@ -100,6 +105,7 @@ impl TimeSchedule {
     ) {
         if !entries.is_empty() && !locations.is_empty() {
             self.areas.push(TimeArea {
+                id,
                 locations,
                 cycle: TimeCycle {
                     entries,
@@ -107,6 +113,10 @@ impl TimeSchedule {
                 },
             });
         }
+    }
+
+    pub(crate) fn remove_areas(&mut self, ids: &[String]) {
+        self.areas.retain(|area| !ids.contains(&area.id));
     }
 
     /// Returns the last matching area's time or the global time at this turn.
@@ -194,6 +204,7 @@ mod tests {
         .map(|(id, lawful_bonus)| TimeOfDay {
             id: id.into(),
             lawful_bonus,
+            color: [0; 3],
         })
         .collect()
     }
@@ -271,6 +282,7 @@ mod tests {
                 .map(|&lawful_bonus| TimeOfDay {
                     id: String::new(),
                     lawful_bonus,
+                    color: [0; 3],
                 })
                 .collect();
             TimeSchedule::new(entries, 1, 0)

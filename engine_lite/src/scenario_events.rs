@@ -3,16 +3,25 @@
 use std::collections::BTreeSet;
 
 mod endlevel;
+pub(crate) mod kill;
 mod items;
+mod have_unit;
+use have_unit::HaveUnit;
+mod variables;
+mod time_areas;
+pub(crate) use time_areas::TimeAreaChange;
+mod personal_recruits;
+pub(crate) use personal_recruits::PersonalRecruits;
 use items::{ItemChange, MapItems};
+use variables::{Comparison, ScalarChange, Scalars};
 
 use crate::{
     hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
 };
 
-#[derive(Debug)]
-enum SideAction {
+#[derive(Clone, Debug)]
+pub(crate) enum SideAction {
     Gold(i32),
     Economy {
         gold: Option<i32>,
@@ -22,24 +31,36 @@ enum SideAction {
     },
     AllowRecruit(Vec<String>),
     SetRecruit(Vec<String>),
+    Objectives(crate::scenario_sides::ScenarioObjectives),
     DisallowRecruit(Option<Vec<String>>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum EventAction {
     Sides { sides: Vec<usize>, action: SideAction },
     Board(BoardChange),
     Item(ItemChange),
+    Variable(ScalarChange),
+    If { tests: Vec<Comparison>, units: Vec<HaveUnit>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct PendingAction(Box<EventAction>);
+
+#[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    HealUnit(crate::board::HealUnit),
+    Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
+    TimeArea(TimeAreaChange),
+    PersonalRecruits(PersonalRecruits),
+    Kill(kill::KillAction, Option<Hex>),
+    Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool },
+    EndLevel { victory: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
-    Terrain { locations: Vec<WmlRectangle>, code: String },
+    Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -157,16 +178,29 @@ pub(crate) struct EventState<'a> {
 }
 
 impl EventAction {
-    fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+    fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "heal_unit" {
+            return crate::board::HealUnit::read(cfg).map(|heal| Self::Board(BoardChange::HealUnit(heal)));
+        }
+        if tag == "message" {
+            return crate::fixed_match::dialogue::Message::read(cfg).map(|message| Self::Board(BoardChange::Dialogue(message)));
+        }
+        if tag == "kill" { return kill::KillAction::read(cfg).map(|kill| Self::Board(BoardChange::Kill(kill, None))); }
         if tag == "modify_turns" {
             return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
         }
         if matches!(tag, "item" | "remove_item") {
             return ItemChange::read(tag, cfg).map(Self::Item);
         }
-        if opening && tag == "unit" {
+        if tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+        }
+        if matches!(tag, "time_area" | "remove_time_area") {
+            return TimeAreaChange::read(tag, cfg).map(|area| Self::Board(BoardChange::TimeArea(area)));
+        }
+        if matches!(tag, "allow_extra_recruit" | "disallow_extra_recruit" | "set_extra_recruit") {
+            return PersonalRecruits::read(tag, cfg).map(|change| Self::Board(BoardChange::PersonalRecruits(change)));
         }
         if tag == "replace_schedule" {
             if cfg.attributes.keys().any(|k| k != "current_time") || cfg.children.iter().any(|(tag, time)| {
@@ -181,7 +215,7 @@ impl EventAction {
             return VillageCapture::read(cfg).map(|v| Self::Board(BoardChange::CaptureVillage(v)));
         }
         if tag == "terrain" {
-            if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain")) {
+            if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain" | "layer" | "replace_if_failed")) {
                 return None;
             }
             if cfg.attributes.values().any(|v| !v.translations.is_empty() || v.text.contains('$')) {
@@ -194,8 +228,32 @@ impl EventAction {
                 locations.push((1..=i32::MAX, 1..=i32::MAX));
             }
             let code = cfg.attribute("terrain")?.trim();
-            if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
-            return Some(Self::Board(BoardChange::Terrain { locations, code: code.into() }));
+            if code.is_empty() || code.contains(['$', '*', ',', ' ']) { return None; }
+            use crate::terrain_aliases::TerrainLayer;
+            let layer = match cfg.attribute("layer").unwrap_or("both") {
+                "both" => TerrainLayer::Both,
+                "base" => TerrainLayer::Base,
+                "overlay" => TerrainLayer::Overlay,
+                _ => return None,
+            };
+            let fallback = matches!(cfg.attribute("replace_if_failed"), Some("yes" | "true" | "1"));
+            let code = code.trim_end_matches('^').to_owned();
+            return Some(Self::Board(BoardChange::Terrain { locations, code, layer, fallback }));
+        }
+        if tag == "objectives" {
+            // Unknown side filters must not publish private objectives to other sides.
+            if cfg.attributes.keys().any(|key| !matches!(key.as_str(), "side" | "silent" | "summary" |
+                "victory_string" | "defeat_string" | "notes_string" | "note" | "gold_carryover_string" |
+                "bullet" | "delayed_variable_substitution"))
+                || cfg.children.iter().any(|(tag, _)| !matches!(tag.as_str(), "objective" | "note" | "gold_carryover"))
+            { return None; }
+            let action = SideAction::Objectives(crate::scenario_sides::ScenarioObjectives::read(cfg));
+            let mut command = Self::side_action(cfg, side_count, action)?;
+            // objectives.lua uses the global list when the side filter matches no side (including side=0).
+            if let Self::Sides { sides, .. } = &mut command && sides.is_empty() {
+                sides.extend(0..side_count);
+            }
+            return Some(command);
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
@@ -243,10 +301,31 @@ impl EventAction {
         Some(Self::Sides { sides, action })
     }
 
-    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems) {
+    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
+        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>) {
+        if !matches!(self, Self::Board(_)) && (!state.board_changes.is_empty()
+            || matches!(self, Self::If { units, .. } if !units.is_empty() && board.is_none())) {
+            state.board_changes.push(BoardChange::Resume(PendingAction(Box::new(self.clone())), primary));
+            return;
+        }
         let (sides, action) = match self {
+            Self::Variable(change) => {
+                change.apply(variables);
+                return;
+            }
+            Self::If { tests, units, on_match, otherwise } => {
+                let matched = tests.iter().all(|test| test.matches(variables))
+                    && units.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
+                let branch = if matched { on_match } else { otherwise };
+                for change in branch { change.apply(state, items, variables, primary, board); }
+                return;
+            }
             Self::Item(change) => {
                 items.apply(change);
+                return;
+            }
+            Self::Board(BoardChange::Kill(kill, _)) => {
+                state.board_changes.push(BoardChange::Kill(kill.clone(), primary));
                 return;
             }
             Self::Board(change) => {
@@ -255,31 +334,85 @@ impl EventAction {
             }
             Self::Sides { sides, action } => (sides, action),
         };
+        action.apply(sides, state.gold, state.sides);
+    }
+}
+
+impl SideAction {
+    pub(crate) fn apply(&self, sides: &[usize], funds: &mut [i64], teams: &mut [SideConfig]) {
         for &index in sides {
-            match action {
-                SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
+            match self {
+                SideAction::Objectives(objectives) => teams[index].objectives.clone_from(objectives),
+                SideAction::Gold(amount) => funds[index] += i64::from(*amount),
                 SideAction::Economy { gold, income, village_gold, village_support } => {
-                    let side = &mut state.sides[index];
-                    if let Some(value) = gold { state.gold[index] = i64::from(*value); }
+                    let side = &mut teams[index];
+                    if let Some(value) = gold { funds[index] = i64::from(*value); }
                     if let Some(value) = income { side.income_bonus = *value; }
                     if let Some(value) = village_gold { side.village_gold = *value; }
                     if let Some(value) = village_support { side.village_support = *value; }
                 }
-                SideAction::AllowRecruit(types) => state.sides[index].recruits.extend(types.iter().cloned()),
-                SideAction::SetRecruit(types) => state.sides[index].recruits = types.iter().cloned().collect(),
+                SideAction::AllowRecruit(types) => teams[index].recruits.extend(types.iter().cloned()),
+                SideAction::SetRecruit(types) => teams[index].recruits = types.iter().cloned().collect(),
                 SideAction::DisallowRecruit(Some(types)) => {
-                    for id in types { state.sides[index].recruits.remove(id); }
+                    for id in types { teams[index].recruits.remove(id); }
                 }
-                SideAction::DisallowRecruit(None) => state.sides[index].recruits.clear(),
+                SideAction::DisallowRecruit(None) => teams[index].recruits.clear(),
             }
         }
     }
 }
 
+fn read_actions<'a>(
+    commands: impl IntoIterator<Item = &'a (String, Node)>,
+    scenario: &Node,
+    side_count: usize,
+) -> Option<Vec<EventAction>> {
+    let mut actions = Vec::new();
+    for (tag, cfg) in commands {
+        let action = match tag.as_str() {
+            "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
+            "if" => {
+                if !cfg.attributes.is_empty() { return None; }
+                let mut tests = Vec::new();
+                let mut units = Vec::new();
+                let mut on_match = Vec::new();
+                let mut otherwise = Vec::new();
+                let mut has_branch = false;
+                for (tag, child) in &cfg.children {
+                    match tag.as_str() {
+                        "variable" => tests.push(Comparison::read(child)?),
+                        "have_unit" => units.push(HaveUnit::read(child)?),
+                        "then" | "else" if child.attributes.is_empty() => {
+                            has_branch = true;
+                            let branch = if tag == "then" { &mut on_match } else { &mut otherwise };
+                            branch.extend(read_actions(&child.children, scenario, side_count)?);
+                        }
+                        _ => return None,
+                    }
+                }
+                if (tests.is_empty() && units.is_empty()) || !has_branch { return None; }
+                EventAction::If { tests, units, on_match, otherwise }
+            }
+            "endlevel" => EventAction::Board(BoardChange::EndLevel {
+                victory: endlevel::player_victory(cfg, scenario)?,
+                next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
+                gold: crate::fixed_match::carryover::GoldOverride::endlevel(cfg, side_count),
+            }),
+            _ => match EventAction::read(tag, cfg, side_count) {
+                Some(action) => action,
+                None if tag == "objectives" || presentation_only(tag, cfg) => continue,
+                None => return None,
+            },
+        };
+        actions.push(action);
+    }
+    Some(actions)
+}
+
 /// Ignore display-only commands without descending through conditions or player choices.
 fn presentation_only(tag: &str, cfg: &Node) -> bool {
     match tag {
-        "message" | "move_unit_fake" | "scroll_to" | "item" | "redraw" | "delay" | "remove_item" => {
+        "message" | "move_unit_fake" | "scroll_to" | "scroll_to_unit" | "item" | "redraw" | "delay" | "remove_item" => {
             cfg.children.is_empty()
         }
         "repeat" => cfg.children.iter().all(|(tag, body)| {
@@ -289,8 +422,8 @@ fn presentation_only(tag: &str, cfg: &Node) -> bool {
     }
 }
 
-#[derive(Debug)]
-struct UnitFilter {
+#[derive(Clone, Debug)]
+pub(crate) struct UnitFilter {
     locations: Vec<WmlRectangle>,
     sides: Vec<usize>,
     ids: Vec<String>,
@@ -298,7 +431,7 @@ struct UnitFilter {
 }
 
 impl UnitFilter {
-    fn read(cfg: &Node) -> Option<Self> {
+    pub(crate) fn read(cfg: &Node) -> Option<Self> {
         if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
             !matches!(key.as_str(), "x" | "y" | "side" | "id" | "type")
                 || !value.translations.is_empty() || value.text.contains('$')
@@ -318,23 +451,29 @@ impl UnitFilter {
         })
     }
 
-    fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
-        let Some((x, y)) = unit.position.to_wml() else { return false };
-        (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
-            && (self.sides.is_empty() || self.sides.contains(&unit.side))
-            && (self.ids.is_empty() || unit.id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
-            && (self.types.is_empty() || self.types.iter().any(|id| id == unit.type_id))
+    pub(crate) fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
+        self.matches_fields(Some(unit.position), unit.side, unit.id.as_deref(), unit.type_id)
+    }
+
+    fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
+        (self.locations.is_empty() || position.and_then(Hex::to_wml).is_some_and(|(x, y)|
+            self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))))
+            && (self.sides.is_empty() || self.sides.contains(&side))
+            && (self.ids.is_empty() || id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
+            && (self.types.is_empty() || self.types.iter().any(|id| id == type_id))
     }
 }
 
 #[derive(Debug)]
 enum EventFilter {
     Unit(UnitFilter),
+    SecondUnit(UnitFilter),
     Side { numbers: Vec<usize>, team_name: Option<String> },
 }
 
 impl EventFilter {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "filter_second" { return UnitFilter::read(cfg).map(Self::SecondUnit); }
         if tag == "filter" {
             return UnitFilter::read(cfg).map(Self::Unit);
         }
@@ -364,9 +503,10 @@ impl EventFilter {
         })
     }
 
-    fn matches(&self, side: &SideConfig, unit: Option<&ArrivingUnit<'_>>) -> bool {
+    fn matches(&self, side: &SideConfig, unit: Option<&ArrivingUnit<'_>>, second: Option<&ArrivingUnit<'_>>) -> bool {
         match self {
             Self::Unit(filter) => unit.is_some_and(|unit| filter.matches(unit)),
+            Self::SecondUnit(filter) => second.is_some_and(|unit| filter.matches(unit)),
             Self::Side { numbers, team_name } => numbers.contains(&side.side)
                 && team_name.as_ref().is_none_or(|name| side.team_names.contains(name)),
         }
@@ -376,7 +516,7 @@ impl EventFilter {
 pub(crate) struct ArrivingUnit<'a> {
     pub(crate) position: Hex,
     pub(crate) side: usize,
-    pub(crate) id: Option<&'a str>,
+    pub(crate) id: Option<String>,
     pub(crate) type_id: &'a str,
 }
 
@@ -392,6 +532,7 @@ struct Handler {
 pub(crate) struct ScenarioEvents {
     handlers: Vec<Handler>,
     active_side: usize,
+    variables: Scalars,
     pub(crate) items: MapItems,
     pub(crate) new_round_at_start: bool,
 }
@@ -413,30 +554,19 @@ impl ScenarioEvents {
             }
             let Some(names) = event.attribute("name") else { continue };
             let (conditions, actions): (Vec<_>, Vec<_>) = event.children.iter()
-                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side"));
+                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side" | "filter_second"));
             let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
-            let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
-            let ends_level = event.children.iter().any(|(tag, _)| tag == "endlevel");
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
-                vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
+                let mut changes = vec![EventAction::Board(BoardChange::CaptureVillage(capture))];
+                if let Some((tag, clear)) = actions.last()
+                    && let Some(change) = ScalarChange::read(tag, clear)
+                {
+                    changes.push(EventAction::Variable(change));
+                }
+                changes
             } else {
-                let Some(changes) = actions.into_iter().filter(|(tag, cfg)| {
-                    // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
-                        && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
-                        && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
-                })
-                    .filter_map(|(tag, cfg)| match tag.as_str() {
-                        "endlevel" => Some(endlevel::player_victory(cfg, scenario)
-                            .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))),
-                        _ => match EventAction::read(tag, cfg, side_count, opening) {
-                        Some(action) => Some(Some(action)),
-                        None if (opening || ends_level) && presentation_only(tag, cfg) => None,
-                        None => Some(None),
-                        },
-                    })
-                    .collect::<Option<Vec<_>>>() else { continue };
+                let Some(changes) = read_actions(actions, scenario, side_count) else { continue };
                 changes
             };
             let once = match event.attribute("first_time_only").unwrap_or("yes") {
@@ -458,29 +588,34 @@ impl ScenarioEvents {
         Self {
             handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
             active_side: 1,
+            variables: variables::initial(scenario),
             items: MapItems::default(),
             new_round_at_start: !matches!(scenario.attribute("it_is_a_new_turn"), Some("no" | "false" | "0")),
         }
     }
 
+    pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, board: &crate::board::Battlefield<'_>, state: &mut EventState<'_>) {
+        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board));
+    }
+
+    pub(crate) fn has_handler(&self, name: &str) -> bool {
+        self.handlers.iter().any(|handler| handler.names.iter().any(|candidate| candidate == name))
+    }
+
     pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
-        self.dispatch(name, None, state);
+        self.dispatch(name, None, None, state);
     }
 
-    pub(crate) fn fire_for_unit(&mut self, name: &str, unit: ArrivingUnit<'_>, state: &mut EventState<'_>) {
-        self.dispatch(name, Some(unit), state);
-    }
-
-    fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
+    pub(crate) fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, second: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
         if state.board_changes.iter().any(|c| matches!(c, BoardChange::EndLevel { .. })) { return; }
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name)
-                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref()))
+                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref(), second.as_ref()))
             {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items);
+                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None);
             }
             !handler.once
         });
@@ -568,14 +703,14 @@ amount=500
         let mut events = ScenarioEvents::read(&scenario, 2);
         let capture = |side| ArrivingUnit { position: Hex { x: 0, y: 0 }, side, id: None, type_id: "Guard" };
 
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 0);
         events.begin_turn(Turn { round: 1, side: 2 }, false, &mut state);
-        events.fire_for_unit("capture", capture(2), &mut state);
+        events.dispatch("capture", Some(capture(2)), None, &mut state);
         assert_eq!(state.gold[0], 0);
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 7);
-        events.fire_for_unit("capture", capture(1), &mut state);
+        events.dispatch("capture", Some(capture(1)), None, &mut state);
         assert_eq!(state.gold[0], 7);
     }
 
@@ -833,7 +968,10 @@ y=1
 
     #[test]
     fn terrain_events_apply_paired_coordinate_ranges_and_clip_at_the_map_edge() {
-        let bundle = Bundle::parse(br#"[units]
+        let bundle = Bundle::parse(br#"[terrain_type]
+string=Hh
+[/terrain_type]
+[units]
 [unit_type]
 id=Guard
 hitpoints=20
@@ -1083,6 +1221,67 @@ mod terrain_event_test {
     use crate::{scenario_bundle::Bundle, hex::Hex};
 
     #[test]
+    fn campaign_terrain_layers_keep_the_other_layer_and_fallback_uses_the_default_base() {
+        let source = br#"[terrain_type]
+string=Gg
+[/terrain_type]
+[terrain_type]
+string=Hh
+[/terrain_type]
+[terrain_type]
+string=^Vh
+default_base=Gg
+gives_income=yes
+[/terrain_type]
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg^Vh,Zz,2 Hh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[terrain]
+x,y=2,1
+terrain=Hh
+layer=base
+[/terrain]
+[terrain]
+x,y=1,1
+terrain=^Vh
+layer=overlay
+[/terrain]
+[terrain]
+x,y=3,1
+terrain=^Vh
+layer=overlay
+replace_if_failed=yes
+[/terrain]
+[terrain]
+x,y=4,1
+terrain=^Z
+layer=overlay
+[/terrain]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        let view = game.observation_for(1).unwrap();
+        assert_eq!(view.tiles.iter().map(|tile| tile.terrain.as_str()).collect::<Vec<_>>(),
+                   ["Gg^Vh", "Hh^Vh", "Gg^Vh", "Hh"]);
+    }
+
+    #[test]
     fn a_new_campaign_village_can_be_claimed_later_in_the_same_event() {
         let source = br#"[terrain_type]
 string=Gg^Vh
@@ -1123,5 +1322,91 @@ x,y=2,1
         let game = bundle.start(1, |_| unreachable!()).unwrap();
         assert_eq!(game.audit_snapshot().villages, [(Hex { x: 1, y: 0 }, 2)]);
         assert_eq!(game.observation_for(1).unwrap().tiles[1].terrain, "Gg^Vh");
+    }
+}
+
+#[cfg(test)]
+mod reinforcements {
+    use crate::{fixed_match::Action, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn turn_reinforcements_take_vacancies_and_reuse_or_enter_the_recall_list() {
+        let source = br#"[terrain_type]
+string=Vh
+gives_income=yes
+[/terrain_type]
+[units]
+[unit_type]
+id=Guard
+hitpoints=22
+movement=5
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Vh,2 Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[unit]
+id=elder
+type=Guard
+placement=recall
+moves=3
+experience=7
+[/unit]
+[/side]
+[event]
+name=turn 2
+[message]
+speaker=narrator
+message=Help has arrived.
+[/message]
+[unit]
+type=Guard
+side=2
+x,y=3,1
+[/unit]
+[unit]
+type=Guard
+side=2
+id=elder
+x,y=3,1
+[/unit]
+[unit]
+type=Guard
+side=2
+x,y=3,1
+experience=11
+[/unit]
+[/event]
+[event]
+name=capture
+[filter]
+id=Guard-4
+[/filter]
+[gold]
+side=2
+amount=9
+[/gold]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let mut game = bundle.start(7, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().units.len(), 2);
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        let snapshot = game.audit_snapshot();
+        let village = Hex { x: 1, y: 0 };
+        assert_eq!(snapshot.villages, [(village, 2)]);
+        assert_eq!(snapshot.gold[1], 109);
+        let arrival = snapshot.units.iter().find(|u| u.position == village).unwrap();
+        assert_eq!((arrival.side, arrival.moves_left, arrival.attacks_left), (2, 5, 1));
+        let elder = snapshot.units.iter().find(|u| u.position == Hex { x: 3, y: 0 }).unwrap();
+        assert_eq!((elder.moves_left, elder.experience), (3, 7));
+        assert_eq!(snapshot.reserves[1].len(), 1);
+        assert_eq!(snapshot.reserves[1][0].experience, 11);
     }
 }
