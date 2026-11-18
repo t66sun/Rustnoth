@@ -382,10 +382,12 @@ impl<'data> FixedMatch<'data> {
             Action::Recruit { unit_type, to } => {
                 self.recruit(turn.side, &unit_type, to)?;
                 self.reveal_travelled_hexes(to, [to]);
+                self.fire_unit_event("recruit", to)?;
             }
             Action::Recall { unit_id, to } => {
                 self.recall(turn.side, &unit_id, to)?;
                 self.reveal_travelled_hexes(to, [to]);
+                self.fire_unit_event("recall", to)?;
             }
             Action::Disband { unit_id } => {
                 self.scenario.board.disband(turn.side, &unit_id).ok_or(MatchError::InvalidDisband)?;
