@@ -116,6 +116,7 @@ function capture.snapshot(step, time_over)
         local statuses = {}
         if unit.status.slowed then statuses[#statuses + 1] = "slowed" end
         if unit.status.poisoned then statuses[#statuses + 1] = "poisoned" end
+        if unit.status.petrified then statuses[#statuses + 1] = "petrified" end
         if #statuses > 0 then
             row("status", unit.x, unit.y, table.unpack(statuses))
         end
