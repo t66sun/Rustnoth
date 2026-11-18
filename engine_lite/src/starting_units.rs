@@ -18,6 +18,8 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) experience: i32,
     pub(crate) moves_left: Option<i32>,
     pub(crate) attacks_left: Option<i32>,
+    pub(crate) poisoned: bool,
+    pub(crate) slowed: bool,
 }
 
 /// Reads the on-map starting units from an already preprocessed scenario.
@@ -73,6 +75,11 @@ pub(crate) fn read_authored_starting_units(
             if can_recruit && leader_hex.is_none() {
                 leader_hex = Some(position);
             }
+            let status = children_named(unit, "status").next();
+            let has_status = |name: &str| {
+                status.and_then(|node| node.attributes.get(name))
+                    .is_some_and(|value| value.translations.is_empty() && wml_true(&value.text))
+            };
             result.push(AuthoredStartingUnit {
                 placement: StartingUnit {
                     side,
@@ -85,6 +92,8 @@ pub(crate) fn read_authored_starting_units(
                 experience: integer(unit, "experience").unwrap_or_default(),
                 moves_left: integer(unit, "moves"),
                 attacks_left: integer(unit, "attacks_left"),
+                poisoned: has_status("poisoned"),
+                slowed: has_status("slowed"),
             });
         }
     }
