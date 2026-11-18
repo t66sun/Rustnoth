@@ -5,6 +5,8 @@ use macroquad::prelude::*;
 
 use crate::{read_file, show_board, BoardData};
 
+mod art;
+mod metadata;
 mod view;
 
 // The final position of the original 1..=100 turns control means unlimited play.
@@ -47,7 +49,6 @@ impl MapEntry {
 enum Field { Map, Side, Team, Faction, Leader, Visibility, Rounds }
 
 impl Field {
-    const ALL: [Self; 7] = [Self::Map, Self::Side, Self::Team, Self::Faction, Self::Leader, Self::Visibility, Self::Rounds];
 
     fn title(self) -> &'static str {
         match self {
@@ -206,7 +207,7 @@ impl Setup {
     }
 
     pub(super) async fn run(mut self) -> Result<(), Box<dyn Error>> {
-        let mut view = view::SetupView::new(&self.root);
+        let mut view = view::SetupView::new(&self.root, &self.core)?;
         let mut error = None;
         loop {
             match view.frame(&self, error.as_deref()) {
