@@ -40,6 +40,7 @@ pub enum Action {
     Move { from: Hex, to: Hex },
     Attack(AttackChoice),
     Recruit { unit_type: String, to: Hex },
+    Recall { unit_id: String, to: Hex },
     EndTurn,
 }
 
@@ -306,6 +307,10 @@ impl<'data> FixedMatch<'data> {
                 self.recruit(turn.side, &unit_type, to)?;
                 self.reveal_travelled_hexes(to, [to]);
             }
+            Action::Recall { unit_id, to } => {
+                self.recall(turn.side, &unit_id, to)?;
+                self.reveal_travelled_hexes(to, [to]);
+            }
             Action::EndTurn => {
                 let surviving_sides: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
                 self.village_owners.retain(|_, side| surviving_sides.contains(side));
@@ -501,6 +506,7 @@ pub enum MatchError {
     Move(MoveError),
     Attack(AttackError),
     InvalidRecruit,
+    InvalidRecall,
     InvalidAdvancement,
 }
 
@@ -529,6 +535,7 @@ impl fmt::Display for MatchError {
             Self::InvalidRecruit => {
                 f.write_str("unit type or destination is unavailable for recruitment")
             }
+            Self::InvalidRecall => f.write_str("unit or destination is unavailable for recall"),
             Self::InvalidAdvancement => f.write_str("unit type is unavailable for advancement"),
         }
     }

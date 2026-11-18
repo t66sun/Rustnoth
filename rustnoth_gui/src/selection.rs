@@ -37,7 +37,7 @@ impl Selection {
         actions.iter().filter(move |action| match action {
             Action::Move { from, to } => selected == Some(*from) && *to == position,
             Action::Attack(attack) => selected == Some(attack.from) && attack.to == position,
-            Action::Recruit { to, .. } => selected.is_none() && *to == position,
+            Action::Recruit { to, .. } | Action::Recall { to, .. } => selected.is_none() && *to == position,
             Action::EndTurn => false,
         })
     }

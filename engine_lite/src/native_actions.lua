@@ -49,6 +49,16 @@ function actions.recruit(x, y, type_id)
     return trait_draws
 end
 
+function actions.recall(x, y, unit_id)
+    local leaders = wesnoth.units.find_on_map { side = wesnoth.current.side, canrecruit = true }
+    local leader = assert(leaders[1], "recalling side has no leader")
+    wesnoth.wml_actions.do_command {
+        tag.recall { value = unit_id, x = x, y = y, tag.from { x = leader.x, y = leader.y } },
+    }
+    local unit = wesnoth.units.get(x, y)
+    assert(unit and unit.id == unit_id, "native recall did not place the requested unit")
+end
+
 function actions.end_turn()
     wesnoth.wml_actions.end_turn {}
 end

@@ -169,6 +169,12 @@ fn write_action(lua: &mut String, action: &Action, step: usize) -> io::Result<()
             )
             .unwrap();
         }
+        Action::Recall { unit_id, to } => {
+            let (x, y) = coordinates(*to)?;
+            write!(lua, "    actions.recall({x}, {y}, ").unwrap();
+            write_string(lua, unit_id);
+            lua.push_str(")\n");
+        }
         Action::EndTurn => unreachable!("turn groups exclude end turns"),
     }
     Ok(())
@@ -235,6 +241,14 @@ mod tests {
         )));
         assert!(native.lua.contains("groups[2] = function()\n    if checkpoint(2, false)"));
         assert!(native.lua.contains("if terminal and step ~= last_step then"));
+    }
+
+    #[test]
+    fn recorded_recalls_use_the_unit_id_and_do_not_draw_recruit_traits() {
+        let actions = crate::audit_actions::parse("recall\t2\t1\tveteran").unwrap();
+        let script = generate(&actions, 1, None).unwrap();
+        assert!(script.lua.contains("actions.recall(2, 1, \"veteran\")"));
+        assert!(!script.lua.contains("RUSTNOTH_AUDIT_RECRUIT_BEGIN"));
     }
 
     #[test]
