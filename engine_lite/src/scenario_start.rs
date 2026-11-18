@@ -4,7 +4,7 @@ use crate::{
     board::{Battlefield, BoardError, DEFAULT_EXPERIENCE_MODIFIER},
     scenario_map::{self, ScenarioMapError},
     scenario_sides::{SideConfig, read_sides},
-    scenario_time::{integer, read_time_schedule},
+    scenario_time::{integer, read_map_schedule},
     starting_units::{PlacementError, read_authored_starting_units},
     time_of_day::TimeSchedule,
     unit_type::UnitType,
@@ -21,13 +21,14 @@ pub struct ScenarioStart<'rules> {
     pub last_round: Option<i32>,
 }
 
-/// Loads the scenario map, sides, placed units, and global time schedule.
+/// Loads the scenario map, sides, placed units, and time schedules.
 pub fn load<'rules>(
     scenario: &Node,
     unit_types: &'rules BTreeMap<String, UnitType>,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<ScenarioStart<'rules>, ScenarioStartError> {
     let map = scenario_map::load(scenario, read_map_file).map_err(ScenarioStartError::Map)?;
+    let schedule = read_map_schedule(scenario, &map);
     let units = read_authored_starting_units(scenario, &map)
         .map_err(ScenarioStartError::Placement)?;
     let experience_modifier = integer(scenario, "experience_modifier")
@@ -38,7 +39,7 @@ pub fn load<'rules>(
     Ok(ScenarioStart {
         board,
         sides: read_sides(scenario),
-        schedule: read_time_schedule(scenario),
+        schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
         last_round: integer(scenario, "turns").filter(|&turns| turns != -1),
     })
