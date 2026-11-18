@@ -1,7 +1,7 @@
 use std::{error, fmt, num::NonZeroU32};
 
 use crate::{
-    combat::{CombatResult, Combatant, Poison, base_hit_chance, resolve_exchange},
+    combat::{CombatResult, Combatant, Poison, base_hit_chance, exchange_with_blows, ResolvedBlow},
     hex::{Direction, Hex},
     rng::ReplayRng,
     strike_damage::strike_damage,
@@ -111,7 +111,7 @@ impl Battlefield<'_> {
     ) -> Result<CombatResult, AttackError> {
         let (from, to) = (action.from, action.to);
         self.begin_attack(active_side, &action, &sides_are_enemies)?;
-        let result = self.resolve_started_attack(action, sides_are_enemies, rng)?;
+        let result = self.resolve_started_attack(action, sides_are_enemies, rng, None)?;
         if result.attacker_hitpoints == 0 { self.remove_casualty(from); }
         if result.defender_hitpoints == 0 { self.remove_casualty(to); }
         Ok(result)
@@ -155,6 +155,7 @@ impl Battlefield<'_> {
 
     pub(crate) fn resolve_started_attack(
         &mut self, action: Attack, sides_are_enemies: impl Fn(usize, usize) -> bool, rng: &mut ReplayRng,
+        blows: Option<&mut Vec<ResolvedBlow>>,
     ) -> Result<CombatResult, AttackError> {
         let (from, to) = (action.from, action.to);
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
@@ -193,7 +194,7 @@ impl Battlefield<'_> {
         let rounds = weapon.combat_rounds().max(
             retaliation.map_or(NonZeroU32::MIN, |(_, response, _)| response.combat_rounds()),
         );
-        let result = resolve_exchange(attacker_stats, defender_stats, rounds, rng);
+        let result = exchange_with_blows(attacker_stats, defender_stats, rounds, rng, blows);
         let attacker_experience =
             combat_experience(defender.unit_type.level, result.defender_hitpoints == 0);
         let defender_experience =
