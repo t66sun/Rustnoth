@@ -10,6 +10,7 @@ use std::{
 };
 
 const CAMPAIGN: &str = "data/campaigns/The_South_Guard";
+pub(super) const TUTORIAL: &str = "data/campaigns/tutorial";
 const BINARY: &str = if cfg!(windows) { "wesnoth.exe" } else { "wesnoth" };
 
 pub(super) struct GameData {
@@ -146,6 +147,10 @@ pub(super) fn prepare(root: &Path, campaign: bool) -> io::Result<GameData> {
         Some((file,root.join(CAMPAIGN).join("maps")))
     } else { None };
     Ok(GameData { core: fs::read(core)?, campaign })
+}
+
+pub(super) fn prepare_tutorial(root: &Path) -> io::Result<PathBuf> {
+    prepared(root, &executable(root)?, &cache_directory()?, TUTORIAL, "NO_TERRAIN_GFX,TUTORIAL,NORMAL")
 }
 
 #[cfg(test)]

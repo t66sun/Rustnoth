@@ -126,7 +126,11 @@ impl<'rules> Session<'rules> {
 
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {
         if self.computer_action.is_some() { return Vec::new(); }
-        self.game.attack_previews(from, to)
+        self.game.attack_previews(from, to)    }
+
+    /// Limit the actions offered by the interface during a scripted tutorial step.
+    pub fn retain_actions(&mut self, allowed: impl FnMut(&Action) -> bool) {
+        self.legal_actions.retain(allowed);
     }
 
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
