@@ -14,6 +14,7 @@ pub struct RecruitStats {
     pub undrainable: bool,
     pub unslowable: bool,
     pub unpoisonable: bool,
+    pub fearless: bool,
 }
 
 impl RecruitStats {
@@ -36,6 +37,7 @@ impl RecruitStats {
             undrainable: false,
             unslowable: false,
             unpoisonable: false,
+            fearless: false,
         };
         for trait_ in traits {
             for (tag, effect) in &trait_.children {
@@ -80,6 +82,7 @@ impl RecruitStats {
                     }
                 }
             }
+            Some("fearless") => self.fearless = crate::scenario_sides::bool_attribute(effect, "set", true),
             Some("status") => {
                 for (key, enabled) in [("add", true), ("remove", false)] {
                     for status in effect.attribute(key).unwrap_or_default().split(',').map(str::trim) {

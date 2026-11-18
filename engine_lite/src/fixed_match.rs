@@ -365,7 +365,8 @@ impl<'data> FixedMatch<'data> {
         );
         let schedule = &self.scenario.schedule;
         let lawful_bonus = schedule.at_turn(turn.round).lawful_bonus;
-        let alignment = schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, false);
+        let alignment =
+            schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, striker.is_fearless());
         let multiplier = (100 + alignment + leadership).saturating_mul(i64::from(damage_taken));
         StrikeModifiers {
             target_hit_chance,
@@ -957,6 +958,67 @@ Xv,Xv,Xv,Xv"
         assert!(game.scenario.board.unit_at(from).is_none());
         assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 10);
         assert_eq!(game.rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn applies_the_strikers_fearless_effect_to_attack_and_retaliation() {
+        let unit = |id, reset| format!(r#"[unit_type]
+            id={id}
+            hitpoints=40
+            alignment=chaotic
+            [trait]
+                id=resolve
+                availability=musthave
+                [effect]
+                    apply_to=fearless
+                [/effect]
+                {reset}
+            [/trait]
+            [attack]
+                range=melee
+                damage=8
+                number=1
+                accuracy=100
+            [/attack]
+        [/unit_type]"#);
+        let reset = "[effect]\napply_to=fearless\nset=no\n[/effect]";
+        let types = unit("Fearless", "") + &unit("Ordinary", reset);
+        for (attacker, defender, daylight, hp) in [
+            ("Fearless", "Ordinary", 25, (34, 32)),
+            ("Ordinary", "Fearless", 25, (32, 34)),
+            ("Fearless", "Ordinary", -25, (30, 30)),
+        ] {
+            let data = format!(r#"[units]
+                {types}
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                [time]
+                    id=light
+                    lawful_bonus={daylight}
+                [/time]
+                [side]
+                    side=1
+                    type={attacker}
+                [/side]
+                [side]
+                    side=2
+                    type={defender}
+                [/side]
+            [/scenario]"#);
+            let bundle = crate::scenario_bundle::Bundle::parse(data.as_bytes()).unwrap();
+            let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+            let from = Hex { x: 0, y: 0 };
+            let to = Hex { x: 1, y: 0 };
+            game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })).unwrap();
+            let board = &game.scenario.board;
+            assert_eq!(
+                (board.unit_at(from).unwrap().hitpoints, board.unit_at(to).unwrap().hitpoints),
+                hp,
+            );
+        }
     }
 
     #[test]
