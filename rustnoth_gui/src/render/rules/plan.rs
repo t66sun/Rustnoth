@@ -28,10 +28,10 @@ pub(super) fn build(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile>
     let mut tiles = build_with_flags(catalog, view);
     tiles.retain(|hex, tile| {
         tile.layers.sort_by_key(|p| (p.layer, p.y));
-        hex.x >= 0
-            && hex.y >= 0
-            && hex.x < view.width
-            && hex.y < view.height
+        hex.x >= -1
+            && hex.y >= -1
+            && hex.x <= view.width
+            && hex.y <= view.height
             && !tile.layers.is_empty()
     });
     tiles
@@ -84,6 +84,7 @@ pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
+            if !inside { tile.flags.insert("base".into()); }
             tile.flags
                 .insert(if inside { "_board" } else { "_border" }.into());
             (hex, tile)

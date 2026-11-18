@@ -1,7 +1,7 @@
 //! Rustnoth's per-user window mode, shared by every desktop launch path.
 use std::{env, fs, io, path::{Path, PathBuf}};
 
-fn config_directory() -> io::Result<PathBuf> {
+pub(super) fn config_directory() -> io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let directory = env::var_os("APPDATA").filter(|p| !p.is_empty()).map(PathBuf::from);
     #[cfg(target_os = "macos")]

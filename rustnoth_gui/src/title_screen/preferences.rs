@@ -4,7 +4,7 @@ use crate::display_preferences;
 use macroquad::prelude::*;
 use std::{error::Error, path::Path};
 
-fn tiled(rect: Rect, texture: &Texture2D) {
+pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
     let mut y = rect.y;
     while y < rect.bottom() {
         let mut x = rect.x;
