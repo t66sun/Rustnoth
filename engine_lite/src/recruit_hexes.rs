@@ -18,7 +18,21 @@ pub fn destinations(
     is_castle: impl Fn(&str) -> bool,
     occupied: impl Fn(Hex) -> bool,
 ) -> Vec<Hex> {
-    let Some(terrain) = map.terrain_at(leader).filter(|_| map.is_playable(leader)) else {
+    destinations_in_view(leader, map, is_keep, is_castle, |_| true, occupied)
+}
+
+pub(crate) fn destinations_in_view(
+    leader: Hex,
+    map: &ScenarioMap,
+    is_keep: impl Fn(&str) -> bool,
+    is_castle: impl Fn(&str) -> bool,
+    terrain_known: impl Fn(Hex) -> bool,
+    occupied: impl Fn(Hex) -> bool,
+) -> Vec<Hex> {
+    if !map.is_playable(leader) || !terrain_known(leader) {
+        return Vec::new();
+    }
+    let Some(terrain) = map.terrain_at(leader) else {
         return Vec::new();
     };
     if !is_keep(terrain) || !is_castle(terrain) {
@@ -43,7 +57,10 @@ pub fn destinations(
             continue;
         }
         for next in hex.neighbors().filter(|&hex| map.is_playable(hex)) {
-            if visited.insert(next) && map.terrain_at(next).is_some_and(&is_castle) {
+            if visited.insert(next)
+                && terrain_known(next)
+                && map.terrain_at(next).is_some_and(&is_castle)
+            {
                 frontier.push_back((next, steps + 1));
             }
         }
