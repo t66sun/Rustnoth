@@ -41,7 +41,7 @@ fn values(input: &str) -> Vec<String> {
 }
 
 /// Parallel expansions such as [1~4,3,2].png:[700*6] zip by frame number.
-pub(super) fn expand(input: &str) -> Vec<String> {
+pub(in crate::render) fn expand(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     for part in split(input).into_iter().filter(|s| !s.is_empty()) {
         let mut columns = vec![String::new()];
@@ -81,7 +81,7 @@ pub(super) fn rotate(text: &str, rotation: usize, names: &[&str]) -> String {
     value
 }
 
-pub(super) fn matches(filter: &str, terrain: &str) -> bool {
+pub(in crate::render) fn matches(filter: &str, terrain: &str) -> bool {
     let (base, overlay) = terrain.split_once('^').unwrap_or((terrain, ""));
     let layer = |value: &str, pattern: &str| {
         pattern

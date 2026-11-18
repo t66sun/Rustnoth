@@ -3,7 +3,7 @@ mod bitmap;
 mod export;
 pub(crate) use export::map_png;
 mod compile;
-mod pattern;
+pub(super) mod pattern;
 mod plan;
 
 use super::{AssetCatalog, Hex, Observation, draw_centered};
