@@ -50,8 +50,31 @@ function actions.recruit(x, y, type_id)
 end
 
 function actions.recall(x, y, unit_id)
-    local leaders = wesnoth.units.find_on_map { side = wesnoth.current.side, canrecruit = true }
-    local leader = assert(leaders[1], "recalling side has no leader")
+    local side = wesnoth.current.side
+    local veteran = assert(wesnoth.units.find_on_recall { side = side, id = unit_id }[1], "missing reserve")
+    local map = wesnoth.current.map
+    local limit = map.playable_width + map.playable_height
+    local function castle_cost(cx, cy)
+        if not wesnoth.sides.is_shrouded(side, cx, cy) and wesnoth.terrain_types[map[{cx, cy}]].castle then
+            return 1
+        end
+        return limit + 1
+    end
+    assert(castle_cost(x, y) == 1 and not wesnoth.units.get(x, y), "recall needs a vacant known castle")
+    local leader
+    for _, candidate in ipairs(wesnoth.units.find_on_map { side = side, canrecruit = true }) do
+        if wesnoth.terrain_types[map[{candidate.x, candidate.y}]].keep
+            and wesnoth.units.matches(veteran, candidate.recall_filter) then
+            local path = wesnoth.paths.find_path(candidate, x, y, {
+                calculate = castle_cost, ignore_teleport = true, max_cost = limit,
+            })
+            if #path > 1 then
+                leader = candidate
+                break
+            end
+        end
+    end
+    assert(leader, "no eligible recall leader on a connected keep")
     wesnoth.wml_actions.do_command {
         tag.recall { value = unit_id, x = x, y = y, tag.from { x = leader.x, y = leader.y } },
     }

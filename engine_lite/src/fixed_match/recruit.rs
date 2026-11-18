@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{hex::Hex, recruit_hexes};
+use crate::{board::UnitState, hex::Hex, recruit_hexes};
 
 use super::{Action, FixedMatch, MatchError, supports_unit};
 
@@ -23,43 +23,52 @@ impl FixedMatch<'_> {
         }
 
         let board = &self.scenario.board;
-        let own: BTreeSet<_> = board.units()
-            .filter(|(_, unit)| unit.side == side)
-            .map(|(position, _)| position)
-            .collect();
-        let destinations = self.recruit_destinations(side, terrain_known, |hex| {
-            own.contains(&hex) || (unit_visible(hex) && board.unit_at(hex).is_some())
-        });
+        let occupied = |hex| board.unit_at(hex).is_some_and(|unit| unit.side == side || unit_visible(hex));
+        let mut destinations = BTreeSet::new();
+        let mut recall_tiles = vec![BTreeSet::new(); reserves.len()];
+        for (position, leader) in board.units().filter(|(_, unit)| unit.side == side && unit.can_recruit) {
+            let castle = self.leader_castle(position, &terrain_known, occupied);
+            destinations.extend(castle.iter().copied());
+            for ((veteran, _, _), tiles) in reserves.iter().zip(&mut recall_tiles) {
+                if leader.can_recall_unit(veteran) {
+                    tiles.extend(castle.iter().copied());
+                }
+            }
+        }
         for unit_type in affordable {
             choices.extend(destinations.iter().map(|&to| Action::Recruit {
                 unit_type: unit_type.clone(),
                 to,
             }));
         }
-        for (unit_id, _) in reserves {
-            choices.extend(destinations.iter().map(|&to| Action::Recall {
+        for ((_, unit_id, _), tiles) in reserves.into_iter().zip(recall_tiles) {
+            choices.extend(tiles.into_iter().map(|to| Action::Recall {
                 unit_id: unit_id.to_owned(),
                 to,
             }));
         }
     }
 
-    fn affordable_recalls(&self, side: usize) -> impl Iterator<Item = (&str, i64)> {
+    fn affordable_recalls(&self, side: usize) -> impl Iterator<Item = (&UnitState<'_>, &str, i64)> {
         let default_cost = self.scenario.sides[side - 1].recall_cost;
         let gold = self.gold[side - 1];
         self.scenario.board.recall_roster(side).iter().filter_map(move |unit| {
             let id = unit.id.as_deref()?;
             let cost = i64::from(unit.recall_cost(default_cost));
-            (cost <= gold && supports_unit(unit.unit_type)).then_some((id, cost))
+            (cost <= gold && supports_unit(unit.unit_type)).then_some((unit, id, cost))
         })
     }
 
     pub(super) fn recall(&mut self, side: usize, unit_id: &str, to: Hex) -> Result<(), MatchError> {
-        let cost = self.affordable_recalls(side)
-            .find_map(|(id, cost)| (id == unit_id).then_some(cost))
+        let (veteran, _, cost) = self.affordable_recalls(side)
+            .find(|(_, id, _)| *id == unit_id)
             .ok_or(MatchError::InvalidRecall)?;
         let occupied = |hex| self.scenario.board.unit_at(hex).is_some();
-        if !self.recruit_destinations(side, |_| true, occupied).contains(&to) {
+        let allowed = self.scenario.board.units().any(|(position, leader)| {
+            leader.side == side && leader.can_recruit && leader.can_recall_unit(veteran)
+                && self.leader_castle(position, |_| true, occupied).contains(&to)
+        });
+        if !allowed {
             return Err(MatchError::InvalidRecall);
         }
         self.scenario.board.place_recall(side, unit_id, to).ok_or(MatchError::InvalidRecall)?;
@@ -73,7 +82,9 @@ impl FixedMatch<'_> {
             .recruit_cost(side, unit_type)
             .ok_or(MatchError::InvalidRecruit)?;
         let occupied = |hex| self.scenario.board.unit_at(hex).is_some();
-        if !self.recruit_destinations(side, |_| true, occupied).contains(&to) {
+        if !self.scenario.board.units().any(|(leader, unit)| unit.side == side && unit.can_recruit
+            && self.leader_castle(leader, |_| true, occupied).contains(&to))
+        {
             return Err(MatchError::InvalidRecruit);
         }
 
@@ -96,28 +107,17 @@ impl FixedMatch<'_> {
         (cost <= self.gold[index] && supports_unit(unit)).then_some(cost)
     }
 
-    fn recruit_destinations(
+    fn leader_castle(
         &self,
-        side: usize,
+        leader: Hex,
         terrain_known: impl Fn(Hex) -> bool,
         occupied: impl Fn(Hex) -> bool,
-    ) -> BTreeSet<Hex> {
-        let board = &self.scenario.board;
+    ) -> Vec<Hex> {
         let terrain = self.rules.terrain;
-        board
-            .units()
-            .filter(|(_, unit)| unit.side == side && unit.can_recruit)
-            .flat_map(|(leader, _)| {
-                recruit_hexes::destinations_in_view(
-                    leader,
-                    board.map(),
-                    |code| terrain.features(code).keep,
-                    |code| terrain.features(code).castle,
-                    &terrain_known,
-                    &occupied,
-                )
-            })
-            .collect()
+        recruit_hexes::destinations_in_view(
+            leader, self.scenario.board.map(), |code| terrain.features(code).keep,
+            |code| terrain.features(code).castle, terrain_known, occupied,
+        )
     }
 }
 
@@ -131,6 +131,98 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn recall_filters_apply_to_the_veteran_and_the_leaders_connected_keep() {
+        let scenario = wml::parse(r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,Gg,Kh,Ch,Gg,Kh,Ch,Gg,Kh,Ch,Gg,2 Kh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Captain
+                recruit=Fighter
+                [filter_recall]
+                    type_adv_tree=Missing, Fighter
+                [/filter_recall]
+                [unit]
+                    type=Captain
+                    canrecruit=yes
+                    x,y=4,1
+                    [filter_recall]
+                        id=elder,other
+                        race=elf
+                        type=Champion
+                    [/filter_recall]
+                [/unit]
+                [unit]
+                    type=Captain
+                    canrecruit=yes
+                    x,y=7,1
+                    [filter_recall]
+                        formula=yes
+                    [/filter_recall]
+                [/unit]
+                [unit]
+                    type=Captain
+                    canrecruit=yes
+                    x,y=10,1
+                    [filter_recall]
+                        race=dwarf
+                    [/filter_recall]
+                [/unit]
+                [unit]
+                    type=Fighter
+                    id=novice
+                    placement=recall
+                [/unit]
+                [unit]
+                    type=Champion
+                    id=elder
+                    placement=recall
+                [/unit]
+                [unit]
+                    type=Champion
+                    id=second
+                    placement=recall
+                [/unit]
+                [unit]
+                    type=Captain
+                    id=other
+                    placement=recall
+                [/unit]
+            [/side]
+            [side]
+                type=Captain
+            [/side]
+        "#).unwrap();
+        let mut definitions = String::new();
+        for (id, advances) in [("Captain", "null"), ("Fighter", "Hero"), ("Hero", "Champion"), ("Champion", "null")] {
+            definitions.push_str(&format!("[unit_type]\nid={id}\nrace=elf\nadvances_to={advances}\nhitpoints=30\ncost=5\n[/unit_type]\n"));
+        }
+        let types = read_unit_types(wml::parse(definitions).unwrap());
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+             [terrain_type]\nstring=Ch\nrecruit_onto=yes\n[/terrain_type]"
+        ).unwrap());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+        let start = scenario_start::load(&scenario, &types, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(start, rules, 42).unwrap();
+        let west = Hex { x: 1, y: 0 };
+        let central = Hex { x: 4, y: 0 };
+        let eastern = Hex { x: 7, y: 0 };
+        let recall = |id: &str, to| Action::Recall { unit_id: id.into(), to };
+        let before = game.decision().unwrap();
+        let recalls: Vec<_> = before.1.iter().filter(|a| matches!(a, Action::Recall { .. })).cloned().collect();
+        assert_eq!(recalls, [recall("novice", west), recall("elder", west), recall("elder", central), recall("second", west)]);
+        assert!(before.1.contains(&Action::Recruit { unit_type: "Fighter".into(), to: eastern }));
+        assert_eq!(game.step(recall("second", central)), Err(MatchError::InvalidRecall));
+        assert_eq!(game.step(recall("elder", eastern)), Err(MatchError::InvalidRecall));
+        assert_eq!(game.decision().unwrap(), before);
+        game.step(recall("elder", central)).unwrap();
+        assert_eq!(game.scenario.board.unit_at(central).unwrap().id.as_deref(), Some("elder"));
+    }
 
     #[test]
     fn recalls_the_selected_reserve_once_at_its_own_cost_with_its_existing_stats() {

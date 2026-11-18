@@ -24,6 +24,7 @@ use crate::{
 
 mod attack;
 mod concealment;
+mod recall_filter;
 mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{StrikeRole, combatant, within_range};
@@ -62,6 +63,7 @@ pub struct UnitState<'rules> {
     pub can_recruit: bool,
     upkeep_override: Option<Upkeep>,
     recall_cost: i32,
+    recall_filter: recall_filter::RecallFilter,
     traits: Option<UnitTraits<'rules>>,
 }
 
@@ -153,6 +155,7 @@ impl<'rules> Battlefield<'rules> {
             type_id: unit.type_id,
             can_recruit: unit.can_recruit,
             recall_cost: None,
+            recall_filter: None,
             upkeep: None,
             traits: Vec::new(),
             hitpoints: None,
@@ -194,6 +197,7 @@ impl<'rules> Battlefield<'rules> {
             type_id,
             can_recruit,
             recall_cost,
+            recall_filter,
             upkeep,
             traits: authored_traits,
             hitpoints,
@@ -242,6 +246,7 @@ impl<'rules> Battlefield<'rules> {
                 can_recruit,
                 upkeep_override: upkeep,
                 recall_cost: recall_cost.unwrap_or(unit_type.recall_cost),
+                recall_filter: recall_filter::RecallFilter::read(recall_filter, unit_types),
                 traits,
             };
             if let Some(tile) = tile {
@@ -417,6 +422,7 @@ impl<'rules> Battlefield<'rules> {
             can_recruit: false,
             upkeep_override: None,
             recall_cost: unit_type.recall_cost,
+            recall_filter: Default::default(),
             traits,
         });
         Ok(())
@@ -885,6 +891,7 @@ mod tests {
             type_id: "Guard".into(),
             can_recruit: position == EAST,
             recall_cost: None,
+            recall_filter: None,
             hitpoints: (position == WEST).then_some(8),
             moves_left: (position == WEST).then_some(2),
             attacks_left: None,

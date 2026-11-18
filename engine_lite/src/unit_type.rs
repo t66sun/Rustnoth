@@ -20,6 +20,7 @@ pub(crate) use hiding::Hiding;
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnitType {
     pub id: String,
+    pub(crate) race: String,
     pub(crate) undead_variation: String,
     pub(crate) variation_id: String,
     variations: BTreeMap<String, UnitType>,
@@ -124,6 +125,7 @@ impl UnitType {
         let (adjacent_healing, cures_adjacent) = stock_adjacent_healing(&unit);
         let mut result = Self {
             id: text("id").to_owned(),
+            race: text("race").to_owned(),
             undead_variation: catalog.undead_variation(&unit).to_owned(),
             variation_id: text("variation_id").to_owned(),
             variations: variations::read(&unit, catalog),
