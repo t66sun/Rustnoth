@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{
         BTreeMap, BTreeSet,
         btree_map::{Entry, VacantEntry},
@@ -9,6 +10,7 @@ use std::{
 
 use crate::{
     hex::Hex,
+    income::Upkeep,
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_destinations},
     rng::ReplayRng,
@@ -57,24 +59,25 @@ pub struct UnitState<'rules> {
     pub moves_left: i32,
     pub attacks_left: i32,
     pub can_recruit: bool,
+    upkeep_override: Option<Upkeep>,
     traits: Option<UnitTraits<'rules>>,
 }
 
 #[derive(Debug)]
 struct UnitTraits<'rules> {
-    definitions: Vec<&'rules Node>,
+    definitions: Vec<Cow<'rules, Node>>,
     stats: RecruitStats,
 }
 
 impl<'rules> UnitTraits<'rules> {
     fn from_definitions(
         unit: &UnitType,
-        definitions: Vec<&'rules Node>,
+        definitions: Vec<Cow<'rules, Node>>,
         base_max_experience: i32,
     ) -> Option<Self> {
         (!definitions.is_empty()).then(|| Self {
             stats: RecruitStats::from_traits_with_base_experience(
-                unit, &definitions, base_max_experience,
+                unit, definitions.iter().map(Cow::as_ref), base_max_experience,
             ),
             definitions,
         })
@@ -101,7 +104,15 @@ impl UnitState<'_> {
     }
 
     pub fn traits(&self) -> impl Iterator<Item = &Node> {
-        self.traits.iter().flat_map(|traits| traits.definitions.iter().copied())
+        self.traits.iter().flat_map(|traits| traits.definitions.iter().map(Cow::as_ref))
+    }
+
+    pub(crate) fn upkeep(&self) -> i32 {
+        if self.can_recruit {
+            return 0;
+        }
+        let from_traits = self.traits.as_ref().map_or(self.unit_type.upkeep, |t| t.stats.upkeep);
+        self.upkeep_override.unwrap_or(from_traits).amount(self.unit_type.level)
     }
 
     pub(crate) fn is_fearless(&self) -> bool {
@@ -131,6 +142,8 @@ impl<'rules> Battlefield<'rules> {
     ) -> Result<Self, BoardError> {
         let starting_units = starting_units.into_iter().map(|placement| AuthoredStartingUnit {
             placement,
+            upkeep: None,
+            traits: Vec::new(),
             hitpoints: None,
             experience: 0,
             moves_left: None,
@@ -164,6 +177,8 @@ impl<'rules> Battlefield<'rules> {
         };
         for AuthoredStartingUnit {
             placement: start,
+            upkeep,
+            traits: authored_traits,
             hitpoints,
             experience,
             moves_left,
@@ -185,9 +200,13 @@ impl<'rules> Battlefield<'rules> {
                         type_id: start.type_id,
                     })?;
             let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
-            let traits = UnitTraits::from_definitions(
-                unit_type, unit_type.traits.mandatory(), base_max_experience,
-            );
+            let mut definitions: Vec<Cow<'_, Node>> = authored_traits.into_iter().map(Cow::Owned).collect();
+            for mandatory in unit_type.traits.mandatory() {
+                if !definitions.iter().any(|t| t.attribute("id") == mandatory.attribute("id")) {
+                    definitions.push(Cow::Borrowed(mandatory));
+                }
+            }
+            let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
             let max_hp = traits.as_ref().map_or(unit_type.hitpoints, |t| t.stats.max_hitpoints);
             let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
             tile.insert(UnitState {
@@ -205,6 +224,7 @@ impl<'rules> Battlefield<'rules> {
                 moves_left: moves_left.unwrap_or(movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
+                upkeep_override: upkeep,
                 traits,
             });
         }
@@ -251,12 +271,13 @@ impl<'rules> Battlefield<'rules> {
             unit.experience -= required;
             unit.unit_type = next_type;
             unit.undead_variation = None;
+            unit.upkeep_override = None;
             unit.base_max_experience =
                 scaled_experience(next_type.experience, self.experience_modifier);
             if let Some(traits) = &mut unit.traits {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
                     next_type,
-                    &traits.definitions,
+                    traits.definitions.iter().map(Cow::as_ref),
                     unit.base_max_experience,
                 );
             }
@@ -287,7 +308,8 @@ impl<'rules> Battlefield<'rules> {
     ) -> Result<(), BoardError> {
         self.place_recruit_with(side, type_id, position, |unit_type, base_max_experience| {
             UnitTraits::from_definitions(
-                unit_type, unit_type.traits.select_for_recruit(rng), base_max_experience,
+                unit_type, unit_type.traits.select_for_recruit(rng).into_iter().map(Cow::Borrowed).collect(),
+                base_max_experience,
             )
         })
     }
@@ -304,7 +326,7 @@ impl<'rules> Battlefield<'rules> {
             raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
             if let Some(traits) = &mut raised.traits {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
-                    variation, &traits.definitions, raised.base_max_experience,
+                    variation, traits.definitions.iter().map(Cow::as_ref), raised.base_max_experience,
                 );
             }
             raised.hitpoints = raised.max_hitpoints();
@@ -342,6 +364,7 @@ impl<'rules> Battlefield<'rules> {
             moves_left: 0,
             attacks_left: 0,
             can_recruit: false,
+            upkeep_override: None,
             traits,
         });
         Ok(())
@@ -783,6 +806,8 @@ mod tests {
             [effect]\napply_to=movement\nincrease=1\n[/effect]\n[/trait]").unwrap();
         let types = BTreeMap::from([("Guard".to_owned(), UnitType::from_wml(definition))]);
         let starts = [EAST, WEST].map(|position| AuthoredStartingUnit {
+            traits: Vec::new(),
+            upkeep: None,
             placement: StartingUnit { position, side: 1, id: None, type_id: "Guard".into(), can_recruit: position == EAST },
             hitpoints: (position == WEST).then_some(8),
             moves_left: (position == WEST).then_some(2),
