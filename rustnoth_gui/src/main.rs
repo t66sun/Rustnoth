@@ -174,10 +174,11 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
-    play_board(data, players, false).await.map(|_| ())
+    play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result<Option<String>, Box<dyn Error>> {
+async fn play_board(data: BoardData, players: Players, mut treasury: Option<&mut engine_lite::fixed_match::carryover::CampaignGold>) -> Result<Option<String>, Box<dyn Error>> {
+    let campaign = treasury.is_some();
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
@@ -248,6 +249,7 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
         if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
+            if let Some(gold) = treasury.as_deref_mut() { session.store_campaign_gold(gold); }
             return Ok(Some(id.to_owned()));
         }
         let menu_action = menu.as_mut().filter(|_| !dialogue_open).and_then(|menu| {
