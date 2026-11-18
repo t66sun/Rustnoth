@@ -98,7 +98,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
     }
 }
 
-fn names(list: &str) -> impl Iterator<Item = String> + '_ {
+pub(crate) fn names(list: &str) -> impl Iterator<Item = String> + '_ {
     list.split(',')
         .map(str::trim_ascii)
         .filter(|name| !name.is_empty())
