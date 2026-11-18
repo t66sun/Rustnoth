@@ -17,6 +17,7 @@ use crate::{
 pub struct ScenarioStart<'rules> {
     pub board: Battlefield<'rules>,
     pub(crate) events: ScenarioEvents,
+    pub(crate) manual_victory_sides: Vec<usize>,
     pub sides: Vec<SideConfig>,
     pub schedule: TimeSchedule,
     pub start_round: i32,
@@ -42,11 +43,23 @@ pub fn load<'rules>(
     Ok(ScenarioStart {
         board,
         events: ScenarioEvents::read(scenario, sides.len()),
+        manual_victory_sides: manual_victory_sides(scenario),
         sides,
         schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
         last_round: integer(scenario, "turns").filter(|&turns| turns != -1),
     })
+}
+
+/// Human-controlled survivors can keep playing after eliminating every enemy.
+pub(crate) fn manual_victory_sides(scenario: &Node) -> Vec<usize> {
+    if crate::scenario_sides::bool_attribute(scenario, "victory_when_enemies_defeated", true) {
+        return Vec::new();
+    }
+    scenario.children.iter().filter(|(tag, _)| tag == "side").enumerate()
+        .filter(|(_, (_, side))| side.attribute("controller") == Some("human"))
+        .map(|(index, _)| index + 1)
+        .collect()
 }
 
 #[derive(Debug)]

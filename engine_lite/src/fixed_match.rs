@@ -586,6 +586,9 @@ impl<'data> FixedMatch<'data> {
             }
             winners.push(side);
         }
+        if winners.iter().any(|side| self.scenario.manual_victory_sides.contains(side)) {
+            return;
+        }
         self.state = match winners.as_slice() {
             [] => MatchState::Draw,
             [side] => MatchState::Won(*side),
