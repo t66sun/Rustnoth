@@ -1,6 +1,6 @@
 use std::{collections::HashSet, error, fmt};
 
-use crate::{hex::Hex, map::ScenarioMap, scenario_time::integer, wml::Node};
+use crate::{hex::Hex, income::Upkeep, map::ScenarioMap, scenario_time::integer, wml::Node};
 
 /// A fixed unit placement, in scenario side and creation order.
 #[derive(Debug, PartialEq, Eq)]
@@ -14,6 +14,8 @@ pub struct StartingUnit {
 
 pub(crate) struct AuthoredStartingUnit {
     pub(crate) placement: StartingUnit,
+    pub(crate) upkeep: Option<Upkeep>,
+    pub(crate) traits: Vec<Node>,
     pub(crate) hitpoints: Option<i32>,
     pub(crate) experience: i32,
     pub(crate) moves_left: Option<i32>,
@@ -89,6 +91,9 @@ pub(crate) fn read_authored_starting_units(
                     position,
                     can_recruit,
                 },
+                upkeep: Upkeep::from_wml(unit),
+                traits: children_named(unit, "modifications")
+                    .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
                 hitpoints: integer(unit, "hitpoints"),
                 experience: integer(unit, "experience").unwrap_or_default(),
                 moves_left: integer(unit, "moves"),

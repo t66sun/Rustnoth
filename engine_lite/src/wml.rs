@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::Range;
 
 /// The document root or the contents of a tag. Children keep their input order.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Node {
     pub attributes: BTreeMap<String, Value>,
     pub children: Vec<(String, Node)>,
@@ -17,14 +17,14 @@ impl Node {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Value {
     pub text: String,
     pub translations: Vec<Translation>,
 }
 
 /// A translatable segment of the source text. `bytes` indexes `Value::text`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Translation {
     pub bytes: Range<usize>,
     pub domain: String,

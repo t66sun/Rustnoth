@@ -338,8 +338,8 @@ impl<'data> FixedMatch<'data> {
             .scenario
             .board
             .units()
-            .filter(|(_, unit)| unit.side == turn.side && !unit.can_recruit)
-            .map(|(_, unit)| unit.unit_type.level)
+            .filter(|(_, unit)| unit.side == turn.side)
+            .map(|(_, unit)| unit.upkeep())
             .sum();
         let index = turn.side - 1;
         let side = &self.scenario.sides[index];
