@@ -15,6 +15,7 @@ use rustnoth_gui::{
 use crate::menu::Menu;
 
 pub mod objectives;
+pub mod attack_dialog;
 mod dialogue;
 pub use dialogue::draw_dialogue;
 mod transitions;
