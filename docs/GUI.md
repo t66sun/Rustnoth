@@ -26,7 +26,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
 ```
 
-列表按战役文件中的顺序显示场景名称和 ID。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。点 Filter 或按 Ctrl+F 可按名称搜索。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
 
 ### 用原版地图建立遭遇战
 

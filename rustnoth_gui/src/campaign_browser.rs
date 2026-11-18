@@ -1,10 +1,12 @@
+#[path = "campaign_selector.rs"]
+mod selector;
 use std::{error::Error, fs, path::{Path, PathBuf}};
 
 use engine_lite::{campaign, wml, wml_emit};
 use macroquad::prelude::{next_frame, set_default_camera};
 use rustnoth_gui::session::Players;
 
-use crate::{BoardData, dialog::{Dialog, ListAction, ListPosition}, read_file, show_board};
+use crate::{BoardData, dialog::ListAction, read_file, show_board};
 
 pub(super) struct Browser {
     campaign: wml::Node,
@@ -34,21 +36,14 @@ impl Browser {
 
     pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
         let scenarios: Vec<_> = campaign::scenarios(&self.campaign).collect();
-        let dialog = Dialog::new(&self.root);
-        let mut position = ListPosition::default();
+        let mut selector = selector::Selector::new(&self.root, &self.campaign, &scenarios);
+
         let mut error: Option<String> = None;
         loop {
-            let frame = dialog.begin();
-            let action = dialog.choose(&frame, &mut position, scenarios.len(), None, "Campaign scenarios",
-                error.as_deref(), |index| {
-                    let (id, name) = scenarios[index];
-                    if name.is_empty() { (id.to_owned(), None) }
-                    else { (name.to_owned(), Some(id.to_owned())) }
-                });
+            let action = selector.draw(error.as_deref());
             set_default_camera();
             match action {
                 ListAction::Choose(index) => {
-                    position.cursor = index;
                     next_frame().await;
                     let (id, _) = scenarios[index];
                     let result = match self.board(id) {
