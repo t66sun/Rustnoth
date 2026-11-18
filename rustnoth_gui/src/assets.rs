@@ -23,12 +23,23 @@ struct UnitAssets {
 
 impl AssetCatalog {
     /// Reads core definitions before custom scenario definitions.
-    pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, wml::ParseError> {
+    pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let images = wesnoth_root.join("data/core/images");
         let mut catalog = Self::default();
+        let mut units = Node::default();
+        let mut document = Node::default();
         for input in [core, bundle] {
-            catalog.read_definitions(&wml::parse(input)?, &images);
+            for (tag, node) in wml::parse(input)?.children {
+                match tag.as_str() {
+                    "units" => units.children.extend(node.children),
+                    "terrain_type" => document.children.push((tag, node)),
+                    _ => {}
+                }
+            }
         }
+        engine_lite::unit_type::resolve_base_units(&mut units)?;
+        document.children.push(("units".into(), units));
+        catalog.read_definitions(&document, &images);
         Ok(catalog)
     }
 
@@ -127,6 +138,15 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_units_can_use_a_core_base_units_sprite_and_weapon_names() {
+        let core = b"[units]\n[unit_type]\nid=Bowman\nimage=units/human/bow.png\n[attack]\ndescription=longbow\n[/attack]\n[/unit_type]\n[/units]";
+        let scenario = b"[units]\n[unit_type]\nid=Hero\n[base_unit]\nid=Bowman\n[/base_unit]\n[/unit_type]\n[/units]";
+        let catalog = AssetCatalog::parse(Path::new("wesnoth"), core, scenario).unwrap();
+        assert_eq!(catalog.unit_image("Hero"), Some(Path::new("wesnoth/data/core/images/units/human/bow.png").into()));
+        assert_eq!(catalog.weapon_name("Hero", 0), Some("longbow"));
+    }
 
     #[test]
     fn preserves_original_unit_names_and_weapons_in_referee_order() {

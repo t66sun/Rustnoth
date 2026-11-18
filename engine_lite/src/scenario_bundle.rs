@@ -37,7 +37,7 @@ impl Bundle {
         let mut bundle = wml::parse(bytes)?;
         let units = take_block(&mut bundle, "units")?;
         let scenario = take_block(&mut bundle, "scenario")?;
-        let (config, units) = if let Some(bytes) = core_bytes {
+        let (config, mut units) = if let Some(bytes) = core_bytes {
             let mut core = wml::parse(bytes)?;
             let mut core_units =
                 take_block(&mut core, "units")?.ok_or("missing [units] block in core catalog")?;
@@ -49,6 +49,7 @@ impl Bundle {
         } else {
             (bundle, units.ok_or("missing [units] block")?)
         };
+        crate::unit_type::resolve_base_units(&mut units)?;
         Ok(Self {
             scenario: scenario.ok_or("missing [scenario] block")?,
             terrain: TerrainAliases::from_wml(&config),
@@ -177,6 +178,23 @@ no_leader=yes
         assert_eq!(first.decision().unwrap().0.side, 2);
         assert_eq!(second.decision().unwrap().0.side, 1);
         assert_eq!(second.state(), initial_state);
+    }
+
+    #[test]
+    fn derived_campaign_units_inherit_core_weapons_with_ordinal_overrides() {
+        let core = b"[units]\n[unit_type]\nid=Base\nhitpoints=32\n[attack]\nname=sword\ndamage=4\n[/attack]\n[attack]\nname=bow\n[/attack]\n[/unit_type]\n[/units]";
+        let bundle = b"[scenario]\n[/scenario]\n[units]\n[unit_type]\nid=Hero\n[base_unit]\nid=Veteran\n[/base_unit]\n[/unit_type]\n\
+            [unit_type]\nid=Veteran\n[base_unit]\nid=Base\n[/base_unit]\n[attack]\ndamage=7\n[/attack]\n[/unit_type]\n[/units]";
+        let parsed = Bundle::parse_with_core(bundle, core).unwrap();
+        let hero = &parsed.unit_types["Hero"];
+        assert_eq!((hero.hitpoints, hero.attacks.len()), (32, 2));
+        assert_eq!((hero.attacks[0].id.as_str(), hero.attacks[0].damage), ("sword", 7));
+        assert_eq!(hero.attacks[1].id, "bow");
+        let text = std::str::from_utf8(bundle).unwrap();
+        for base in ["Missing", "Hero"] {
+            let broken = text.replace("id=Base", &format!("id={base}"));
+            assert!(Bundle::parse_with_core(broken.as_bytes(), core).is_err());
+        }
     }
 
     #[test]
