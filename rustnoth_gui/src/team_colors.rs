@@ -33,6 +33,15 @@ impl TeamColors {
     }
 
     fn parse_palette(bytes: &[u8], name: &str) -> io::Result<Self> {
+        Self::parse_ranges(bytes, name, None)
+    }
+
+    /// Applies a named original color range (including non-side colors) using index 1.
+    pub fn named_range(bytes: &[u8], palette: &str, range: &str) -> io::Result<Self> {
+        Self::parse_ranges(bytes, palette, Some(range))
+    }
+
+    fn parse_ranges(bytes: &[u8], name: &str, wanted: Option<&str>) -> io::Result<Self> {
         let config = wml::parse(bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let source = config
@@ -50,8 +59,11 @@ impl TeamColors {
 
         let mut sides = Vec::new();
         for (tag, range) in &config.children {
-            if tag != "color_range"
-                || !matches!(range.attribute("default"), Some("yes" | "true" | "on" | "1"))
+            let matches = match wanted {
+                Some(id) => range.attribute("id") == Some(id),
+                None => matches!(range.attribute("default"), Some("yes" | "true" | "on" | "1")),
+            };
+            if tag != "color_range" || !matches
             {
                 continue;
             }

@@ -160,6 +160,7 @@ Xv,Xv,Xv,Xv,Xv"
             tiles: Vec::new(),
             units: vec![ObservedUnit {
                 can_recruit: false, emits_zoc: true,
+                max_hitpoints: 33, full_action_points: Some(true),
                 position: own,
                 side: 1,
                 type_id: "Bowman".to_owned(),
