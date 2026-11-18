@@ -433,7 +433,8 @@ impl<'rules> Battlefield<'rules> {
         for (&hex, unit) in self.units.iter_mut().filter(|(_, unit)| unit.side == side) {
             let terrain_healing =
                 self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
-            let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
+            let healthy = unit.traits.as_ref().is_some_and(|traits| traits.stats.healthy);
+            let rest_healing = if healthy || self.resting.contains(&hex) { REST_HEALING } else { 0 };
             let from_healer = adjacent_healing.get(&hex).copied().unwrap_or(0);
             let main_healing = if unit.poisoned {
                 if terrain_healing != 0 || unit.unit_type.regeneration > 0 {
@@ -764,6 +765,31 @@ mod tests {
         board.units.get_mut(&corridor_hex(0)).unwrap().hitpoints = 10;
         board.heal_at_turn_start(1, &terrain);
         assert_eq!(board.unit_at(corridor_hex(0)).unwrap().hitpoints, 16);
+    }
+
+    #[test]
+    fn healthy_units_receive_rest_healing_even_after_moving() {
+        let make_type = |id: &str, disable| {
+            let reset = if disable { "[effect]\napply_to=healthy\nset=no\n[/effect]\n" } else { "" };
+            UnitType::from_wml(wml::parse(format!("id={id}\nhitpoints=20\nmovement=5\n\
+                [trait]\nid=sturdy\navailability=musthave\n[effect]\napply_to=healthy\n\
+                [/effect]\n{reset}[/trait]")).unwrap())
+        };
+        let types = BTreeMap::from([
+            ("Healthy".into(), make_type("Healthy", false)),
+            ("Ordinary".into(), make_type("Ordinary", true)),
+        ]);
+        let starts = [(EAST, "Healthy"), (WEST, "Ordinary")].map(|(position, kind)| StartingUnit {
+            side: 1, id: None, type_id: kind.into(), position, can_recruit: false,
+        });
+        let mut board = Battlefield::new(map(), starts.into(), &types).unwrap();
+        for unit in board.units.values_mut() { unit.hitpoints = 5; }
+        let terrain = TerrainAliases::from_wml(&Node::default());
+        board.heal_at_turn_start(1, &terrain);
+        assert_eq!(board.unit_at(EAST).unwrap().hitpoints, 7);
+        assert_eq!(board.unit_at(WEST).unwrap().hitpoints, 5);
+        board.heal_at_turn_start(1, &terrain);
+        assert_eq!(board.unit_at(EAST).unwrap().hitpoints, 9);
     }
 
     #[test]
