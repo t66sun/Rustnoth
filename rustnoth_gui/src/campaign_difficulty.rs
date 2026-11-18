@@ -45,7 +45,13 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
     if choices.len() <= 1 {
         return Some(choices.first().map_or("NORMAL", |c| c.define).to_owned());
     }
-    let back = Texture2D::from_image(&get_screen_data());
+    let mut snapshot = get_screen_data();
+    // The framebuffer already contains the composited RGB values of the list.
+    for pixel in snapshot.bytes.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    let back = Texture2D::from_image(&snapshot);
+    next_frame().await;
     let mut first = 0usize;
     let mut last_click = None;
     loop {
@@ -56,7 +62,11 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
         let (mx, my) = mouse_position();
         let pointer = vec2(mx / scale, my / scale);
         set_camera(&setup_camera(w, h));
-        image(&back, Rect::new(0.0, 0.0, w, h));
+        draw_texture_ex(&back, 0.0, 0.0, WHITE, DrawTextureParams {
+            dest_size: Some(vec2(w, h)),
+            flip_y: true,
+            ..Default::default()
+        });
         fill(Rect::new(0.0, 0.0, w, h), Color::from_rgba(0, 0, 0, 80));
         let row_height = 78.0;
         let visible = (((h - 136.0) / row_height).floor() as usize)
