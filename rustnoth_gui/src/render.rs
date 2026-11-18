@@ -27,6 +27,7 @@ mod unit_status;
 mod ground;
 mod rules;
 mod reach;
+mod hover;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
@@ -90,6 +91,7 @@ pub struct BoardArt {
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D, bool)>,
     unit_status: unit_status::StatusArt,
+    hover: hover::Art,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -147,6 +149,7 @@ impl BoardArt {
             periods,
             map_items: Vec::new(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
+            hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
@@ -432,6 +435,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size);
         }
     }
+    let (pointer_x, pointer_y) = mouse_position();
+    let hover = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
+    if let Some(focus) = &hover { focus.draw(layout, false); }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
@@ -497,6 +503,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat(global_color);
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
+    if let Some(focus) = &hover { focus.draw(layout, true); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
