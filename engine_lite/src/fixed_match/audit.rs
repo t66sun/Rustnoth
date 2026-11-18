@@ -30,6 +30,7 @@ pub struct SnapshotUnit {
     pub can_recruit: bool,
     pub experience: i32,
     pub slowed: bool,
+    pub poisoned: bool,
     /// Applied trait IDs in effect order.
     pub traits: Vec<String>,
 }
@@ -69,6 +70,7 @@ impl FixedMatch<'_> {
                     can_recruit: unit.can_recruit,
                     experience: unit.experience,
                     slowed: unit.slowed,
+                    poisoned: unit.poisoned,
                     traits: unit
                         .traits()
                         .map(|trait_| trait_.attribute("id").unwrap_or_default().to_owned())
@@ -131,6 +133,9 @@ mod tests {
                             [slow]
                                 id=slow
                             [/slow]
+                            [poison]
+                                id=poison
+                            [/poison]
                         [/specials]
                     [/attack]
                 [/unit_type]
@@ -178,6 +183,8 @@ Xv,Xv,Xv,Xv"
         assert_eq!(after.units[1].hitpoints, 10);
         assert!(after.units[0].slowed);
         assert!(!after.units[1].slowed);
+        assert!(after.units[0].poisoned);
+        assert!(!after.units[1].poisoned);
         assert_eq!(game.rng.next_u32(), ReplayRng::restore(22, 1).next_u32());
     }
 
@@ -247,6 +254,7 @@ Xv,Xv,Xv,Xv,Xv"
             can_recruit: true,
             experience: 0,
             slowed: false,
+            poisoned: false,
             traits: Vec::new(),
         };
         assert_eq!(before.state, MatchState::Playing(Turn { round: 1, side: 1 }));
