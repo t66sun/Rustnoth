@@ -216,6 +216,22 @@ impl Locale {
         "images/misc/logo.png".into()
     }
 
+    pub fn title_map(&self, root: &Path) -> (String, Option<String>) {
+        let maps = "data/core/images/maps";
+        let base = format!("{maps}/titlescreen.webp");
+        if !self.effective.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b)) {
+            return (base, None);
+        }
+        let names = candidates(&self.effective);
+        let localized = |file: &str| names.iter()
+            .map(|id| format!("{maps}/l10n/{id}/{file}"))
+            .find(|path| root.join(path).is_file());
+        if let Some(replacement) = localized("titlescreen.webp") {
+            return (replacement, None);
+        }
+        (base, localized("titlescreen--overlay.webp"))
+    }
+
     pub fn ui<'a>(&'a self, key: &'a str) -> &'a str {
         self.interface.text(key)
     }
@@ -259,6 +275,18 @@ mod tests {
         let active = Locale::load(&root, saved(&root).unwrap()).unwrap();
         assert_eq!(active.effective, "zh_CN");
         assert_eq!(active.logo(&root), "images/misc/l10n/zh_CN/logo.png");
+        let maps = "data/core/images/maps";
+        let original = format!("{maps}/titlescreen.webp");
+        let overlay = format!("{maps}/l10n/zh/titlescreen--overlay.webp");
+        let replacement = format!("{maps}/l10n/zh_CN/titlescreen.webp");
+        for path in [&overlay, &replacement] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        }
+        fs::write(root.join(&overlay), []).unwrap();
+        assert_eq!(active.title_map(&root), (original.clone(), Some(overlay)));
+        fs::write(root.join(&replacement), []).unwrap();
+        assert_eq!(active.title_map(&root), (replacement, None));
+        assert_eq!(Locale::load(&root, "en_US".into()).unwrap().title_map(&root), (original, None));
         save(&root, "en_US").unwrap();
         assert_eq!(
             Locale::load(&root, saved(&root).unwrap())
