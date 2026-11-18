@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod attack;
+mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{StrikeRole, combatant, within_range};
 
@@ -382,6 +383,44 @@ impl<'rules> Battlefield<'rules> {
         terrain_known: impl Fn(Hex) -> bool,
         unit_visible: impl Fn(Hex) -> bool,
     ) -> Result<BTreeMap<Hex, u32>, MoveError> {
+        self.search_walking_map(
+            active_side, from, movement_cost, is_enemy, terrain_known, unit_visible,
+            |moves, tile_at| reachable_destinations(from, moves, |hex| Some(tile_at(hex)?.0)),
+        )
+    }
+
+    /// Plans a single-turn walk in the mover's view and includes both endpoints.
+    /// The mover's chance to be hit on each terrain breaks equal-MP paths.
+    pub fn walk_route_in_view(
+        &self,
+        active_side: usize,
+        from: Hex,
+        to: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        hit_chance: impl Fn(&str) -> u8,
+        is_enemy: impl Fn(usize) -> bool,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+    ) -> Result<Vec<Hex>, MoveError> {
+        self.search_walking_map(
+            active_side, from, movement_cost, is_enemy, terrain_known, unit_visible,
+            |moves, tile_at| walk_route::find(from, to, moves, |hex| {
+                let (tile, terrain) = tile_at(hex)?;
+                Some((tile, hit_chance(terrain)))
+            }),
+        )?.ok_or(MoveError::Unreachable(to))
+    }
+
+    fn search_walking_map<'board, T>(
+        &'board self,
+        active_side: usize,
+        from: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        is_enemy: impl Fn(usize) -> bool,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+        search: impl FnOnce(u32, &dyn Fn(Hex) -> Option<(MovementTile, &'board str)>) -> T,
+    ) -> Result<T, MoveError> {
         let known_unit_at = |hex| {
             if !self.map.is_playable(hex) {
                 return None;
@@ -396,11 +435,12 @@ impl<'rules> Battlefield<'rules> {
         let moves_left = unit.moves_left.max(0) as u32;
         let hostile = |unit: &UnitState<'rules>| unit.side != active_side && is_enemy(unit.side);
 
-        Ok(reachable_destinations(from, moves_left, |position| {
+        Ok(search(moves_left, &|position| {
             if !self.map.is_playable(position) || !terrain_known(position) {
                 return None;
             }
-            let cost = movement_cost(self.map.terrain_at(position)?)?;
+            let terrain = self.map.terrain_at(position)?;
+            let cost = movement_cost(terrain)?;
             let cost = if unit.slowed {
                 cost.checked_mul(NonZeroU32::new(2).unwrap())?
             } else {
@@ -415,11 +455,11 @@ impl<'rules> Battlefield<'rules> {
                 known_unit_at(neighbor)
                     .is_some_and(|unit| hostile(unit) && unit.unit_type.emits_zoc)
             });
-            Some(MovementTile {
+            Some((MovementTile {
                 cost,
                 occupancy,
                 stops_movement,
-            })
+            }, terrain))
         }))
     }
 
@@ -1081,6 +1121,21 @@ mod tests {
             ).unwrap();
             assert_eq!(moves, BTreeMap::from([(corridor_hex(1), 4)]));
         }
+    }
+
+    #[test]
+    fn walk_route_shows_each_step_and_uses_only_the_movers_view() {
+        let unit_types = types();
+        let board = corridor(&unit_types, &[(0, 1), (1, 1), (3, 2)]);
+        let from = corridor_hex(0);
+        let to = corridor_hex(4);
+        let route = |shrouded: Option<Hex>, visible: bool| board.walk_route_in_view(
+            1, from, to, walking_cost, |_| 60, |side| side == 2,
+            |hex| Some(hex) != shrouded, |_| visible,
+        );
+        assert_eq!(route(None, false).unwrap(), (0..=4).map(corridor_hex).collect::<Vec<_>>());
+        assert_eq!(route(Some(corridor_hex(2)), false), Err(MoveError::Unreachable(to)));
+        assert_eq!(route(None, true), Err(MoveError::Unreachable(to)));
     }
 
     #[test]
