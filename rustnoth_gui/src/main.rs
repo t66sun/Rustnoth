@@ -199,6 +199,13 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             }
         }
         let clicked = is_mouse_button_pressed(MouseButton::Left);
+        if is_key_pressed(KeyCode::D) && menu.is_none() {
+            menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
+            if menu.is_some() {
+                selection.clear();
+                message = None;
+            }
+        }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let button = render::end_turn_button(screen_width(), screen_height(), can_end);
         let menu_action = menu.as_mut().and_then(|menu| {
@@ -211,13 +218,14 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             if is_key_pressed(KeyCode::Tab) {
                 menu.cycle();
             }
-            if is_key_pressed(KeyCode::Enter) {
+            let action = if is_key_pressed(KeyCode::Enter) {
                 Some(menu.focused_action().clone())
             } else if clicked {
                 menu.action_at(pointer, area).cloned()
             } else {
                 None
-            }
+            }?;
+            menu.activate(action)
         });
         let requested = if can_end
             && (is_key_pressed(KeyCode::Space)
