@@ -18,6 +18,8 @@ pub struct SideConfig {
     pub team_names: Vec<String>,
     pub fog: bool,
     pub shroud: bool,
+    pub(crate) fog_data: String,
+    pub(crate) shroud_data: String,
     pub share_vision: ShareVision,
     pub starting_gold: i32,
     /// The side's WML `income`, added to the global base income.
@@ -68,6 +70,8 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         team_names: names(team_names).collect(),
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
+        fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),
+        shroud_data: cfg.attribute("shroud_data").unwrap_or_default().to_owned(),
         share_vision: read_share_vision(cfg),
         starting_gold,
         income_bonus: int_attribute(cfg, "income", 0),
