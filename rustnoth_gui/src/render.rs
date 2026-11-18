@@ -20,6 +20,7 @@ pub use dialogue::draw_dialogue;
 mod transitions;
 mod reach;
 
+const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
