@@ -145,7 +145,7 @@ mod tests {
         let north = water.neighbor(Direction::North).unwrap();
         let northeast = water.neighbor(Direction::NorthEast).unwrap();
         let tile = |position, terrain: &str| ObservedTile {
-            position, terrain: terrain.into(), visible: true, village_owner: None,
+            position, terrain: terrain.into(), visible: true, village_owner: None, time_color: [0; 3],
         };
         let mut view = Observation {
             side: 1, allied_sides: vec![1], gold: None, width: 4, height: 4, units: vec![],

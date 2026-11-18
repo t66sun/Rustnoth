@@ -11,9 +11,13 @@ use engine_lite::wml::{self, Node};
 #[derive(Debug, Default)]
 pub struct AssetCatalog {
     image_dirs: Vec<PathBuf>,
+    terrain_rules: Vec<Node>,
     fallback: PathBuf,
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
+    terrain_names: BTreeMap<String, String>,
+    minimap_symbols: BTreeMap<String, PathBuf>,
+    villages: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -22,8 +26,40 @@ struct UnitAssets {
     portrait: Option<PathBuf>,
     dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
-    weapon_names: Vec<Option<String>>,
+    weapons: Vec<(Option<String>, Option<PathBuf>)>,
     ellipse: String,
+    bars: UnitBars,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UnitBars {
+    pub offset: Option<[i32; 2]>,
+    pub hp_scale: f32,
+    pub xp_scale: f32,
+    pub level: i32,
+    /// Some(true) for a major advancement, Some(false) for AMLA only.
+    pub advancement: Option<bool>,
+}
+
+impl UnitBars {
+    fn from_unit(unit: &Node) -> Self {
+        let x = unit.attribute("bar_offset_x");
+        let y = unit.attribute("bar_offset_y");
+        let advances_to = unit.attribute("advances_to")
+            .is_some_and(|ids| ids.split(',').map(str::trim).any(|id| !id.is_empty() && id != "null"));
+        let mut advancement = advances_to.then_some(true);
+        for (_, advance) in unit.children.iter().filter(|(tag, _)| tag == "advancement") {
+            let major = matches!(advance.attribute("major_amla"), Some("yes" | "true" | "1" | "on"));
+            advancement = Some(advancement.unwrap_or(false) || major);
+        }
+        Self {
+            offset: (x.is_some() || y.is_some()).then(|| [x, y].map(|v| v.and_then(|s| s.parse().ok()).unwrap_or(0))),
+            hp_scale: unit.attribute("hp_bar_scaling").and_then(|s| s.parse().ok()).unwrap_or(0.6),
+            xp_scale: unit.attribute("xp_bar_scaling").and_then(|s| s.parse().ok()).unwrap_or(0.5),
+            level: unit.attribute("level").and_then(|s| s.parse().ok()).unwrap_or(0),
+            advancement,
+        }
+    }
 }
 
 impl AssetCatalog {
@@ -33,11 +69,14 @@ impl AssetCatalog {
         let mut catalog = Self::default();
         let mut units = Node::default();
         let mut document = Node::default();
-        for input in [core, bundle] {
+        let mut core_graphics = Vec::new();
+        for (is_core, input) in [(true, core), (false, bundle)] {
             for (tag, node) in wml::parse(input)?.children {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" if is_core => core_graphics.push(node),
+                    "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
                         if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
                             && !path.contains("..") && safe_relative_path(Path::new(path))
@@ -49,6 +88,10 @@ impl AssetCatalog {
                 }
             }
         }
+        if core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
+            core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
+        }
+        catalog.terrain_rules.extend(core_graphics);
         engine_lite::unit_type::resolve_base_units(&mut units)?;
         document.children.push(("units".into(), units));
         catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
@@ -57,6 +100,14 @@ impl AssetCatalog {
         catalog.read_definitions(&document);
         Ok(catalog)
     }
+
+    pub fn unit_bars(&self, id: &str) -> Option<UnitBars> {
+        self.units.get(id).map(|unit| unit.bars)
+    }
+
+    pub fn terrain_rules(&self) -> &[Node] { &self.terrain_rules }
+
+    pub fn image_roots(&self) -> &[PathBuf] { &self.image_dirs }
 
     pub fn ellipse_prefix(&self, id: &str) -> Option<&str> {
         let prefix = self.units.get(id)?.ellipse.as_str();
@@ -85,7 +136,19 @@ impl AssetCatalog {
 
     /// Returns the display name at the referee's zero-based weapon index.
     pub fn weapon_name(&self, id: &str, index: usize) -> Option<&str> {
-        self.units.get(id)?.weapon_names.get(index)?.as_deref()
+        self.units.get(id)?.weapons.get(index)?.0.as_deref()
+    }
+
+    pub fn weapon_icon(&self, id: &str, index: usize) -> Option<PathBuf> {
+        self.resolve_image(self.units.get(id)?.weapons.get(index)?.1.as_deref()?)
+    }
+
+    /// Name of the highlighted tile as displayed in the terrain report.
+    pub fn terrain_name(&self, code: &str) -> Option<&str> {
+        self.terrain_names.get(code).or_else(|| {
+            let (base, overlay) = code.split_at(code.find('^')?);
+            self.terrain_names.get(overlay).or_else(|| self.terrain_names.get(base))
+        }).map(String::as_str)
     }
 
     /// Returns an exact terrain image or the known base and overlay in draw order.
@@ -101,6 +164,20 @@ impl AssetCatalog {
             .into_iter()
             .filter_map(|layer| self.resolve_image(self.terrain.get(layer)?.as_deref()?))
             .collect()
+    }
+
+    /// Native terrain symbols (distinct from editor previews) and village classification.
+    pub fn minimap_terrain(&self, code: &str) -> (Vec<PathBuf>, bool) {
+        let layers = if self.terrain.contains_key(code) {
+            vec![code]
+        } else if let Some(caret) = code.find('^') {
+            vec![&code[..caret], &code[caret..]]
+        } else {
+            vec![code]
+        };
+        let village = layers.iter().any(|layer| self.villages.contains(*layer));
+        let paths = layers.iter().map_while(|layer| self.resolve_image(self.minimap_symbols.get(*layer)?)).collect();
+        (paths, village)
     }
 
     pub fn resolve_image(&self, image: &Path) -> Option<PathBuf> {
@@ -119,6 +196,17 @@ impl AssetCatalog {
                     let Some(code) = node.attribute("string").filter(|code| !code.is_empty()) else {
                         continue;
                     };
+                    if let Some(symbol) = node.attribute("symbol_image").and_then(image_filename) {
+                        let mut path = Path::new("terrain").join(symbol);
+                        if path.extension().is_none() { path.set_extension("png"); }
+                        self.minimap_symbols.entry(code.to_owned()).or_insert(path);
+                    }
+                    if matches!(node.attribute("gives_income"), Some("yes" | "true" | "on" | "1")) {
+                        self.villages.insert(code.to_owned());
+                    }
+                    if let Some(name) = display_name(node, "name") {
+                        self.terrain_names.entry(code.to_owned()).or_insert_with(|| name.to_owned());
+                    }
                     self.terrain.entry(code.to_owned()).or_insert_with(|| {
                         terrain_image(node).map(|image| Path::new("terrain").join(image))
                     });
@@ -141,15 +229,17 @@ impl AssetCatalog {
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
+                            bars: UnitBars::from_unit(unit),
                             ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
-                            weapon_names: unit
+                            weapons: unit
                                 .children
                                 .iter()
                                 .filter(|(tag, _)| tag == "attack")
                                 .map(|(_, weapon)| {
-                                    display_name(weapon, "description")
-                                        .or_else(|| display_name(weapon, "name"))
-                                        .map(str::to_owned)
+                                    let name = display_name(weapon, "description").or_else(|| display_name(weapon, "name"));
+                                    let image = display_name(weapon, "icon").and_then(image_filename).map(PathBuf::from)
+                                        .or_else(|| Some(PathBuf::from(format!("attacks/{}.png", display_name(weapon, "name")?))));
+                                    (name.map(str::to_owned), image)
                                 })
                                 .collect(),
                         });
@@ -189,6 +279,17 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimap_uses_symbol_art_and_identifies_neutral_village_overlays() {
+        let core = b"[terrain_type]\nstring=Gg\nsymbol_image=grass/green-symbol\neditor_image=grass/green\n[/terrain_type]\n[terrain_type]\nstring=^Vh\nsymbol_image=village/human\ngives_income=yes\n[/terrain_type]";
+        let root = Path::new("wesnoth");
+        let catalog = AssetCatalog::parse(root, core, b"").unwrap();
+        let terrain = root.join("data/core/images/terrain");
+        assert_eq!(catalog.minimap_terrain("Gg^Vh"),
+            (vec![terrain.join("grass/green-symbol.png"), terrain.join("village/human.png")], true));
+        assert_eq!(catalog.minimap_terrain("Gg"), (vec![terrain.join("grass/green-symbol.png")], false));
+    }
 
     #[test]
     fn original_campaign_art_is_resolved_from_the_declared_binary_path() {
@@ -296,11 +397,13 @@ profile=portraits/scout.webp
         let core = br#"
 [terrain_type]
     string=Gg
+    name=Grassland
     editor_image=grass/green
     symbol_image=grass/green-symbol
 [/terrain_type]
 [terrain_type]
     string=^Vh
+    name=Village
     symbol_image="village/human-tile~O(0.5)"
 [/terrain_type]
 [terrain_type]
@@ -331,11 +434,19 @@ profile=portraits/scout.webp
     [unit_type]
         id=Scout
         image=units/custom/scout.png
+        bar_offset_x=3
+        hp_bar_scaling=0.8
+        level=2
+        [advancement]
+            id=amla
+        [/advancement]
     [/unit_type]
 [/units]
 "#;
         let catalog = AssetCatalog::parse(root, core, bundle).unwrap();
 
+        assert_eq!(catalog.terrain_name("Gg"), Some("Grassland"));
+        assert_eq!(catalog.terrain_name("Gg^Vh"), Some("Village"));
         assert_eq!(
             catalog.unit_image("Bowman"),
             Some(images.join("units/human-loyalists/bowman.png")),
@@ -344,6 +455,10 @@ profile=portraits/scout.webp
             catalog.unit_image("Scout"),
             Some(images.join("units/custom/scout.png")),
         );
+        let bars = catalog.unit_bars("Scout").unwrap();
+        assert_eq!(bars.offset, Some([3, 0]));
+        assert_eq!((bars.level, bars.hp_scale, bars.xp_scale), (2, 0.8, 0.5));
+        assert_eq!(bars.advancement, Some(false));
         assert_eq!(catalog.unit_image("Missing"), None);
         assert_eq!(
             catalog.terrain_images("Gg^Vh"),

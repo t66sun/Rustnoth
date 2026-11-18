@@ -117,11 +117,14 @@ pub fn scenario_with_teams(
     ]);
 
     // Wesnoth 1.18.8 DEFAULT_SCHEDULE, starting at dawn.
-    for (id, bonus) in [
-        ("dawn", "0"), ("morning", "25"), ("afternoon", "25"),
-        ("dusk", "0"), ("first_watch", "-25"), ("second_watch", "-25"),
+    for (id, bonus, [red, green, blue]) in [
+        ("dawn", "0", ["-25", "-15", "0"]), ("morning", "25", ["0"; 3]),
+        ("afternoon", "25", ["0"; 3]), ("dusk", "0", ["10", "-20", "-35"]),
+        ("first_watch", "-25", ["-75", "-45", "-13"]), ("second_watch", "-25", ["-75", "-45", "-13"]),
     ] {
-        scenario.children.push(("time".into(), attributes(&[("id", id), ("lawful_bonus", bonus)])));
+        scenario.children.push(("time".into(), attributes(&[
+            ("id", id), ("lawful_bonus", bonus), ("red", red), ("green", green), ("blue", blue),
+        ])));
     }
     let (fog, shroud) = match visibility {
         Visibility::Open => ("no", "no"),
@@ -206,6 +209,8 @@ mod tests {
         let schedule = read_time_schedule(scenario);
         let bonuses: Vec<_> = (1..=7).map(|turn| schedule.at_turn(turn).lawful_bonus).collect();
         assert_eq!(bonuses, [0, 25, 25, 0, -25, -25, 0]);
+        assert_eq!(schedule.at_turn(1).color, [-25, -15, 0]);
+        assert_eq!(schedule.at_turn(4).color, [10, -20, -35]);
     }
 
     #[test]

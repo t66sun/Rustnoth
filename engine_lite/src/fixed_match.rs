@@ -38,6 +38,7 @@ mod recruit;
 mod plague;
 mod kill;
 mod retaliation;
+pub mod attack_preview;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -363,6 +364,7 @@ impl<'data> FixedMatch<'data> {
             .collect();
         observation.gold = Some(gold);
         for tile in &mut observation.tiles {
+            tile.time_color = self.scenario.schedule.at_hex(self.current_round, tile.position).color;
             tile.village_owner = self.village_owners.get(&tile.position).copied().filter(|owner|
                 tile.visible || observation.allied_sides.contains(owner)
             );
@@ -585,6 +587,12 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn prepare_attack(&self, turn: Turn, choice: AttackChoice) -> Result<Attack, AttackError> {
+        self.prepare_attack_in_view(turn, choice, |_| true).map(|(attack, _)| attack)
+    }
+
+    fn prepare_attack_in_view(
+        &self, turn: Turn, choice: AttackChoice, visible: impl Fn(Hex) -> bool + Copy,
+    ) -> Result<(Attack, bool), AttackError> {
         let board = &self.scenario.board;
         let attacker = board.unit_at(choice.from).ok_or(AttackError::MissingAttacker)?;
         let defender = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?;
@@ -594,16 +602,15 @@ impl<'data> FixedMatch<'data> {
             .get(choice.weapon)
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
-        let attack_leadership = self.leadership_bonus(choice.from, attacker);
-        let defense_leadership = self.leadership_bonus(choice.to, defender);
-        let attack_light = self.lawful_bonus_at(turn.round, choice.from);
-        let defense_light = self.lawful_bonus_at(turn.round, choice.to);
+        let attack_leadership = self.leadership_in_view(choice.from, attacker, visible);
+        let defense_leadership = self.leadership_in_view(choice.to, defender, visible);
+        let attack_light = self.lawful_bonus_in_view(turn.round, choice.from, visible);
+        let defense_light = self.lawful_bonus_in_view(turn.round, choice.to, visible);
         let modifiers = self.modifiers(attack_light, attacker, defender, weapon, choice.to, attack_leadership, true);
-        let offensive_role = StrikeRole::Attack {
-            backstab: board.backstabs(choice.from, choice.to, weapon, |side| {
-                self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
-            }),
-        };
+        let backstab = board.backstabs(choice.from, choice.to, weapon, |at, side| {
+            visible(at) && self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
+        });
+        let offensive_role = StrikeRole::Attack { backstab };
         let candidates = defender
             .unit_type
             .attacks
@@ -627,17 +634,21 @@ impl<'data> FixedMatch<'data> {
                 let rounds = weapon.combat_rounds().max(response.combat_rounds());
                 ((index, response_modifiers), attacker_stats, defender_stats, rounds)
             });
-        Ok(Attack {
+        Ok((Attack {
             from: choice.from,
             to: choice.to,
             weapon: choice.weapon,
             retaliation: retaliation::select(candidates),
             modifiers,
-        })
+        }, backstab))
     }
 
     fn leadership_bonus(&self, position: Hex, recipient: &UnitState<'_>) -> i64 {
-        position.neighbors()
+        self.leadership_in_view(position, recipient, |_| true)
+    }
+
+    fn leadership_in_view(&self, position: Hex, recipient: &UnitState<'_>, visible: impl Fn(Hex) -> bool) -> i64 {
+        position.neighbors().filter(|hex| visible(*hex))
             .filter_map(|hex| self.scenario.board.unit_at(hex))
             .filter(|unit| unit.side == recipient.side && unit.unit_type.leadership)
             .map(|unit| i64::from(unit.unit_type.level) - i64::from(recipient.unit_type.level))
