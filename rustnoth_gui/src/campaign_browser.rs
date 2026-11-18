@@ -83,15 +83,16 @@ impl Browser {
             set_default_camera();
             match action {
                 ListAction::Choose(index) => {
-                    next_frame().await;
                     let (id, _) = scenarios[index];
                     let result = if let Some(entry) = self.installed.get(id) {
                         if id == crate::tutorial::FIRST_SCENARIO {
+                            next_frame().await;
                             crate::tutorial::run(&self.root, &self.core, self.seed).await
                         } else {
                             self.play_installed(entry, id, &mut selector).await
                         }
                     } else {
+                        next_frame().await;
                         self.play_from(id.to_owned()).await
                     };
                     error = result.err().map(|cause| format!("{id} — {cause}"));
