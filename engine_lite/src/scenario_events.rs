@@ -46,7 +46,7 @@ pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool },
+    EndLevel { victory: bool, next_scenario: Option<String> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
@@ -360,6 +360,7 @@ fn read_actions<'a>(
             }
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
+                next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
             }),
             _ => match EventAction::read(tag, cfg, side_count) {
                 Some(action) => action,

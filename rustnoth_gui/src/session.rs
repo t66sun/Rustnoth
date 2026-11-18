@@ -84,6 +84,10 @@ impl<'rules> Session<'rules> {
         Ok(true)
     }
 
+    pub fn next_scenario(&self) -> Option<&str> {
+        self.game.next_scenario_after_victory()
+    }
+
     pub fn state(&self) -> MatchState {
         self.game.state()
     }

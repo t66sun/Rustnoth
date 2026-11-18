@@ -210,8 +210,9 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory } => {
+                BoardChange::EndLevel { victory, next_scenario } => {
                     if matches!(self.state, MatchState::Playing(_)) {
+                        if next_scenario.is_some() { self.scenario.next_scenario = next_scenario; }
                         self.state = if victory { MatchState::CampaignVictory } else { MatchState::CampaignDefeat };
                     }
                     continue;
@@ -302,6 +303,18 @@ impl<'data> FixedMatch<'data> {
     pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
         self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
             .filter(|objectives| !objectives.is_empty())
+    }
+
+    /// Campaign destination after a scripted victory or a surviving human side's victory.
+    pub fn next_scenario_after_victory(&self) -> Option<&str> {
+        let human_won = |side: usize| self.scenario.sides[side - 1].human;
+        let proceed = match &self.state {
+            MatchState::CampaignVictory => true,
+            MatchState::Won(side) => human_won(*side),
+            MatchState::AlliedVictory(winners) => winners.iter().copied().any(human_won),
+            _ => false,
+        };
+        self.scenario.next_scenario.as_deref().filter(|id| proceed && !id.is_empty() && *id != "null")
     }
 
     /// Original map item images visible to one side, in hex overlay draw order.

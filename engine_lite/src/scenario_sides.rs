@@ -54,6 +54,7 @@ pub struct SideConfig {
     pub side: usize,
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
+    pub(crate) human: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -109,6 +110,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         side,
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
+        human: cfg.attribute("controller") == Some("human"),
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,

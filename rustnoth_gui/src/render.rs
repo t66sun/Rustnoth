@@ -229,7 +229,7 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w >= 112.0 && bounds.y >= HEADER_HEIGHT).then_some(bounds)
 }
 
-pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str, shortcut: &str) {
     let (background, outline) = if highlighted {
         (BUTTON_HIGHLIGHTED, TEXT)
     } else {
@@ -238,9 +238,9 @@ pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
     draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, background);
     draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, outline);
     let baseline = bounds.y + 28.0;
-    label(&art.font, "End turn", bounds.x + 10.0, baseline, 16, TEXT);
-    let hint_width = measure_text("Space", art.font.as_ref(), 12, 1.0).width;
-    label(&art.font, "Space", bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
+    label(&art.font, text, bounds.x + 10.0, baseline, 16, TEXT);
+    let hint_width = measure_text(shortcut, art.font.as_ref(), 12, 1.0).width;
+    label(&art.font, shortcut, bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
 }
 
 pub fn menu_area() -> Rect {
