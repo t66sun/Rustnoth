@@ -228,6 +228,19 @@ impl<'data> FixedMatch<'data> {
         self.step_with_choices(action, None, None)
     }
 
+    /// Supported next types of an active-side unit, in WML declaration order.
+    pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
+        let MatchState::Playing(turn) = self.state else { return Vec::new() };
+        let board = &self.scenario.board;
+        let Some(unit) = board.unit_at(position).filter(|unit| unit.side == turn.side) else {
+            return Vec::new();
+        };
+        unit.unit_type.advances_to.iter()
+            .filter(|id| board.can_advance_to(position, id, supports_unit))
+            .cloned()
+            .collect()
+    }
+
     /// Apply an attack with each combatant's preferred next type if it advances.
     /// Omitted choices and subsequent levels use the first declared type.
     /// Invalid preferences are rejected before combat or RNG consumption.

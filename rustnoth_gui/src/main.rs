@@ -202,13 +202,19 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let button = render::end_turn_button(screen_width(), screen_height(), can_end);
         let menu_action = menu.as_mut().and_then(|menu| {
+            let area = render::menu_area();
+            if is_key_pressed(KeyCode::P)
+                || (clicked && menu.advancement_button(area).is_some_and(|bounds| bounds.contains(pointer)))
+            {
+                menu.cycle_advancement();
+            }
             if is_key_pressed(KeyCode::Tab) {
                 menu.cycle();
             }
             if is_key_pressed(KeyCode::Enter) {
                 Some(menu.focused_action().clone())
             } else if clicked {
-                menu.action_at(pointer, render::menu_area()).cloned()
+                menu.action_at(pointer, area).cloned()
             } else {
                 None
             }
@@ -231,6 +237,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                 menu::Menu::new(
                     position,
                     options_at(&selection, position, observation, session.legal_actions(), &data.assets),
+                    |from| session.advancement_choices(from),
                 )
             };
             movement
@@ -243,7 +250,8 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                 Action::Attack(attack) => Some(attack.from),
                 _ => None,
             };
-            match session.apply(action) {
+            let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
+            match session.apply_with_advancement(action, advancement) {
                 Ok(_) => {
                     message = None;
                     menu = None;
