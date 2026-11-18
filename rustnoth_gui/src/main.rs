@@ -18,8 +18,10 @@ use camera::BoardCamera;
 mod camera;
 mod menu;
 mod render;
+mod setup;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
 const PAN_PIXELS_PER_SECOND: f32 = 480.0;
@@ -32,7 +34,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let data = match Options::parse(&args).and_then(BoardData::load) {
+    let launch = match Options::parse(&args).and_then(Launch::load) {
         Ok(data) => data,
         Err(error) => {
             eprintln!("{error}");
@@ -40,14 +42,18 @@ fn main() -> ExitCode {
         }
     };
     let configuration = Conf {
-        window_title: format!("Rustnoth - {}", data.title),
+        window_title: format!("Rustnoth - {}", launch.title()),
         window_width: 1200,
         window_height: 820,
         window_resizable: true,
         ..Conf::default()
     };
     Window::from_config(configuration, async move {
-        if let Err(error) = show_board(data).await {
+        let result = match launch {
+            Launch::Board(data) => show_board(data).await,
+            Launch::Skirmish(setup) => setup.run().await,
+        };
+        if let Err(error) = result {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -57,10 +63,16 @@ fn main() -> ExitCode {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Options {
-    bundle: PathBuf,
+    source: Source,
     core: PathBuf,
     seed: u32,
     wesnoth_root: PathBuf,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Source {
+    Bundle(PathBuf),
+    Skirmish,
 }
 
 impl Options {
@@ -76,7 +88,34 @@ impl Options {
             .to_str()
             .and_then(|seed| seed.parse().ok())
             .ok_or("seed must be an unsigned 32-bit integer")?;
-        Ok(Self { bundle: bundle.into(), core: core.into(), seed, wesnoth_root: root })
+        let source = if bundle == "--skirmish" { Source::Skirmish } else { Source::Bundle(bundle.into()) };
+        Ok(Self { source, core: core.into(), seed, wesnoth_root: root })
+    }
+}
+
+enum Launch {
+    Board(BoardData),
+    Skirmish(setup::Setup),
+}
+
+impl Launch {
+    fn load(options: Options) -> Result<Self, Box<dyn Error>> {
+        let core = read_file(&options.core)?;
+        match options.source {
+            Source::Bundle(path) => {
+                let source = read_file(&path)?;
+                let directory = path.parent().unwrap_or_else(|| Path::new(".")).to_owned();
+                Ok(Self::Board(BoardData::from_source(&source, &core, directory, options.wesnoth_root, options.seed)?))
+            }
+            Source::Skirmish => Ok(Self::Skirmish(setup::Setup::load(options.wesnoth_root, core, options.seed)?)),
+        }
+    }
+
+    fn title(&self) -> &str {
+        match self {
+            Self::Board(data) => &data.title,
+            Self::Skirmish(_) => "Skirmish",
+        }
     }
 }
 
@@ -90,30 +129,27 @@ struct BoardData {
 }
 
 impl BoardData {
-    fn load(options: Options) -> Result<Self, Box<dyn Error>> {
-        let source = read_file(&options.bundle)?;
-        let core = read_file(&options.core)?;
-        let images = options.wesnoth_root.join("data/core/images");
+    fn from_source(source: &[u8], core: &[u8], directory: PathBuf, wesnoth_root: PathBuf, seed: u32) -> Result<Self, Box<dyn Error>> {
+        let images = wesnoth_root.join("data/core/images");
         if !images.is_dir() {
             return Err(format!("Wesnoth image directory is missing at {}", images.display()).into());
         }
-        let scenario = Bundle::parse_with_core(&source, &core)?;
-        let assets = AssetCatalog::parse(&options.wesnoth_root, &core, &source)?;
-        let title = wml::parse(&source)?
+        let scenario = Bundle::parse_with_core(source, core)?;
+        let assets = AssetCatalog::parse(&wesnoth_root, core, source)?;
+        let title = wml::parse(source)?
             .children
             .into_iter()
             .find(|(tag, _)| tag == "scenario")
             .and_then(|(_, config)| config.attribute("name").map(str::to_owned))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "Scenario".to_owned());
-        let directory = options.bundle.parent().unwrap_or_else(|| Path::new(".")).to_owned();
         Ok(Self {
             scenario,
             assets,
             title,
             directory,
-            wesnoth_root: options.wesnoth_root,
-            seed: options.seed,
+            wesnoth_root,
+            seed,
         })
     }
 }
@@ -276,6 +312,8 @@ mod tests {
         let custom = Options::parse(&args).unwrap();
         assert_eq!(custom.wesnoth_root, PathBuf::from("Local Wesnoth"));
         assert_eq!(custom.seed, 0);
+        let args = ["--skirmish", "core.cfg", "3"].map(OsString::from);
+        assert_eq!(Options::parse(&args).unwrap().source, Source::Skirmish);
     }
 
     #[test]
