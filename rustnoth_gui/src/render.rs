@@ -14,6 +14,8 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+mod unit_status;
+
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -73,6 +75,7 @@ pub struct BoardArt {
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D)>,
+    unit_status: unit_status::StatusArt,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -122,6 +125,7 @@ impl BoardArt {
             flags: BTreeMap::new(),
             periods,
             map_items: Vec::new(),
+            unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
@@ -197,13 +201,17 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
 }
 
 fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+    load_recolored(path, palette)
+}
+
+fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamColors, usize)>) -> Option<Texture2D> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
     let mut image = Image::from_file_with_format(&bytes, None)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
-    if let Some((colors, side)) = palette {
+    for (colors, side) in palettes {
         colors.recolor(side, &mut image.bytes);
     }
     let texture = Texture2D::from_image(&image);
@@ -503,7 +511,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
     }
     let mut choices = BTreeMap::new();
+    let mut actionable = HashSet::new();
     for action in movement.actions {
+        match action {
+            Action::Move { from, .. } => { actionable.insert(*from); }
+            Action::Attack(attack) => { actionable.insert(attack.from); }
+            _ => {}
+        }
         match action {
             Action::Move { from, to } if Some(*from) == movement.selected => {
                 choices.insert(*to, REACHABLE);
@@ -553,7 +567,17 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
 
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
+    let (mx, my) = mouse_position();
+    let hover = layout.hex_at([mx, my]);
     for unit in &view.units {
+        if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
+            let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
+                .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
+            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position));
+            let highlighted = [hover, movement.selected].contains(&Some(unit.position));
+            let origin = Vec2::from_array(layout.tile_origin(unit.position));
+            art.unit_status.draw(unit, style, origin, size, width, orb, highlighted);
+        }
         let icons = [
             art.poisoned.as_ref().filter(|_| unit.poisoned),
             art.slowed.as_ref().filter(|_| unit.slowed),
