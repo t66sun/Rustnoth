@@ -1,4 +1,10 @@
-use super::Battlefield;
+use super::{Battlefield, UnitState};
+
+impl UnitState<'_> {
+    pub(crate) fn hides_on(&self, terrain: &str, lawful: i32, resting: bool) -> bool {
+        !self.uncovered && self.unit_type.hiding.iter().any(|hiding| hiding.applies(terrain, lawful, resting))
+    }
+}
 use crate::hex::Hex;
 
 impl Battlefield<'_> {
@@ -24,7 +30,7 @@ impl Battlefield<'_> {
         }
         let terrain = self.map.terrain_at(position).expect("unit on a playable hex");
         let resting = self.resting.contains(&position);
-        !unit.unit_type.hiding.iter().any(|ability| ability.applies(terrain, lawful_bonus, resting))
+        !unit.hides_on(terrain, lawful_bonus, resting)
             || position.neighbors().filter_map(|hex| self.unit_at(hex))
                 .any(|neighbor| enemies(unit.side, neighbor.side))
     }

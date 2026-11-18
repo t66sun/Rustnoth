@@ -170,6 +170,7 @@ mod tests {
             time_color: [0; 3],
         };
         let observed_unit = |x, y| crate::observation::ObservedUnit {
+                facing: None,
                 can_recruit: false, emits_zoc: true,
                 max_hitpoints: 8, full_action_points: Some(true),
             position: Hex { x, y }, side: 2, type_id: "Fighter".into(),

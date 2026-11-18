@@ -25,11 +25,14 @@ mod dialogue;
 pub use dialogue::draw_dialogue;
 mod transitions;
 mod unit_status;
+mod standing;
 mod ground;
 mod rules;
+pub(crate) use rules::map_png;
 mod border;
 mod reach;
 mod hover;
+mod footsteps;
 
 const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
@@ -87,6 +90,7 @@ pub struct BoardArt {
     border_background: Option<Texture2D>,    grid: [Option<Texture2D>; 2],
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
@@ -96,6 +100,7 @@ pub struct BoardArt {
     map_items: Vec<(Hex, Texture2D, bool)>,
     unit_status: unit_status::StatusArt,
     hover: hover::Art,
+    footsteps: footsteps::Art,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -146,6 +151,7 @@ impl BoardArt {
             border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
+            standing: HashMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
@@ -154,6 +160,7 @@ impl BoardArt {
             periods,
             map_items: Vec::new(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
+            footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
@@ -218,6 +225,13 @@ impl BoardArt {
                     });
                 }
             }
+            self.standing.entry(unit.type_id.clone()).or_default().entry(unit.side).or_insert_with(|| {
+                let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
+                standing::Sprites::load(assets.standing_animations(&unit.type_id), |image| {
+                    let path = assets.resolve_image(Path::new(image))?;
+                    load_texture(&path, palette)
+                })
+            });
             self.units
                 .entry(unit.type_id.clone())
                 .or_default()
@@ -258,6 +272,7 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 }
 
 pub struct MovementView<'a> {
+    pub route: Option<&'a engine_lite::fixed_match::move_preview::MovePreview>,
     pub session: &'a rustnoth_gui::session::Session<'a>,
     pub global_time: Option<&'a TimeOfDay>,
     pub selected: Option<Hex>,
@@ -415,15 +430,15 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
-    let border_time = (get_time() * 1000.0) as u64;
+    let now = (get_time() * 1000.0) as u64;
     let border_period = movement.global_time.map_or("", |t| t.id.as_str());
     for hex in border::ring(view.width, view.height) {
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
-        art.rules.draw(hex, center, size, false, border_period, border_time);
-        art.rules.draw(hex, center, size, true, border_period, border_time);
+        art.rules.draw(hex, center, size, false, border_period, now);
+        art.rules.draw(hex, center, size, true, border_period, now);
     }
-    let frame = village_flag_frame((get_time() * 1000.0) as u64);
+    let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
     draw_terrain(view, layout, art, Some((frame, global_color)), period);
@@ -452,6 +467,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size);
         }
     }
+    if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route); }
     let (pointer_x, pointer_y) = mouse_position();
     let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
@@ -466,13 +482,22 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 for texture in halves.iter().flatten() { draw_centered(texture, center, size); }
             }
         }
-        let texture = art
+        let base = art
             .units
             .get(&unit.type_id)
             .and_then(|sides| sides.get(&unit.side))
             .and_then(Option::as_ref);
-        if let Some(texture) = texture {
-            draw_centered(texture, center, size);
+        let direction = standing::facing(unit);
+        let standing_frame = art.standing.get(&unit.type_id).and_then(|teams| teams.get(&unit.side))
+            .and_then(|sprites| {
+                if unit.petrified { return None; }
+                let terrain = view.tiles.binary_search_by_key(
+                    &(unit.position.y, unit.position.x), |tile| (tile.position.y, tile.position.x),
+                ).ok().map(|index| view.tiles[index].terrain.as_str());
+                sprites.frame(direction, terrain, now)
+            });
+        if let Some((texture, flipped)) = standing_frame.or_else(|| base.map(|image| (image, standing::west(direction)))) {
+            draw_centered_flipped(texture, center, size, flipped);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
         }
@@ -511,7 +536,6 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             });
         }
     }
-    let now = (get_time() * 1000.0) as u64;
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
         art.lighting.terrain(tile.position, x, y, size);
@@ -521,6 +545,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
@@ -544,10 +569,15 @@ mod ellipse_tests {
 }
 
 fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {
+    draw_centered_flipped(texture, center, hex_size, false);
+}
+
+fn draw_centered_flipped(texture: &Texture2D, center: Vec2, hex_size: f32, flip_x: bool) {
     let scale = hex_size / ART_HEX_SIZE;
     let size = vec2(texture.width(), texture.height()) * scale;
     let top = center - size / 2.0;
     draw_texture_ex(texture, top.x, top.y, WHITE, DrawTextureParams {
+        flip_x,
         dest_size: Some(size),
         ..DrawTextureParams::default()
     });

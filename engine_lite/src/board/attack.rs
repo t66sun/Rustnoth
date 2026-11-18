@@ -148,6 +148,8 @@ impl Battlefield<'_> {
         unit.uncovered = true;
         unit.moves_left = unit.moves_left.saturating_sub(moves).max(0);
         unit.attacks_left = unit.attacks_left.saturating_sub(attacks).max(0);
+        unit.facing = from.direction_to(to);
+        self.units.get_mut(&to).expect("validated defender").facing = to.direction_to(from);
         Ok(participants)
     }
 
@@ -637,6 +639,8 @@ mod tests {
         assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (20, 10));
         assert_eq!(board.unit_at(ATTACKER).unwrap().experience, 2);
         assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 2);
+        assert_eq!(board.unit_at(ATTACKER).unwrap().facing, Some(crate::hex::Direction::SouthEast));
+        assert_eq!(board.unit_at(DEFENDER).unwrap().facing, Some(crate::hex::Direction::NorthWest));
     }
 
     #[test]
