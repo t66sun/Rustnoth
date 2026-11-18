@@ -62,6 +62,8 @@ mod tests {
             side,
             type_id: "Fighter".to_owned(),
             hitpoints: 10,
+            experience: 0,
+            max_experience: 40,
             moves_left: (side == 1).then_some(1),
             attacks_left: (side == 1).then_some(1),
         };

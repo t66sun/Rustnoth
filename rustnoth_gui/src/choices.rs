@@ -84,6 +84,8 @@ mod tests {
                 side: 1,
                 type_id: "Bowman".to_owned(),
                 hitpoints: 33,
+                experience: 0,
+                max_experience: 35,
                 poisoned: false,
                 slowed: false,
                 moves_left: Some(5),
