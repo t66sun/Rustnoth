@@ -35,6 +35,7 @@ rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
 const PAN_PIXELS_PER_SECOND: f32 = 480.0;
@@ -46,6 +47,19 @@ fn main() -> ExitCode {
     {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+    if args.first().is_some_and(|flag| flag == "--screenshot") {
+        let (map, output, explicit) = match &args[1..] {
+            [map, output] => (map, output, None),
+            [map, output, flag, root] if flag == "--wesnoth-root" => (map, output, Some(Path::new(root))),
+            _ => { eprintln!("{USAGE}"); return ExitCode::FAILURE; }
+        };
+        let result = desktop::locate(explicit).map_err(Box::<dyn Error>::from)
+            .and_then(|root| render::map_png(&root, Path::new(map), Path::new(output)));
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => { eprintln!("{err}"); ExitCode::FAILURE }
+        };
     }
     let launch = match Launch::from_args(&args) {
         Ok(data) => data,
