@@ -110,8 +110,8 @@ pub(crate) struct EventState<'a> {
 }
 
 impl EventAction {
-    fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
-        if opening && tag == "unit" {
+    fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
         }
@@ -265,17 +265,16 @@ impl ScenarioEvents {
             let Some(names) = event.attribute("name") else { continue };
             let Some(filters) = event.children.iter().filter(|(tag, _)| tag == "filter")
                 .map(|(_, cfg)| UnitFilter::read(cfg)).collect::<Option<Vec<_>>>() else { continue };
-            let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&event.children) {
                 vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
                 let Some(changes) = event.children.iter().filter(|(tag, cfg)| {
                     // Objectives are display data. A literal assignment cannot affect the static actions parsed here.
-                    tag != "filter" && !(opening && presentation_only(tag, cfg)) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
+                    tag != "filter" && !presentation_only(tag, cfg) && tag != "objectives" && !(tag == "set_variable" && cfg.children.is_empty()
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
-                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count, opening))
+                    .map(|(tag, cfg)| EventAction::read(tag, cfg, side_count))
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
             };
@@ -751,5 +750,91 @@ x,y=2,1
         let game = bundle.start(1, |_| unreachable!()).unwrap();
         assert_eq!(game.audit_snapshot().villages, [(Hex { x: 1, y: 0 }, 2)]);
         assert_eq!(game.observation_for(1).unwrap().tiles[1].terrain, "Gg^Vh");
+    }
+}
+
+#[cfg(test)]
+mod reinforcements {
+    use crate::{fixed_match::Action, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn turn_reinforcements_take_vacancies_and_reuse_or_enter_the_recall_list() {
+        let source = br#"[terrain_type]
+string=Vh
+gives_income=yes
+[/terrain_type]
+[units]
+[unit_type]
+id=Guard
+hitpoints=22
+movement=5
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Vh,2 Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[unit]
+id=elder
+type=Guard
+placement=recall
+moves=3
+experience=7
+[/unit]
+[/side]
+[event]
+name=turn 2
+[message]
+speaker=narrator
+message=Help has arrived.
+[/message]
+[unit]
+type=Guard
+side=2
+x,y=3,1
+[/unit]
+[unit]
+type=Guard
+side=2
+id=elder
+x,y=3,1
+[/unit]
+[unit]
+type=Guard
+side=2
+x,y=3,1
+experience=11
+[/unit]
+[/event]
+[event]
+name=capture
+[filter]
+id=Guard-4
+[/filter]
+[gold]
+side=2
+amount=9
+[/gold]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let mut game = bundle.start(7, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().units.len(), 2);
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        let snapshot = game.audit_snapshot();
+        let village = Hex { x: 1, y: 0 };
+        assert_eq!(snapshot.villages, [(village, 2)]);
+        assert_eq!(snapshot.gold[1], 109);
+        let arrival = snapshot.units.iter().find(|u| u.position == village).unwrap();
+        assert_eq!((arrival.side, arrival.moves_left, arrival.attacks_left), (2, 5, 1));
+        let elder = snapshot.units.iter().find(|u| u.position == Hex { x: 3, y: 0 }).unwrap();
+        assert_eq!((elder.moves_left, elder.experience), (3, 7));
+        assert_eq!(snapshot.reserves[1].len(), 1);
+        assert_eq!(snapshot.reserves[1][0].experience, 11);
     }
 }

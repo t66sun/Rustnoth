@@ -112,9 +112,10 @@ pub(crate) fn read_authored_starting_units(
 /// A literal on-map [unit] command. Variable-driven placements need a WML interpreter.
 pub(crate) fn read_event_unit(unit: &Node, side_count: usize) -> Option<AuthoredStartingUnit> {
     let type_id = nonempty(unit, "type")?;
-    let id = nonempty(unit, "id")?;
-    let side: usize = unit.attribute("side")?.trim().parse().ok()?;
-    if !(1..=side_count).contains(&side) || type_id.contains('$') || id.contains('$')
+    let side: usize = unit.attribute("side").unwrap_or("1").trim().parse().ok()?;
+    if !(1..=side_count).contains(&side) || type_id.contains('$')
+        || unit.attribute("id").is_some_and(|id| id.contains('$'))
+        || unit.attribute("overwrite").is_some_and(wml_true)
         || unit.attribute("placement").is_some_and(|p| !p.is_empty() && p != "map")
         || unit.attribute("to_variable").is_some()
         || unit.attribute("passable").is_some_and(wml_true)
