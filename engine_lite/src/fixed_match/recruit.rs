@@ -207,6 +207,24 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         game.step(Action::EndTurn).unwrap();
         let unit = game.scenario.board.unit_at(castle).unwrap();
         assert_eq!((unit.moves_left, unit.attacks_left), (5, 1));
+
+        let disband = |id: &str| Action::Disband { unit_id: id.into() };
+        let (_, choices) = game.decision().unwrap();
+        let available: Vec<_> = choices.into_iter().filter(|a| matches!(a, Action::Disband { .. })).collect();
+        assert_eq!(available, [disband("reserve"), disband("expensive")]);
+        let mut expected = game.audit_snapshot();
+        for id in ["veteran", "enemy_veteran", "missing"] {
+            assert_eq!(game.step(disband(id)), Err(MatchError::InvalidDisband));
+            assert_eq!(game.audit_snapshot(), expected);
+        }
+        let rng = game.rng.seed_and_calls();
+        expected.reserves[0].remove(1);
+        game.step(disband("expensive")).unwrap();
+        assert_eq!(game.audit_snapshot(), expected);
+        assert_eq!(game.rng.seed_and_calls(), rng);
+        assert!(game.recall_info("reserve").is_some());
+        assert!(game.recall_info("expensive").is_none());
+        assert_eq!(game.step(disband("expensive")), Err(MatchError::InvalidDisband));
     }
 
     #[test]

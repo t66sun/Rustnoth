@@ -63,6 +63,13 @@ function actions.recall(x, y, unit_id)
     assert(unit and unit.id == unit_id, "native recall did not place the requested unit")
 end
 
+function actions.disband(unit_id)
+    local veteran = { id = unit_id, side = wesnoth.current.side }
+    assert(#wesnoth.units.find_on_recall(veteran) == 1, "native disband needs an owned reserve")
+    wesnoth.wml_actions.do_command { tag.disband { value = unit_id } }
+    assert(#wesnoth.units.find_on_recall(veteran) == 0, "native disband left the veteran on recall")
+end
+
 function actions.end_turn()
     wesnoth.wml_actions.end_turn {}
 end

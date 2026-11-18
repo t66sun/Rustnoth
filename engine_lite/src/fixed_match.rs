@@ -41,6 +41,7 @@ pub enum Action {
     Attack(AttackChoice),
     Recruit { unit_type: String, to: Hex },
     Recall { unit_id: String, to: Hex },
+    Disband { unit_id: String },
     EndTurn,
 }
 
@@ -256,6 +257,9 @@ impl<'data> FixedMatch<'data> {
                 .map(Action::Attack),
         );
         self.extend_recruit_choices_in_view(turn.side, &mut actions, terrain_known, unit_visible);
+        actions.extend(board.recall_roster(turn.side).iter().filter_map(|unit| {
+            unit.id.as_ref().map(|id| Action::Disband { unit_id: id.clone() })
+        }));
         actions.push(Action::EndTurn);
         Some((observation, actions))
     }
@@ -336,6 +340,9 @@ impl<'data> FixedMatch<'data> {
             Action::Recall { unit_id, to } => {
                 self.recall(turn.side, &unit_id, to)?;
                 self.reveal_travelled_hexes(to, [to]);
+            }
+            Action::Disband { unit_id } => {
+                self.scenario.board.disband(turn.side, &unit_id).ok_or(MatchError::InvalidDisband)?;
             }
             Action::EndTurn => {
                 let surviving_sides: BTreeSet<_> = self.surviving_sides().collect();
@@ -548,6 +555,7 @@ pub enum MatchError {
     Attack(AttackError),
     InvalidRecruit,
     InvalidRecall,
+    InvalidDisband,
     InvalidAdvancement,
 }
 
@@ -577,6 +585,7 @@ impl fmt::Display for MatchError {
                 f.write_str("unit type or destination is unavailable for recruitment")
             }
             Self::InvalidRecall => f.write_str("unit or destination is unavailable for recall"),
+            Self::InvalidDisband => f.write_str("unit is absent from the active side's recall list"),
             Self::InvalidAdvancement => f.write_str("unit type is unavailable for advancement"),
         }
     }
