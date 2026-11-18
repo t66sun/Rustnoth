@@ -26,6 +26,7 @@ use crate::{
 
 pub mod audit;
 mod recruit;
+mod plague;
 mod retaliation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,10 +230,11 @@ impl<'data> FixedMatch<'data> {
             Action::Attack(choice) => {
                 let attack = self.prepare_attack(turn, choice)?;
                 let board = &mut self.scenario.board;
-                board.apply_attack_with_relations(
+                board.apply_scenario_attack(
                     turn.side,
                     attack,
                     enemies,
+                    self.rules.terrain,
                     &mut self.rng,
                 )?;
                 board.advance_after_combat(choice.from, supports_unit);
