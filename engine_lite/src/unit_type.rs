@@ -17,6 +17,7 @@ pub use traits::TraitPool;
 pub struct UnitType {
     pub id: String,
     pub level: i32,
+    pub(crate) leadership: bool,
     pub hitpoints: i32,
     pub movement: i32,
     pub max_attacks: i32,
@@ -105,6 +106,11 @@ impl UnitType {
         let mut result = Self {
             id: text("id").to_owned(),
             level,
+            leadership: unit.children.iter().any(|(tag, abilities)| {
+                tag == "abilities" && abilities.children.iter().any(|(tag, ability)| {
+                    tag == "leadership" && stock_leadership(ability)
+                })
+            }),
             hitpoints: int("hitpoints", 1),
             movement: int("movement", 1),
             max_attacks: int("attacks", 1),
@@ -201,6 +207,26 @@ fn stock_adjacent_healing(unit: &Node) -> i32 {
         })
         .max()
         .unwrap_or(0)
+}
+
+
+fn stock_leadership(ability: &Node) -> bool {
+    let [(tag, adjacent)] = ability.children.as_slice() else { return false };
+    let [(filter_tag, filter)] = adjacent.children.as_slice() else { return false };
+    tag == "affect_adjacent"
+        && adjacent.attributes.is_empty()
+        && filter_tag == "filter"
+        && filter.children.is_empty()
+        && filter.attributes.len() == 1
+        && filter.attribute("formula") == Some("level < other.level")
+        && ability.attribute("id") == Some("leadership")
+        && ability.attribute("value") == Some("(25 * (level - other.level))")
+        && ability.attribute("cumulative") == Some("no")
+        && ability.attribute("affect_self") == Some("no")
+        && ability.attributes.keys().all(|key| matches!(
+            key.as_str(), "id" | "value" | "cumulative" | "affect_self" | "name" |
+            "female_name" | "description" | "special_note"
+        ))
 }
 
 /// Indexes flat unit types and resolves their inherited traits from a preprocessed `[units]` body.
