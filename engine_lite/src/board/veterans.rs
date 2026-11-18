@@ -21,6 +21,7 @@ impl Veteran {
             unit: AuthoredStartingUnit {
                 side: unit.side, id: unit.id.clone(), type_id: unit.unit_type.id.clone(),
                 variation: unit.unit_type.variation_id.clone(), position: None,
+                display_name: unit.display_name.clone(), portrait: unit.portrait.clone(),
                 can_recruit: unit.can_recruit, extra_recruits: unit.extra_recruits.clone(),
                 upkeep: unit.upkeep_override, recall_cost: Some(unit.recall_cost), recall_filter: None,
                 modifications, experience: unit.experience, hitpoints: None, moves_left: None, attacks_left: None,

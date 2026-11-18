@@ -10,6 +10,7 @@ impl FixedMatch<'_> {
         let sides = &self.scenario.sides;
         let moving_side = &sides[side - 1];
         let mover = board.unit_at(from).expect("validated route origin");
+        let mover_serial = mover.serial;
         let mut view = (moving_side.fog || moving_side.shroud).then(|| self.effective_vision(side));
         let mut sighted = false;
 
@@ -62,7 +63,9 @@ impl FixedMatch<'_> {
         for hex in discovered {
             board.uncover_unit(hex);
         }
-        if self.capture_village(side, position)? {
+        let captured = self.capture_village(side, position)?;
+        if self.scenario.board.unit_at(position).is_none_or(|unit| unit.serial != mover_serial) { return Ok(()); }
+        if captured {
             self.scenario.board.stop_movement(position);
         }
         if position != from {

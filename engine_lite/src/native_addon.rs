@@ -77,6 +77,10 @@ fn prepare(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing [scenario] block"))?;
     let (tag, scenario) = &mut document.children[index];
 
+    let mut campaign_end = false;
+    for (_, event) in scenario.children.iter_mut().filter(|(tag, _)| tag == "event") {
+        campaign_end |= mark_campaign_ends(event)?;
+    }
     let manual_victory_sides = crate::scenario_start::manual_victory_sides(scenario);
     let mut sides = Vec::new();
     for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
@@ -89,7 +93,10 @@ fn prepare(
             )
             .into());
         }
-        set_attribute(side, "controller", "human");
+        // endlevel.lua determines the actual player result from the local human controllers.
+        if !campaign_end {
+            set_attribute(side, "controller", "human");
+        }
         sides.push(expected);
     }
     if sides.len() < 2 {
@@ -119,6 +126,21 @@ fn prepare(
     set_attribute(scenario, "random_calls", "0");
     set_attribute(scenario, "map_data", map);
     scenario.attributes.remove("map_file");
+    if campaign_end {
+        let expected = match driver {
+            Driver::Script(actions) => actions.len().to_string(),
+            Driver::Explore { .. } => "nil".to_owned(),
+        };
+        let mut hook = Node::default();
+        set_attribute(&mut hook, "name", "local_victory,local_defeat");
+        set_attribute(&mut hook, "priority", "1000000");
+        let mut lua = Node::default();
+        set_attribute(&mut lua, "code", format!(
+            "wesnoth.require('~add-ons/RustnothAudit/capture.lua').campaign_end({expected})"
+        ));
+        hook.children.push(("lua".into(), lua));
+        scenario.children.push(("event".into(), hook));
+    }
     scenario
         .children
         .extend(script.events.into_iter().map(|event| ("event".to_owned(), event)));
@@ -130,6 +152,24 @@ fn prepare(
     }
     lua.push_str(&script.lua);
     Ok((document, lua))
+}
+
+/// Mark authored endings on the native test copy. The marker is independent of victory or defeat.
+fn mark_campaign_ends(node: &mut Node) -> io::Result<bool> {
+    let mut found = false;
+    for (tag, child) in &mut node.children {
+        if tag == "endlevel" {
+            if child.attribute("test_result").is_some() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    "campaign audit requires [endlevel] without an authored test_result"));
+            }
+            set_attribute(child, "test_result", "rustnoth_campaign");
+            found = true;
+        } else {
+            found |= mark_campaign_ends(child)?;
+        }
+    }
+    Ok(found)
 }
 
 fn unique_block(bundle: &Node, name: &str) -> io::Result<Option<usize>> {
@@ -162,6 +202,50 @@ mod tests {
     use super::*;
 
     const MAP: &str = "Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv";
+
+    #[test]
+    fn campaign_end_audit_preserves_native_side_results_and_captures_the_actual_terminal_frame() {
+        let source = br#"[scenario]
+map_file=board.map
+[side]
+controller=human
+[/side]
+[side]
+controller=ai
+[/side]
+[event]
+name=side 1 turn end
+[if]
+[true]
+[/true]
+[then]
+[endlevel]
+result=victory
+[result]
+side=1
+result=defeat
+[/result]
+[/endlevel]
+[/then]
+[/if]
+[/event]
+[/scenario]"#;
+        let (doc, lua) = prepare(source, Driver::Script(&[Action::EndTurn]), 9, |_| Ok(MAP.into())).unwrap();
+        let scenario = &doc.children[0].1;
+        assert_eq!(scenario.children[1].1.attribute("controller"), Some("ai"));
+        let child = |node: &Node, tag: &str| node.children.iter().position(|(name, _)| name == tag).unwrap();
+        let mut action = scenario;
+        for tag in ["event", "if", "then", "endlevel"] {
+            action = &action.children[child(action, tag)].1;
+        }
+        assert_eq!(action.attribute("test_result"), Some("rustnoth_campaign"));
+        assert_eq!(action.attribute("result"), Some("victory"));
+        assert_eq!(action.children[0].1.attribute("result"), Some("defeat"));
+        let hook = scenario.children.iter().find(|(tag, event)| tag == "event"
+            && event.attribute("name") == Some("local_victory,local_defeat")).unwrap();
+        assert!(hook.1.children[0].1.attribute("code").unwrap().ends_with(".campaign_end(1)"));
+        assert!(lua.contains("if capture.campaign_pending() then return true end"));
+    }
 
     #[test]
     fn campaign_turn_changes_schedule_actual_refresh_and_expiration_events() {

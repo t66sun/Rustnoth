@@ -18,6 +18,7 @@ local actions = wesnoth.require('~add-ons/RustnothAudit/actions.lua')
 local groups = {}
 
 local function checkpoint(step, time_over)
+    if capture.campaign_pending() then return true end
     local terminal = capture.snapshot(step, time_over)
     if terminal and step ~= last_step then
         wesnoth.log("err", "audit script has actions after terminal step " .. step)
