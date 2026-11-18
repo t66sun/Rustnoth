@@ -45,6 +45,7 @@ pub struct UnitState<'rules> {
     pub id: Option<String>,
     pub unit_type: &'rules UnitType,
     pub hitpoints: i32,
+    pub poisoned: bool,
     pub(crate) experience: i32,
     base_max_experience: i32,
     pub moves_left: i32,
@@ -143,6 +144,7 @@ impl<'rules> Battlefield<'rules> {
                 id: start.id,
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
+                poisoned: false,
                 experience,
                 base_max_experience: scaled_experience(unit_type.experience, experience_modifier),
                 moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
@@ -202,6 +204,7 @@ impl<'rules> Battlefield<'rules> {
                 );
             }
             unit.hitpoints = unit.max_hitpoints();
+            unit.poisoned = false;
             unit.moves_left = unit.moves_left.min(unit.max_movement().max(0));
             unit.attacks_left = unit.attacks_left.min(next_type.max_attacks.max(0));
         }
@@ -258,6 +261,7 @@ impl<'rules> Battlefield<'rules> {
             id: None,
             unit_type,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
+            poisoned: false,
             experience: 0,
             base_max_experience,
             moves_left: 0,
@@ -393,7 +397,17 @@ impl<'rules> Battlefield<'rules> {
             let terrain_healing =
                 self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
             let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
-            let healing = i64::from(terrain_healing) + rest_healing;
+            let main_healing = if unit.poisoned {
+                if terrain_healing != 0 {
+                    unit.poisoned = false;
+                    0
+                } else {
+                    -crate::combat::POISON_AMOUNT
+                }
+            } else {
+                terrain_healing
+            };
+            let healing = i64::from(main_healing) + rest_healing;
             let hitpoints = i64::from(unit.hitpoints);
             let max_heal = (i64::from(unit.max_hitpoints()) - hitpoints).max(0);
             let min_heal = (1 - hitpoints).min(0);
@@ -464,6 +478,21 @@ mod tests {
         let config = wml::parse("id=Spearman\nhitpoints=36\nmovement=5\nattacks=2\nlevel=1").unwrap();
         let unit_type = UnitType::from_wml(config);
         BTreeMap::from([(unit_type.id.clone(), unit_type)])
+    }
+
+    #[test]
+    fn advancing_to_a_new_type_cures_poison() {
+        let mut types = types();
+        types.get_mut("Spearman").unwrap().advances_to.push("Pikeman".into());
+        types.insert("Pikeman".into(), UnitType::from_wml(wml::parse("id=Pikeman").unwrap()));
+        let mut board = Battlefield::new(map(), Vec::new(), &types).unwrap();
+        board.place_recruit(1, "Spearman", EAST).unwrap();
+        let unit = board.units.get_mut(&EAST).unwrap();
+        unit.poisoned = true;
+        unit.experience = unit.max_experience();
+        board.advance_after_combat(EAST, |_| true);
+        assert_eq!(board.unit_at(EAST).unwrap().unit_type.id, "Pikeman");
+        assert!(!board.unit_at(EAST).unwrap().poisoned);
     }
 
     #[test]

@@ -84,15 +84,31 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_poison(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_poison(tag, definition))
+        })
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
                 is_unconditional_firststrike(tag, definition)
                     || is_unconditional_magical(tag, definition)
                     || is_stock_charge(tag, definition)
+                    || is_stock_poison(tag, definition)
             })
         })
     }
+}
+
+fn is_stock_poison(tag: &str, definition: &Node) -> bool {
+    tag == "poison"
+        && definition.attribute("id") == Some("poison")
+        && definition.children.is_empty()
+        && definition.attributes.keys().all(|key| {
+            matches!(key.as_str(), "id" | "name" | "description" | "special_note")
+        })
 }
 
 fn is_unconditional_magical(tag: &str, definition: &Node) -> bool {

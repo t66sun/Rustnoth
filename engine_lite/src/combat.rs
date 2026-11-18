@@ -2,6 +2,22 @@ use std::num::NonZeroU32;
 
 use crate::rng::ReplayRng;
 
+pub(crate) const POISON_AMOUNT: i32 = 8;
+
+/// Poison carried into battle, including the effect of the selected weapon.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Poison {
+    pub inflicts: bool,
+    pub immune: bool,
+    pub active: bool,
+}
+
+impl Poison {
+    pub(crate) fn affects(self, target: Self) -> bool {
+        self.inflicts && !target.immune
+    }
+}
+
 /// A participant's resolved stats for a combat exchange.
 pub struct Combatant {
     pub hitpoints: u32,
@@ -9,12 +25,15 @@ pub struct Combatant {
     pub damage: u32,
     pub hit_chance: u8,
     pub firststrike: bool,
+    pub poison: Poison,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CombatResult {
     pub attacker_hitpoints: u32,
     pub defender_hitpoints: u32,
+    /// Attacker and defender poison at the end of the exchange.
+    pub poisoned: [bool; 2],
 }
 
 /// Computes a weapon's chance to hit before specials and invulnerability.
@@ -46,6 +65,7 @@ pub fn resolve_exchange(
     let strike_limit = attacker.strikes.max(defender.strikes);
     let mut hp = [attacker.hitpoints, defender.hitpoints];
     let participants = [attacker, defender];
+    let mut poisoned = participants.each_ref().map(|unit| unit.poison.active);
 
     if strike_limit > 0 && !hp.contains(&0) {
         'fight: for _ in 0..rounds.get() {
@@ -56,6 +76,7 @@ pub fn resolve_exchange(
                         continue;
                     }
                     if rng.next_u32() % 100 < u32::from(unit.hit_chance) {
+                        poisoned[1 - index] |= unit.poison.affects(participants[1 - index].poison);
                         let target = &mut hp[1 - index];
                         *target = target.saturating_sub(unit.damage);
                         if *target == 0 {
@@ -70,6 +91,7 @@ pub fn resolve_exchange(
     CombatResult {
         attacker_hitpoints: hp[0],
         defender_hitpoints: hp[1],
+        poisoned,
     }
 }
 
@@ -93,6 +115,7 @@ mod tests {
             damage,
             hit_chance,
             firststrike: false,
+            poison: Poison::default(),
         }
     }
 
@@ -108,6 +131,18 @@ mod tests {
         assert_eq!(result.attacker_hitpoints, 14);
         assert_eq!(result.defender_hitpoints, 20);
         assert_eq!(rng.seed_and_calls(), (5489, 3));
+    }
+
+    #[test]
+    fn only_successful_hits_poison_susceptible_opponents() {
+        let mut attacker = unit(12, 1, 2, 0);
+        attacker.poison.inflicts = true;
+        attacker.poison.immune = true;
+        let mut defender = unit(12, 1, 2, 100);
+        defender.poison.inflicts = true;
+        let result = resolve_exchange(attacker, defender, NonZeroU32::MIN, &mut ReplayRng::new(5489));
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (10, 12));
+        assert_eq!(result.poisoned, [false, false]);
     }
 
     #[test]

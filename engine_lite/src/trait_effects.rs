@@ -10,6 +10,7 @@ pub struct RecruitStats {
     pub max_experience: i32,
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
+    pub unpoisonable: bool,
 }
 
 impl RecruitStats {
@@ -28,6 +29,7 @@ impl RecruitStats {
             max_movement: unit.movement,
             max_experience: base_max_experience,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
+            unpoisonable: false,
         };
         for trait_ in traits {
             for (tag, effect) in &trait_.children {
@@ -68,6 +70,15 @@ impl RecruitStats {
                         && matches_filter(effect, "type", &weapon.damage_type)
                     {
                         *damage = increase(*damage, effect, "increase_damage", 0);
+                    }
+                }
+            }
+            Some("status") => {
+                for (key, enabled) in [("add", true), ("remove", false)] {
+                    if effect.attribute(key).is_some_and(|statuses| {
+                        statuses.split(',').any(|name| name.trim() == "unpoisonable")
+                    }) {
+                        self.unpoisonable = enabled;
                     }
                 }
             }
@@ -116,6 +127,15 @@ fn matches_filter(effect: &Node, key: &str, actual: &str) -> bool {
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn later_status_effects_can_remove_poison_immunity() {
+        let unit = UnitType::from_wml(wml::parse("id=Fighter").unwrap());
+        let grants = wml::parse("[effect]\napply_to=status\nadd=undrainable,unpoisonable\n[/effect]").unwrap();
+        let removes = wml::parse("[effect]\napply_to=status\nremove=unpoisonable\n[/effect]").unwrap();
+        assert!(RecruitStats::from_traits(&unit, &[&grants]).unpoisonable);
+        assert!(!RecruitStats::from_traits(&unit, &[&grants, &removes]).unpoisonable);
+    }
 
     #[test]
     fn calculates_native_bowman_stats_from_selected_traits() {

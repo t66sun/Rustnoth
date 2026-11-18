@@ -1,7 +1,7 @@
 use std::{error, fmt, num::NonZeroU32};
 
 use crate::{
-    combat::{CombatResult, Combatant, base_hit_chance, resolve_exchange},
+    combat::{CombatResult, Combatant, Poison, base_hit_chance, resolve_exchange},
     hex::Hex,
     rng::ReplayRng,
     strike_damage::strike_damage,
@@ -119,6 +119,7 @@ impl Battlefield<'_> {
                 damage: 0,
                 hit_chance: 0,
                 firststrike: false,
+                poison: defender.poison_in_combat(false),
             },
             |(index, _, modifiers)| combatant(defender, index, modifiers, weapon.parry, charging),
         );
@@ -137,6 +138,7 @@ impl Battlefield<'_> {
         } else {
             let unit = self.units.get_mut(&from).expect("validated attacker");
             unit.hitpoints = result.attacker_hitpoints as i32;
+            unit.poisoned = result.poisoned[0];
             unit.experience = unit.experience.saturating_add(attacker_experience);
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
@@ -146,6 +148,7 @@ impl Battlefield<'_> {
         } else {
             let unit = self.units.get_mut(&to).expect("validated defender");
             unit.hitpoints = result.defender_hitpoints as i32;
+            unit.poisoned = result.poisoned[1];
             unit.experience = unit.experience.saturating_add(defender_experience);
         }
         Ok(result)
@@ -163,6 +166,16 @@ fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
 
 pub(crate) fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
     (i64::from(weapon.min_range)..=i64::from(weapon.max_range)).contains(&distance)
+}
+
+impl UnitState<'_> {
+    fn poison_in_combat(&self, inflicts: bool) -> Poison {
+        Poison {
+            active: self.poisoned,
+            immune: self.traits.as_ref().is_some_and(|traits| traits.stats.unpoisonable),
+            inflicts,
+        }
+    }
 }
 
 pub(crate) fn combatant(
@@ -186,6 +199,7 @@ pub(crate) fn combatant(
         damage: u32::try_from(damage).unwrap_or(u32::MAX),
         hit_chance,
         firststrike: weapon.has_firststrike(),
+        poison: unit.poison_in_combat(weapon.has_poison()),
     }
 }
 
@@ -251,6 +265,33 @@ mod tests {
             modifiers: StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 },
             retaliation: Some((0, StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 })),
         }
+    }
+
+    #[test]
+    fn poison_from_attacks_and_replies_ticks_on_the_patients_turn_until_cured() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.hitpoints = 30;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=2\nnumber=1\n[specials]\n[poison]\nid=poison\n[/poison]\n[/specials]",
+        ).unwrap());
+        assert!(fighter.attacks[0].supports_specials());
+        let mut board = board(&types);
+        let result = board.apply_attack(1, attack(0), |side| side == 2, &mut ReplayRng::new(5489)).unwrap();
+        assert_eq!(result.poisoned, [true, true]);
+        let terrain = |heals| crate::terrain_aliases::TerrainAliases::from_wml(&wml::parse(format!(
+            "[terrain_type]\nid=keep\nstring=Kh\nheals={heals}\n[/terrain_type]"
+        )).unwrap());
+        for expected in [20, 14, 8, 2, 1, 1] {
+            board.heal_at_turn_start(2, &terrain(0));
+            assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, expected);
+            assert!(board.unit_at(DEFENDER).unwrap().poisoned);
+            assert_eq!(board.unit_at(ATTACKER).unwrap().hitpoints, 28);
+        }
+        board.heal_at_turn_start(2, &terrain(8));
+        assert_eq!(board.unit_at(DEFENDER).unwrap().hitpoints, 3);
+        assert!(!board.unit_at(DEFENDER).unwrap().poisoned);
+        assert!(board.unit_at(ATTACKER).unwrap().poisoned);
     }
 
     #[test]
