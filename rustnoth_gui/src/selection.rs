@@ -58,6 +58,7 @@ mod tests {
         let unit = |position, side| ObservedUnit {
             poisoned: false,
             slowed: false,
+            petrified: false,
             position,
             side,
             type_id: "Fighter".to_owned(),

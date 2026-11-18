@@ -151,7 +151,7 @@ mod tests {
         let observed_unit = |x, y| crate::observation::ObservedUnit {
             position: Hex { x, y }, side: 2, type_id: "Fighter".into(),
             experience: 0, max_experience: 40,
-            hitpoints: 8, poisoned: false, slowed: false, moves_left: Some(3), attacks_left: Some(1),
+            hitpoints: 8, poisoned: false, slowed: false, petrified: false, moves_left: Some(3), attacks_left: Some(1),
         };
         let observation = Observation {
             side: 2,

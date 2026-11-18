@@ -37,6 +37,7 @@ pub struct ObservedUnit {
     pub max_experience: i32,
     pub poisoned: bool,
     pub slowed: bool,
+    pub petrified: bool,
     pub moves_left: Option<i32>,
     pub attacks_left: Option<i32>,
 }
@@ -88,6 +89,7 @@ pub fn project(
                 max_experience: unit.max_experience(),
                 poisoned: unit.poisoned,
                 slowed: unit.slowed,
+                petrified: unit.petrified,
                 moves_left: own.then_some(unit.moves_left),
                 attacks_left: own.then_some(unit.attacks_left),
             });
@@ -138,6 +140,9 @@ mod tests {
                     x,y=2,1
                     id=seen_unit
                     experience=19
+                    [status]
+                        petrified=yes
+                    [/status]
                     [modifications]
                         [trait]
                             id=intelligent
@@ -202,6 +207,7 @@ mod tests {
                     max_experience: 50,
                     poisoned: false,
                     slowed: false,
+                    petrified: false,
                     moves_left: Some(5),
                     attacks_left: Some(2),
                 },
@@ -214,6 +220,7 @@ mod tests {
                     max_experience: 40,
                     poisoned: false,
                     slowed: false,
+                    petrified: true,
                     moves_left: None,
                     attacks_left: None,
                 },
