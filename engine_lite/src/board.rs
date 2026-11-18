@@ -24,6 +24,7 @@ use crate::{
 
 mod attack;
 mod concealment;
+mod recall_filter;
 mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{StrikeRole, combatant, within_range};
@@ -67,6 +68,7 @@ pub struct UnitState<'rules> {
     pub(crate) extra_recruits: Vec<String>,
     upkeep_override: Option<Upkeep>,
     recall_cost: i32,
+    recall_filter: recall_filter::RecallFilter,
     traits: Option<UnitTraits<'rules>>,
 }
 
@@ -171,6 +173,7 @@ impl<'rules> Battlefield<'rules> {
             extra_recruits: Vec::new(),
             recall_cost: None,
             default_amlas: 0,
+            recall_filter: None,
             upkeep: None,
             traits: Vec::new(),
             hitpoints: None,
@@ -217,6 +220,7 @@ impl<'rules> Battlefield<'rules> {
             extra_recruits,
             recall_cost,
             default_amlas,
+            recall_filter,
             upkeep,
             traits: authored_traits,
             hitpoints,
@@ -272,6 +276,7 @@ impl<'rules> Battlefield<'rules> {
                 extra_recruits,
                 upkeep_override: upkeep,
                 recall_cost: recall_cost.unwrap_or(unit_type.recall_cost),
+                recall_filter: recall_filter::RecallFilter::read(recall_filter, unit_types),
                 traits,
             };
             unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
@@ -461,6 +466,7 @@ impl<'rules> Battlefield<'rules> {
             extra_recruits: Vec::new(),
             upkeep_override: None,
             recall_cost: unit_type.recall_cost,
+            recall_filter: Default::default(),
             traits,
         });
         Ok(())
@@ -950,6 +956,7 @@ mod tests {
             can_recruit: position == EAST,
             extra_recruits: Vec::new(),
             recall_cost: None,
+            recall_filter: None,
             hitpoints: (position == WEST).then_some(8),
             moves_left: (position == WEST).then_some(2),
             attacks_left: None,
