@@ -351,14 +351,19 @@ impl<'rules> Battlefield<'rules> {
             .copied()
             .ok_or(MoveError::Unreachable(to))?;
 
+        self.finish_walk(from, to, remaining);
+        Ok(())
+    }
+
+    pub(crate) fn finish_walk(&mut self, from: Hex, to: Hex, remaining: u32) {
         let mut unit = self.units.remove(&from).expect("validated move source");
         // The search can leave at most the unit's starting i32 movement budget.
         unit.moves_left = remaining as i32;
-        self.units.insert(to, unit);
+        let occupied = self.units.insert(to, unit);
+        debug_assert!(occupied.is_none());
         if self.resting.remove(&from) {
             self.resting.insert(to);
         }
-        Ok(())
     }
 
     /// Returns legal destinations in hex order and the movement left at each.
@@ -408,6 +413,23 @@ impl<'rules> Battlefield<'rules> {
         terrain_known: impl Fn(Hex) -> bool,
         unit_visible: impl Fn(Hex) -> bool,
     ) -> Result<Vec<Hex>, MoveError> {
+        self.walk_steps_in_view(active_side, from, to, movement_cost, hit_chance, is_enemy,
+            terrain_known, unit_visible)
+            .map(|steps| steps.into_iter().map(|(hex, _)| hex).collect())
+    }
+
+    /// Movement remaining after each step of the side's chosen route, including its origin.
+    pub(crate) fn walk_steps_in_view(
+        &self,
+        active_side: usize,
+        from: Hex,
+        to: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        hit_chance: impl Fn(&str) -> u8,
+        is_enemy: impl Fn(usize) -> bool,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+    ) -> Result<Vec<(Hex, u32)>, MoveError> {
         self.search_walking_map(
             active_side, from, movement_cost, is_enemy, terrain_known, unit_visible,
             |moves, tile_at| walk_route::find(from, to, moves, |hex| {

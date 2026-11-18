@@ -20,14 +20,14 @@ impl FixedMatch<'_> {
         )
     }
 
-    pub(super) fn planned_route(&self, side: usize, from: Hex, to: Hex) -> Result<Vec<Hex>, MoveError> {
+    pub(super) fn planned_route(&self, side: usize, from: Hex, to: Hex) -> Result<Vec<(Hex, u32)>, MoveError> {
         let board = &self.scenario.board;
         let unit = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
         let vision = self.effective_vision(side);
         let unit_type = unit.unit_type;
         let inherited = self.rules.movement.get(&unit_type.movement_type).map(|m| &m.defense);
         let sides = &self.scenario.sides;
-        board.walk_route_in_view(side, from, to,
+        board.walk_steps_in_view(side, from, to,
             |terrain| self.rules.walking_cost(unit_type, terrain),
             |terrain| unit_type.defense_overrides.hit_chance_with_fallback(self.rules.terrain, terrain, inherited),
             |other| sides[side - 1].is_enemy(&sides[other - 1]),
