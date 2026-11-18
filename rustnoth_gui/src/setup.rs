@@ -1,6 +1,6 @@
 use std::{error::Error, fs, path::{Path, PathBuf}};
 
-use engine_lite::{map::ScenarioMap, skirmish::{self, Faction}, wml_emit};
+use engine_lite::{map::ScenarioMap, skirmish::{self, Faction, Visibility}, wml_emit};
 use macroquad::prelude::*;
 
 use crate::{read_file, show_board, BoardData};
@@ -8,6 +8,12 @@ use crate::{read_file, show_board, BoardData};
 mod view;
 
 const ROUND_LIMIT: i32 = 30;
+const VISIBILITY_OPTIONS: [(Visibility, &str); 4] = [
+    (Visibility::Open, "Open map"),
+    (Visibility::Fog, "Fog of war"),
+    (Visibility::Shroud, "Shroud"),
+    (Visibility::FogAndShroud, "Fog and shroud"),
+];
 
 struct MapEntry {
     name: String,
@@ -33,10 +39,10 @@ impl MapEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Field { Map, Side, Faction, Leader }
+enum Field { Map, Side, Faction, Leader, Visibility }
 
 impl Field {
-    const ALL: [Self; 4] = [Self::Map, Self::Side, Self::Faction, Self::Leader];
+    const ALL: [Self; 5] = [Self::Map, Self::Side, Self::Faction, Self::Leader, Self::Visibility];
 
     fn title(self) -> &'static str {
         match self {
@@ -44,6 +50,7 @@ impl Field {
             Self::Side => "Side",
             Self::Faction => "Faction",
             Self::Leader => "Leader",
+            Self::Visibility => "Visibility",
         }
     }
 }
@@ -63,6 +70,7 @@ pub(super) struct Setup {
     map: usize,
     side: usize,
     sides: Vec<Side>,
+    visibility: usize,
 }
 
 impl Setup {
@@ -89,7 +97,7 @@ impl Setup {
         }
         let first = maps.iter().position(|map| map.name == "2p Hamlets" && map.board.is_ok())
             .or_else(|| maps.iter().position(|map| map.board.is_ok())).unwrap_or(0);
-        let mut setup = Self { root, core, seed, maps, factions, map: first, side: 0, sides: Vec::new() };
+        let mut setup = Self { root, core, seed, maps, factions, map: first, side: 0, sides: Vec::new(), visibility: 0 };
         setup.select(Field::Map, first);
         Ok(setup)
     }
@@ -98,6 +106,7 @@ impl Setup {
         match field {
             Field::Map => self.maps.len(),
             Field::Side => self.sides.len(),
+            Field::Visibility => VISIBILITY_OPTIONS.len(),
             Field::Faction if !self.sides.is_empty() => self.factions.len(),
             Field::Leader if !self.sides.is_empty() => self.factions[self.sides[self.side].faction].leaders.len(),
             _ => 0,
@@ -110,6 +119,7 @@ impl Setup {
             Field::Side => self.side,
             Field::Faction => self.sides[self.side].faction,
             Field::Leader => self.sides[self.side].leader,
+            Field::Visibility => self.visibility,
         }
     }
 
@@ -119,6 +129,7 @@ impl Setup {
             Field::Side => format!("Side {} of {}", index + 1, self.sides.len()),
             Field::Faction => self.factions[index].id.clone(),
             Field::Leader => self.factions[self.sides[self.side].faction].leaders[index].clone(),
+            Field::Visibility => VISIBILITY_OPTIONS[index].1.to_owned(),
         }
     }
 
@@ -143,6 +154,7 @@ impl Setup {
                 }
             }
             Field::Leader => self.sides[self.side].leader = index,
+            Field::Visibility => self.visibility = index,
         }
     }
 
@@ -153,7 +165,9 @@ impl Setup {
             let faction = &self.factions[side.faction];
             (faction, Some(faction.leaders[side.leader].as_str()))
         }).collect();
-        let scenario = skirmish::scenario(&map.name, data, ROUND_LIMIT, &sides)?;
+        let scenario = skirmish::scenario_with_visibility(
+            &map.name, data, ROUND_LIMIT, &sides, VISIBILITY_OPTIONS[self.visibility].0,
+        )?;
         let mut bytes = Vec::new();
         wml_emit::write_config(&mut bytes, &scenario)?;
         BoardData::from_source(&bytes, &self.core, self.root.clone(), self.root.clone(), self.seed)
@@ -200,9 +214,11 @@ mod tests {
         let map = |n: usize| MapEntry { name: n.to_string(), board: Ok((String::new(), n)) };
         let mut setup = Setup {
             root: PathBuf::new(), core: Vec::new(), seed: 0, maps: vec![map(2usize), map(4)],
-            factions: vec![faction("Rebels"), faction("Loyalists")], map: 0, side: 0, sides: vec![],
+            factions: vec![faction("Rebels"), faction("Loyalists")], map: 0, side: 0, sides: vec![], visibility: 0,
         };
         setup.select(Field::Map, 0);
+        assert_eq!(setup.label(Field::Visibility, setup.selected(Field::Visibility)), "Open map");
+        setup.select(Field::Visibility, 3);
         assert_eq!(setup.label(Field::Faction, setup.selected(Field::Faction)), "Loyalists");
         setup.select(Field::Leader, 1);
         setup.select(Field::Map, 1);
@@ -214,5 +230,6 @@ mod tests {
         assert_eq!((setup.count(Field::Side), setup.side), (2, 1));
         setup.select(Field::Side, 0);
         assert_eq!(setup.selected(Field::Leader), 1);
+        assert_eq!(setup.label(Field::Visibility, setup.selected(Field::Visibility)), "Fog and shroud");
     }
 }

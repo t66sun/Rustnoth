@@ -41,7 +41,7 @@ impl SetupView {
 
     pub(super) fn frame(&mut self, setup: &Setup, error: Option<&str>) -> Input {
         // Keep every field reachable in short windows while preserving the layout aspect ratio.
-        let scale = (screen_width() / 440.0).min(screen_height() / 520.0).clamp(0.01, 1.0);
+        let scale = (screen_width() / 440.0).min(screen_height() / 577.0).clamp(0.01, 1.0);
         let w = screen_width() / scale;
         let h = screen_height() / scale;
         let (mx, my) = mouse_position();
@@ -145,7 +145,7 @@ impl SetupView {
             }
             let map_error = setup.maps[setup.map].board.as_ref().err().map(String::as_str);
             if let Some(message) = error.or(map_error) {
-                wrap(font, message, left, y + 360.0, inner);
+                wrap(font, message, left, y + 105.0 + Field::ALL.len() as f32 * 57.0 + 27.0, inner);
             }
             let rect = Rect::new(left, y + height - 71.0, inner, 48.0);
             let start = !setup.sides.is_empty()
