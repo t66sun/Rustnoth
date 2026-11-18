@@ -333,6 +333,10 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         assert!(game.decision().unwrap().1.contains(&action));
         let route: Vec<_> = game.planned_route(1, START, GOAL).unwrap().into_iter().map(|(hex, _)| hex).collect();
         assert_eq!(route, (0..=6).map(|x| Hex { x, y: 0 }).collect::<Vec<_>>());
+        let preview = game.move_preview(START, GOAL).unwrap();
+        assert_eq!(preview.steps, route.iter().map(|&hex| (hex, 1)).collect::<Vec<_>>());
+        assert!(!preview.zone_of_control && !preview.capture);
+        assert!(game.move_preview(blocker, START).is_none());
         game.step(action).unwrap();
         assert_eq!(game.scenario.board.unit_at(Hex { x: 2, y: 0 }).unwrap().moves_left, 6);
         assert_eq!(game.scenario.board.unit_at(blocker).unwrap().side, 2);

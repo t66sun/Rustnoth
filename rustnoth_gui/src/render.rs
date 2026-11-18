@@ -30,6 +30,7 @@ mod rules;
 mod border;
 mod reach;
 mod hover;
+mod footsteps;
 
 const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
@@ -97,6 +98,7 @@ pub struct BoardArt {
     map_items: Vec<(Hex, Texture2D, bool)>,
     unit_status: unit_status::StatusArt,
     hover: hover::Art,
+    footsteps: footsteps::Art,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -156,6 +158,7 @@ impl BoardArt {
             periods,
             map_items: Vec::new(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
+            footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
@@ -259,6 +262,7 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 }
 
 pub struct MovementView<'a> {
+    pub route: Option<&'a engine_lite::fixed_match::move_preview::MovePreview>,
     pub global_time: Option<&'a TimeOfDay>,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
@@ -452,6 +456,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size);
         }
     }
+    if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route); }
     let (pointer_x, pointer_y) = mouse_position();
     let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
@@ -521,6 +526,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
