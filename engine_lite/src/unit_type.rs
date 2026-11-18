@@ -20,6 +20,8 @@ pub struct UnitType {
     pub(crate) leadership: bool,
     pub hitpoints: i32,
     pub movement: i32,
+    /// Negative values use the unit's maximum movement.
+    pub(crate) vision: i32,
     pub max_attacks: i32,
     /// HP restored to adjacent friendly units at the start of this unit's turn.
     pub adjacent_healing: i32,
@@ -31,6 +33,7 @@ pub struct UnitType {
     pub movement_type: String,
     /// Terrain costs that this unit type defines over its inherited movement type.
     pub movement_cost_overrides: MovementCosts,
+    pub(crate) vision_cost_overrides: MovementCosts,
     /// Terrain defense that this unit type defines over its inherited movement type.
     pub defense_overrides: TerrainDefense,
     pub emits_zoc: bool,
@@ -86,12 +89,14 @@ impl UnitType {
                 .map(str::to_owned)
                 .collect(),
         };
-        let movement_cost_overrides = MovementCosts::from_wml_tables(
-            unit.children
-                .iter()
-                .filter(|(tag, _)| tag == "movement_costs")
-                .map(|(_, table)| table),
-        );
+        let terrain_costs = |name: &str| {
+            MovementCosts::from_wml_tables(
+                unit.children
+                    .iter()
+                    .filter(|(tag, _)| tag == name)
+                    .map(|(_, table)| table),
+            )
+        };
         let defense_overrides = TerrainDefense::from_wml_tables(
             unit.children
                 .iter()
@@ -115,6 +120,7 @@ impl UnitType {
             }),
             hitpoints: int("hitpoints", 1),
             movement: int("movement", 1),
+            vision: int("vision", -1),
             max_attacks: int("attacks", 1),
             adjacent_healing,
             cures_adjacent,
@@ -122,7 +128,8 @@ impl UnitType {
             cost: int("cost", 1),
             alignment,
             movement_type: text("movement_type").to_owned(),
-            movement_cost_overrides,
+            movement_cost_overrides: terrain_costs("movement_costs"),
+            vision_cost_overrides: terrain_costs("vision_costs"),
             defense_overrides,
             resistance_overrides,
             emits_zoc,
