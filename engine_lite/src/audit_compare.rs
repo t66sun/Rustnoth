@@ -149,8 +149,8 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         status_owner = Some((*x, *y));
                         unit_positions.insert(last_unit.expect("validated unit position"));
                     }
-                ["status", x, y, "slowed" | "poisoned"] | ["status", x, y, "slowed", "poisoned"]
-                    if last_village.is_none() && status_owner.take() == Some((*x, *y)) => {}
+                ["status", x, y, statuses @ ..] if last_village.is_none()
+                    && valid_statuses(statuses) && status_owner.take() == Some((*x, *y)) => {}
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
                 _ => {
@@ -172,6 +172,11 @@ fn side_number(side: &str) -> Option<usize> {
         return None;
     }
     side.parse().ok()
+}
+
+fn valid_statuses(statuses: &[&str]) -> bool {
+    let mut order = ["slowed", "poisoned", "petrified"].into_iter();
+    !statuses.is_empty() && statuses.iter().all(|status| order.any(|name| name == *status))
 }
 
 fn valid_unit_details(fields: &[&str]) -> bool {
@@ -382,7 +387,12 @@ mod tests {
             assert!(difference.starts_with("step 0 differs"));
             assert!(difference.contains("poisoned"));
         }
-        for invalid in ["poisoned\tslowed", "poisoned\tpoisoned", "slowed\tpoisoned\tpoisoned"] {
+        for statuses in ["petrified", "poisoned\tpetrified", "slowed\tpetrified", "slowed\tpoisoned\tpetrified"] {
+            let trace = with_status(statuses);
+            assert_eq!(compare(&trace, &trace), Ok(2));
+            assert!(compare(THREE_SIDES, &trace).unwrap_err().contains("petrified"));
+        }
+        for invalid in ["petrified\tslowed", "petrified\tpetrified", "poisoned\tslowed", "poisoned\tpoisoned", "slowed\tpoisoned\tpoisoned"] {
             let trace = with_status(invalid);
             assert!(compare(&trace, &trace).unwrap_err().starts_with("malformed Rust trace"));
         }
