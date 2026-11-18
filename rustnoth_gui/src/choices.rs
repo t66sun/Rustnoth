@@ -88,6 +88,7 @@ mod tests {
                 max_experience: 35,
                 poisoned: false,
                 slowed: false,
+                petrified: false,
                 moves_left: Some(5),
                 attacks_left: Some(1),
             }],
