@@ -380,9 +380,10 @@ impl<'data> FixedMatch<'data> {
             terrain,
             inherited_defense,
         );
-        let damage_taken = target.unit_type.resistance_overrides.damage_taken_with_fallback(
+        let damage_taken = target.unit_type.combat_damage_taken(
             &weapon.damage_type,
             self.rules.resistance.get(target_movement),
+            target.side != turn.side,
         );
         let schedule = &self.scenario.schedule;
         let lawful_bonus = schedule.at_turn(turn.round).lawful_bonus;
