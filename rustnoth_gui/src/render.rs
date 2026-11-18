@@ -82,7 +82,7 @@ pub struct BoardArt {
     shroud: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
-    font: Option<Font>,
+    pub(super) font: Option<Font>,
 }
 
 impl BoardArt {
@@ -185,7 +185,7 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
         .clone()
 }
 
-fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
