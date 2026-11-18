@@ -21,6 +21,7 @@ mod dialog;
 mod menu;
 mod render;
 mod setup;
+mod story;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -135,6 +136,7 @@ impl Launch {
 
 struct BoardData {
     scenario: Bundle,
+    story: Vec<story::Part>,
     assets: AssetCatalog,
     title: String,
     directory: PathBuf,
@@ -150,15 +152,14 @@ impl BoardData {
         }
         let scenario = Bundle::parse_with_core(source, core)?;
         let assets = AssetCatalog::parse(&wesnoth_root, core, source)?;
-        let title = wml::parse(source)?
-            .children
-            .into_iter()
-            .find(|(tag, _)| tag == "scenario")
-            .and_then(|(_, config)| config.attribute("name").map(str::to_owned))
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Scenario".to_owned());
+        let document = wml::parse(source)?;
+        let (_, config) = document.children.iter().find(|(tag, _)| tag == "scenario")
+            .ok_or("bundle has no scenario")?;
+        let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
+        let story = story::read(config, &title);
         Ok(Self {
             scenario,
+            story,
             assets,
             title,
             directory,
@@ -182,28 +183,41 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
+    story::show(&data.story, &data.assets, art.font.as_ref()).await;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
+    let mut dialogue_page = 0;
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        let dialogue_open = session.dialogue().is_some();
+        if !dialogue_open && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
                 return Ok(None);
             }
         }
-        if is_mouse_button_pressed(MouseButton::Right) {
+        if !dialogue_open && is_mouse_button_pressed(MouseButton::Right) {
             selection.clear();
             menu = None;
             message = None;
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
+        if !dialogue_open && let Some(objectives) = session.objectives() {
+            let opened = render::objectives::hotkey()
+                || (is_mouse_button_pressed(MouseButton::Left)
+                    && render::objectives::button(screen_width()).is_some_and(|r| r.contains(pointer)));
+            if opened {
+                render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
+                next_frame().await;
+                continue;
+            }
+        }
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.fit(render::board_viewport(), observation.width, observation.height, reset);
-            if !reset {
+            if !reset && !dialogue_open {
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],
@@ -220,8 +234,8 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
         }
-        let clicked = !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        let clicked = !dialogue_open && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
+        if !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -229,14 +243,14 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let next = if campaign { session.next_scenario() } else { None };
+        let next = if campaign && !dialogue_open { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
         if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             return Ok(Some(id.to_owned()));
         }
-        let menu_action = menu.as_mut().and_then(|menu| {
+        let menu_action = menu.as_mut().filter(|_| !dialogue_open).and_then(|menu| {
             let area = render::menu_area();
             if is_key_pressed(KeyCode::P)
                 || (clicked && menu.advancement_button(area).is_some_and(|bounds| bounds.contains(pointer)))
@@ -255,7 +269,7 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
             }?;
             menu.activate(action)
         });
-        let requested = if !computer_acted && can_end
+        let requested = if !dialogue_open && !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -310,6 +324,7 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
             &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
+                has_objectives: session.objectives().is_some(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
@@ -326,6 +341,15 @@ async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue", "Enter");
+        }
+        if let Some(line) = session.dialogue() {
+            let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
+            if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+                || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
+            {
+                if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
+                else { dialogue_page += 1; }
+            }
         }
         next_frame().await;
     }

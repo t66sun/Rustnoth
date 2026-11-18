@@ -44,15 +44,16 @@ impl MapEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Field { Map, Side, Faction, Leader, Visibility, Rounds }
+enum Field { Map, Side, Team, Faction, Leader, Visibility, Rounds }
 
 impl Field {
-    const ALL: [Self; 6] = [Self::Map, Self::Side, Self::Faction, Self::Leader, Self::Visibility, Self::Rounds];
+    const ALL: [Self; 7] = [Self::Map, Self::Side, Self::Team, Self::Faction, Self::Leader, Self::Visibility, Self::Rounds];
 
     fn title(self) -> &'static str {
         match self {
             Self::Map => "Map",
             Self::Side => "Side",
+            Self::Team => "Team",
             Self::Faction => "Faction",
             Self::Leader => "Leader",
             Self::Visibility => "Visibility",
@@ -63,6 +64,7 @@ impl Field {
 
 #[derive(Clone, Copy)]
 struct Side {
+    team: usize,
     faction: usize,
     leader: usize,
 }
@@ -112,7 +114,7 @@ impl Setup {
     fn count(&self, field: Field) -> usize {
         match field {
             Field::Map => self.maps.len(),
-            Field::Side => self.sides.len(),
+            Field::Side | Field::Team => self.sides.len(),
             Field::Visibility => VISIBILITY_OPTIONS.len(),
             Field::Rounds => UNLIMITED_INDEX + 1,
             Field::Faction if !self.sides.is_empty() => self.factions.len(),
@@ -125,6 +127,7 @@ impl Setup {
         match field {
             Field::Map => self.map,
             Field::Side => self.side,
+            Field::Team => self.sides[self.side].team,
             Field::Faction => self.sides[self.side].faction,
             Field::Leader => self.sides[self.side].leader,
             Field::Visibility => self.visibility,
@@ -136,6 +139,7 @@ impl Setup {
         match field {
             Field::Map => self.maps[index].name.clone(),
             Field::Side => format!("Side {} of {}", index + 1, self.sides.len()),
+            Field::Team => format!("Team {}", index + 1),
             Field::Faction => self.factions[index].id.clone(),
             Field::Leader => self.factions[self.sides[self.side].faction].leaders[index].clone(),
             Field::Visibility => VISIBILITY_OPTIONS[index].1.to_owned(),
@@ -150,18 +154,30 @@ impl Setup {
                 self.map = index;
                 let count = self.maps[index].board.as_ref().map_or(0, |(_, n)| *n);
                 self.sides.truncate(count);
+                // Keep alliances intact if the smaller map lacks a selected team slot.
+                for index in 0..self.sides.len() {
+                    let old = self.sides[index].team;
+                    if old < count { continue; }
+                    let free = (0..count).find(|&team| self.sides.iter().all(|s| s.team != team))
+                        .expect("at most one team per side");
+                    for side in self.sides.iter_mut().filter(|side| side.team == old) {
+                        side.team = free;
+                    }
+                }
                 for side in self.sides.len()..count {
                     let default_id = ["Loyalists", "Rebels"].get(side).copied();
                     let faction = self.factions.iter().position(|f| Some(f.id.as_str()) == default_id)
                         .unwrap_or(side % self.factions.len());
-                    self.sides.push(Side { faction, leader: 0 });
+                    self.sides.push(Side { team: side, faction, leader: 0 });
                 }
                 self.side = self.side.min(count.saturating_sub(1));
             }
             Field::Side => self.side = index,
+            Field::Team => self.sides[self.side].team = index,
             Field::Faction => {
                 if self.sides[self.side].faction != index {
-                    self.sides[self.side] = Side { faction: index, leader: 0 };
+                    self.sides[self.side].faction = index;
+                    self.sides[self.side].leader = 0;
                 }
             }
             Field::Leader => self.sides[self.side].leader = index,
@@ -170,16 +186,20 @@ impl Setup {
         }
     }
 
-    fn build(&self) -> Result<BoardData, Box<dyn Error>> {
+    fn scenario(&self) -> Result<engine_lite::wml::Node, Box<dyn Error>> {
         let map = &self.maps[self.map];
         let (data, _) = map.board.as_ref().map_err(|e| e.as_str())?;
         let sides: Vec<_> = self.sides.iter().map(|side| {
             let faction = &self.factions[side.faction];
-            (faction, Some(faction.leaders[side.leader].as_str()))
+            skirmish::SideChoice { faction, leader: Some(&faction.leaders[side.leader]), team: side.team + 1 }
         }).collect();
-        let scenario = skirmish::scenario_with_visibility(
+        skirmish::scenario_with_teams(
             &map.name, data, round_limit(self.rounds_index), &sides, VISIBILITY_OPTIONS[self.visibility].0,
-        )?;
+        )
+    }
+
+    fn build(&self) -> Result<BoardData, Box<dyn Error>> {
+        let scenario = self.scenario()?;
         let mut bytes = Vec::new();
         wml_emit::write_config(&mut bytes, &scenario)?;
         BoardData::from_source(&bytes, &self.core, self.root.clone(), self.root.clone(), self.seed)
@@ -219,6 +239,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skirmish_team_picker_controls_computer_targets_and_allied_victory() {
+        use engine_lite::{
+            board::AttackChoice, fixed_match::{Action, MatchState}, hex::Hex,
+            opponent::attack_or_approach, scenario_bundle::Bundle,
+        };
+        let core = b"[units]\n[unit_type]\nid=Guard\nhitpoints=10\n[attack]\nrange=melee\ndamage=3\nnumber=1\n[/attack]\n[/unit_type]\n[/units]";
+        let mut setup = Setup {
+            root: PathBuf::new(), core: core.to_vec(), seed: 0,
+            maps: vec![MapEntry {
+                name: "Three sides".into(),
+                board: Ok(("Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,3 Gg,Xv\nXv,Xv,Xv,Xv,Xv".into(), 3)),
+            }],
+            factions: vec![Faction { id: "Guards".into(), leaders: vec!["Guard".into()], recruits: vec![] }],
+            map: 0, side: 0, sides: vec![], visibility: 0, rounds_index: 29,
+        };
+        let bundle = |setup: &Setup| {
+            let mut bytes = Vec::new();
+            wml_emit::write_config(&mut bytes, &setup.scenario().unwrap()).unwrap();
+            Bundle::parse_with_core(&bytes, &setup.core).unwrap()
+        };
+        setup.select(Field::Map, 0);
+        setup.select(Field::Side, 1);
+        assert_eq!(setup.label(Field::Team, setup.selected(Field::Team)), "Team 2");
+        setup.select(Field::Team, 0);
+        let scenario = bundle(&setup);
+        let mut game = scenario.start(7, |_| unreachable!()).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let (view, actions) = game.decision().unwrap();
+        assert_eq!(view.allied_sides, [1, 2]);
+        let attack = |x| Action::Attack(AttackChoice { from: Hex { x: 1, y: 0 }, to: Hex { x, y: 0 }, weapon: 0 });
+        assert!(!actions.contains(&attack(0)));
+        assert_eq!(attack_or_approach(&view, &actions), Some(&attack(2)));
+
+        setup.select(Field::Side, 2);
+        setup.select(Field::Team, 0);
+        let scenario = bundle(&setup);
+        assert_eq!(scenario.start(7, |_| unreachable!()).unwrap().state(), MatchState::AlliedVictory(vec![1, 2, 3]));
+    }
+
+    #[test]
     fn changing_one_sides_faction_resets_only_its_leader_and_map_resizes_the_roster() {
         let faction = |id: &str| Faction {
             id: id.into(), leaders: vec!["First".into(), "Second".into()], recruits: vec!["Recruit".into()],
@@ -238,13 +298,18 @@ mod tests {
         assert_eq!(setup.label(Field::Faction, setup.selected(Field::Faction)), "Loyalists");
         setup.select(Field::Leader, 1);
         setup.select(Field::Map, 1);
+        setup.select(Field::Team, 3);
+        setup.select(Field::Side, 1);
+        setup.select(Field::Team, 3);
         setup.select(Field::Side, 3);
         setup.select(Field::Leader, 1);
         setup.select(Field::Faction, 0);
         assert_eq!(setup.selected(Field::Leader), 0);
         setup.select(Field::Map, 0);
         assert_eq!((setup.count(Field::Side), setup.side), (2, 1));
+        assert_eq!(setup.selected(Field::Team), 0);
         setup.select(Field::Side, 0);
+        assert_eq!(setup.selected(Field::Team), 0);
         assert_eq!(setup.selected(Field::Leader), 1);
         assert_eq!(setup.label(Field::Visibility, setup.selected(Field::Visibility)), "Fog and shroud");
     }

@@ -14,6 +14,7 @@ pub enum Players {
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
+    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     computer_action: Option<Action>,
     observation: Option<Observation>,
@@ -27,7 +28,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
+            dialogue: Default::default(), game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
         session
@@ -50,10 +51,22 @@ impl<'rules> Session<'rules> {
                 self.observation = self.game.observation_for(viewer);
             }
         }
+        if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
+            self.dialogue.extend(self.game.take_dialogue(viewer));
+        }
+    }
+
+    pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
+        self.dialogue.front()
+    }
+
+    pub fn dismiss_dialogue(&mut self) {
+        self.dialogue.pop_front();
     }
 
     /// Apply at most one computer command per desktop frame.
     pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
+        if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
         match self.game.step(action.clone()) {
             Ok(_) => {}
@@ -87,6 +100,10 @@ impl<'rules> Session<'rules> {
         self.observation.as_ref()
     }
 
+    pub fn objectives(&self) -> Option<&engine_lite::scenario_sides::ScenarioObjectives> {
+        self.game.objectives_for(self.observation.as_ref()?.side)
+    }
+
     pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
         self.observation.as_ref().map(|view| self.game.map_item_images(view.side)).unwrap_or_default()
     }
@@ -110,7 +127,7 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
-        if self.computer_action.is_some() {
+        if self.computer_action.is_some() || self.dialogue().is_some() {
             return Err(MatchError::ActionUnavailable);
         }
         let state = match action {
@@ -152,6 +169,85 @@ mod tests {
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
 
     #[test]
+    fn shows_only_the_human_viewers_messages_in_authored_order() {
+        let bundle = Bundle::parse(br#"
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=0
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+id=captain
+name=Captain Arin
+profile=portraits/captain.webp
+fog=yes
+[/side]
+[side]
+type=Guard
+id=bandit
+[/side]
+[event]
+name=start
+[message]
+speaker=narrator
+side_for=2
+message=Second side only
+[/message]
+[message]
+speaker=bandit
+message=Hidden enemy
+[/message]
+[message]
+speaker=narrator
+image=wesnoth-icon.png
+message=On arrival
+[/message]
+[message]
+speaker=captain
+message=Defend the fort
+[/message]
+[/event]
+[event]
+name=side 2 turn
+[message]
+speaker=narrator
+side_for=2
+message=Enemy orders
+[/message]
+[message]
+speaker=narrator
+side_for=1
+message=Nightfall
+[/message]
+[/event]
+[/scenario]"#).unwrap();
+        let mut session = Session::with_players(bundle.start(1, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        let line = session.dialogue().unwrap();
+        assert_eq!(line.text, "On arrival");
+        assert_eq!(line.image.as_deref(), Some("wesnoth-icon.png"));
+        assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
+        session.dismiss_dialogue();
+        let line = session.dialogue().unwrap();
+        assert_eq!(line.text, "Defend the fort");
+        assert_eq!(line.caption.as_deref(), Some("Captain Arin"));
+        assert_eq!(line.image.as_deref(), Some("portraits/captain.webp"));
+        session.dismiss_dialogue();
+        assert!(session.dialogue().is_none());
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.dialogue().unwrap().text, "Nightfall");
+        assert!(!session.play_computer_action().unwrap());
+        session.dismiss_dialogue();
+        assert!(session.play_computer_action().unwrap());
+    }
+
+    #[test]
     fn computer_recruits_or_scouts_when_no_enemy_is_visible() {
         use engine_lite::observation::ObservedTile;
 
@@ -169,6 +265,73 @@ mod tests {
         assert_eq!(computer_choice(&view, &[scout.clone(), recruit.clone(), Action::EndTurn]), recruit);
         assert_eq!(computer_choice(&view, &[scout.clone(), Action::EndTurn]), scout);
         assert_eq!(computer_choice(&view, &[Action::EndTurn]), Action::EndTurn);
+    }
+
+    #[test]
+    fn desktop_objectives_follow_the_viewer_and_ordered_side_events() {
+        let source = br#"[units]
+[unit_type]
+id=Scout
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Scout
+[/side]
+[side]
+type=Scout
+[/side]
+[event]
+name=prestart
+[objectives]
+side=0
+[objective]
+condition=win
+description= _ "Reach the keep"
+[/objective]
+[objective]
+condition=lose
+description=Loss of the scout
+[/objective]
+[objective]
+condition=win
+description=Secret goal
+[show_if]
+[have_unit]
+id=hidden
+[/have_unit]
+[/show_if]
+[/objective]
+[/objectives]
+[/event]
+[event]
+name=side 2 turn
+[objectives]
+side=2
+[objective]
+condition=win
+description=Defend the keep
+[/objective]
+[/objectives]
+[/event]
+[/scenario]"#;
+        let bundle = engine_lite::scenario_bundle::Bundle::parse(source).unwrap();
+        let mut session = Session::new(bundle.start(7, |_| unreachable!()).unwrap());
+        let mut versus = Session::with_players(bundle.start(7, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        versus.apply(Action::EndTurn).unwrap();
+        assert_eq!(versus.objectives().unwrap().victory, ["Reach the keep"]);
+        let first = session.objectives().unwrap();
+        assert_eq!(first.victory, ["Reach the keep"]);
+        assert_eq!(first.defeat, ["Loss of the scout"]);
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.objectives().unwrap().victory, ["Defend the keep"]);
+        assert!(session.objectives().unwrap().defeat.is_empty());
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.objectives().unwrap().victory, ["Reach the keep"]);
     }
 
     #[test]

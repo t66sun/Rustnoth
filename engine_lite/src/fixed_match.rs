@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub mod audit;
+pub mod dialogue;
 #[cfg(test)]
 mod amla_tests;
 mod illumination;
@@ -113,6 +114,7 @@ pub struct FixedMatch<'data> {
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     side_order: Vec<usize>,
+    dialogue: Vec<(Vec<usize>, dialogue::DialogueLine)>,
     gold: Vec<i64>,
 }
 
@@ -157,6 +159,7 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
+            dialogue: Vec::new(),
             side_order: (1..=side_count).collect(),
             gold,
         };
@@ -186,11 +189,23 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
+        self.with_events_at(None, handle)
+    }
+
+    fn with_events_at(&mut self, primary: Option<Hex>, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::HealUnit(heal) => {
+                    heal.apply(&mut self.scenario.board, primary);
+                    continue;
+                }
+                BoardChange::Dialogue(message) => {
+                    self.queue_dialogue(message);
+                    continue;
+                }
                 BoardChange::TurnLimit(change) => {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
@@ -203,30 +218,41 @@ impl<'data> FixedMatch<'data> {
                     continue;
                 }
                 BoardChange::CaptureVillage(capture) => capture,
+                BoardChange::TimeArea(area) => {
+                    area.apply(&mut self.scenario.schedule, self.current_round);
+                    continue;
+                }
                 BoardChange::Schedule { entries, current_time } => {
                     self.scenario.schedule.replace_global(entries, self.current_round, current_time);
                     continue;
                 }
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
-                    let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
-                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind.variation(&unit.variation))) {
+                    let recalled = unit.id.as_ref().and_then(|id|
+                        self.scenario.board.recall_roster(side).iter().find(|u| u.id.as_ref() == Some(id))
+                    );
+                    let kind = recalled.map(|veteran| veteran.unit_type)
+                        .or_else(|| self.scenario.board.unit_type(&unit.type_id).map(|kind| kind.variation(&unit.variation)));
+                    if kind.is_some_and(|kind| !supports_unit(kind)) {
                         return Err(MatchError::UnsupportedScenario);
                     }
-                    self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
-                    self.capture_village(side, position)?;
-                    self.update_side_sight(side, false);
+                    if let Some(position) = self.scenario.board.place_event_unit(*unit).map_err(MatchError::OpeningUnit)? {
+                        self.capture_village(side, position)?;
+                        self.update_side_sight(side, false);
+                    }
                     continue;
                 }
-                BoardChange::Terrain { locations, code } => {
+                BoardChange::Terrain { locations, code, layer, fallback } => {
                     let map = self.scenario.board.map();
                     let (width, height) = (map.width(), map.height());
-                    let village = self.rules.terrain.features(&code).village;
                     for (xs, ys) in locations {
                         for x in (*xs.start()).max(1)..=(*xs.end()).min(width) {
                             for y in (*ys.start()).max(1)..=(*ys.end()).min(height) {
                                 let position = Hex { x: x - 1, y: y - 1 };
-                                self.scenario.board.replace_terrain(position, &code);
+                                let old = self.scenario.board.map().terrain_at(position).expect("clipped map location");
+                                let Some(merged) = self.rules.terrain.merge_terrain(old, &code, layer, fallback) else { continue };
+                                let village = self.rules.terrain.features(&merged).village;
+                                self.scenario.board.replace_terrain(position, &merged);
                                 if !village { self.village_owners.remove(&position); }
                             }
                         }
@@ -271,6 +297,12 @@ impl<'data> FixedMatch<'data> {
             experience: unit.experience,
             cost: unit.recall_cost(self.scenario.sides[turn.side - 1].recall_cost),
         })
+    }
+
+    /// Current WML objectives for the chosen side of the desktop match.
+    pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
+        self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
+            .filter(|objectives| !objectives.is_empty())
     }
 
     /// Campaign destination after a scripted victory or a surviving human side's victory.
@@ -390,6 +422,7 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
+        self.dialogue.clear();
         let sides = &self.scenario.sides;
         let viewer = &sides[turn.side - 1];
         if (viewer.fog || viewer.shroud || attacker.is_some() || defender.is_some()) && !matches!(action, Action::EndTurn)
@@ -470,12 +503,16 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn fire_unit_event(&mut self, name: &str, position: Hex) -> Result<(), MatchError> {
-        let unit = self.scenario.board.unit_at(position).expect("event location has its unit");
-        let id = unit.id.clone();
-        let arrival = crate::scenario_events::ArrivingUnit {
-            position, side: unit.side, id: id.as_deref(), type_id: &unit.unit_type.id,
-        };
-        self.with_events(|events, state| events.fire_for_unit(name, arrival, state))
+        self.fire_units_event(name, position, None)
+    }
+
+    fn fire_units_event(&mut self, name: &str, position: Hex, second: Option<Hex>) -> Result<(), MatchError> {
+        let context = |position| self.scenario.board.unit_at(position).map(|unit| crate::scenario_events::ArrivingUnit {
+            position, side: unit.side, id: unit.id.clone(), type_id: unit.unit_type.id.as_str(),
+        });
+        let primary = context(position);
+        let secondary = second.and_then(context);
+        self.with_events_at(Some(position), |events, state| events.dispatch(name, primary, secondary, state))
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> Result<bool, MatchError> {
@@ -691,7 +728,7 @@ impl fmt::Display for MatchError {
             Self::UnsupportedScenario => f.write_str(
                 "fixed match requires at least two sides in order and supported weapons",
             ),
-            Self::OpeningUnit(error) => write!(f, "could not place an opening event unit: {error}"),
+            Self::OpeningUnit(error) => write!(f, "could not place a scenario event unit: {error}"),
             Self::ActionUnavailable => f.write_str("action is unavailable to the current side"),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),

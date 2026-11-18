@@ -19,12 +19,41 @@ pub(crate) enum DefeatCondition {
     Always,
 }
 
+/// Literal scenario objectives shown by the desktop client.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScenarioObjectives {
+    pub victory: Vec<String>,
+    pub defeat: Vec<String>,
+}
+
+impl ScenarioObjectives {
+    pub(crate) fn read(cfg: &Node) -> Self {
+        let mut result = Self::default();
+        for (_, objective) in cfg.children.iter().filter(|(tag, _)| tag == "objective") {
+            if objective.children.iter().any(|(tag, _)| tag == "show_if") { continue; }
+            let Some(description) = objective.attribute("description")
+                .filter(|text| !text.trim().is_empty() && !text.contains('$')) else { continue };
+            match objective.attribute("condition") {
+                Some("win") => result.victory.push(description.to_owned()),
+                Some("lose") => result.defeat.push(description.to_owned()),
+                _ => {}
+            }
+        }
+        result
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.victory.is_empty() && self.defeat.is_empty()
+    }
+}
+
 /// The initial rules settings for a side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SideConfig {
     /// One-based position in the scenario's side roster.
     pub side: usize,
     pub team_names: Vec<String>,
+    pub(crate) objectives: ScenarioObjectives,
     pub(crate) human: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
@@ -80,6 +109,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
     SideConfig {
         side,
         team_names: names(team_names).collect(),
+        objectives: ScenarioObjectives::default(),
         human: cfg.attribute("controller") == Some("human"),
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
