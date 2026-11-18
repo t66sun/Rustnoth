@@ -9,8 +9,10 @@ use crate::weapon::WeaponProfile;
 use crate::wml::Node;
 
 mod traits;
+mod hiding;
 use traits::TraitCatalog;
 pub use traits::TraitPool;
+pub(crate) use hiding::Hiding;
 
 /// Base rules for a preprocessed Wesnoth 1.18.8 `[unit_type]`.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub struct UnitType {
     /// HP restored each turn by the stock self-regeneration ability.
     pub regeneration: i32,
     pub(crate) skirmisher: bool,
+    pub(crate) hiding: Vec<Hiding>,
     pub advances_to: Vec<String>,
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
@@ -135,6 +138,7 @@ impl UnitType {
             emits_zoc,
             regeneration: 0,
             skirmisher: false,
+            hiding: Vec::new(),
             advances_to,
             attacks: Vec::new(),
             traits: catalog.inherited_traits(&unit, alignment),
@@ -146,6 +150,9 @@ impl UnitType {
                         tag == "skirmisher" && is_stock_skirmisher(config)
                     });
                     for (ability, cfg) in &child.children {
+                        if ability == "hides" {
+                            result.hiding.push(Hiding::from_wml(cfg));
+                        }
                         if ability == "regenerate"
                             && cfg.children.is_empty()
                             && cfg.attribute("id") == Some("regenerates")

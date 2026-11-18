@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod attack;
+mod concealment;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{StrikeRole, combatant, within_range};
 
