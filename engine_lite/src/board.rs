@@ -101,6 +101,15 @@ impl UnitState<'_> {
         self.traits.as_ref().map_or(self.unit_type.movement, |traits| traits.stats.max_movement)
     }
 
+    /// Usable movement points. Petrification masks the unit's saved turn counters.
+    pub fn movement_left(&self) -> i32 {
+        if self.petrified { 0 } else { self.moves_left }
+    }
+
+    pub fn attacks_left(&self) -> i32 {
+        if self.petrified { 0 } else { self.attacks_left }
+    }
+
     /// Sight points before terrain costs, independent of moves left this turn.
     pub fn vision_range(&self) -> u32 {
         let vision = self.traits.as_ref().map_or(self.unit_type.vision, |traits| traits.stats.vision);
@@ -621,7 +630,7 @@ impl<'rules> Battlefield<'rules> {
         if unit.side != active_side {
             return Err(MoveError::WrongSide(from));
         }
-        let moves_left = unit.moves_left.max(0) as u32;
+        let moves_left = unit.movement_left().max(0) as u32;
         let hostile = |unit: &UnitState<'rules>| unit.side != active_side && is_enemy(unit.side);
 
         Ok(search(moves_left, &|position| {
@@ -642,7 +651,7 @@ impl<'rules> Battlefield<'rules> {
             };
             let stops_movement = !unit.unit_type.skirmisher && position.neighbors().any(|neighbor| {
                 known_unit_at(neighbor)
-                    .is_some_and(|unit| hostile(unit) && unit.unit_type.emits_zoc)
+                    .is_some_and(|unit| hostile(unit) && !unit.petrified && unit.unit_type.emits_zoc)
             });
             Some((MovementTile {
                 cost,
@@ -1461,6 +1470,19 @@ mod tests {
             board.move_unit(1, controlled, corridor_hex(1), walking_cost, |side| side == 2),
             Err(MoveError::Unreachable(corridor_hex(1))),
         );
+    }
+
+    #[test]
+    fn a_statue_blocks_its_hex_but_not_movement_through_its_zone_of_control() {
+        let types = types();
+        let (from, near, enemy) = (corridor_hex(0), corridor_hex(2), corridor_hex(3));
+        let mut board = corridor(&types, &[(0, 1), (3, 2)]);
+        board.units.get_mut(&enemy).unwrap().petrified = true;
+        let destinations = board.move_destinations(1, from, walking_cost, |side| side == 2).unwrap();
+        assert!(!destinations.contains_key(&enemy));
+        assert_eq!(destinations.get(&near), Some(&2));
+        board.move_unit(1, from, near, walking_cost, |side| side == 2).unwrap();
+        assert_eq!(board.unit_at(near).unwrap().movement_left(), 2);
     }
 
     #[test]
