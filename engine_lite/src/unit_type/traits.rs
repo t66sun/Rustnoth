@@ -11,8 +11,7 @@ pub struct TraitPool {
 }
 
 impl TraitPool {
-    /// Selects the traits of a fresh non-leader recruit in native selection order.
-    pub fn select_for_recruit(&self, rng: &mut ReplayRng) -> Vec<&Node> {
+    pub(crate) fn mandatory(&self) -> Vec<&Node> {
         let mut selected = Vec::new();
         for definition in self.available.iter().map(Arc::as_ref) {
             if definition.attribute("availability") == Some("musthave")
@@ -22,6 +21,12 @@ impl TraitPool {
             }
         }
 
+        selected
+    }
+
+    /// Selects the traits of a fresh non-leader recruit in native selection order.
+    pub fn select_for_recruit(&self, rng: &mut ReplayRng) -> Vec<&Node> {
+        let mut selected = self.mandatory();
         let mut candidates = Vec::new();
         while selected.len() < self.count.max(0) as usize {
             let has_trait = |id| selected.iter().any(|&trait_| trait_id(trait_) == id);
