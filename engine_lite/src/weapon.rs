@@ -111,8 +111,16 @@ impl WeaponProfile {
     }
 
     pub(crate) fn has_drains(&self) -> bool {
+        self.has_status_special("drains")
+    }
+
+    pub(crate) fn has_slow(&self) -> bool {
+        self.has_status_special("slow")
+    }
+
+    fn has_status_special(&self, name: &str) -> bool {
         self.specials.as_ref().is_some_and(|specials| {
-            specials.children.iter().any(|(tag, definition)| is_stock_drains(tag, definition))
+            specials.children.iter().any(|(tag, cfg)| tag == name && is_status_special(tag, cfg))
         })
     }
 
@@ -124,7 +132,7 @@ impl WeaponProfile {
                     || is_unconditional_magical(tag, definition)
                     || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
-                    || is_stock_drains(tag, definition)
+                    || (matches!(tag.as_str(), "drains" | "slow") && is_status_special(tag, definition))
             })
         })
     }
@@ -157,9 +165,8 @@ fn is_stock_berserk(tag: &str, definition: &Node) -> bool {
         })
 }
 
-fn is_stock_drains(tag: &str, definition: &Node) -> bool {
-    tag == "drains"
-        && definition.attribute("id") == Some("drains")
+fn is_status_special(tag: &str, definition: &Node) -> bool {
+    definition.attribute("id") == Some(tag)
         && definition.children.is_empty()
         && definition.attributes.iter().all(|(key, value)| match key.as_str() {
             "id" => value.translations.is_empty(),

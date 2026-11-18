@@ -11,6 +11,7 @@ pub struct RecruitStats {
     /// Damage indexed in the same order as the unit type's attacks.
     pub attack_damage: Vec<i32>,
     pub undrainable: bool,
+    pub unslowable: bool,
 }
 
 impl RecruitStats {
@@ -30,6 +31,7 @@ impl RecruitStats {
             max_experience: base_max_experience,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
             undrainable: false,
+            unslowable: false,
         };
         for trait_ in traits {
             for (tag, effect) in &trait_.children {
@@ -74,16 +76,22 @@ impl RecruitStats {
                 }
             }
             Some("status") => {
-                let lists_undrainable = |key| {
+                let lists_status = |key, id| {
                     effect.attribute(key).is_some_and(|statuses| {
-                        statuses.split(',').any(|status| status.trim() == "undrainable")
+                        statuses.split(',').any(|status| status.trim() == id)
                     })
                 };
-                if lists_undrainable("add") {
+                if lists_status("add", "undrainable") {
                     self.undrainable = true;
                 }
-                if lists_undrainable("remove") {
+                if lists_status("remove", "undrainable") {
                     self.undrainable = false;
+                }
+                if lists_status("add", "unslowable") {
+                    self.unslowable = true;
+                }
+                if lists_status("remove", "unslowable") {
+                    self.unslowable = false;
                 }
             }
             _ => {}

@@ -7,6 +7,10 @@ pub struct Combatant {
     pub hitpoints: u32,
     pub strikes: u32,
     pub damage: u32,
+    pub slow_damage: u32,
+    pub slows: bool,
+    pub slowed: bool,
+    pub unslowable: bool,
     pub hit_chance: u8,
     pub firststrike: bool,
     /// Maximum HP the striker can heal to with the stock drains special.
@@ -18,6 +22,8 @@ pub struct Combatant {
 pub struct CombatResult {
     pub attacker_hitpoints: u32,
     pub defender_hitpoints: u32,
+    pub attacker_slowed: bool,
+    pub defender_slowed: bool,
 }
 
 /// Computes a weapon's chance to hit before specials and invulnerability.
@@ -35,18 +41,23 @@ pub(crate) fn strike_order(attacker: &Combatant, defender: &Combatant) -> [usize
 }
 
 /// Applies a successful strike before death checks and the next retaliation.
-pub(crate) fn apply_hit(units: &[Combatant; 2], hp: &mut [u32; 2], striker: usize) {
+pub(crate) fn apply_hit(
+    units: &[Combatant; 2], hp: &mut [u32; 2], slowed: &mut [bool; 2], striker: usize,
+) {
     let target = 1 - striker;
-    let damage = hp[target].min(units[striker].damage);
+    let weapon_damage = if slowed[striker] { units[striker].slow_damage } else { units[striker].damage };
+    let damage = hp[target].min(weapon_damage);
     hp[target] -= damage;
     if let Some(cap) = units[striker].drain_healing_cap.filter(|_| !units[target].undrainable) {
         hp[striker] = hp[striker].saturating_add(damage / 2).min(cap.max(1));
+    }
+    if hp[target] > 0 && units[striker].slows && !units[target].unslowable {
+        slowed[target] = true;
     }
 }
 
 /// Resolves the strike sequence for ordinary seeded combat.
 ///
-/// Both participants' damage and chance to hit are fixed for the exchange.
 /// A defender without retaliation has zero strikes. Call from the referee
 /// using its combat random stream.
 pub fn resolve_exchange(
@@ -58,6 +69,7 @@ pub fn resolve_exchange(
     let order = strike_order(&attacker, &defender);
     let strike_limit = attacker.strikes.max(defender.strikes);
     let mut hp = [attacker.hitpoints, defender.hitpoints];
+    let mut slowed = [attacker.slowed, defender.slowed];
     let participants = [attacker, defender];
 
     if strike_limit > 0 && !hp.contains(&0) {
@@ -69,7 +81,7 @@ pub fn resolve_exchange(
                         continue;
                     }
                     if rng.next_u32() % 100 < u32::from(unit.hit_chance) {
-                        apply_hit(&participants, &mut hp, index);
+                        apply_hit(&participants, &mut hp, &mut slowed, index);
                         if hp[1 - index] == 0 {
                             break 'fight;
                         }
@@ -82,6 +94,8 @@ pub fn resolve_exchange(
     CombatResult {
         attacker_hitpoints: hp[0],
         defender_hitpoints: hp[1],
+        attacker_slowed: slowed[0],
+        defender_slowed: slowed[1],
     }
 }
 
@@ -103,6 +117,10 @@ mod tests {
             hitpoints,
             strikes,
             damage,
+            slow_damage: damage.div_ceil(2),
+            slows: false,
+            slowed: false,
+            unslowable: false,
             hit_chance,
             firststrike: false,
             drain_healing_cap: None,
@@ -145,7 +163,10 @@ mod tests {
             &mut ReplayRng::new(5489),
         );
         // 4 + floor(5/2) - 5 + floor(3/2).
-        assert_eq!(result, CombatResult { attacker_hitpoints: 2, defender_hitpoints: 0 });
+        assert_eq!(result, CombatResult {
+            attacker_hitpoints: 2, defender_hitpoints: 0,
+            attacker_slowed: false, defender_slowed: false,
+        });
     }
 
     #[test]

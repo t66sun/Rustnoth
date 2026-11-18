@@ -66,12 +66,13 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
         return outcome;
     }
 
+    let starting_slow = [attacker.slowed, defender.slowed];
     let order = strike_order(&attacker, &defender);
     let units = [attacker, defender];
     let strikes = units.each_ref().map(|unit| {
-        if unit.damage == 0 || unit.hit_chance == 0 { 0 } else { unit.strikes }
+        if (unit.damage == 0 && !unit.slows) || unit.hit_chance == 0 { 0 } else { unit.strikes }
     });
-    let mut ongoing = BTreeMap::from([(starting_hp, 1.0)]);
+    let mut ongoing = BTreeMap::from([((starting_hp, starting_slow), 1.0)]);
     let strikes_per_round = strikes[0].max(strikes[1]);
     for strike in (0..rounds.get()).flat_map(|_| 0..strikes_per_round) {
         // Native stops prediction between rounds at a 99% combined probability of death.
@@ -86,22 +87,23 @@ fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Out
             let target = 1 - striker;
             let chance = f64::from(unit.hit_chance) / 100.0;
             let mut next = BTreeMap::new();
-            for (hitpoints, probability) in ongoing {
+            for ((hitpoints, slowed), probability) in ongoing {
                 if chance < 1.0 {
-                    *next.entry(hitpoints).or_default() += probability * (1.0 - chance);
+                    *next.entry((hitpoints, slowed)).or_default() += probability * (1.0 - chance);
                 }
                 let mut after_hit = hitpoints;
-                apply_hit(&units, &mut after_hit, striker);
+                let mut after_slow = slowed;
+                apply_hit(&units, &mut after_hit, &mut after_slow, striker);
                 if after_hit[target] == 0 {
                     outcome.add(after_hit, probability * chance);
                 } else {
-                    *next.entry(after_hit).or_default() += probability * chance;
+                    *next.entry((after_hit, after_slow)).or_default() += probability * chance;
                 }
             }
             ongoing = next;
         }
     }
-    for (hitpoints, probability) in ongoing {
+    for ((hitpoints, _), probability) in ongoing {
         outcome.add(hitpoints, probability);
     }
     outcome
@@ -116,6 +118,10 @@ mod tests {
             hitpoints,
             strikes,
             damage,
+            slow_damage: damage.div_ceil(2),
+            slowed: false,
+            slows: false,
+            unslowable: false,
             hit_chance,
             firststrike: false,
             drain_healing_cap: None,
@@ -143,6 +149,17 @@ mod tests {
         let plain = exchange(combatant(20, 1, 6, 100), combatant(20, 1, 7, 100), NonZeroU32::MIN);
         assert_eq!(draining.average_hp, [14.0, 17.0]);
         assert!(draining.better_for_defender_than(&plain));
+    }
+
+    #[test]
+    fn predicted_slow_only_reduces_retaliation_on_successful_hits() {
+        let slow = Combatant { slows: true, ..combatant(20, 1, 3, 50) };
+        let response = || combatant(20, 1, 9, 100);
+        let outcome = exchange(slow, response());
+        assert_eq!(outcome.average_hp, [13.0, 18.5]);
+        let slow = Combatant { slows: true, ..combatant(20, 1, 3, 100) };
+        let immune = Combatant { unslowable: true, ..response() };
+        assert_eq!(exchange(slow, immune).average_hp, [11.0, 17.0]);
     }
 
     #[test]
