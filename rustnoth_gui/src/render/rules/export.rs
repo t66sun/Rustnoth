@@ -8,6 +8,33 @@ use image::{Rgba, RgbaImage, imageops};
 use rustnoth_gui::assets::AssetCatalog;
 use std::{collections::HashMap, error::Error, path::Path};
 
+pub(crate) fn map_observation(map: &ScenarioMap) -> Observation {
+    let mut view = Observation {
+        side: 1,
+        allied_sides: vec![1],
+        gold: None,
+        width: map.width(),
+        height: map.height(),
+        tiles: vec![],
+        units: vec![],
+    };
+    for x in 0..map.width() {
+        for y in 0..map.height() {
+            let position = Hex { x, y };
+            if let Some(terrain) = map.terrain_at(position) {
+                view.tiles.push(ObservedTile {
+                    position,
+                    terrain: terrain.into(),
+                    visible: true,
+                    village_owner: None,
+                    time_color: [0; 3],
+                });
+            }
+        }
+    }
+    view
+}
+
 fn dimensions(map: &ScenarioMap) -> (u32, u32) {
     (
         ((map.width() + 1) * 54 + 18) as u32,
@@ -66,29 +93,7 @@ pub(crate) fn map_png(root: &Path, file: &Path, output: &Path) -> Result<(), Box
             }
         }
     }
-    let mut view = Observation {
-        side: 1,
-        allied_sides: vec![1],
-        gold: None,
-        width: map.width(),
-        height: map.height(),
-        tiles: vec![],
-        units: vec![],
-    };
-    for x in 0..map.width() {
-        for y in 0..map.height() {
-            let position = Hex { x, y };
-            if let Some(terrain) = map.terrain_at(position) {
-                view.tiles.push(ObservedTile {
-                    position,
-                    terrain: terrain.into(),
-                    visible: true,
-                    village_owner: None,
-                    time_color: [0; 3],
-                });
-            }
-        }
-    }
+    let view = map_observation(&map);
     let tiles = plan::map_tiles(&catalog, &view, &map);
     let mut order: Vec<_> = tiles.keys().copied().collect();
     order.sort_by_key(|hex| (2 * hex.y + hex.x.rem_euclid(2), hex.x));

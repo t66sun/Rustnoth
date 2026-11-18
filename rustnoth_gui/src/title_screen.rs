@@ -23,7 +23,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Preferences, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -31,6 +31,7 @@ impl Command {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
             Self::Load => "Load",
+            Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
             Self::Quit => "Quit",
             Self::Language => "Language",
@@ -42,8 +43,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -147,7 +148,7 @@ impl TitleScreen {
                     }).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
-                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help)) => {
+                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help | Command::Editor)) => {
                     next_frame().await;
                     error = self.open(command, &art).await.err().map(|cause| cause.to_string());
                 }
@@ -185,6 +186,7 @@ impl TitleScreen {
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             Command::Help => help::show(&self.root, &data.core, art).await,
+            Command::Editor => crate::editor::run(&self.root, &data.core).await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
@@ -416,8 +418,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Quit]);
     }
 
     #[test]
