@@ -28,6 +28,11 @@ const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
+const FLAG_FRAMES: usize = 4;
+
+fn village_flag_frame(elapsed_ms: u64) -> usize {
+    ((elapsed_ms / 150) % FLAG_FRAMES as u64) as usize
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Cover {
@@ -60,8 +65,10 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    flag_dir: PathBuf,
+    flag_colors: Option<TeamColors>,
+    flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
-    core_images: PathBuf,
     map_items: Vec<(Hex, Texture2D)>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
@@ -92,16 +99,22 @@ impl BoardArt {
             let image = load_texture(&clock_dir.join(format!("schedule-{file}.png")), None);
             (id, (name, image))
         }).collect();
-        let team_colors = fs::read(&palette_path)
-            .and_then(|bytes| TeamColors::parse(&bytes))
+        let palette_bytes = fs::read(&palette_path)
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
             .ok();
+        let palette = |parse: fn(&[u8]) -> std::io::Result<TeamColors>| {
+            parse(palette_bytes.as_deref()?)
+                .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
+                .ok()
+        };
         Self {
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
+            flag_dir: wesnoth_root.join("data/core/images/flags"),
+            flag_colors: palette(TeamColors::parse_flags),
+            flags: BTreeMap::new(),
             periods,
-            core_images: wesnoth_root.join("data/core/images"),
             map_items: Vec::new(),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
@@ -109,7 +122,7 @@ impl BoardArt {
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             cover: Vec::new(),
-            team_colors,
+            team_colors: palette(TeamColors::parse),
             font,
         }
     }
@@ -122,12 +135,21 @@ impl BoardArt {
                 || path.extension().is_none_or(|ext| ext != "png") || image.contains(['~', ':', '\\']) {
                 continue;
             }
-            if let Some(texture) = get_texture(&mut self.paths, self.core_images.join(path)) {
+            if let Some(texture) = assets.resolve_image(path).and_then(|p| get_texture(&mut self.paths, p)) {
                 self.map_items.push((position, texture));
             }
         }
         self.cover = map_cover(observation);
         for tile in &observation.tiles {
+            if let Some(owner) = tile.village_owner
+                && let Some(colors) = self.flag_colors.as_ref()
+                && colors.marker_color(owner).is_some()
+            {
+                self.flags.entry(owner).or_insert_with(|| std::array::from_fn(|i| {
+                    let path = self.flag_dir.join(format!("flag-{}.png", i + 1));
+                    load_texture(&path, Some((colors, owner)))
+                }));
+            }
             self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
                 assets
                     .terrain_images(&tile.terrain)
@@ -365,7 +387,7 @@ fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, colo
     }
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_marker: f32) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
@@ -379,6 +401,11 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_ma
             }
         }
         if let Some(owner) = tile.village_owner {
+            if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
+                draw_centered(flag, center, size);
+                continue;
+            }
+            let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
             draw_circle(
                 center.x + size * 0.27,
                 center.y - size * 0.26,
@@ -390,7 +417,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_ma
 }
 
 fn draw_minimap(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
-    draw_terrain(view, layout, art, 0.0);
+    draw_terrain(view, layout, art, None);
     let size = layout.tile_size();
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
@@ -427,7 +454,8 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
-    draw_terrain(view, layout, art, 2.0);
+    let frame = village_flag_frame((get_time() * 1000.0) as u64);
+    draw_terrain(view, layout, art, Some(frame));
     for (position, texture) in &art.map_items {
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
@@ -533,6 +561,12 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn village_flag_cycles_through_four_original_frames_every_600ms() {
+        assert_eq!([0, 149, 150, 300, 450, 599, 600].map(village_flag_frame),
+                   [0, 0, 1, 2, 3, 3, 0]);
+    }
 
     #[test]
     fn map_cover_follows_the_viewing_side_and_stops_at_the_board_edge() {

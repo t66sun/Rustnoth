@@ -125,6 +125,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recruit_and_recall_events_match_the_unit_placed_on_the_castle() {
+        let config = r#"
+[units]
+[unit_type]
+id=Guard
+hitpoints=24
+cost=7
+[/unit_type]
+[/units]
+[terrain_type]
+string=Kh
+recruit_from=yes
+recruit_onto=yes
+[/terrain_type]
+[terrain_type]
+string=Ch
+recruit_onto=yes
+[/terrain_type]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,Ch,2 Kh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+gold=50
+recruit=Guard
+recall_cost=12
+[unit]
+id=veteran
+type=Guard
+placement=recall
+[/unit]
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=recruit
+[filter]
+type=Guard
+side=1
+x,y=2,1
+[/filter]
+[gold]
+side=1
+amount=3
+[/gold]
+[/event]
+[event]
+name=recruit,recall
+[filter]
+id=veteran
+[/filter]
+[gold]
+side=1
+amount=9
+[/gold]
+[/event]
+[/scenario]"#;
+        let bundle = crate::scenario_bundle::Bundle::parse(config.as_bytes()).unwrap();
+        let mut game = bundle.start(42, |_| unreachable!()).unwrap();
+        let recruit = Action::Recruit { unit_type: "Guard".into(), to: Hex { x: 1, y: 0 } };
+        game.step(recruit).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 46);
+        let recall = |x| Action::Recall { unit_id: "veteran".into(), to: Hex { x, y: 0 } };
+        assert_eq!(game.step(recall(1)), Err(MatchError::InvalidRecall));
+        assert_eq!(game.audit_snapshot().gold[0], 46);
+        game.step(recall(2)).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 43);
+    }
+
+    #[test]
     fn recall_filters_apply_to_the_veteran_and_the_leaders_connected_keep() {
         let scenario = wml::parse(r#"
             map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv

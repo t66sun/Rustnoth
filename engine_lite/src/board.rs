@@ -100,6 +100,10 @@ impl UnitState<'_> {
         base.saturating_add(3 * i32::from(self.default_amlas))
     }
 
+    fn emits_zoc(&self) -> bool {
+        !self.petrified && self.traits.as_ref().map_or(self.unit_type.emits_zoc, |t| t.stats.emits_zoc)
+    }
+
     pub fn max_movement(&self) -> i32 {
         self.traits.as_ref().map_or(self.unit_type.movement, |traits| traits.stats.max_movement)
     }
@@ -682,7 +686,7 @@ impl<'rules> Battlefield<'rules> {
             };
             let stops_movement = !unit.unit_type.skirmisher && position.neighbors().any(|neighbor| {
                 known_unit_at(neighbor)
-                    .is_some_and(|unit| hostile(unit) && !unit.petrified && unit.unit_type.emits_zoc)
+                    .is_some_and(|unit| hostile(unit) && unit.emits_zoc())
             });
             Some((MovementTile {
                 cost,
@@ -1503,6 +1507,20 @@ mod tests {
             board.move_unit(1, controlled, corridor_hex(1), walking_cost, |side| side == 2),
             Err(MoveError::Unreachable(corridor_hex(1))),
         );
+    }
+
+    #[test]
+    fn a_trait_can_remove_an_enemy_zone_of_control() {
+        let scenario = wml::parse("[side]\ntype=Spearman\n[/side]\n[side]\ntype=Spearman\n\
+            [modifications]\n[trait]\nid=harmless\n[effect]\napply_to=zoc\nvalue=no\n\
+            [/effect]\n[/trait]\n[/modifications]\n[/side]").unwrap();
+        let map = ScenarioMap::parse("Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv").unwrap();
+        let starts = crate::starting_units::read_authored_starting_units(&scenario, &map).unwrap();
+        let units = types();
+        let mut board = Battlefield::from_authored_starting_units(map, starts, &units, 100).unwrap();
+        let near = Hex { x: 2, y: 0 };
+        board.move_unit(1, Hex { x: 0, y: 0 }, near, |_| NonZeroU32::new(1), |s| s == 2).unwrap();
+        assert_eq!(board.unit_at(near).unwrap().moves_left, 3);
     }
 
     #[test]
