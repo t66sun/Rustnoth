@@ -32,6 +32,7 @@ mod rules;
 pub(crate) use rules::{map_observation, map_png, Rules as EditorTerrain};
 pub(crate) use minimap::Art as EditorMinimap;
 mod border;
+mod fog_edges;
 mod reach;
 mod hover;
 mod footsteps;
@@ -106,6 +107,7 @@ pub struct BoardArt {
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
+    fog_edges: fog_edges::Edges,
     fog: Vec<Texture2D>,
     shroud: Option<Texture2D>,
     unreachable: Option<Texture2D>,
@@ -167,6 +169,7 @@ impl BoardArt {
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
+            fog_edges: fog_edges::Edges::load(&terrain_dir),
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
@@ -193,6 +196,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.fog_edges.update(observation, &self.cover);
         self.transitions.load(observation, assets);
         self.minimap.load(observation, assets);
         self.rules.load(assets, observation);
@@ -545,6 +549,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
     art.lighting.flat(global_color);
     draw_cover(layout, art);
+    art.fog_edges.draw(layout);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
