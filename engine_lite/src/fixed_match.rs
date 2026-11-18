@@ -35,10 +35,12 @@ pub enum Action {
     EndTurn,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MatchState {
     Playing(Turn),
     Won(usize),
+    /// Surviving sides, in ascending order, when none are enemies of one another.
+    AlliedVictory(Vec<usize>),
     Draw,
 }
 
@@ -60,10 +62,10 @@ impl Rules<'_> {
     }
 }
 
-/// A headless free-for-all on a fixed, fully visible map.
+/// A headless match on a fixed, fully visible map.
 ///
 /// This match applies ordinary recruit traits and supports stock First Strike, Magical, and Charge.
-/// It ends when fewer than two sides have leaders or the scenario reaches the round limit.
+/// It ends when no surviving leaders are enemies or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
@@ -86,7 +88,6 @@ impl<'data> FixedMatch<'data> {
                 side.side != index + 1
                     || side.fog
                     || side.shroud
-                    || scenario.sides[..index].iter().any(|other| !side.is_enemy(other))
             })
             || scenario
                 .board
@@ -134,7 +135,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn state(&self) -> MatchState {
-        self.state
+        self.state.clone()
     }
 
     /// Projects the current board for a match side, including after the match ends.
@@ -143,6 +144,10 @@ impl<'data> FixedMatch<'data> {
         let board = &self.scenario.board;
         let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
         let mut observation = project(board, side, &vision, |_| true);
+        observation.allied_sides = self.scenario.sides.iter()
+            .filter(|other| !self.scenario.sides[side - 1].is_enemy(other))
+            .map(|other| other.side)
+            .collect();
         observation.gold = Some(gold);
         for tile in &mut observation.tiles {
             tile.village_owner = self.village_owners.get(&tile.position).copied();
@@ -157,7 +162,8 @@ impl<'data> FixedMatch<'data> {
         };
         let observation = self.observation_for(turn.side).expect("active match side");
         let board = &self.scenario.board;
-        let is_enemy = |side| side != turn.side;
+        let sides = &self.scenario.sides;
+        let is_enemy = |other: usize| sides[turn.side - 1].is_enemy(&sides[other - 1]);
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
             let destinations = board
@@ -185,7 +191,8 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
-        let is_enemy = |side| side != turn.side;
+        let sides = &self.scenario.sides;
+        let enemies = |first: usize, second: usize| sides[first - 1].is_enemy(&sides[second - 1]);
         match action {
             Action::Move { from, to } => {
                 let board = &mut self.scenario.board;
@@ -195,7 +202,7 @@ impl<'data> FixedMatch<'data> {
                     from,
                     to,
                     |terrain| self.rules.walking_cost(unit_type, terrain),
-                    is_enemy,
+                    |other| enemies(turn.side, other),
                 )?;
                 if self.capture_village(turn.side, to) {
                     self.scenario.board.stop_movement(to);
@@ -204,10 +211,10 @@ impl<'data> FixedMatch<'data> {
             Action::Attack(choice) => {
                 let attack = self.prepare_attack(turn, choice)?;
                 let board = &mut self.scenario.board;
-                board.apply_attack(
+                board.apply_attack_with_relations(
                     turn.side,
                     attack,
-                    is_enemy,
+                    enemies,
                     &mut self.rng,
                 )?;
                 board.advance_after_combat(choice.from, supports_unit);
@@ -231,7 +238,7 @@ impl<'data> FixedMatch<'data> {
                 };
             }
         }
-        Ok(self.state)
+        Ok(self.state())
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> bool {
@@ -245,7 +252,13 @@ impl<'data> FixedMatch<'data> {
         {
             return false;
         }
-        self.village_owners.insert(to, side);
+        if leader_sides(&self.scenario.board).any(|leader_side| leader_side == side) {
+            self.village_owners.insert(to, side);
+        } else if self.village_owners.get(&to).is_some_and(|owner|
+            self.scenario.sides[side - 1].is_enemy(&self.scenario.sides[*owner - 1])
+        ) {
+            self.village_owners.remove(&to);
+        }
         true
     }
 
@@ -285,7 +298,9 @@ impl<'data> FixedMatch<'data> {
         let defense_leadership = self.leadership_bonus(choice.to, defender);
         let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to, attack_leadership);
         let offensive_role = StrikeRole::Attack {
-            backstab: board.backstabs(choice.from, choice.to, weapon, defender.side),
+            backstab: board.backstabs(choice.from, choice.to, weapon, |side| {
+                self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
+            }),
         };
         let candidates = defender
             .unit_type
@@ -359,11 +374,19 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn check_leaders(&mut self) {
-        let mut leader_sides = leader_sides(&self.scenario.board);
-        self.state = match leader_sides.next() {
-            None => MatchState::Draw,
-            Some(side) if leader_sides.all(|other| other == side) => MatchState::Won(side),
-            Some(_) => self.state,
+        let living: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
+        let sides = &self.scenario.sides;
+        let mut winners: Vec<usize> = Vec::with_capacity(living.len());
+        for side in living {
+            if winners.iter().any(|&other| sides[side - 1].is_enemy(&sides[other - 1])) {
+                return;
+            }
+            winners.push(side);
+        }
+        self.state = match winners.as_slice() {
+            [] => MatchState::Draw,
+            [side] => MatchState::Won(*side),
+            _ => MatchState::AlliedVictory(winners),
         };
     }
 }
@@ -401,7 +424,7 @@ impl fmt::Display for MatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedScenario => f.write_str(
-                "fixed match requires at least two mutually hostile sides in order, with full visibility and supported weapons",
+                "fixed match requires at least two sides in order, with full visibility and supported weapons",
             ),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
@@ -1417,6 +1440,85 @@ Xv,Xv,Xv,Xv,Xv,Xv"
         later_round.start_round = 2;
         let resumed = FixedMatch::new(later_round, rules(), 5489).unwrap();
         assert_eq!(observed_gold(&resumed), (1, Some(24)));
+    }
+
+    #[test]
+    fn common_ally_allows_passage_but_does_not_link_hostile_teams() {
+        let bundle = crate::scenario_bundle::Bundle::parse(br#"
+            [terrain_type]
+                id=flat
+                string=Gg
+            [/terrain_type]
+            [terrain_type]
+                id=village
+                string=Vh
+                gives_income=yes
+                mvt_alias=Gg
+            [/terrain_type]
+            [units]
+                [movetype]
+                    name=foot
+                    [movement_costs]
+                        flat=1
+                    [/movement_costs]
+                [/movetype]
+                [unit_type]
+                    id=Fighter
+                    level=1
+                    hitpoints=10
+                    movement=4
+                    movement_type=foot
+                    [attack]
+                        range=melee
+                        accuracy=100
+                        damage=10
+                        number=1
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,3 Gg,Gg,Vh,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+                [side]
+                    side=1
+                    team_name=blue
+                    type=Fighter
+                [/side]
+                [side]
+                    side=2
+                    team_name=red
+                    type=Fighter
+                [/side]
+                [side]
+                    side=3
+                    team_name=blue,red
+                    type=Fighter
+                    [village]
+                        x,y=4,1
+                    [/village]
+                [/side]
+            [/scenario]
+        "#).unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let hex = |x| Hex { x, y: 0 };
+        let ally_attack = Action::Attack(AttackChoice { from: hex(0), to: hex(1), weapon: 0 });
+        let movement = Action::Move { from: hex(0), to: hex(3) };
+        let (observation, actions) = game.decision().unwrap();
+        assert_eq!(observation.allied_sides, [1, 3]);
+        assert!(!actions.contains(&ally_attack));
+        assert_eq!(game.step(ally_attack), Err(MatchError::Attack(AttackError::FriendlyTarget)));
+        assert!(actions.contains(&movement));
+        game.step(movement).unwrap();
+        assert_eq!(game.village_owners[&hex(3)], 1);
+        assert_eq!(game.scenario.board.unit_at(hex(3)).unwrap().moves_left, 0);
+        let attack = Action::Attack(AttackChoice { from: hex(3), to: hex(4), weapon: 0 });
+        assert!(game.decision().unwrap().1.contains(&attack));
+        assert_eq!(game.step(attack), Ok(MatchState::AlliedVictory(vec![1, 3])));
+        assert!(game.decision().is_none());
+        let mut wire = Vec::new();
+        crate::audit_trace::write_snapshot(&mut wire, 2, &game.audit_snapshot()).unwrap();
+        assert!(wire.starts_with(b"step\t2\twon\t1\t3\n"));
     }
 
     #[test]

@@ -284,6 +284,7 @@ mod tests {
         let destination = Hex { x: 1, y: 0 };
         let observation = Observation {
             side: 1,
+            allied_sides: vec![1],
             gold: Some(10),
             width: 3,
             height: 2,

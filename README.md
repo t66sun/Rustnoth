@@ -14,7 +14,7 @@ The referee owns the full game state. Policies receive only the information and 
 
 ## Run a fixed scenario
 
-The headless command runs a fully visible free-for-all match between two or more mutually hostile sides. Give it a preprocessed WML bundle with top-level `[terrain_type]` definitions, one `[units]` block of flat unit types and movement profiles, and one `[scenario]` block. Paths in `map_file` are relative to the bundle.
+The headless command runs a fully visible match between two or more sides. Sides sharing a `team_name` are allies. Surviving sides win together when no two are enemies. Give the command a preprocessed WML bundle with top-level `[terrain_type]` definitions, one `[units]` block of flat unit types and movement profiles, and one `[scenario]` block. Paths in `map_file` are relative to the bundle.
 
 ```sh
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-headless -- bundle.cfg 5489 100
