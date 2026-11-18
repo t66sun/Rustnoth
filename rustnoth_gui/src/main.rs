@@ -236,6 +236,14 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
         );
         let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = dialogue_open || top.handled;
+        if !input_blocked && is_key_pressed(KeyCode::G)
+            && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+                || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
+            match display_preferences::save_grid(!art.show_grid) {
+                Ok(()) => art.show_grid = !art.show_grid,
+                Err(error) => message = Some(format!("Could not save grid preference: {error}")),
+            }
+        }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
             Some(map_menus::Command::NextUnit) => {

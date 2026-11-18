@@ -13,28 +13,34 @@ fn config_directory() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Cannot locate the user configuration directory"))
 }
 
-fn load_from(directory: &Path) -> io::Result<bool> {
-    match fs::read_to_string(directory.join("window-mode")) {
-        Ok(value) => match value.trim() {
-            "fullscreen" => Ok(true),
-            "windowed" => Ok(false),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown Rustnoth window mode")),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+struct Setting { file: &'static str, off: &'static str, on: &'static str }
+
+const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
+const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
+
+impl Setting {
+    fn read(&self, dir: &Path) -> io::Result<bool> {
+        match fs::read_to_string(dir.join(self.file)) {
+            Ok(value) if value.trim() == self.on => Ok(true),
+            Ok(value) if value.trim() == self.off => Ok(false),
+            Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Unknown Rustnoth {}", self.file))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write(&self, dir: &Path, enabled: bool) -> io::Result<()> {
+        fs::create_dir_all(dir)?;
+        let pending = dir.join(format!("{}.{}.tmp", self.file, std::process::id()));
+        fs::write(&pending, format!("{}\n", if enabled { self.on } else { self.off }))?;
+        fs::rename(pending, dir.join(self.file))
     }
 }
 
-fn save_to(directory: &Path, fullscreen: bool) -> io::Result<()> {
-    fs::create_dir_all(directory)?;
-    let pending = directory.join(format!("window-mode.{}.tmp", std::process::id()));
-    fs::write(&pending, if fullscreen { "fullscreen\n" } else { "windowed\n" })?;
-    fs::rename(pending, directory.join("window-mode"))
-}
-
-pub fn load() -> io::Result<bool> { load_from(&config_directory()?) }
-
-pub fn save(fullscreen: bool) -> io::Result<()> { save_to(&config_directory()?, fullscreen) }
+pub fn load() -> io::Result<bool> { WINDOW.read(&config_directory()?) }
+pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory()?, fullscreen) }
+pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
+pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
 
 #[cfg(test)]
 mod tests {
@@ -44,11 +50,16 @@ mod tests {
     fn saved_modes_are_restored_across_launches() {
         let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let dir = env::temp_dir().join(format!("rustnoth-display-{}-{unique}", std::process::id()));
-        assert!(!load_from(&dir).unwrap());
-        save_to(&dir, true).unwrap();
-        assert!(load_from(&dir).unwrap());
-        save_to(&dir, false).unwrap();
-        assert!(!load_from(&dir).unwrap());
+        assert!(!WINDOW.read(&dir).unwrap());
+        WINDOW.write(&dir, true).unwrap();
+        assert!(WINDOW.read(&dir).unwrap());
+        WINDOW.write(&dir, false).unwrap();
+        assert!(!WINDOW.read(&dir).unwrap());
+        assert!(!GRID.read(&dir).unwrap());
+        GRID.write(&dir, true).unwrap();
+        assert!(GRID.read(&dir).unwrap());
+        assert!(!WINDOW.read(&dir).unwrap());
+        fs::remove_file(dir.join("map-grid")).unwrap();
         fs::remove_file(dir.join("window-mode")).unwrap();
         fs::remove_dir(dir).unwrap();
     }

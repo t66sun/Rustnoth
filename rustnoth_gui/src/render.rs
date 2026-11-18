@@ -82,6 +82,8 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
+    grid: [Option<Texture2D>; 2],
+    pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -140,6 +142,8 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
+            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
+            show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -349,7 +353,13 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             draw_centered(overlay, center, size);
         }
         }
-        if flag_frame.is_some() { art.rules.draw(tile.position, center, size, false, tod, now); }
+        if flag_frame.is_some() {
+            art.rules.draw(tile.position, center, size, false, tod, now);
+            if art.show_grid {
+                if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
+                for grid in art.grid.iter().flatten() { draw_centered(grid, center, size); }
+            }
+        }
         if let Some(owner) = tile.village_owner {
             if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
             if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
