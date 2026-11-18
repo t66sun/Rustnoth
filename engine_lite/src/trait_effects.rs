@@ -2,6 +2,23 @@
 
 use crate::{income::Upkeep, scenario_time::integer, unit_type::UnitType, wml::Node};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CombatImmunities {
+    pub(crate) undrainable: bool,
+    pub(crate) unslowable: bool,
+    pub(crate) unpoisonable: bool,
+}
+
+impl CombatImmunities {
+    pub(crate) fn with_traits(self, traits: &RecruitStats) -> Self {
+        Self {
+            undrainable: self.undrainable || traits.undrainable,
+            unslowable: self.unslowable || traits.unslowable,
+            unpoisonable: self.unpoisonable || traits.unpoisonable,
+        }
+    }
+}
+
 /// A recruit's effective maximum stats and weapon damage.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecruitStats {
@@ -25,13 +42,14 @@ pub struct RecruitStats {
 impl RecruitStats {
     /// Applies direct HP, movement, experience and attack damage effects in trait order.
     pub fn from_traits(unit: &UnitType, traits: &[&Node]) -> Self {
-        Self::from_traits_with_base_experience(unit, traits.iter().copied(), unit.experience)
+        Self::from_traits_with_base_experience(unit, traits.iter().copied(), unit.experience, CombatImmunities::default())
     }
 
     pub(crate) fn from_traits_with_base_experience<'a>(
         unit: &UnitType,
         traits: impl IntoIterator<Item = &'a Node>,
         base_max_experience: i32,
+        immunities: CombatImmunities,
     ) -> Self {
         let mut stats = Self {
             max_hitpoints: unit.hitpoints,
@@ -41,9 +59,9 @@ impl RecruitStats {
             max_experience: base_max_experience,
             healthy: false,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
-            undrainable: false,
-            unslowable: false,
-            unpoisonable: false,
+            undrainable: immunities.undrainable,
+            unslowable: immunities.unslowable,
+            unpoisonable: immunities.unpoisonable,
             unpetrifiable: false,
             unhealable: false,
             unplagueable: false,

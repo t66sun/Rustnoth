@@ -16,7 +16,7 @@ use crate::{
     rng::ReplayRng,
     starting_units::{AuthoredStartingUnit, StartingUnit},
     terrain_aliases::TerrainAliases,
-    trait_effects::{RecruitStats, increase_percent},
+    trait_effects::{CombatImmunities, RecruitStats, increase_percent},
     turn::Turn,
     unit_type::UnitType,
     wml::Node,
@@ -51,6 +51,7 @@ pub struct UnitState<'rules> {
     pub id: Option<String>,
     pub unit_type: &'rules UnitType,
     pub hitpoints: i32,
+    immunities: CombatImmunities,
     pub poisoned: bool,
     pub petrified: bool,
     unpetrifiable: bool,
@@ -86,7 +87,7 @@ impl<'rules> UnitTraits<'rules> {
     ) -> Option<Self> {
         (!definitions.is_empty()).then(|| Self {
             stats: RecruitStats::from_traits_with_base_experience(
-                unit, definitions.iter().map(Cow::as_ref), base_max_experience,
+                unit, definitions.iter().map(Cow::as_ref), base_max_experience, CombatImmunities::default(),
             ),
             definitions,
         })
@@ -180,6 +181,7 @@ impl<'rules> Battlefield<'rules> {
             experience: 0,
             moves_left: None,
             attacks_left: None,
+            immunities: CombatImmunities::default(),
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
@@ -236,6 +238,7 @@ impl<'rules> Battlefield<'rules> {
             experience,
             moves_left,
             attacks_left,
+            immunities,
             poisoned,
             petrified,
             unpetrifiable,
@@ -268,6 +271,7 @@ impl<'rules> Battlefield<'rules> {
             unit_type,
             hitpoints: 0,
             default_amlas,
+            immunities: traits.as_ref().map_or(immunities, |t| immunities.with_traits(&t.stats)),
             poisoned,
             petrified,
             unpetrifiable,
@@ -390,8 +394,9 @@ impl<'rules> Battlefield<'rules> {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
                     next_type,
                     traits.definitions.iter().map(Cow::as_ref),
-                    unit.base_max_experience,
+                    unit.base_max_experience, unit.immunities,
                 );
+                unit.immunities = CombatImmunities::default().with_traits(&traits.stats);
             }
             unit.hitpoints = unit.max_hitpoints();
             unit.slowed = false;
@@ -439,8 +444,9 @@ impl<'rules> Battlefield<'rules> {
             raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
             if let Some(traits) = &mut raised.traits {
                 traits.stats = RecruitStats::from_traits_with_base_experience(
-                    variation, traits.definitions.iter().map(Cow::as_ref), raised.base_max_experience,
+                    variation, traits.definitions.iter().map(Cow::as_ref), raised.base_max_experience, raised.immunities,
                 );
+                raised.immunities = CombatImmunities::default().with_traits(&traits.stats);
             }
             raised.hitpoints = raised.max_hitpoints();
         }
@@ -468,6 +474,7 @@ impl<'rules> Battlefield<'rules> {
             unit_type,
             default_amlas: 0,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
+            immunities: traits.as_ref().map_or_else(CombatImmunities::default, |t| CombatImmunities::default().with_traits(&t.stats)),
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
@@ -979,6 +986,7 @@ mod tests {
             moves_left: (position == WEST).then_some(2),
             attacks_left: None,
             experience: 0,
+            immunities: CombatImmunities::default(),
             poisoned: false,
             petrified: false,
             unpetrifiable: false,
