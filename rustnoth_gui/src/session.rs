@@ -1,5 +1,5 @@
 use engine_lite::{
-    fixed_match::{Action, FixedMatch, MatchError, MatchState},
+    fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
     hex::Hex,
     observation::Observation,
 };
@@ -38,6 +38,10 @@ impl<'rules> Session<'rules> {
 
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
         self.game.advancement_choices(position)
+    }
+
+    pub fn recall_info(&self, id: &str) -> Option<RecallInfo<'_>> {
+        self.game.recall_info(id)
     }
 
     pub fn apply(&mut self, action: Action) -> Result<MatchState, MatchError> {
