@@ -39,7 +39,7 @@ pub(crate) enum BoardChange {
     EndLevel { victory: bool },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
-    Terrain { locations: Vec<WmlRectangle>, code: String },
+    Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +181,7 @@ impl EventAction {
             return VillageCapture::read(cfg).map(|v| Self::Board(BoardChange::CaptureVillage(v)));
         }
         if tag == "terrain" {
-            if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain")) {
+            if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain" | "layer" | "replace_if_failed")) {
                 return None;
             }
             if cfg.attributes.values().any(|v| !v.translations.is_empty() || v.text.contains('$')) {
@@ -194,8 +194,17 @@ impl EventAction {
                 locations.push((1..=i32::MAX, 1..=i32::MAX));
             }
             let code = cfg.attribute("terrain")?.trim();
-            if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
-            return Some(Self::Board(BoardChange::Terrain { locations, code: code.into() }));
+            if code.is_empty() || code.contains(['$', '*', ',', ' ']) { return None; }
+            use crate::terrain_aliases::TerrainLayer;
+            let layer = match cfg.attribute("layer").unwrap_or("both") {
+                "both" => TerrainLayer::Both,
+                "base" => TerrainLayer::Base,
+                "overlay" => TerrainLayer::Overlay,
+                _ => return None,
+            };
+            let fallback = matches!(cfg.attribute("replace_if_failed"), Some("yes" | "true" | "1"));
+            let code = code.trim_end_matches('^').to_owned();
+            return Some(Self::Board(BoardChange::Terrain { locations, code, layer, fallback }));
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
@@ -833,7 +842,10 @@ y=1
 
     #[test]
     fn terrain_events_apply_paired_coordinate_ranges_and_clip_at_the_map_edge() {
-        let bundle = Bundle::parse(br#"[units]
+        let bundle = Bundle::parse(br#"[terrain_type]
+string=Hh
+[/terrain_type]
+[units]
 [unit_type]
 id=Guard
 hitpoints=20
@@ -1081,6 +1093,67 @@ mod starting_villages_test {
 #[cfg(test)]
 mod terrain_event_test {
     use crate::{scenario_bundle::Bundle, hex::Hex};
+
+    #[test]
+    fn campaign_terrain_layers_keep_the_other_layer_and_fallback_uses_the_default_base() {
+        let source = br#"[terrain_type]
+string=Gg
+[/terrain_type]
+[terrain_type]
+string=Hh
+[/terrain_type]
+[terrain_type]
+string=^Vh
+default_base=Gg
+gives_income=yes
+[/terrain_type]
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg^Vh,Zz,2 Hh,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[terrain]
+x,y=2,1
+terrain=Hh
+layer=base
+[/terrain]
+[terrain]
+x,y=1,1
+terrain=^Vh
+layer=overlay
+[/terrain]
+[terrain]
+x,y=3,1
+terrain=^Vh
+layer=overlay
+replace_if_failed=yes
+[/terrain]
+[terrain]
+x,y=4,1
+terrain=^Z
+layer=overlay
+[/terrain]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        let view = game.observation_for(1).unwrap();
+        assert_eq!(view.tiles.iter().map(|tile| tile.terrain.as_str()).collect::<Vec<_>>(),
+                   ["Gg^Vh", "Hh^Vh", "Gg^Vh", "Hh"]);
+    }
 
     #[test]
     fn a_new_campaign_village_can_be_claimed_later_in_the_same_event() {
