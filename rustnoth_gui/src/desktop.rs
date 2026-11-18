@@ -9,6 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
 const CAMPAIGN: &str = "data/campaigns/The_South_Guard";
 pub(super) const TUTORIAL: &str = "data/campaigns/tutorial";
 const BINARY: &str = if cfg!(windows) { "wesnoth.exe" } else { "wesnoth" };
@@ -19,7 +20,8 @@ pub(super) struct GameData {
 }
 
 pub(super) fn campaign_available(root: &Path) -> bool {
-    root.join(CAMPAIGN).join("_main.cfg").is_file() && root.join(CAMPAIGN).join("maps").is_dir()
+    fs::read_dir(root.join("data/campaigns")).is_ok_and(|mut folders|
+        folders.any(|f| f.is_ok_and(|f| f.path().join("_main.cfg").is_file())))
 }
 
 fn steam_libraries(config: &str) -> impl Iterator<Item = PathBuf> + '_ {
@@ -143,10 +145,15 @@ pub(super) fn prepare(root: &Path, campaign: bool) -> io::Result<GameData> {
     let cache = cache_directory()?;
     let core = prepared(root,&binary,&cache,"data/core","SKIP_CORE,NO_TERRAIN_GFX")?;
     let campaign = if campaign {
-        let file = prepared(root,&binary,&cache,CAMPAIGN,"NO_TERRAIN_GFX,CAMPAIGN_THE_SOUTH_GUARD,NORMAL")?;
-        Some((file,root.join(CAMPAIGN).join("maps")))
+        let file = prepared(root, &binary, &cache, "data", "TITLE_SCREEN,NO_TERRAIN_GFX")?;
+        Some((file, root.join("data/campaigns")))
     } else { None };
     Ok(GameData { core: fs::read(core)?, campaign })
+}
+
+pub(super) fn prepare_campaign(root: &Path, folder: &str, define: &str, difficulty: &str) -> io::Result<PathBuf> {
+    let source = format!("data/campaigns/{folder}");
+    prepared(root, &executable(root)?, &cache_directory()?, &source, &format!("NO_TERRAIN_GFX,{define},{difficulty}"))
 }
 
 pub(super) fn prepare_tutorial(root: &Path) -> io::Result<PathBuf> {
