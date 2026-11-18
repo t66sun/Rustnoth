@@ -11,6 +11,7 @@ enum Group {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Command {
     Objectives,
+    Save,
     Quit,
     NextUnit,
     Recruit,
@@ -20,6 +21,7 @@ impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::Objectives => "Scenario Objectives",
+            Self::Save => "Save Game",
             Self::Quit => "Quit to Main Menu",
             Self::NextUnit => "Next Unit",
             Self::Recruit => "Recruit",
@@ -117,7 +119,7 @@ fn items(group: Group, commands: &[Command]) -> Vec<Command> {
     commands
         .iter()
         .copied()
-        .filter(|c| matches!(c, Command::Objectives | Command::Quit) == (group == Group::Menu))
+        .filter(|c| matches!(c, Command::Objectives | Command::Save | Command::Quit) == (group == Group::Menu))
         .collect()
 }
 fn row(button: Rect, i: usize, scale: f32) -> Rect {

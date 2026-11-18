@@ -22,6 +22,8 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 
 从 **Preferences → Display** 勾选或取消 **Full screen** 可立即切换显示模式。用 Tab 切换焦点，空格或 Enter 确认，Esc 关闭。Rustnoth 会在下次启动时恢复该选择。
 
+独立场景和遭遇战可以按 **Ctrl+S** 命名并保存。下次从标题选择 **Load** 即可继续，方向键选择存档，Enter 载入，Esc 返回。每个存档保留开局规则、地图、随机种子、玩家操作和电脑回合。存档存放在 Rustnoth 自有的用户配置目录下。
+
 ### 在窗口中选择战役场景
 
 给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：

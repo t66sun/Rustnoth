@@ -21,13 +21,14 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Preferences, Quit, Help, Previous, Next }
+enum Command { Campaigns, Multiplayer, Load, Preferences, Quit, Help, Previous, Next }
 
 impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
+            Self::Load => "Load",
             Self::Preferences => "Preferences",
             Self::Quit => "Quit",
             Self::Help => "Help",
@@ -38,8 +39,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Preferences, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -99,6 +100,10 @@ impl TitleScreen {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::Previous) => { error = None; tip = (tip + tips.len() - 1) % tips.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % tips.len(); }
+                Some(Command::Load) => {
+                    next_frame().await;
+                    error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
+                }
                 Some(Command::Preferences) => {
                     next_frame().await;
                     let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
@@ -325,8 +330,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
     }
 
     #[test]

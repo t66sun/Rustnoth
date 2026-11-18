@@ -26,6 +26,8 @@ mod map_menus;
 mod render;
 mod setup;
 mod story;
+mod saved_game;
+mod save_dialog;
 mod title_screen;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
@@ -170,6 +172,9 @@ impl Launch {
 }
 
 struct BoardData {
+    source: Vec<u8>,
+    core: Vec<u8>,
+    restore: Option<saved_game::Restore>,
     scenario: Bundle,
     story: Vec<story::Part>,
     assets: AssetCatalog,
@@ -193,6 +198,7 @@ impl BoardData {
         let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
         let story = story::read(config, &title);
         Ok(Self {
+            source: source.to_vec(), core: core.to_vec(), restore: None,
             scenario,
             story,
             assets,
@@ -212,14 +218,32 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
+async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
     let campaign = carryover.is_some();
-    let game = data.scenario.start_campaign(data.seed, |name| fs::read_to_string(data.directory.join(name)), carryover.as_deref_mut())?;
+    let restore = data.restore.take();
+    let mut saved_map = None;
+    let game = data.scenario.start_campaign(data.seed, |name| {
+        let map = match &restore {
+            Some(checkpoint) => checkpoint.map.clone().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,"Saved scenario is missing its external map"))?,
+            None => fs::read_to_string(data.directory.join(name))?,
+        };
+        saved_map = Some(map.clone());
+        Ok(map)
+    }, carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root)?;
-    story::show(&data.story, &data.assets, art.font.as_ref()).await;
+    if let Some(checkpoint) = restore {
+        for event in checkpoint.events { event.apply(&mut session)?; }
+        if let Some(view) = session.observation() {
+            if let Some(hex) = checkpoint.selected { selection.select_own(hex,view); }
+            camera.update(render::board_viewport(),view,false);
+            if let Some(focus) = checkpoint.camera { camera.restore(focus); }
+        }
+    } else {
+        story::show(&data.story, &data.assets, art.font.as_ref()).await;
+    }
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
@@ -231,11 +255,12 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
     let mut top_menu = map_menus::State::default();
     loop {
         let dialogue_open = session.dialogue().is_some();
-        let commands = map_menus::available(
+        let mut commands = map_menus::available(
             session.objectives().is_some(),
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
             session.legal_actions(),
         );
+        if !campaign { commands.insert(0, map_menus::Command::Save); }
         let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = dialogue_open || top.handled;
         match top.command {
@@ -258,6 +283,18 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                 }
             }
             _ => {}
+        }
+        if !campaign && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
+            next_frame().await;
+            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
+                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit())) {
+                    Ok(()) => format!("Saved {name}"),
+                    Err(e) => format!("Save failed: {e}"),
+                });
+            }
+            next_frame().await;
+            continue;
         }
         if !input_blocked && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
