@@ -116,6 +116,8 @@ impl<'rules> Battlefield<'rules> {
             experience: 0,
             moves_left: None,
             attacks_left: None,
+            poisoned: false,
+            slowed: false,
         });
         Self::from_authored_starting_units(
             map,
@@ -144,6 +146,8 @@ impl<'rules> Battlefield<'rules> {
             experience,
             moves_left,
             attacks_left,
+            poisoned,
+            slowed,
         } in starting_units
         {
             let position = start.position;
@@ -166,9 +170,9 @@ impl<'rules> Battlefield<'rules> {
                 id: start.id,
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(max_hp),
-                poisoned: false,
+                poisoned,
                 experience,
-                slowed: false,
+                slowed,
                 base_max_experience,
                 moves_left: moves_left.unwrap_or(movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
@@ -576,6 +580,8 @@ mod tests {
             moves_left: (position == WEST).then_some(2),
             attacks_left: None,
             experience: 0,
+            poisoned: false,
+            slowed: false,
         });
         let board = Battlefield::from_authored_starting_units(map(), starts, &types, 100).unwrap();
         for (position, hp, moves) in [(EAST, 13, 5), (WEST, 8, 2)] {
