@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 mod endlevel;
 pub(crate) mod kill;
 mod items;
+mod have_unit;
+use have_unit::HaveUnit;
 mod variables;
 mod time_areas;
 pub(crate) use time_areas::TimeAreaChange;
@@ -39,7 +41,7 @@ enum EventAction {
     Board(BoardChange),
     Item(ItemChange),
     Variable(ScalarChange),
-    If { tests: Vec<Comparison>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
+    If { tests: Vec<Comparison>, units: Vec<HaveUnit>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
 }
 
 #[derive(Clone, Debug)]
@@ -299,9 +301,10 @@ impl EventAction {
         Some(Self::Sides { sides, action })
     }
 
-    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars, primary: Option<Hex>) {
-        if !state.board_changes.is_empty() && !matches!(self, Self::Board(_)) {
-            // Prior board actions can run nested WML handlers before this command.
+    fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
+        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>) {
+        if !matches!(self, Self::Board(_)) && (!state.board_changes.is_empty()
+            || matches!(self, Self::If { units, .. } if !units.is_empty() && board.is_none())) {
             state.board_changes.push(BoardChange::Resume(PendingAction(Box::new(self.clone())), primary));
             return;
         }
@@ -310,9 +313,11 @@ impl EventAction {
                 change.apply(variables);
                 return;
             }
-            Self::If { tests, on_match, otherwise } => {
-                let branch = if tests.iter().all(|test| test.matches(variables)) { on_match } else { otherwise };
-                for change in branch { change.apply(state, items, variables, primary); }
+            Self::If { tests, units, on_match, otherwise } => {
+                let matched = tests.iter().all(|test| test.matches(variables))
+                    && units.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
+                let branch = if matched { on_match } else { otherwise };
+                for change in branch { change.apply(state, items, variables, primary, board); }
                 return;
             }
             Self::Item(change) => {
@@ -369,12 +374,14 @@ fn read_actions<'a>(
             "if" => {
                 if !cfg.attributes.is_empty() { return None; }
                 let mut tests = Vec::new();
+                let mut units = Vec::new();
                 let mut on_match = Vec::new();
                 let mut otherwise = Vec::new();
                 let mut has_branch = false;
                 for (tag, child) in &cfg.children {
                     match tag.as_str() {
                         "variable" => tests.push(Comparison::read(child)?),
+                        "have_unit" => units.push(HaveUnit::read(child)?),
                         "then" | "else" if child.attributes.is_empty() => {
                             has_branch = true;
                             let branch = if tag == "then" { &mut on_match } else { &mut otherwise };
@@ -383,8 +390,8 @@ fn read_actions<'a>(
                         _ => return None,
                     }
                 }
-                if tests.is_empty() || !has_branch { return None; }
-                EventAction::If { tests, on_match, otherwise }
+                if (tests.is_empty() && units.is_empty()) || !has_branch { return None; }
+                EventAction::If { tests, units, on_match, otherwise }
             }
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
@@ -445,15 +452,15 @@ impl UnitFilter {
     }
 
     pub(crate) fn matches(&self, unit: &ArrivingUnit<'_>) -> bool {
-        let Some((x, y)) = unit.position.to_wml() else { return false };
-        (self.locations.is_empty() || self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y)))
-            && self.matches_fields(unit.side, unit.id.as_deref(), unit.type_id)
+        self.matches_fields(Some(unit.position), unit.side, unit.id.as_deref(), unit.type_id)
     }
 
-    fn matches_fields(&self, side: usize, id: Option<&str>, type_id: &str) -> bool {
-        (self.sides.is_empty() || self.sides.contains(&side))
+    fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
+        (self.locations.is_empty() || position.and_then(Hex::to_wml).is_some_and(|(x, y)|
+            self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))))
+            && (self.sides.is_empty() || self.sides.contains(&side))
             && (self.ids.is_empty() || id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
-            && (self.types.is_empty() || self.types.iter().any(|kind| kind == type_id))
+            && (self.types.is_empty() || self.types.iter().any(|id| id == type_id))
     }
 }
 
@@ -587,8 +594,8 @@ impl ScenarioEvents {
         }
     }
 
-    pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, state: &mut EventState<'_>) {
-        action.0.apply(state, &mut self.items, &mut self.variables, primary);
+    pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, board: &crate::board::Battlefield<'_>, state: &mut EventState<'_>) {
+        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board));
     }
 
     pub(crate) fn has_handler(&self, name: &str) -> bool {
@@ -608,7 +615,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position));
+                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None);
             }
             !handler.once
         });
