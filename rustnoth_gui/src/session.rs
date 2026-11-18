@@ -24,6 +24,10 @@ impl<'rules> Session<'rules> {
         self.game.state()
     }
 
+    pub fn global_time_of_day(&self) -> Option<&engine_lite::time_of_day::TimeOfDay> {
+        self.game.global_time_of_day()
+    }
+
     pub fn observation(&self) -> Option<&Observation> {
         self.observation.as_ref()
     }
@@ -63,6 +67,53 @@ impl<'rules> Session<'rules> {
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn shows_the_current_global_period_across_side_and_round_changes() {
+        let bundle = Bundle::parse(br#"
+            [units]
+                [unit_type]
+                    id=Guard
+                    hitpoints=10
+                [/unit_type]
+            [/units]
+            [scenario]
+                turns=2
+                current_time=1
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                [time]
+                    id=custom_light
+                    lawful_bonus=13
+                [/time]
+                [time]
+                    id=first_watch
+                    lawful_bonus=-25
+                [/time]
+                [time_area]
+                    x,y=1,1
+                    [time]
+                        id=local_cavern
+                        lawful_bonus=-40
+                    [/time]
+                [/time_area]
+                [side]
+                    type=Guard
+                [/side]
+                [side]
+                    type=Guard
+                [/side]
+            [/scenario]
+        "#).unwrap();
+        let mut session = Session::new(bundle.start(19, |_| unreachable!()).unwrap());
+        for expected in [("first_watch", -25), ("first_watch", -25), ("custom_light", 13), ("custom_light", 13)] {
+            let period = session.global_time_of_day().unwrap();
+            assert_eq!((period.id.as_str(), period.lawful_bonus), expected);
+            session.apply(Action::EndTurn).unwrap();
+        }
+        assert!(session.global_time_of_day().is_none());
+    }
 
     #[test]
     fn follows_the_active_side_and_keeps_its_updated_board_at_the_end() {

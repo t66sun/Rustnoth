@@ -5,6 +5,7 @@ use std::{
 };
 
 use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::Observation};
+use engine_lite::time_of_day::TimeOfDay;
 use macroquad::prelude::*;
 use rustnoth_gui::{
     assets::AssetCatalog,
@@ -59,6 +60,7 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     fog: Vec<Texture2D>,
@@ -75,6 +77,18 @@ impl BoardArt {
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let palette_path = wesnoth_root.join("data/core/team-colors.cfg");
         let terrain_dir = wesnoth_root.join("data/core/images/terrain");
+        let clock_dir = wesnoth_root.join("data/core/images/misc/time-schedules/default");
+        let periods = [
+            ("dawn", "Dawn", "dawn"),
+            ("morning", "Morning", "morning"),
+            ("afternoon", "Afternoon", "afternoon"),
+            ("dusk", "Dusk", "dusk"),
+            ("first_watch", "First Watch", "firstwatch"),
+            ("second_watch", "Second Watch", "secondwatch"),
+        ].into_iter().map(|(id, name, file)| {
+            let image = load_texture(&clock_dir.join(format!("schedule-{file}.png")), None);
+            (id, (name, image))
+        }).collect();
         let team_colors = fs::read(&palette_path)
             .and_then(|bytes| TeamColors::parse(&bytes))
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
@@ -83,6 +97,7 @@ impl BoardArt {
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
+            periods,
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
@@ -141,6 +156,7 @@ fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Te
 }
 
 pub struct MovementView<'a> {
+    pub global_time: Option<&'a TimeOfDay>,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -207,7 +223,13 @@ pub fn draw(
     draw_rectangle(panel_x, HEADER_HEIGHT, panel_width, (height - HEADER_HEIGHT).max(0.0), PANEL);
     draw_line(0.0, HEADER_HEIGHT, width, HEADER_HEIGHT, 1.0, BORDER);
     draw_line(panel_x, HEADER_HEIGHT, panel_x, height, 1.0, BORDER);
-    label(&art.font, title, 24.0, 44.0, 29, TEXT);
+    let title_space = if let Some(period) = movement.global_time {
+        draw_global_clock(art, period, panel_x, width);
+        panel_x
+    } else {
+        width
+    };
+    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_space - 36.0);
     let inset = panel_x + 18.0;
     let baseline = HEADER_HEIGHT + 40.0;
     match state {
@@ -286,6 +308,34 @@ pub fn draw(
             draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, if highlighted { TEXT } else { BORDER });
             label(&art.font, row.label, bounds.x + 10.0, bounds.y + 27.0, 17, TEXT);
         }
+    }
+}
+
+fn draw_global_clock(art: &BoardArt, period: &TimeOfDay, left: f32, right: f32) {
+    let mut x = left + 12.0;
+    let (name, image) = art.periods.get(period.id.as_str())
+        .map_or((period.id.as_str(), None), |(name, image)| (*name, image.as_ref()));
+    if right - left >= 190.0 && let Some(image) = image {
+        let width = (right - left - 116.0).min(image.width());
+        let height = width * image.height() / image.width();
+        draw_texture_ex(image, x, (HEADER_HEIGHT - height) * 0.5, WHITE, DrawTextureParams {
+            dest_size: Some(vec2(width, height)), ..DrawTextureParams::default()
+        });
+        x += width + 8.0;
+    }
+    let available = right - x - 10.0;
+    header_label(&art.font, name, x, 30.0, 17, TEXT, available);
+    let bonus = format!("Lawful {:+}%", period.lawful_bonus);
+    header_label(&art.font, &bonus, x, 51.0, 15, MUTED, available);
+}
+
+fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, color: Color, width: f32) {
+    if width > 0.0 && !text.is_empty() {
+        let measured = measure_text(text, font.as_ref(), size, 1.0).width;
+        draw_text_ex(text, x, y, TextParams {
+            font: font.as_ref(), font_size: size, font_scale: (width / measured).min(1.0),
+            color, ..TextParams::default()
+        });
     }
 }
 

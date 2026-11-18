@@ -166,6 +166,12 @@ impl<'data> FixedMatch<'data> {
         self.state.clone()
     }
 
+    /// Public scenario time for the active round, before terrain or unit illumination.
+    pub fn global_time_of_day(&self) -> Option<&crate::time_of_day::TimeOfDay> {
+        let MatchState::Playing(turn) = self.state else { return None };
+        Some(self.scenario.schedule.at_turn(turn.round))
+    }
+
     /// Projects the current board for a match side, including after the match ends.
     pub fn observation_for(&self, side: usize) -> Option<Observation> {
         let gold = *self.gold.get(side.checked_sub(1)?)?;
