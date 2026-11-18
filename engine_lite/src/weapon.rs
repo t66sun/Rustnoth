@@ -1,7 +1,10 @@
+use std::num::NonZeroU32;
+
 use crate::wml::Node;
 
 const MAGICAL_HIT_CHANCE: u8 = 70;
 const MARKSMAN_HIT_CHANCE: u8 = 60;
+const BERSERK_ROUNDS: NonZeroU32 = NonZeroU32::new(30).unwrap();
 
 /// The combat fields of a preprocessed Wesnoth 1.18.8 `[attack]` tag.
 #[derive(Debug, PartialEq, Eq)]
@@ -97,10 +100,21 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn combat_rounds(&self) -> NonZeroU32 {
+        if self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_berserk(tag, definition))
+        }) {
+            BERSERK_ROUNDS
+        } else {
+            NonZeroU32::MIN
+        }
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
                 is_unconditional_firststrike(tag, definition)
+                    || is_stock_berserk(tag, definition)
                     || is_unconditional_magical(tag, definition)
                     || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
@@ -119,6 +133,18 @@ fn is_stock_marksman(tag: &str, definition: &Node) -> bool {
         && definition.attribute("active_on") == Some("offense")
         && definition.attributes.iter().all(|(key, value)| match key.as_str() {
             "id" | "value" | "cumulative" | "active_on" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
+}
+
+fn is_stock_berserk(tag: &str, definition: &Node) -> bool {
+    tag == "berserk"
+        && definition.children.is_empty()
+        && definition.attribute("id") == Some("berserk")
+        && definition.attribute("value").and_then(|value| value.parse().ok()) == Some(BERSERK_ROUNDS)
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "value" => value.translations.is_empty(),
             "name" | "description" | "special_note" => true,
             _ => false,
         })
@@ -209,6 +235,20 @@ mod tests {
         let (kind, definition) = &specials.children[0];
         assert_eq!(kind, "chance_to_hit");
         assert_eq!(definition.attribute("id"), Some("marksman"));
+    }
+
+    #[test]
+    fn rejects_berserk_with_a_different_limit_or_trigger() {
+        for fields in [
+            "id=berserk\nvalue=40",
+            "id=berserk\nvalue=30\nactive_on=offense",
+            "id=berserk\nvalue=30\n[filter_opponent]\nlevel=1\n[/filter_opponent]",
+        ] {
+            let weapon = WeaponProfile::from_wml(
+                wml::parse(format!("[specials]\n[berserk]\n{fields}\n[/berserk]\n[/specials]")).unwrap(),
+            );
+            assert!(!weapon.supports_specials());
+        }
     }
 
     #[test]

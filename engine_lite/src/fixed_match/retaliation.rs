@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 use crate::{
     board::StrikeModifiers,
@@ -6,17 +6,17 @@ use crate::{
 };
 
 pub(super) fn select(
-    candidates: impl Iterator<Item = ((usize, StrikeModifiers), Combatant, Combatant)>,
+    candidates: impl Iterator<Item = ((usize, StrikeModifiers), Combatant, Combatant, NonZeroU32)>,
 ) -> Option<(usize, StrikeModifiers)> {
     let mut candidates = candidates.peekable();
-    let (mut best, attacker, defender) = candidates.next()?;
+    let (mut best, attacker, defender, rounds) = candidates.next()?;
     if candidates.peek().is_none() {
         return Some(best);
     }
 
-    let mut best_outcome = exchange(attacker, defender);
-    for (candidate, attacker, defender) in candidates {
-        let outcome = exchange(attacker, defender);
+    let mut best_outcome = exchange(attacker, defender, rounds);
+    for (candidate, attacker, defender, rounds) in candidates {
+        let outcome = exchange(attacker, defender, rounds);
         if outcome.better_for_defender_than(&best_outcome) {
             best = candidate;
             best_outcome = outcome;
@@ -58,7 +58,7 @@ impl Outcome {
     }
 }
 
-fn exchange(attacker: Combatant, defender: Combatant) -> Outcome {
+fn exchange(attacker: Combatant, defender: Combatant, rounds: NonZeroU32) -> Outcome {
     let mut outcome = Outcome::default();
     let starting_hp = [attacker.hitpoints, defender.hitpoints];
     if starting_hp.contains(&0) {
@@ -72,8 +72,10 @@ fn exchange(attacker: Combatant, defender: Combatant) -> Outcome {
         if unit.damage == 0 || unit.hit_chance == 0 { 0 } else { unit.strikes }
     });
     let mut ongoing = BTreeMap::from([(starting_hp, 1.0)]);
-    for strike in 0..strikes[0].max(strikes[1]) {
-        if ongoing.is_empty() {
+    let strikes_per_round = strikes[0].max(strikes[1]);
+    for strike in (0..rounds.get()).flat_map(|_| 0..strikes_per_round) {
+        // Native stops prediction between rounds at a 99% combined probability of death.
+        if ongoing.is_empty() || (strike == 0 && outcome.death[0] + outcome.death[1] >= 0.99) {
             break;
         }
         for striker in order {
@@ -115,8 +117,8 @@ mod tests {
 
     #[test]
     fn favors_a_chance_to_kill_over_more_expected_damage() {
-        let steady = exchange(combatant(10, 1, 1, 100), combatant(20, 3, 3, 100));
-        let lethal = exchange(combatant(10, 1, 1, 100), combatant(20, 1, 10, 20));
+        let steady = exchange(combatant(10, 1, 1, 100), combatant(20, 3, 3, 100), NonZeroU32::MIN);
+        let lethal = exchange(combatant(10, 1, 1, 100), combatant(20, 1, 10, 20), NonZeroU32::MIN);
         assert_eq!(steady.average_hp[0], 1.0);
         assert_eq!(lethal.average_hp[0], 8.0);
         assert_eq!(lethal.death[0], 0.2);
@@ -125,7 +127,7 @@ mod tests {
 
     #[test]
     fn only_surviving_defenders_can_retaliate() {
-        let outcome = exchange(combatant(10, 1, 10, 75), combatant(10, 1, 10, 100));
+        let outcome = exchange(combatant(10, 1, 10, 75), combatant(10, 1, 10, 100), NonZeroU32::MIN);
         assert_eq!(outcome.death, [0.25, 0.75]);
         assert_eq!(outcome.average_hp, [7.5, 2.5]);
     }
