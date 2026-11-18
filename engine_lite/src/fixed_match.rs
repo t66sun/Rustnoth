@@ -223,12 +223,27 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn step(&mut self, action: Action) -> Result<MatchState, MatchError> {
+        self.step_with_choices(action, None, None)
+    }
+
+    /// Apply an attack with each combatant's preferred next type if it advances.
+    /// Omitted choices and subsequent levels use the first declared type.
+    /// Invalid preferences are rejected before combat or RNG consumption.
+    pub fn attack_with_advancements(
+        &mut self, attack: AttackChoice, attacker: Option<&str>, defender: Option<&str>,
+    ) -> Result<MatchState, MatchError> {
+        self.step_with_choices(Action::Attack(attack), attacker, defender)
+    }
+
+    fn step_with_choices(
+        &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
+    ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
         let sides = &self.scenario.sides;
         let viewer = &sides[turn.side - 1];
-        if (viewer.fog || viewer.shroud) && !matches!(action, Action::EndTurn)
+        if (viewer.fog || viewer.shroud || attacker.is_some() || defender.is_some()) && !matches!(action, Action::EndTurn)
             && !self.decision().expect("playing side").1.contains(&action)
         {
             return Err(MatchError::ActionUnavailable);
@@ -244,6 +259,11 @@ impl<'data> FixedMatch<'data> {
                 }
                 let attack = self.prepare_attack(turn, choice)?;
                 let board = &mut self.scenario.board;
+                for (position, preferred) in [(choice.from, attacker), (choice.to, defender)] {
+                    if preferred.is_some_and(|id| !board.can_advance_to(position, id, supports_unit)) {
+                        return Err(MatchError::InvalidAdvancement);
+                    }
+                }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
                 board.apply_scenario_attack(
                     turn.side,
@@ -252,8 +272,8 @@ impl<'data> FixedMatch<'data> {
                     self.rules.terrain,
                     &mut self.rng,
                 )?;
-                board.advance_after_combat(choice.from, supports_unit);
-                board.advance_after_combat(choice.to, supports_unit);
+                board.advance_after_combat(choice.from, attacker, supports_unit);
+                board.advance_after_combat(choice.to, defender, supports_unit);
                 self.refog(defender_side);
                 self.reveal_travelled_hexes(choice.from, [choice.from]);
                 self.check_leaders();
@@ -457,6 +477,7 @@ pub enum MatchError {
     Move(MoveError),
     Attack(AttackError),
     InvalidRecruit,
+    InvalidAdvancement,
 }
 
 impl From<MoveError> for MatchError {
@@ -484,6 +505,7 @@ impl fmt::Display for MatchError {
             Self::InvalidRecruit => {
                 f.write_str("unit type or destination is unavailable for recruitment")
             }
+            Self::InvalidAdvancement => f.write_str("unit type is unavailable for advancement"),
         }
     }
 }
@@ -501,7 +523,7 @@ mod tests {
     };
 
     #[test]
-    fn advances_combat_survivors_using_scenario_experience_thresholds() {
+    fn advances_combat_survivors_using_their_chosen_or_first_declared_type() {
         let scenario = wml::parse(
             r#"
             experience_modifier=50
@@ -535,7 +557,7 @@ Xv,Xv,Xv,Xv"
                     attacks=4
                     level=1
                     experience=20
-                    advances_to=Veteran
+                    advances_to=Veteran,Champion,Unsupported
                     [attack]
                         name=sword
                         type=blade
@@ -563,6 +585,16 @@ Xv,Xv,Xv,Xv"
                     experience=50
                     advances_to=null
                 [/unit_type]
+                [unit_type]
+                    id=Unsupported
+                    [attack]
+                        [specials]
+                            [dummy]
+                                id=custom
+                            [/dummy]
+                        [/specials]
+                    [/attack]
+                [/unit_type]
                 "#,
             )
             .unwrap(),
@@ -570,18 +602,18 @@ Xv,Xv,Xv,Xv"
         let terrain = TerrainAliases::from_wml(&wml::Node::default());
         let movement = BTreeMap::new();
         let resistance = BTreeMap::new();
-        let start = scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap();
-        let mut game = FixedMatch::new(
-            start,
+        let start_game = || FixedMatch::new(
+            scenario_start::load(&scenario, &roster, |_| unreachable!()).unwrap(),
             Rules { terrain: &terrain, movement: &movement, resistance: &resistance },
             5489,
-        )
-        .unwrap();
+        ).unwrap();
+        let mut game = start_game();
 
         let from = Hex { x: 0, y: 0 };
         let to = Hex { x: 1, y: 0 };
+        let attack = AttackChoice { from, to, weapon: 0 };
         assert_eq!(
-            game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })),
+            game.step(Action::Attack(attack)),
             Ok(MatchState::Playing(Turn { round: 1, side: 1 }))
         );
 
@@ -603,6 +635,20 @@ Xv,Xv,Xv,Xv"
             (defender.id.as_deref(), defender.side, defender.can_recruit),
             (Some("East"), 2, true)
         );
+
+        let mut game = start_game();
+        let before = game.audit_snapshot();
+        let rng = game.rng.seed_and_calls();
+        for (attacker, defender) in [(Some("Fighter"), None), (None, Some("Unsupported"))] {
+            assert_eq!(game.attack_with_advancements(attack, attacker, defender), Err(MatchError::InvalidAdvancement));
+            assert_eq!(game.audit_snapshot(), before);
+            assert_eq!(game.rng.seed_and_calls(), rng);
+        }
+        game.attack_with_advancements(attack, Some("Champion"), Some("Champion")).unwrap();
+        let attacker = game.scenario.board.unit_at(from).unwrap();
+        let defender = game.scenario.board.unit_at(to).unwrap();
+        assert_eq!((attacker.unit_type.id.as_str(), attacker.hitpoints, attacker.experience), ("Champion", 25, 20));
+        assert_eq!((defender.unit_type.id.as_str(), defender.hitpoints, defender.experience), ("Champion", 25, 0));
     }
 
     #[test]
