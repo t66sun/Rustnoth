@@ -1,5 +1,6 @@
 use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState},
+    hex::Hex,
     observation::Observation,
 };
 
@@ -31,8 +32,19 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
+        self.game.advancement_choices(position)
+    }
+
     pub fn apply(&mut self, action: Action) -> Result<MatchState, MatchError> {
-        let state = self.game.step(action)?;
+        self.apply_with_advancement(action, None)
+    }
+
+    pub fn apply_with_advancement(&mut self, action: Action, attacker: Option<&str>) -> Result<MatchState, MatchError> {
+        let state = match action {
+            Action::Attack(attack) => self.game.attack_with_advancements(attack, attacker, None)?,
+            action => self.game.step(action)?,
+        };
         if let Some((observation, actions)) = self.game.decision() {
             self.observation = Some(observation);
             self.legal_actions = actions;
