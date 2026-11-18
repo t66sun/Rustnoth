@@ -18,6 +18,7 @@ pub mod objectives;
 mod dialogue;
 pub use dialogue::draw_dialogue;
 mod transitions;
+mod ground;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
@@ -71,6 +72,7 @@ pub struct BoardArt {
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     transitions: transitions::Transitions,
+    ground: ground::Ground,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -121,6 +123,7 @@ impl BoardArt {
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
             transitions: transitions::Transitions::default(),
+            ground: ground::Ground::new(wesnoth_root),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -155,6 +158,7 @@ impl BoardArt {
         self.cover = map_cover(observation);
         self.transitions.load(observation, assets);
         for tile in &observation.tiles {
+            self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
                 && colors.marker_color(owner).is_some()
@@ -450,7 +454,8 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let layers = &art.terrain[&tile.terrain];
-        if let Some(base) = layers.first() {
+        let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
+        if let Some(base) = ground.or_else(|| layers.first()) {
             draw_centered(base, center, size);
         } else {
             draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
