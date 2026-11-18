@@ -7,6 +7,10 @@ local escapes = {
     ["\n"] = "\\n",
 }
 
+local function escape_id(text)
+    return (text:gsub("[\\\t\r\n]", escapes))
+end
+
 local function row(...)
     std_print(table.concat({...}, "\t"))
 end
@@ -109,17 +113,17 @@ function capture.snapshot(step, time_over)
         local side = unit.side
         slots[side] = (slots[side] or 0) + 1
         local traits = {}
-        for i, id in ipairs(unit.traits) do traits[i] = id:gsub("[\\\\\\t\\r\\n]", escapes) end
+        for i, id in ipairs(unit.traits) do traits[i] = escape_id(id) end
         local cost = unit.recall_cost
         if cost < 0 then cost = wesnoth.sides[side].recall_cost end
-        row("reserve", side, slots[side], (unit.type:gsub("[\\\\\\t\\r\\n]", escapes)),
+        row("reserve", side, slots[side], escape_id(unit.type),
             unit.hitpoints, unit.experience, cost, table.unpack(traits))
     end
     for _, unit in ipairs(units) do
-        local unit_type = unit.type:gsub("[\\\t\r\n]", escapes)
+        local unit_type = escape_id(unit.type)
         local traits = {}
         for index, id in ipairs(unit.traits) do
-            traits[index] = id:gsub("[\\\t\r\n]", escapes)
+            traits[index] = escape_id(id)
         end
         row("unit", unit.x, unit.y, unit.side, unit_type, unit.hitpoints,
             unit.moves, unit.attacks_left, unit.canrecruit and 1 or 0, unit.experience,
