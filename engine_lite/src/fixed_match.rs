@@ -208,13 +208,18 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
-                    let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
-                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind.variation(&unit.variation))) {
+                    let recalled = unit.id.as_ref().and_then(|id|
+                        self.scenario.board.recall_roster(side).iter().find(|u| u.id.as_ref() == Some(id))
+                    );
+                    let kind = recalled.map(|veteran| veteran.unit_type)
+                        .or_else(|| self.scenario.board.unit_type(&unit.type_id).map(|kind| kind.variation(&unit.variation)));
+                    if kind.is_some_and(|kind| !supports_unit(kind)) {
                         return Err(MatchError::UnsupportedScenario);
                     }
-                    self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
-                    self.capture_village(side, position)?;
-                    self.update_side_sight(side, false);
+                    if let Some(position) = self.scenario.board.place_event_unit(*unit).map_err(MatchError::OpeningUnit)? {
+                        self.capture_village(side, position)?;
+                        self.update_side_sight(side, false);
+                    }
                     continue;
                 }
                 BoardChange::Terrain { locations, code } => {
@@ -270,6 +275,12 @@ impl<'data> FixedMatch<'data> {
             experience: unit.experience,
             cost: unit.recall_cost(self.scenario.sides[turn.side - 1].recall_cost),
         })
+    }
+
+    /// Current WML objectives for the chosen side of the desktop match.
+    pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
+        self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
+            .filter(|objectives| !objectives.is_empty())
     }
 
     /// Original map item images visible to one side, in hex overlay draw order.
@@ -457,12 +468,16 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn fire_unit_event(&mut self, name: &str, position: Hex) -> Result<(), MatchError> {
-        let unit = self.scenario.board.unit_at(position).expect("event location has its unit");
-        let id = unit.id.clone();
-        let arrival = crate::scenario_events::ArrivingUnit {
-            position, side: unit.side, id: id.as_deref(), type_id: &unit.unit_type.id,
-        };
-        self.with_events(|events, state| events.fire_for_unit(name, arrival, state))
+        self.fire_units_event(name, position, None)
+    }
+
+    fn fire_units_event(&mut self, name: &str, position: Hex, second: Option<Hex>) -> Result<(), MatchError> {
+        let context = |position| self.scenario.board.unit_at(position).map(|unit| crate::scenario_events::ArrivingUnit {
+            position, side: unit.side, id: unit.id.clone(), type_id: unit.unit_type.id.as_str(),
+        });
+        let primary = context(position);
+        let secondary = second.and_then(context);
+        self.with_events(|events, state| events.dispatch(name, primary, secondary, state))
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> Result<bool, MatchError> {
@@ -678,7 +693,7 @@ impl fmt::Display for MatchError {
             Self::UnsupportedScenario => f.write_str(
                 "fixed match requires at least two sides in order and supported weapons",
             ),
-            Self::OpeningUnit(error) => write!(f, "could not place an opening event unit: {error}"),
+            Self::OpeningUnit(error) => write!(f, "could not place a scenario event unit: {error}"),
             Self::ActionUnavailable => f.write_str("action is unavailable to the current side"),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
