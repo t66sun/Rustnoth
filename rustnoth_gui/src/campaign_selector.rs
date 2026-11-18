@@ -165,10 +165,12 @@ impl<'a> Selector<'a> {
         }
         if self.cursor != previous { self.description_offset = 0; }
         let entry = rows.get(self.cursor).map(|&index| &entries[index]);
-        if confirmed && let Some(entry) = entry {
+        let action = if confirmed && let Some(entry) = entry {
             self.last_click = None;
-            return ListAction::Choose(entry.scenario);
-        }
+            ListAction::Choose(entry.scenario)
+        } else {
+            ListAction::Idle
+        };
 
         self.art.window(window);
         self.art.label("Play a Campaign", panel.x, window.y+40.0, 28, GOLD);
@@ -240,7 +242,7 @@ impl<'a> Selector<'a> {
         }
         self.art.button(play, "Play", pointer);
         self.art.button(cancel, "Cancel", pointer);
-        ListAction::Idle
+        action
     }
 }
 
