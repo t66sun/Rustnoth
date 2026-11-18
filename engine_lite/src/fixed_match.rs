@@ -11,6 +11,7 @@ use crate::{
     },
     hex::Hex,
     income::{DEFAULT_BASE_INCOME, net_income},
+    movement_cost::MovementCosts,
     movement_types::MovementType,
     observation::{Observation, project},
     resistance::DamageTable,
@@ -59,6 +60,23 @@ impl Rules<'_> {
         unit_type
             .movement_cost_overrides
             .cost_with_fallback(self.terrain, terrain, false, inherited)
+    }
+
+    /// Cost of seeing through a hex, including slow. Unreachable terrain costs 99.
+    pub fn sight_cost(&self, unit: &UnitState<'_>, terrain: &str) -> NonZeroU32 {
+        let unit_type = unit.unit_type;
+        let profile = self.movement.get(&unit_type.movement_type);
+        MovementCosts::layered_cost(
+            self.terrain,
+            terrain,
+            unit.slowed,
+            &[
+                Some(&unit_type.vision_cost_overrides),
+                profile.map(|p| &p.vision_costs),
+                Some(&unit_type.movement_cost_overrides),
+                profile.map(|p| &p.movement_costs),
+            ],
+        )
     }
 }
 

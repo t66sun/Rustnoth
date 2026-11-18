@@ -7,6 +7,7 @@ use crate::{scenario_time::integer, unit_type::UnitType, wml::Node};
 pub struct RecruitStats {
     pub max_hitpoints: i32,
     pub max_movement: i32,
+    pub(crate) vision: i32,
     pub max_experience: i32,
     pub healthy: bool,
     /// Damage indexed in the same order as the unit type's attacks.
@@ -31,6 +32,7 @@ impl RecruitStats {
         let mut stats = Self {
             max_hitpoints: unit.hitpoints,
             max_movement: unit.movement,
+            vision: unit.vision,
             max_experience: base_max_experience,
             healthy: false,
             attack_damage: unit.attacks.iter().map(|attack| attack.damage).collect(),
@@ -65,8 +67,21 @@ impl RecruitStats {
                 self.max_hitpoints = increase(base, effect, "increase_total", 1).max(1);
             }
             Some("movement") => {
+                let old_movement = self.max_movement;
+                if self.vision < 0 {
+                    self.vision = old_movement;
+                }
                 let increased = increase(self.max_movement, effect, "increase", 1);
                 self.max_movement = integer(effect, "set").unwrap_or(increased);
+                if crate::scenario_sides::bool_attribute(effect, "apply_to_vision", true) {
+                    let delta = i64::from(self.max_movement) - i64::from(old_movement);
+                    self.vision = (i64::from(self.vision) + delta).clamp(0, i64::from(i32::MAX)) as i32;
+                }
+            }
+            Some("vision") => {
+                let vision = if self.vision < 0 { self.max_movement } else { self.vision };
+                let increased = increase(vision, effect, "increase", 1);
+                self.vision = integer(effect, "set").unwrap_or(increased);
             }
             Some("max_experience") => {
                 let base = set_relative(self.max_experience, effect, "set");
@@ -140,6 +155,25 @@ fn matches_filter(effect: &Node, key: &str, actual: &str) -> bool {
 mod tests {
     use super::*;
     use crate::wml;
+
+    #[test]
+    fn movement_effects_change_sight_by_their_delta_unless_opted_out() {
+        let scout = UnitType::from_wml(wml::parse("movement=6\nvision=8").unwrap());
+        let quick = wml::parse("[effect]\napply_to=movement\nincrease=1\n[/effect]").unwrap();
+        let stationary = wml::parse(
+            "[effect]\napply_to=movement\nset=0\napply_to_vision=no\n[/effect]",
+        ).unwrap();
+        let stats = RecruitStats::from_traits(&scout, &[&quick, &stationary]);
+        assert_eq!((stats.max_movement, stats.vision), (0, 9));
+
+        let walker = UnitType::from_wml(wml::parse("movement=5").unwrap());
+        let stats = RecruitStats::from_traits(&walker, &[&stationary]);
+        assert_eq!((stats.max_movement, stats.vision), (0, 5));
+        let sight = wml::parse("[effect]\napply_to=vision\nincrease=20%\n[/effect]").unwrap();
+        assert_eq!(RecruitStats::from_traits(&walker, &[&sight, &quick]).vision, 7);
+        let reset = wml::parse("[effect]\napply_to=vision\nset=-1\n[/effect]").unwrap();
+        assert_eq!(RecruitStats::from_traits(&scout, &[&reset, &quick]).vision, 7);
+    }
 
     #[test]
     fn later_status_effects_can_remove_poison_immunity() {
