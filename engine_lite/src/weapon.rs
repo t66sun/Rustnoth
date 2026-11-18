@@ -128,6 +128,12 @@ impl WeaponProfile {
         })
     }
 
+    pub(crate) fn has_backstab(&self) -> bool {
+        self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_backstab(tag, definition))
+        })
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
@@ -137,9 +143,32 @@ impl WeaponProfile {
                     || is_stock_marksman(tag, definition)
                     || is_stock_charge(tag, definition)
                     || (matches!(tag.as_str(), "drains" | "slow" | "poison") && is_status_special(tag, definition))
+                    || (self.min_range == 1 && self.max_range == 1 && is_stock_backstab(tag, definition))
             })
         })
     }
+}
+
+fn is_stock_backstab(tag: &str, definition: &Node) -> bool {
+    let [(filter_tag, filter)] = definition.children.as_slice() else { return false };
+    const FORMULA: &str =
+        "enemy_of(self, flanker) and not flanker.petrified where flanker = unit_at(direction_from(loc, other.facing))";
+    tag == "damage"
+        && definition.attribute("id") == Some("backstab")
+        && definition.attribute("multiply") == Some("2")
+        && definition.attribute("active_on") == Some("offense")
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" | "multiply" | "active_on" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
+        && filter_tag == "filter_opponent"
+        && filter.children.is_empty()
+        && filter.attributes.len() == 1
+        && filter.attributes.get("formula").is_some_and(|value| {
+            value.translations.is_empty()
+                && value.text.split_ascii_whitespace().eq(FORMULA.split_ascii_whitespace())
+        })
 }
 
 fn is_stock_marksman(tag: &str, definition: &Node) -> bool {
