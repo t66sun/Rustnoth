@@ -65,13 +65,29 @@ impl Bundle {
         seed: u32,
         read_map_file: impl FnOnce(&str) -> io::Result<String>,
     ) -> Result<FixedMatch<'_>, Box<dyn Error>> {
-        let start = scenario_start::load(&self.scenario, &self.unit_types, read_map_file)?;
+        self.start_campaign(seed, read_map_file, None)
+    }
+
+    /// Restore survivors before opening events, consuming their records once the match starts.
+    pub fn start_campaign(
+        &self,
+        seed: u32,
+        read_map_file: impl FnOnce(&str) -> io::Result<String>,
+        carryover: Option<&mut crate::fixed_match::carryover::CampaignCarryover>,
+    ) -> Result<FixedMatch<'_>, Box<dyn Error>> {
+        let mut start = scenario_start::load(&self.scenario, &self.unit_types, read_map_file)?;
+        let claimed = match &carryover {
+            Some(route) => route.restore_units(&self.scenario, &mut start.board)?,
+            None => Default::default(),
+        };
         let rules = Rules {
             terrain: &self.terrain,
             movement: &self.movement,
             resistance: &self.resistance,
         };
-        Ok(FixedMatch::new(start, rules, seed)?)
+        let game = FixedMatch::new(start, rules, seed)?;
+        if let Some(route) = carryover { route.finish_transfer(claimed); }
+        Ok(game)
     }
 }
 

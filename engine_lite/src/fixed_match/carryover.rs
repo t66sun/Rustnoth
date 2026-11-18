@@ -1,12 +1,37 @@
 //! Campaign treasury settlement and transfer between scenarios.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use crate::board::{Battlefield, BoardError, Veteran};
 use crate::{hex::Hex, income::DEFAULT_BASE_INCOME, scenario_sides::bool_attribute, wml::{Node, Value}};
 use super::FixedMatch;
 
 /// Unclaimed treasuries for the current campaign route. Used by the scenario loader.
 #[derive(Default)]
 pub struct CampaignGold(BTreeMap<String, (i64, bool)>);
+
+/// Referee-owned state of the current desktop campaign route.
+#[derive(Default)]
+pub struct CampaignCarryover {
+    pub gold: CampaignGold,
+    units: BTreeMap<String, Vec<Veteran>>,
+}
+
+impl CampaignCarryover {
+    pub(crate) fn restore_units(&self, scenario: &Node, board: &mut Battlefield<'_>) -> Result<BTreeSet<String>, BoardError> {
+        let mut claimed = BTreeSet::new();
+        for (index, (_, side)) in scenario.children.iter().filter(|(tag, _)| tag == "side").enumerate() {
+            if let Some(id) = save_id(side) && let Some(veterans) = self.units.get(id)
+                && claimed.insert(id.to_owned()) {
+                board.restore_veterans(index + 1, veterans)?;
+            }
+        }
+        Ok(claimed)
+    }
+
+    pub(crate) fn finish_transfer(&mut self, claimed: BTreeSet<String>) {
+        for id in claimed { self.units.remove(&id); }
+    }
+}
 
 fn save_id(side: &Node) -> Option<&str> {
     side.attribute("save_id").filter(|id| !id.is_empty())
@@ -113,6 +138,16 @@ impl Treasury {
 }
 
 impl FixedMatch<'_> {
+    pub fn store_campaign_survivors(&self, campaign: &mut CampaignCarryover) {
+        if self.next_scenario_after_victory().is_none() { return; }
+        self.store_campaign_gold(&mut campaign.gold);
+        for (side, treasury) in self.scenario.sides.iter().zip(&self.scenario.treasuries) {
+            let Some(id) = &treasury.save_id else { continue };
+            if treasury.remove_on_defeat && !self.side_survives(side.side) { continue; }
+            campaign.units.insert(id.clone(), self.scenario.board.surviving_veterans(side.side));
+        }
+    }
+
     /// Settle only when a player continues a won campaign scenario.
     pub fn store_campaign_gold(&self, campaign: &mut CampaignGold) {
         if self.next_scenario_after_victory().is_none() { return; }
