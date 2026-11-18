@@ -198,9 +198,19 @@ impl<'data> FixedMatch<'data> {
                     self.update_side_sight(side, false);
                     continue;
                 }
-                BoardChange::Terrain { position, code } => {
-                    self.scenario.board.replace_terrain(position, &code);
-                    if !self.rules.terrain.features(&code).village { self.village_owners.remove(&position); }
+                BoardChange::Terrain { locations, code } => {
+                    let map = self.scenario.board.map();
+                    let (width, height) = (map.width(), map.height());
+                    let village = self.rules.terrain.features(&code).village;
+                    for (xs, ys) in locations {
+                        for x in (*xs.start()).max(1)..=(*xs.end()).min(width) {
+                            for y in (*ys.start()).max(1)..=(*ys.end()).min(height) {
+                                let position = Hex { x: x - 1, y: y - 1 };
+                                self.scenario.board.replace_terrain(position, &code);
+                                if !village { self.village_owners.remove(&position); }
+                            }
+                        }
+                    }
                     continue;
                 }
             };

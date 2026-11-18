@@ -24,7 +24,7 @@ enum EventAction {
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
-    Terrain { position: Hex, code: String },
+    Terrain { locations: Vec<WmlRectangle>, code: String },
 }
 
 #[derive(Clone, Debug)]
@@ -122,10 +122,18 @@ impl EventAction {
             if !cfg.children.is_empty() || cfg.attributes.keys().any(|k| !matches!(k.as_str(), "x" | "y" | "terrain")) {
                 return None;
             }
-            let position = Hex::from_wml(cfg.attribute("x")?.trim().parse().ok()?, cfg.attribute("y")?.trim().parse().ok()?)?;
+            if cfg.attributes.values().any(|v| !v.translations.is_empty() || v.text.contains('$')) {
+                return None;
+            }
+            let x = cfg.attribute("x").unwrap_or_default();
+            let y = cfg.attribute("y").unwrap_or_default();
+            let mut locations = coordinate_ranges(x, y, i32::MAX, i32::MAX);
+            if locations.is_empty() {
+                locations.push((1..=i32::MAX, 1..=i32::MAX));
+            }
             let code = cfg.attribute("terrain")?.trim();
             if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
-            return Some(Self::Board(BoardChange::Terrain { position, code: code.into() }));
+            return Some(Self::Board(BoardChange::Terrain { locations, code: code.into() }));
         }
         let types = |value: &str| {
             value.split(',').map(str::trim).filter(|id| !id.is_empty())
@@ -555,6 +563,41 @@ y=1
         assert_eq!(game.audit_snapshot().villages, [(c, 1)]);
         game.step(Action::EndTurn).unwrap();
         assert_eq!(game.audit_snapshot().gold[0], 106);
+    }
+
+    #[test]
+    fn terrain_events_apply_paired_coordinate_ranges_and_clip_at_the_map_edge() {
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,2 Gg,Xv
+Xv,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[terrain]
+x=2-3,4-1000000
+y=1,2
+terrain=Hh
+[/terrain]
+[/event]
+[/scenario]"#).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        let observation = game.observation_for(1).unwrap();
+        let hills: BTreeSet<_> = observation.tiles.iter().filter(|tile| tile.terrain == "Hh")
+            .map(|tile| tile.position).collect();
+        assert_eq!(hills, [Hex { x: 1, y: 0 }, Hex { x: 2, y: 0 }, Hex { x: 3, y: 1 }].into());
     }
 
     #[test]
