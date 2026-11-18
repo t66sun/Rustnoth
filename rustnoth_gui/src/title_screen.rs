@@ -5,6 +5,7 @@ use engine_lite::wml;
 use macroquad::prelude::*;
 
 mod preferences;
+mod help;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -20,7 +21,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Preferences, Quit, Previous, Next }
+enum Command { Campaigns, Multiplayer, Preferences, Quit, Help, Previous, Next }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -29,6 +30,7 @@ impl Command {
             Self::Multiplayer => "Multiplayer",
             Self::Preferences => "Preferences",
             Self::Quit => "Quit",
+            Self::Help => "Help",
             Self::Previous => "Previous",
             Self::Next => "Next",
         }
@@ -87,6 +89,7 @@ impl TitleScreen {
             set_default_camera();
 
             let command = if is_key_pressed(KeyCode::Escape) { Some(Command::Quit) }
+                else if is_key_pressed(KeyCode::F1) { Some(Command::Help) }
                 else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
                 else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
                 else if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
@@ -108,7 +111,7 @@ impl TitleScreen {
                     }).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
-                Some(command @ (Command::Campaigns | Command::Multiplayer)) => {
+                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help)) => {
                     next_frame().await;
                     error = self.open(command, &art).await.err().map(|cause| cause.to_string());
                 }
@@ -140,6 +143,7 @@ impl TitleScreen {
                 Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?.run().await
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
+            Command::Help => help::show(&self.root, &data.core, art).await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
@@ -259,6 +263,7 @@ impl Art {
         let mut buttons: Vec<_> = actions.iter().enumerate().map(|(i, action)| (*action,
             Rect::new(menu.x + inset, menu.y + inset + i as f32 * (bh + 10.0), bw, bh))).collect();
         let next = Rect::new(tip.right() - inset - 62.0, bottom - inset - 26.0, 62.0, 26.0);
+        buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
         buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
         buttons.push((Command::Next, next));
         buttons
