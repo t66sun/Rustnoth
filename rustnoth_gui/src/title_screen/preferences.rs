@@ -51,12 +51,12 @@ pub(super) async fn show(
         draw_rectangle_lines(bounds.x + 1.0, bounds.y + 1.0, bounds.w - 2.0, bounds.h - 2.0, 1.0,
             Color::from_rgba(114, 79, 46, 255));
         tiled(Rect::new(bounds.x + 2.0, bounds.y + 2.0, bounds.w - 4.0, bounds.h - 4.0), &backdrop);
-        dialog::text(font, "Preferences", left, bounds.y + 41.0, 28, gold);
+        dialog::text(font, art.locale.ui("Preferences"), left, bounds.y + 41.0, 28, gold);
         let page = Rect::new(left, top, 150.0, 36.0);
         draw_rectangle(page.x, page.y, page.w, page.h, Color::from_rgba(41, 56, 63, 255));
         draw_rectangle_lines(page.x, page.y, page.w, page.h, 1.0, Color::from_rgba(114, 79, 46, 255));
         image(Rect::new(left + 6.0, top + 3.0, 30.0, 30.0), &icon);
-        dialog::text(font, "Display", left + 43.0, top + 24.0, 17, gold);
+        dialog::text(font, art.locale.ui("Display"), left + 43.0, top + 24.0, 17, gold);
 
         let checkbox = Rect::new(page.right() + 17.0, top + 3.0, 145.0, 30.0);
         let close = Rect::new(bounds.right() - 127.0, bounds.bottom() - 46.0, 110.0, 30.0);
@@ -76,13 +76,13 @@ pub(super) async fn show(
             let texture = &checks[2 * usize::from(checked) + usize::from(focus == i)];
             let size = texture.size();
             image(Rect::new(rect.x, rect.y + (rect.h - size.y) * 0.5, size.x, size.y), texture);
-            dialog::text(font, label, rect.x + size.x + 8.0, rect.y + 21.0, 17, gold);
+            dialog::text(font, art.locale.ui(label), rect.x + size.x + 8.0, rect.y + 21.0, 17, gold);
         }
         if let Some(message) = &error {
             let message = dialog::fit(font, String::clone(message), bounds.w - 35.0, 15);
             dialog::text(font, &message, left, close.y - 10.0, 15, Color::from_rgba(255, 140, 135, 255));
         }
-        art.button(close, "Close", focus == 2, down == Some(2) && hover == down);
+        art.button(close, art.locale.ui("Close"), focus == 2, down == Some(2) && hover == down);
         set_default_camera();
 
         if is_mouse_button_pressed(MouseButton::Left) { down = hover; }
