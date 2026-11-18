@@ -4,7 +4,7 @@ use engine_lite::{campaign, wml, wml_emit};
 use macroquad::prelude::{next_frame, set_default_camera};
 use rustnoth_gui::session::Players;
 
-use crate::{BoardData, dialog::{Dialog, ListAction, ListPosition}, read_file, show_board};
+use crate::{BoardData, dialog::{Dialog, ListAction, ListPosition}, read_file, play_board};
 
 pub(super) struct Browser {
     campaign: wml::Node,
@@ -32,6 +32,15 @@ impl Browser {
         BoardData::from_source(&source, &self.core, self.maps.clone(), self.root.clone(), self.seed)
     }
 
+    async fn play_from(&self, mut id: String) -> Result<(), Box<dyn Error>> {
+        loop {
+            let board = self.board(&id)?;
+            let Some(next) = play_board(board, Players::HotSeat, true).await? else { return Ok(()) };
+            id = next;
+            next_frame().await;
+        }
+    }
+
     pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
         let scenarios: Vec<_> = campaign::scenarios(&self.campaign).collect();
         let dialog = Dialog::new(&self.root);
@@ -51,10 +60,7 @@ impl Browser {
                     position.cursor = index;
                     next_frame().await;
                     let (id, _) = scenarios[index];
-                    let result = match self.board(id) {
-                        Ok(data) => show_board(data, Players::HotSeat).await,
-                        Err(cause) => Err(cause),
-                    };
+                    let result = self.play_from(id.to_owned()).await;
                     error = result.err().map(|cause| format!("{id} — {cause}"));
                 }
                 ListAction::Back => return Ok(()),
@@ -82,17 +88,24 @@ mod tests {
         fs::write(&file, b"[units]\n[unit_type]\nid=Captain\nhitpoints=19\n[/unit_type]\n[/units]\n\
             [scenario]\nid=first\nmap_file=missing.map\n[/scenario]\n\
             [scenario]\nid=second\nname=River Crossing\nmap_file=river.map\n\
-            [side]\ntype=Captain\n[/side]\n[side]\ntype=Captain\n[/side]\n[/scenario]").unwrap();
+            [side]\ntype=Captain\ncontroller=human\n[/side]\n[side]\ntype=Captain\n[/side]\n\
+            [event]\nname=side 1 turn end\n[endlevel]\nnext_scenario=third\n[/endlevel]\n[/event]\n[/scenario]\n\
+            [scenario]\nid=third\nname=The Harbor\nmap_file=river.map\n[/scenario]").unwrap();
         fs::write(maps.join("river.map"), "Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Xv\nXv,Xv,Xv,Xv").unwrap();
         let browser = Browser::load(&file, maps, b"[units]\n[/units]".to_vec(), root.clone(), 9).unwrap();
         assert_eq!(campaign::scenarios(&browser.campaign).collect::<Vec<_>>(),
-            [("first", ""), ("second", "River Crossing")]);
+            [("first", ""), ("second", "River Crossing"), ("third", "The Harbor")]);
         assert!(browser.board("first").is_err());
         let board = browser.board("second").unwrap();
         assert_eq!(board.title, "River Crossing");
         let game = board.scenario.start(board.seed, |_| unreachable!("selected map was embedded")).unwrap();
         let view = game.observation_for(1).unwrap();
         assert!(view.units.iter().any(|u| u.position == Hex { x: 0, y: 0 } && u.hitpoints == 19));
+        let mut session = rustnoth_gui::session::Session::new(game);
+        assert_eq!(session.next_scenario(), None);
+        session.apply(engine_lite::fixed_match::Action::EndTurn).unwrap();
+        let successor = browser.board(session.next_scenario().unwrap()).unwrap();
+        assert_eq!(successor.title, "The Harbor");
         fs::remove_dir_all(root).unwrap();
     }
 }

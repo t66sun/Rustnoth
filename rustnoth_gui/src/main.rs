@@ -173,6 +173,10 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
+    play_board(data, players, false).await.map(|_| ())
+}
+
+async fn play_board(data: BoardData, players: Players, campaign: bool) -> Result<Option<String>, Box<dyn Error>> {
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
@@ -186,7 +190,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     loop {
         if is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
-                return Ok(());
+                return Ok(None);
             }
         }
         if is_mouse_button_pressed(MouseButton::Right) {
@@ -225,7 +229,13 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let button = render::end_turn_button(screen_width(), screen_height(), can_end);
+        let next = if campaign { session.next_scenario() } else { None };
+        let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
+        if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
+            || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
+        {
+            return Ok(Some(id.to_owned()));
+        }
         let menu_action = menu.as_mut().and_then(|menu| {
             let area = render::menu_area();
             if is_key_pressed(KeyCode::P)
@@ -311,7 +321,11 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             && let Some(bounds) = button
         {
             let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
-            render::draw_end_turn_button(bounds, highlighted, &art);
+            render::draw_turn_button(bounds, highlighted, &art, "End turn", "Space");
+        } else if campaign && session.next_scenario().is_some()
+            && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
+        {
+            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue", "Enter");
         }
         next_frame().await;
     }

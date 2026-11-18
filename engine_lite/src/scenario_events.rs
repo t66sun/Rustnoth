@@ -36,7 +36,7 @@ enum EventAction {
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool },
+    EndLevel { victory: bool, next_scenario: Option<String> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String },
@@ -429,7 +429,9 @@ impl ScenarioEvents {
                 })
                     .filter_map(|(tag, cfg)| match tag.as_str() {
                         "endlevel" => Some(endlevel::player_victory(cfg, scenario)
-                            .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))),
+                            .map(|victory| EventAction::Board(BoardChange::EndLevel {
+                                victory, next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
+                            }))),
                         _ => match EventAction::read(tag, cfg, side_count, opening) {
                         Some(action) => Some(Some(action)),
                         None if (opening || ends_level) && presentation_only(tag, cfg) => None,
