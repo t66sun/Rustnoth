@@ -84,6 +84,10 @@ impl<'rules> Session<'rules> {
         Ok(true)
     }
 
+    pub fn store_campaign_survivors(&self, route: &mut engine_lite::fixed_match::carryover::CampaignCarryover) {
+        self.game.store_campaign_survivors(route);
+    }
+
     pub fn store_campaign_gold(&self, gold: &mut engine_lite::fixed_match::carryover::CampaignGold) {
         self.game.store_campaign_gold(gold);
     }
