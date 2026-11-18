@@ -5,10 +5,6 @@ use crate::{hex::Hex, recruit_hexes};
 use super::{Action, FixedMatch, MatchError, supports_unit};
 
 impl FixedMatch<'_> {
-    pub(super) fn extend_recruit_choices(&self, side: usize, choices: &mut Vec<Action>) {
-        self.extend_recruit_choices_in_view(side, choices, |_| true, |_| true);
-    }
-
     pub(super) fn extend_recruit_choices_in_view(
         &self,
         side: usize,
