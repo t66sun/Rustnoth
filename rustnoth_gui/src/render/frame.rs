@@ -150,10 +150,8 @@ pub fn draw(
     if s <= 0.0 { return; }
     draw_reports(frame, title, state, observation, art);
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
-    if let Some(view) = observation
-        && let Some(mini) = BoardLayout::fit(view.width, view.height, frame.minimap)
-    {
-        draw_minimap(view, &mini, art);
+    if let Some(view) = observation {
+        art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
     }
 
     if movement.menu.is_none() {

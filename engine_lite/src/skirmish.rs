@@ -78,12 +78,33 @@ pub fn scenario(
     scenario_with_visibility(name, map_data, turns, sides, Visibility::Open)
 }
 
+/// One player's choices for a numbered map start.
+pub struct SideChoice<'a> {
+    pub faction: &'a Faction,
+    pub leader: Option<&'a str>,
+    pub team: usize,
+}
+
 /// Build the same skirmish with the chosen fog and shroud settings on every side.
 pub fn scenario_with_visibility(
     name: &str,
     map_data: &str,
     turns: i32,
     sides: &[(&Faction, Option<&str>)],
+    visibility: Visibility,
+) -> Result<Node, Box<dyn Error>> {
+    let choices: Vec<_> = sides.iter().enumerate().map(|(index, &(faction, leader))| {
+        SideChoice { faction, leader, team: index + 1 }
+    }).collect();
+    scenario_with_teams(name, map_data, turns, &choices, visibility)
+}
+
+/// Build a skirmish with an explicit one-based team for each map start.
+pub fn scenario_with_teams(
+    name: &str,
+    map_data: &str,
+    turns: i32,
+    sides: &[SideChoice<'_>],
     visibility: Visibility,
 ) -> Result<Node, Box<dyn Error>> {
     if sides.len() < 2 || turns < -1 || turns == 0 {
@@ -111,7 +132,11 @@ pub fn scenario_with_visibility(
         Visibility::Shroud => ("no", "yes"),
         Visibility::FogAndShroud => ("yes", "yes"),
     };
-    for (index, &(faction, selected_leader)) in sides.iter().enumerate() {
+    for (index, &SideChoice { faction, leader: selected_leader, team }) in sides.iter().enumerate() {
+        if !(1..=sides.len()).contains(&team) {
+            return Err(format!("side {} has invalid team {team}", index + 1).into());
+        }
+        let team = team.to_string();
         let number = (index + 1).to_string();
         let leader = match selected_leader {
             Some(id) if faction.leaders.iter().any(|listed| listed == id) => id,
@@ -120,7 +145,7 @@ pub fn scenario_with_visibility(
         };
         let recruits = faction.recruits.join(",");
         let side = attributes(&[
-            ("side", &number), ("team_name", &number), ("faction", &faction.id),
+            ("side", &number), ("team_name", &team), ("faction", &faction.id),
             ("type", leader), ("recruit", &recruits), ("controller", "human"),
             ("random_traits", "no"), ("fog", fog), ("shroud", shroud),
         ]);
