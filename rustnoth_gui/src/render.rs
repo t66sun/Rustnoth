@@ -272,7 +272,18 @@ pub fn draw(
             let fill = if highlighted { BUTTON_HIGHLIGHTED } else { BUTTON };
             draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, fill);
             draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, if highlighted { TEXT } else { BORDER });
-            label(&art.font, row.label, bounds.x + 10.0, bounds.y + 27.0, 17, TEXT);
+            if let Action::Recall { .. } = row.action {
+                for (line, (baseline, size, color)) in row.label.lines().zip([(15.0, 15, TEXT), (28.0, 12, TEXT), (40.0, 12, MUTED)]) {
+                    let available = bounds.w - 16.0;
+                    let width = measure_text(line, art.font.as_ref(), size, 1.0).width;
+                    let font_scale = (available / width.max(1.0)).min(1.0);
+                    draw_text_ex(line, bounds.x + 8.0, bounds.y + baseline, TextParams {
+                        font: art.font.as_ref(), font_size: size, font_scale, color, ..Default::default()
+                    });
+                }
+            } else {
+                label(&art.font, row.label, bounds.x + 10.0, bounds.y + 27.0, 17, TEXT);
+            }
         }
     }
 }

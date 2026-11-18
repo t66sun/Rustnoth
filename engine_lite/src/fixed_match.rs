@@ -41,6 +41,14 @@ pub enum Action {
     EndTurn,
 }
 
+/// Information the active side can inspect when choosing one of its reserves.
+pub struct RecallInfo<'a> {
+    pub type_id: &'a str,
+    pub hitpoints: i32,
+    pub experience: i32,
+    pub cost: i32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MatchState {
     Playing(Turn),
@@ -163,6 +171,18 @@ impl<'data> FixedMatch<'data> {
 
     pub fn state(&self) -> MatchState {
         self.state.clone()
+    }
+
+    pub fn recall_info(&self, id: &str) -> Option<RecallInfo<'_>> {
+        let MatchState::Playing(turn) = self.state else { return None };
+        let unit = self.scenario.board.recall_roster(turn.side)
+            .iter().find(|unit| unit.id.as_deref() == Some(id))?;
+        Some(RecallInfo {
+            type_id: &unit.unit_type.id,
+            hitpoints: unit.hitpoints,
+            experience: unit.experience,
+            cost: unit.recall_cost(self.scenario.sides[turn.side - 1].recall_cost),
+        })
     }
 
     /// Projects the current board for a match side, including after the match ends.
