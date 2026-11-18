@@ -74,6 +74,26 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
         }
         let valid_side = |side: &str| side_number(side).is_some_and(|number| number <= side_count);
 
+        let mut last_reserve = (0, 0);
+        while lines.peek().is_some_and(|(_, row)| row.starts_with("reserve\t")) {
+            let (line, row) = lines.next().expect("peeked reserve");
+            let fields: Vec<_> = row.split('\t').collect();
+            let ["reserve", side, slot, kind, hp, xp, cost, traits @ ..] = fields.as_slice() else {
+                return Err(bad_row(line, "expected reserve side, slot, type, hitpoints, experience and cost"));
+            };
+            let (Some(side), Some(slot)) = (side_number(side), side_number(slot)) else {
+                return Err(bad_row(line, "invalid reserve side or slot"));
+            };
+            if side > side_count || !(side == last_reserve.0 && slot.checked_sub(1) == Some(last_reserve.1)
+                || side > last_reserve.0 && slot == 1)
+                || kind.is_empty() || kind.contains('\r') || hp.parse::<i32>().is_err()
+                || xp.parse::<i32>().is_err() || cost.parse::<i32>().is_err() || traits.iter().any(|id| id.contains('\r'))
+            {
+                return Err(bad_row(line, "invalid reserve or out-of-order roster slot"));
+            }
+            last_reserve = (side, slot);
+            rows.push(row);
+        }
         let mut last_unit = None;
         let mut unit_positions = std::collections::BTreeSet::new();
         let mut status_owner = None;
@@ -395,6 +415,17 @@ mod tests {
         for invalid in ["petrified\tslowed", "petrified\tpetrified", "poisoned\tslowed", "poisoned\tpoisoned", "slowed\tpoisoned\tpoisoned"] {
             let trace = with_status(invalid);
             assert!(compare(&trace, &trace).unwrap_err().starts_with("malformed Rust trace"));
+        }
+    }
+
+    #[test]
+    fn reserve_frames_detect_a_missing_veteran_and_preserve_recall_order() {
+        let reserve = "reserve\t2\t1\tSwordsman\t33\t15\t13\tloyal\n";
+        let frame = THREE_SIDES.replacen("unit\t", &format!("{reserve}unit\t"), 1);
+        assert_eq!(compare(&frame, &frame), Ok(2));
+        assert!(compare(THREE_SIDES, &frame).unwrap_err().contains("Swordsman"));
+        for malformed in [frame.replace("reserve\t2\t1", "reserve\t2\t2"), frame.replace(reserve, &reserve.repeat(2))] {
+            assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
         }
     }
 

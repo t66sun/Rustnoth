@@ -104,6 +104,17 @@ function capture.snapshot(step, time_over)
     for side = 1, #wesnoth.sides do
         row("gold", side, wesnoth.sides[side].gold)
     end
+    local slots = {}
+    for _, unit in ipairs(wesnoth.units.find_on_recall {}) do
+        local side = unit.side
+        slots[side] = (slots[side] or 0) + 1
+        local traits = {}
+        for i, id in ipairs(unit.traits) do traits[i] = id:gsub("[\\\\\\t\\r\\n]", escapes) end
+        local cost = unit.recall_cost
+        if cost < 0 then cost = wesnoth.sides[side].recall_cost end
+        row("reserve", side, slots[side], (unit.type:gsub("[\\\\\\t\\r\\n]", escapes)),
+            unit.hitpoints, unit.experience, cost, table.unpack(traits))
+    end
     for _, unit in ipairs(units) do
         local unit_type = unit.type:gsub("[\\\t\r\n]", escapes)
         local traits = {}
