@@ -21,6 +21,7 @@ mod desktop;
 mod dialog;
 mod display_preferences;
 mod menu;
+mod recruit_dialog;
 mod render;
 mod setup;
 mod story;
@@ -224,6 +225,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
+    let mut confirmed_recruit = None;
     loop {
         let dialogue_open = session.dialogue().is_some();
         if !dialogue_open && is_key_pressed(KeyCode::Escape) {
@@ -309,7 +311,9 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             }?;
             menu.activate(action)
         });
-        let requested = if !dialogue_open && !computer_acted && can_end
+        let requested = if let Some(action) = confirmed_recruit.take() {
+            Some(action)
+        } else if !dialogue_open && !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -388,7 +392,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                 actions: session.legal_actions(),
                 message: message.as_deref(),
                 assets: &data.assets,
-                menu: menu.as_ref(),
+                menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
         );
         if session.legal_actions().contains(&Action::EndTurn)
@@ -400,6 +404,16 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
+        }
+        if menu.as_ref().is_some_and(menu::Menu::offers_recruit)
+            && let Some(view) = session.observation()
+            && let Some(choices) = menu.take()
+        {
+            match recruit_dialog::show(&data, choices.options(), view.side).await {
+                recruit_dialog::Result::Recruit(action) => confirmed_recruit = Some(action),
+                recruit_dialog::Result::Recall => menu = choices.into_recall(),
+                recruit_dialog::Result::Cancel => {}
+            }
         }
         if let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);

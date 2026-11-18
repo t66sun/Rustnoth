@@ -31,6 +31,20 @@ impl Menu {
         Some(Self { target: Some(target), options, focused: 0, advancements, advancement: None, confirming_disband: false })
     }
 
+    pub fn offers_recruit(&self) -> bool {
+        self.options.iter().any(|row| matches!(row.action, Action::Recruit { .. }))
+    }
+
+    pub fn options(&self) -> &[ActionOption] {
+        &self.options
+    }
+
+    pub fn into_recall(mut self) -> Option<Self> {
+        self.options.retain(|row| matches!(row.action, Action::Recall { .. }));
+        self.focused = 0;
+        (!self.options.is_empty()).then_some(self)
+    }
+
     pub fn disband(session: &Session<'_>, unit_name: impl Fn(&str) -> String) -> Option<Self> {
         let options: Vec<_> = session.legal_actions().iter().filter_map(|action| {
             let Action::Disband { unit_id } = action else { return None };
