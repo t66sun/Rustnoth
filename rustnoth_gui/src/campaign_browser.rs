@@ -82,6 +82,8 @@ mod tests {
         fs::write(&file, b"[units]\n[unit_type]\nid=Captain\nhitpoints=19\n[/unit_type]\n[/units]\n\
             [scenario]\nid=first\nmap_file=missing.map\n[/scenario]\n\
             [scenario]\nid=second\nname=River Crossing\nmap_file=river.map\n\
+            [story]\n[part]\nstory= _ \"<span color='#BAAC7D'>Winter &amp; snow.</span>\"\nbackground=story/winter.webp\n[/part]\n[/story]\n\
+            [story]\n[part]\nshow_title=yes\n[background_layer]\nimage=maps/river.webp\nbase_layer=yes\n[/background_layer]\n[/part]\n[/story]\n\
             [side]\ntype=Captain\n[/side]\n[side]\ntype=Captain\n[/side]\n[/scenario]").unwrap();
         fs::write(maps.join("river.map"), "Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Xv\nXv,Xv,Xv,Xv").unwrap();
         let browser = Browser::load(&file, maps, b"[units]\n[/units]".to_vec(), root.clone(), 9).unwrap();
@@ -90,6 +92,9 @@ mod tests {
         assert!(browser.board("first").is_err());
         let board = browser.board("second").unwrap();
         assert_eq!(board.title, "River Crossing");
+        assert_eq!(board.story.len(), 2);
+        assert_eq!(board.story[0].text, "Winter & snow.");
+        assert_eq!(board.story[1].title, "River Crossing");
         let game = board.scenario.start(board.seed, |_| unreachable!("selected map was embedded")).unwrap();
         let view = game.observation_for(1).unwrap();
         assert!(view.units.iter().any(|u| u.position == Hex { x: 0, y: 0 } && u.hitpoints == 19));

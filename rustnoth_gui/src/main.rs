@@ -21,6 +21,7 @@ mod dialog;
 mod menu;
 mod render;
 mod setup;
+mod story;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -135,6 +136,7 @@ impl Launch {
 
 struct BoardData {
     scenario: Bundle,
+    story: Vec<story::Part>,
     assets: AssetCatalog,
     title: String,
     directory: PathBuf,
@@ -150,15 +152,14 @@ impl BoardData {
         }
         let scenario = Bundle::parse_with_core(source, core)?;
         let assets = AssetCatalog::parse(&wesnoth_root, core, source)?;
-        let title = wml::parse(source)?
-            .children
-            .into_iter()
-            .find(|(tag, _)| tag == "scenario")
-            .and_then(|(_, config)| config.attribute("name").map(str::to_owned))
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Scenario".to_owned());
+        let document = wml::parse(source)?;
+        let (_, config) = document.children.iter().find(|(tag, _)| tag == "scenario")
+            .ok_or("bundle has no scenario")?;
+        let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
+        let story = story::read(config, &title);
         Ok(Self {
             scenario,
+            story,
             assets,
             title,
             directory,
@@ -178,6 +179,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
+    story::show(&data.story, &data.assets, art.font.as_ref()).await;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
