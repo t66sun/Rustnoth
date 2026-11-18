@@ -1,6 +1,6 @@
 use std::{collections::HashSet, error, fmt};
 
-use crate::trait_effects::CombatImmunities;
+use crate::trait_effects::{CombatImmunities, Modification};
 use crate::{hex::Hex, income::Upkeep, map::ScenarioMap, scenario_time::integer, wml::Node};
 
 /// A fixed unit placement, in scenario side and creation order.
@@ -25,8 +25,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) recall_cost: Option<i32>,
     pub(crate) recall_filter: Option<Node>,
     pub(crate) upkeep: Option<Upkeep>,
-    pub(crate) traits: Vec<Node>,
-    pub(crate) default_amlas: u8,
+    pub(crate) modifications: Vec<Modification<'static>>,
     pub(crate) hitpoints: Option<i32>,
     pub(crate) experience: i32,
     pub(crate) moves_left: Option<i32>,
@@ -148,11 +147,7 @@ fn authored_unit(
         recall_cost: if leader { None } else { integer(unit, "recall_cost") },
         recall_filter: children_named(unit, "filter_recall").next().cloned(),
         upkeep: Upkeep::from_wml(unit),
-        traits: children_named(unit, "modifications")
-            .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
-        default_amlas: children_named(unit, "modifications")
-            .flat_map(|mods| children_named(mods, "advancement"))
-            .filter(|advance| crate::unit_type::is_default_amla(advance)).take(100).count() as u8,
+        modifications: read_modifications(unit),
         hitpoints: integer(unit, "hitpoints"),
         experience: integer(unit, "experience").unwrap_or_default(),
         moves_left: integer(unit, "moves"),
@@ -171,6 +166,26 @@ fn authored_unit(
         slowed: has_status("slowed"),
         uncovered: has_status("uncovered"),
     }
+}
+
+fn read_modifications(unit: &Node) -> Vec<Modification<'static>> {
+    let mut modifications = Vec::new();
+    let mut saved_amlas = 0;
+    for (tag, node) in children_named(unit, "modifications").flat_map(|block| &block.children) {
+        let modification = match tag.as_str() {
+            "trait" => Modification::Trait(std::borrow::Cow::Owned(node.clone())),
+            "object" if matches!(node.attribute("duration"), None | Some("" | "forever")) => {
+                Modification::Object(node.clone())
+            }
+            "advancement" if saved_amlas < 100 && crate::unit_type::is_default_amla(node) => {
+                saved_amlas += 1;
+                Modification::DefaultAdvancement(node.clone())
+            }
+            _ => continue,
+        };
+        modifications.push(modification);
+    }
+    modifications
 }
 
 fn children_named<'a>(node: &'a Node, name: &'a str) -> impl Iterator<Item = &'a Node> {
