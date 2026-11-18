@@ -46,6 +46,7 @@ pub struct UnitState<'rules> {
     pub unit_type: &'rules UnitType,
     pub hitpoints: i32,
     pub(crate) experience: i32,
+    pub(crate) slowed: bool,
     base_max_experience: i32,
     pub moves_left: i32,
     pub attacks_left: i32,
@@ -144,6 +145,7 @@ impl<'rules> Battlefield<'rules> {
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
                 experience,
+                slowed: false,
                 base_max_experience: scaled_experience(unit_type.experience, experience_modifier),
                 moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
@@ -202,6 +204,7 @@ impl<'rules> Battlefield<'rules> {
                 );
             }
             unit.hitpoints = unit.max_hitpoints();
+            unit.slowed = false;
             unit.moves_left = unit.moves_left.min(unit.max_movement().max(0));
             unit.attacks_left = unit.attacks_left.min(next_type.max_attacks.max(0));
         }
@@ -260,6 +263,7 @@ impl<'rules> Battlefield<'rules> {
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
             experience: 0,
             base_max_experience,
+            slowed: false,
             moves_left: 0,
             attacks_left: 0,
             can_recruit: false,
@@ -340,6 +344,11 @@ impl<'rules> Battlefield<'rules> {
                 return None;
             }
             let cost = movement_cost(self.map.terrain_at(position)?)?;
+            let cost = if unit.slowed {
+                cost.checked_mul(NonZeroU32::new(2).unwrap())?
+            } else {
+                cost
+            };
             let occupancy = match self.unit_at(position) {
                 Some(unit) if hostile(unit) => Occupancy::Enemy,
                 Some(_) => Occupancy::Ally,
@@ -369,6 +378,9 @@ impl<'rules> Battlefield<'rules> {
         active_sides: &[usize],
         last_round: Option<i32>,
     ) -> Option<Turn> {
+        for unit in self.units.values_mut().filter(|unit| unit.side == current.side) {
+            unit.slowed = false;
+        }
         let next = current.next(active_sides, last_round)?;
         self.resting.retain(|hex| {
             let unit = &self.units[hex];
@@ -606,6 +618,41 @@ mod tests {
 
     fn walking_cost(terrain: &str) -> Option<NonZeroU32> {
         NonZeroU32::new(if terrain == "Hh" { 2 } else { 1 })
+    }
+
+    #[test]
+    fn standard_advancement_clears_slow() {
+        let mut types = types();
+        types.get_mut("Spearman").unwrap().advances_to.push("Veteran".into());
+        types.insert("Veteran".into(), UnitType::from_wml(wml::parse("id=Veteran").unwrap()));
+        let hex = corridor_hex(0);
+        let mut board = corridor(&types, &[(0, 1)]);
+        let unit = board.units.get_mut(&hex).unwrap();
+        unit.slowed = true;
+        unit.experience = unit.max_experience();
+        board.advance_after_combat(hex, |_| true);
+        let advanced = board.unit_at(hex).unwrap();
+        assert_eq!(advanced.unit_type.id, "Veteran");
+        assert!(!advanced.slowed);
+    }
+
+    #[test]
+    fn slow_doubles_entry_cost_until_the_units_own_turn_ends() {
+        let types = types();
+        let from = corridor_hex(0);
+        let to = corridor_hex(1);
+        let mut board = corridor(&types, &[(0, 2)]);
+        board.units.get_mut(&from).unwrap().slowed = true;
+        let first = Turn { round: 1, side: 1 };
+        let second = board.advance_turn(first, &[1, 2], None).unwrap();
+        let options = board.move_destinations(2, from, walking_cost, |_| false).unwrap();
+        assert_eq!(options, BTreeMap::from([(to, 3)]));
+        board.move_unit(2, from, to, walking_cost, |_| false).unwrap();
+        assert_eq!(board.unit_at(to).unwrap().moves_left, 3);
+        board.advance_turn(second, &[1, 2], None).unwrap();
+        assert!(!board.unit_at(to).unwrap().slowed);
+        let options = board.move_destinations(2, to, walking_cost, |_| false).unwrap();
+        assert_eq!(options[&corridor_hex(2)], 1);
     }
 
     #[test]

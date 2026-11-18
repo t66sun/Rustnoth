@@ -117,6 +117,10 @@ impl Battlefield<'_> {
                 hitpoints: defender.hitpoints.max(0) as u32,
                 strikes: 0,
                 damage: 0,
+                slow_damage: 0,
+                slows: false,
+                slowed: defender.slowed,
+                unslowable: defender.is_unslowable(),
                 hit_chance: 0,
                 firststrike: false,
                 drain_healing_cap: None,
@@ -139,6 +143,7 @@ impl Battlefield<'_> {
         } else {
             let unit = self.units.get_mut(&from).expect("validated attacker");
             unit.hitpoints = result.attacker_hitpoints as i32;
+            unit.slowed = result.attacker_slowed;
             unit.experience = unit.experience.saturating_add(attacker_experience);
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
@@ -148,6 +153,7 @@ impl Battlefield<'_> {
         } else {
             let unit = self.units.get_mut(&to).expect("validated defender");
             unit.hitpoints = result.defender_hitpoints as i32;
+            unit.slowed = result.defender_slowed;
             unit.experience = unit.experience.saturating_add(defender_experience);
         }
         Ok(result)
@@ -164,6 +170,10 @@ fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
 }
 
 impl UnitState<'_> {
+    fn is_unslowable(&self) -> bool {
+        self.traits.as_ref().is_some_and(|traits| traits.stats.unslowable)
+    }
+
     fn is_undrainable(&self) -> bool {
         self.traits.as_ref().is_some_and(|traits| traits.stats.undrainable)
     }
@@ -183,7 +193,9 @@ pub(crate) fn combatant(
     let weapon = &unit.unit_type.attacks[weapon_index];
     let base_damage = unit.attack_damage(weapon_index);
     let base_damage = if charging { base_damage.saturating_mul(2) } else { base_damage };
-    let damage = strike_damage(base_damage, modifiers.damage_multiplier, false);
+    let damage = |slowed| {
+        u32::try_from(strike_damage(base_damage, modifiers.damage_multiplier, slowed)).unwrap_or(u32::MAX)
+    };
     // Native applies the noncumulative magical replacement after accuracy and parry.
     let hit_chance = weapon.magical_hit_chance().unwrap_or_else(|| {
         base_hit_chance(modifiers.target_hit_chance, weapon.accuracy, opposing_parry)
@@ -191,7 +203,11 @@ pub(crate) fn combatant(
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
         strikes: weapon.strikes.max(0) as u32,
-        damage: u32::try_from(damage).unwrap_or(u32::MAX),
+        damage: damage(false),
+        slow_damage: damage(true),
+        slows: weapon.has_slow(),
+        slowed: unit.slowed,
+        unslowable: unit.is_unslowable(),
         hit_chance,
         firststrike: weapon.has_firststrike(),
         drain_healing_cap: weapon.has_drains().then(|| unit.max_hitpoints().max(0) as u32),
@@ -261,6 +277,26 @@ mod tests {
             modifiers: StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 },
             retaliation: Some((0, StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 })),
         }
+    }
+
+    #[test]
+    fn slows_on_hit_before_retaliation_and_keeps_both_survivors_slowed() {
+        let mut types = unit_types();
+        let weapon = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=5\nnumber=1\nmovement_used=2\n\
+             [specials]\n[slow]\nid=slow\n[/slow]\n[/specials]",
+        ).unwrap());
+        assert!(weapon.supports_specials());
+        types.get_mut("Fighter").unwrap().attacks[0] = weapon;
+        let mut board = board(&types);
+        let mut rng = ReplayRng::new(5489);
+        board.apply_attack(1, attack(0), |side| side == 2, &mut rng).unwrap();
+        let attacker = board.unit_at(ATTACKER).unwrap();
+        let defender = board.unit_at(DEFENDER).unwrap();
+        assert_eq!((attacker.hitpoints, defender.hitpoints), (7, 5));
+        assert_eq!((attacker.moves_left, defender.moves_left), (3, 5));
+        assert!(attacker.slowed && defender.slowed);
+        assert_eq!(rng.seed_and_calls(), (5489, 2));
     }
 
     #[test]
