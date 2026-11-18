@@ -40,14 +40,18 @@ fn time_entries(node: &Node) -> Vec<TimeOfDay> {
 }
 
 pub(crate) fn location_ranges(x: &str, y: &str, map: &ScenarioMap) -> Vec<WmlRectangle> {
+    coordinate_ranges(x, y, map.width() + 1, map.height() + 1)
+}
+
+pub(crate) fn coordinate_ranges(x: &str, y: &str, max_x: i32, max_y: i32) -> Vec<WmlRectangle> {
     fn values(text: &str) -> Vec<&str> {
         text.split(',').map(str::trim).filter(|value| !value.is_empty()).collect()
     }
     let xs = values(x);
     let ys = values(y);
     (0..xs.len().max(ys.len())).map(|i| (
-        axis_range(xs.get(i).copied(), map.width() + 1),
-        axis_range(ys.get(i).copied(), map.height() + 1),
+        axis_range(xs.get(i).copied(), max_x),
+        axis_range(ys.get(i).copied(), max_y),
     )).collect()
 }
 

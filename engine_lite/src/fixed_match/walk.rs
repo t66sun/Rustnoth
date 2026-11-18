@@ -59,6 +59,14 @@ impl FixedMatch<'_> {
         if self.capture_village(side, position) {
             self.scenario.board.stop_movement(position);
         }
+        if position != from {
+            let unit = self.scenario.board.unit_at(position).expect("completed walk has a unit");
+            let id = unit.id.clone();
+            let arrival = crate::scenario_events::ArrivingUnit {
+                position, side, id: id.as_deref(), type_id: &unit.unit_type.id,
+            };
+            self.with_events(|events, state| events.moveto(arrival, state));
+        }
         Ok(())
     }
 }
@@ -73,6 +81,10 @@ mod tests {
     const GOAL: Hex = Hex { x: 6, y: 0 };
 
     fn scenario(fog: bool, forest: bool, scout_row: &str) -> Bundle {
+        scenario_with_events(fog, forest, scout_row, "")
+    }
+
+    fn scenario_with_events(fog: bool, forest: bool, scout_row: &str, events: &str) -> Bundle {
         let fog = if fog { "yes" } else { "no" };
         let enemy_row = if forest {
             "Gg,Gg,Gg,Gg,2 Gg^Fp,Gg,Gg,Gg"
@@ -124,6 +136,7 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
     [side]
         side=1
         team_name=west
+        id=scout
         type=Elvish Scout
         fog={fog}
         [unit]
@@ -136,9 +149,82 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         team_name=east
         type=Wose
     [/side]
+    {events}
 [/scenario]
 "#);
         Bundle::parse(wml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn moveto_fires_on_the_actual_stop_after_an_ambush() {
+        let events = r#"
+            [event]
+                name=moveto
+                [filter]
+                    x=2,4-5
+                    y=2,1
+                    side=1
+                    id=scout,second_scout
+                    type=Cavalryman,Elvish Scout
+                [/filter]
+                [gold]
+                    side=1
+                    amount=7
+                [/gold]
+                [allow_recruit]
+                    side=1
+                    type=Wose
+                [/allow_recruit]
+            [/event]
+            [event]
+                name=moveto
+                [filter]
+                    x=2-3,7
+                    y=1,1
+                [/filter]
+                [gold]
+                    side=1
+                    amount=100
+                [/gold]
+            [/event]
+            [event]
+                name=moveto
+                [filter]
+                    x=4
+                    race=elf
+                [/filter]
+                [gold]
+                    side=1
+                    amount=1000
+                [/gold]
+            [/event]"#;
+        let bundle = scenario_with_events(true, true, "1 Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg^Vh,Gg", events);
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let initial = game.gold[0];
+        game.step(Action::Move { from: START, to: GOAL }).unwrap();
+        assert_eq!(game.scenario.board.unit_at(STOP).unwrap().id.as_deref(), Some("scout"));
+        assert_eq!(game.gold[0], initial + 7);
+        assert!(game.scenario.sides[0].recruits.contains("Wose"));
+    }
+
+    #[test]
+    fn unmatched_arrivals_leave_once_handlers_pending_and_matching_arrivals_can_repeat() {
+        let reward = |once: &str, amount: i32| format!(
+            "[event]\nname=moveto\nfirst_time_only={once}\n[filter]\nx=4\ny=1\nid=scout\n[/filter]\n\
+             [gold]\nside=1\namount={amount}\n[/gold]\n[/event]\n"
+        );
+        let events = reward("yes", 7) + &reward("no", 2) + &reward("no", 100).replace("x=4", "x=1");
+        let bundle = scenario_with_events(false, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg", &events);
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let initial = game.gold[0];
+        assert!(game.step(Action::Move { from: START, to: START }).is_err());
+        assert_eq!(game.gold[0], initial);
+        let through = Hex { x: 2, y: 0 };
+        let away = Hex { x: 4, y: 0 };
+        for (from, to, bonus) in [(START, through, 0), (through, STOP, 9), (STOP, away, 9), (away, STOP, 11)] {
+            game.step(Action::Move { from, to }).unwrap();
+            assert_eq!(game.gold[0], initial + bonus);
+        }
     }
 
     #[test]
