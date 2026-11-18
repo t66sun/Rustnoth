@@ -20,6 +20,7 @@ pub struct UnitType {
     pub id: String,
     pub level: i32,
     pub(crate) leadership: bool,
+    pub(crate) illuminates: bool,
     pub hitpoints: i32,
     pub movement: i32,
     /// Negative values use the unit's maximum movement.
@@ -138,6 +139,7 @@ impl UnitType {
             emits_zoc,
             regeneration: 0,
             skirmisher: false,
+            illuminates: false,
             hiding: Vec::new(),
             advances_to,
             attacks: Vec::new(),
@@ -150,6 +152,9 @@ impl UnitType {
                         tag == "skirmisher" && is_stock_skirmisher(config)
                     });
                     for (ability, cfg) in &child.children {
+                        if ability == "illuminates" && is_stock_illumination(cfg) {
+                            result.illuminates = true;
+                        }
                         if ability == "hides" {
                             result.hiding.push(Hiding::from_wml(cfg));
                         }
@@ -176,6 +181,19 @@ impl UnitType {
         }
         result
     }
+}
+
+fn is_stock_illumination(ability: &Node) -> bool {
+    ability.attribute("id") == Some("illumination")
+        && ability.attribute("value") == Some("25")
+        && ability.attribute("max_value") == Some("25")
+        && ability.attribute("cumulative") == Some("no")
+        && ability.attribute("affect_self") == Some("yes")
+        && ability.children.is_empty()
+        && ability.attributes.keys().all(|key| matches!(
+            key.as_str(), "id" | "value" | "max_value" | "cumulative" | "affect_self" | "halo_image"
+                | "name" | "female_name" | "description" | "special_note"
+        ))
 }
 
 fn is_stock_skirmisher(ability: &Node) -> bool {
