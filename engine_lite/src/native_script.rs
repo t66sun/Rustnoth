@@ -175,6 +175,11 @@ fn write_action(lua: &mut String, action: &Action, step: usize) -> io::Result<()
             write_string(lua, unit_id);
             lua.push_str(")\n");
         }
+        Action::Disband { unit_id } => {
+            lua.push_str("    actions.disband(");
+            write_string(lua, unit_id);
+            lua.push_str(")\n");
+        }
         Action::EndTurn => unreachable!("turn groups exclude end turns"),
     }
     Ok(())
@@ -249,6 +254,16 @@ mod tests {
         let script = generate(&actions, 1, None).unwrap();
         assert!(script.lua.contains("actions.recall(2, 1, \"veteran\")"));
         assert!(!script.lua.contains("RUSTNOTH_AUDIT_RECRUIT_BEGIN"));
+    }
+
+    #[test]
+    fn writes_disband_as_an_ordinary_command_with_its_exact_unit_id() {
+        let actions = crate::audit_actions::parse("disband\tveteran \"A\"").unwrap();
+        assert_eq!(actions, [Action::Disband { unit_id: "veteran \"A\"".into() }]);
+        let script = generate(&actions, 1, None).unwrap();
+        assert!(script.lua.contains(r#"actions.disband("veteran \"A\"")"#));
+        assert!(!script.lua.contains("RUSTNOTH_AUDIT_RECRUIT_BEGIN"));
+        assert!(crate::audit_actions::parse("disband\t ").is_err());
     }
 
     #[test]

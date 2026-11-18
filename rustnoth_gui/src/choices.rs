@@ -39,7 +39,7 @@ pub fn options_at<'a>(
                     let name = assets.unit_name(unit.type_id).unwrap_or(unit.type_id);
                     format!("Recall {name}\n{unit_id}\nHP {}   XP {}   {} gold", unit.hitpoints, unit.experience, unit.cost)
                 }
-                Action::Move { .. } | Action::EndTurn => return None,
+                Action::Move { .. } | Action::Disband { .. } | Action::EndTurn => return None,
             };
             Some(ActionOption { label, action: action.clone() })
         })
