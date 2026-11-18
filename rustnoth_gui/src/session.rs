@@ -96,6 +96,10 @@ impl<'rules> Session<'rules> {
         self.observation.as_ref()
     }
 
+    pub fn objectives(&self) -> Option<&engine_lite::scenario_sides::ScenarioObjectives> {
+        self.game.objectives_for(self.observation.as_ref()?.side)
+    }
+
     pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
         self.observation.as_ref().map(|view| self.game.map_item_images(view.side)).unwrap_or_default()
     }
@@ -257,6 +261,73 @@ message=Nightfall
         assert_eq!(computer_choice(&view, &[scout.clone(), recruit.clone(), Action::EndTurn]), recruit);
         assert_eq!(computer_choice(&view, &[scout.clone(), Action::EndTurn]), scout);
         assert_eq!(computer_choice(&view, &[Action::EndTurn]), Action::EndTurn);
+    }
+
+    #[test]
+    fn desktop_objectives_follow_the_viewer_and_ordered_side_events() {
+        let source = br#"[units]
+[unit_type]
+id=Scout
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Scout
+[/side]
+[side]
+type=Scout
+[/side]
+[event]
+name=prestart
+[objectives]
+side=0
+[objective]
+condition=win
+description= _ "Reach the keep"
+[/objective]
+[objective]
+condition=lose
+description=Loss of the scout
+[/objective]
+[objective]
+condition=win
+description=Secret goal
+[show_if]
+[have_unit]
+id=hidden
+[/have_unit]
+[/show_if]
+[/objective]
+[/objectives]
+[/event]
+[event]
+name=side 2 turn
+[objectives]
+side=2
+[objective]
+condition=win
+description=Defend the keep
+[/objective]
+[/objectives]
+[/event]
+[/scenario]"#;
+        let bundle = engine_lite::scenario_bundle::Bundle::parse(source).unwrap();
+        let mut session = Session::new(bundle.start(7, |_| unreachable!()).unwrap());
+        let mut versus = Session::with_players(bundle.start(7, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        versus.apply(Action::EndTurn).unwrap();
+        assert_eq!(versus.objectives().unwrap().victory, ["Reach the keep"]);
+        let first = session.objectives().unwrap();
+        assert_eq!(first.victory, ["Reach the keep"]);
+        assert_eq!(first.defeat, ["Loss of the scout"]);
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.objectives().unwrap().victory, ["Defend the keep"]);
+        assert!(session.objectives().unwrap().defeat.is_empty());
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(session.objectives().unwrap().victory, ["Reach the keep"]);
     }
 
     #[test]
