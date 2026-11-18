@@ -7,7 +7,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-fn unit_sight(map: &ScenarioMap, rules: &Rules<'_>, origin: Hex, unit: &UnitState<'_>) -> BTreeSet<Hex> {
+pub(super) fn unit_sight(map: &ScenarioMap, rules: &Rules<'_>, origin: Hex, unit: &UnitState<'_>) -> BTreeSet<Hex> {
     sight_from(map, origin, unit.vision_range(), |terrain| Some(rules.sight_cost(unit, terrain)))
 }
 
