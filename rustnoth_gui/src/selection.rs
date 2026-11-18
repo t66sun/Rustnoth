@@ -56,6 +56,7 @@ mod tests {
         let destination = Hex { x: 1, y: 1 };
         let keep = Hex { x: 0, y: 2 };
         let unit = |position, side| ObservedUnit {
+                can_recruit: false, emits_zoc: true,
             poisoned: false,
             slowed: false,
             petrified: false,

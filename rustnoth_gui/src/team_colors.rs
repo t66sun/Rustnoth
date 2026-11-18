@@ -27,6 +27,11 @@ impl TeamColors {
         Self::parse_palette(bytes, "flag_green")
     }
 
+    /// Source palette used by the original unit ellipse textures.
+    pub fn parse_ellipses(bytes: &[u8]) -> io::Result<Self> {
+        Self::parse_palette(bytes, "ellipse_red")
+    }
+
     fn parse_palette(bytes: &[u8], name: &str) -> io::Result<Self> {
         let config = wml::parse(bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;

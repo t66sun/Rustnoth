@@ -43,6 +43,8 @@ cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-parity -- --repl
 cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-step-trace -- <bundle.cfg> <actions.tsv> <seed> --core-config "<out>/_main.cfg"
 ```
 
+场景事件含有 `[endlevel]` 时，对拍保留原始控制者设置，从 Wesnoth 的本地胜败回调读取实际结局。开场结束记作第 0 帧，动作或回合中结束记作触发动作的帧。固定脚本需在该帧结束。此模式的 `test_result` 属于对拍驱动，请使用普通战役的 `[endlevel]` 配置。
+
 动作文件为 UTF-8，每行字段用制表符分隔。坐标从 1 起算，武器索引从 0 起算。以下是动作格式示例。
 
 ```text

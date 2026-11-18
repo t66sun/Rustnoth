@@ -16,7 +16,7 @@ pub(super) struct MapItem {
     z_order: f64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum ItemChange {
     Place(Hex, MapItem),
     Remove(Hex, Option<String>),

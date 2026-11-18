@@ -21,8 +21,10 @@ pub struct AssetCatalog {
 struct UnitAssets {
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
+    dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
     weapon_names: Vec<Option<String>>,
+    ellipse: String,
 }
 
 impl AssetCatalog {
@@ -32,11 +34,13 @@ impl AssetCatalog {
         let mut catalog = Self::default();
         let mut units = Node::default();
         let mut document = Node::default();
-        for input in [core, bundle] {
+        let mut core_graphics = Vec::new();
+        for (is_core, input) in [(true, core), (false, bundle)] {
             for (tag, node) in wml::parse(input)?.children {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" if is_core => core_graphics.push(node),
                     "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
                         if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
@@ -49,6 +53,10 @@ impl AssetCatalog {
                 }
             }
         }
+        if core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
+            core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
+        }
+        catalog.terrain_rules.extend(core_graphics);
         engine_lite::unit_type::resolve_base_units(&mut units)?;
         document.children.push(("units".into(), units));
         catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
@@ -62,6 +70,11 @@ impl AssetCatalog {
 
     pub fn image_roots(&self) -> &[PathBuf] { &self.image_dirs }
 
+    pub fn ellipse_prefix(&self, id: &str) -> Option<&str> {
+        let prefix = self.units.get(id)?.ellipse.as_str();
+        (prefix != "none" && safe_relative_path(Path::new(prefix))).then_some(prefix)
+    }
+
     /// Returns the original sprite path of a unit type.
     pub fn unit_image(&self, id: &str) -> Option<PathBuf> {
         self.resolve_image(self.units.get(id)?.image.as_deref()?)
@@ -70,6 +83,11 @@ impl AssetCatalog {
     /// Original sidebar portrait. A missing profile or `unit_image` uses the team's board sprite.
     pub fn unit_portrait(&self, id: &str) -> Option<PathBuf> {
         self.resolve_image(self.units.get(id)?.portrait.as_deref()?)
+    }
+
+    /// Full-size portrait used when a campaign speaker has no explicit profile.
+    pub fn dialogue_portrait(&self, id: &str) -> Option<PathBuf> {
+        self.resolve_image(self.units.get(id)?.dialogue_portrait.as_deref()?)
     }
 
     /// Returns the unit type's display name from its WML definition.
@@ -127,12 +145,15 @@ impl AssetCatalog {
                                 .attribute("image")
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
+                            dialogue_portrait: display_name(unit, "profile")
+                                .filter(|value| *value != "unit_image").and_then(image_filename).map(PathBuf::from),
                             portrait: display_name(unit, "small_profile")
                                 .or_else(|| display_name(unit, "profile"))
                                 .filter(|value| *value != "unit_image")
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
+                            ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
                             weapon_names: unit
                                 .children
                                 .iter()

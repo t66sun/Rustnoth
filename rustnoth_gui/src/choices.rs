@@ -159,6 +159,7 @@ Xv,Xv,Xv,Xv,Xv"
             height: 2,
             tiles: Vec::new(),
             units: vec![ObservedUnit {
+                can_recruit: false, emits_zoc: true,
                 position: own,
                 side: 1,
                 type_id: "Bowman".to_owned(),
