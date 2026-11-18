@@ -16,6 +16,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) placement: StartingUnit,
     pub(crate) upkeep: Option<Upkeep>,
     pub(crate) traits: Vec<Node>,
+    pub(crate) default_amlas: u8,
     pub(crate) hitpoints: Option<i32>,
     pub(crate) experience: i32,
     pub(crate) moves_left: Option<i32>,
@@ -96,6 +97,9 @@ pub(crate) fn read_authored_starting_units(
                 upkeep: Upkeep::from_wml(unit),
                 traits: children_named(unit, "modifications")
                     .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
+                default_amlas: children_named(unit, "modifications")
+                    .flat_map(|mods| children_named(mods, "advancement"))
+                    .filter(|advance| crate::unit_type::is_default_amla(advance)).take(100).count() as u8,
                 hitpoints: integer(unit, "hitpoints"),
                 experience: integer(unit, "experience").unwrap_or_default(),
                 moves_left: integer(unit, "moves"),

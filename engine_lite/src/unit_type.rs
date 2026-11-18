@@ -51,6 +51,7 @@ pub struct UnitType {
     pub(crate) skirmisher: bool,
     pub(crate) hiding: Vec<Hiding>,
     pub advances_to: Vec<String>,
+    pub(crate) default_amla: bool,
     pub attacks: Vec<WeaponProfile>,
     /// Damage percentages that this unit type defines over its inherited movement type.
     pub resistance_overrides: DamageTable,
@@ -154,6 +155,8 @@ impl UnitType {
             illuminates: false,
             hiding: Vec::new(),
             advances_to,
+            default_amla: unit.children.iter().find(|(tag, _)| tag == "advancement")
+                .is_some_and(|(_, cfg)| is_default_amla(cfg)),
             attacks: Vec::new(),
             traits: catalog.inherited_traits(&unit, alignment),
         };
@@ -208,6 +211,25 @@ impl UnitType {
             taken
         }
     }
+}
+
+pub(crate) fn is_default_amla(advancement: &Node) -> bool {
+    let effects: &[&[(&str, &str)]] = &[
+        &[("apply_to", "hitpoints"), ("increase_total", "3"), ("heal_full", "yes")],
+        &[("apply_to", "max_experience"), ("increase", "20%")],
+        &[("apply_to", "status"), ("remove", "poisoned")],
+        &[("apply_to", "status"), ("remove", "slowed")],
+    ];
+    advancement.attribute("id") == Some("amla_default")
+        && advancement.attribute("strict_amla") == Some("yes")
+        && advancement.attribute("max_times") == Some("100")
+        && advancement.attributes.keys().all(|key|
+            matches!(key.as_str(), "id" | "strict_amla" | "max_times" | "description" | "image"))
+        && advancement.children.len() == effects.len()
+        && advancement.children.iter().zip(effects).all(|((tag, effect), attributes)| {
+            tag == "effect" && effect.children.is_empty() && effect.attributes.len() == attributes.len()
+                && attributes.iter().all(|&(key, value)| effect.attribute(key) == Some(value))
+        })
 }
 
 fn stock_steadfast(ability: &Node) -> bool {
