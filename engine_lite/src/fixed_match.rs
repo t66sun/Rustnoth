@@ -564,11 +564,15 @@ impl<'data> FixedMatch<'data> {
             terrain,
             inherited_defense,
         );
-        let damage_taken = target.unit_type.combat_damage_taken(
-            &weapon.damage_type,
-            self.rules.resistance.get(target_movement),
-            target_defends,
-        );
+        let inherited_resistance = self.rules.resistance.get(target_movement);
+        let damage_taken_for = |damage_type: &str|
+            target.unit_type.combat_damage_taken(damage_type, inherited_resistance, target_defends);
+        let base_damage_taken = damage_taken_for(&weapon.damage_type);
+        let damage_taken = if weapon.has_arcane_alternative() {
+            base_damage_taken.max(damage_taken_for("arcane"))
+        } else {
+            base_damage_taken
+        };
         let schedule = &self.scenario.schedule;
         let alignment =
             schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, striker.is_fearless());
