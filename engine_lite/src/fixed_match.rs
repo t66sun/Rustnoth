@@ -7,7 +7,7 @@ use std::{
 use crate::{
     board::{
         Attack, AttackChoice, AttackError, Battlefield, MoveError, StrikeModifiers, UnitState,
-        combatant, within_range,
+        StrikeRole, combatant, within_range,
     },
     hex::Hex,
     income::{DEFAULT_BASE_INCOME, net_income},
@@ -282,7 +282,6 @@ impl<'data> FixedMatch<'data> {
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
         let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to);
-        let charging = weapon.has_charge();
         let candidates = defender
             .unit_type
             .attacks
@@ -295,10 +294,12 @@ impl<'data> FixedMatch<'data> {
             })
             .map(|(index, response)| {
                 let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
-                let attacker_stats =
-                    combatant(attacker, choice.weapon, &modifiers, response.parry, charging);
-                let defender_stats =
-                    combatant(defender, index, &response_modifiers, weapon.parry, charging);
+                let attacker_stats = combatant(
+                    attacker, choice.weapon, &modifiers, response.parry, StrikeRole::Attack,
+                );
+                let defender_stats = combatant(
+                    defender, index, &response_modifiers, weapon.parry, StrikeRole::Retaliate(weapon),
+                );
                 ((index, response_modifiers), attacker_stats, defender_stats)
             });
         Ok(Attack {
@@ -980,8 +981,11 @@ Xv,Xv,Xv,Xv"
         let (response, modifiers) = attack.retaliation.unwrap();
         assert_eq!(response, 1);
         let defender = game.scenario.board.unit_at(to).unwrap();
-        assert_eq!(combatant(defender, response, &modifiers, 90, false).hit_chance, 70);
-        assert_eq!(combatant(defender, response, &modifiers, -200, false).hit_chance, 70);
+        let weapon = &game.scenario.board.unit_at(from).unwrap().unit_type.attacks[choice.weapon];
+        for parry in [90, -200] {
+            let stats = combatant(defender, response, &modifiers, parry, StrikeRole::Retaliate(weapon));
+            assert_eq!(stats.hit_chance, 70);
+        }
 
         game.step(Action::Attack(choice)).unwrap();
         assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 2);
