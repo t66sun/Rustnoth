@@ -10,12 +10,22 @@ pub enum ShareVision {
     None,
 }
 
+/// WML criterion used to decide a side's survival and village ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DefeatCondition {
+    NoLeaderLeft,
+    NoUnitsLeft,
+    Never,
+    Always,
+}
+
 /// The initial rules settings for a side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SideConfig {
     /// One-based position in the scenario's side roster.
     pub side: usize,
     pub team_names: Vec<String>,
+    pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
     pub(crate) fog_data: String,
@@ -69,6 +79,12 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
     SideConfig {
         side,
         team_names: names(team_names).collect(),
+        defeat_condition: match cfg.attribute("defeat_condition") {
+            Some("no_units_left") => DefeatCondition::NoUnitsLeft,
+            Some("never") => DefeatCondition::Never,
+            Some("always") => DefeatCondition::Always,
+            _ => DefeatCondition::NoLeaderLeft,
+        },
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
         fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),

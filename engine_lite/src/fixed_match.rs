@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     board::{
-        Attack, AttackChoice, AttackError, Battlefield, MoveError, StrikeModifiers, UnitState,
+        Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState,
         StrikeRole, combatant, within_range,
     },
     hex::Hex,
@@ -148,7 +148,7 @@ impl<'data> FixedMatch<'data> {
         for side in 1..=side_count {
             game.update_side_sight(side, false);
         }
-        game.check_leaders();
+        game.check_victory();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
                 game.state = MatchState::Draw;
@@ -278,14 +278,14 @@ impl<'data> FixedMatch<'data> {
                 board.advance_after_combat(choice.to, defender, supports_unit);
                 self.refog(defender_side);
                 self.reveal_travelled_hexes(choice.from, [choice.from]);
-                self.check_leaders();
+                self.check_victory();
             }
             Action::Recruit { unit_type, to } => {
                 self.recruit(turn.side, &unit_type, to)?;
                 self.reveal_travelled_hexes(to, [to]);
             }
             Action::EndTurn => {
-                let surviving_sides: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
+                let surviving_sides: BTreeSet<_> = self.surviving_sides().collect();
                 self.village_owners.retain(|_, side| surviving_sides.contains(side));
                 let next = self
                     .scenario
@@ -320,7 +320,7 @@ impl<'data> FixedMatch<'data> {
         {
             return false;
         }
-        if leader_sides(&self.scenario.board).any(|leader_side| leader_side == side) {
+        if self.side_survives(side) {
             self.village_owners.insert(to, side);
         } else if self.village_owners.get(&to).is_some_and(|owner|
             self.scenario.sides[side - 1].is_enemy(&self.scenario.sides[*owner - 1])
@@ -445,8 +445,22 @@ impl<'data> FixedMatch<'data> {
         }
     }
 
-    fn check_leaders(&mut self) {
-        let living: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
+    fn side_survives(&self, side: usize) -> bool {
+        use crate::scenario_sides::DefeatCondition;
+        match self.scenario.sides[side - 1].defeat_condition {
+            DefeatCondition::Never => true,
+            DefeatCondition::Always => false,
+            DefeatCondition::NoUnitsLeft => self.scenario.board.units().any(|(_, unit)| unit.side == side),
+            DefeatCondition::NoLeaderLeft => self.scenario.board.units().any(|(_, unit)| unit.side == side && unit.can_recruit),
+        }
+    }
+
+    fn surviving_sides(&self) -> impl Iterator<Item = usize> + '_ {
+        self.side_order.iter().copied().filter(|&side| self.side_survives(side))
+    }
+
+    fn check_victory(&mut self) {
+        let living: BTreeSet<_> = self.surviving_sides().collect();
         let sides = &self.scenario.sides;
         let mut winners: Vec<usize> = Vec::with_capacity(living.len());
         for side in living {
@@ -461,10 +475,6 @@ impl<'data> FixedMatch<'data> {
             _ => MatchState::AlliedVictory(winners),
         };
     }
-}
-
-fn leader_sides<'board>(board: &'board Battlefield<'_>) -> impl Iterator<Item = usize> + 'board {
-    board.units().filter_map(|(_, unit)| unit.can_recruit.then_some(unit.side))
 }
 
 fn supports_unit(unit_type: &UnitType) -> bool {
@@ -1787,6 +1797,41 @@ Xv,Xv,Xv,Xv,Xv"
         assert!(actions.contains(&attack(1)));
         assert_eq!(game.step(attack(0)), Ok(MatchState::Playing(Turn { round: 1, side: 3 })));
         assert_eq!(game.step(attack(1)), Ok(MatchState::Won(3)));
+    }
+
+    #[test]
+    fn scenario_defeat_rules_distinguish_leaders_armies_and_permanent_sides() {
+        let scenario = r#"[units]
+[unit_type]
+id=Guard
+hitpoints=12
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,2 Kh,Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[/side]
+[side]
+no_leader=yes
+defeat_condition=CONDITION
+TROOPS
+[/side]
+[/scenario]"#;
+        let soldier = "[unit]\ntype=Guard\nx,y=3,1\n[/unit]";
+        for (condition, troops, active) in [
+            ("no_leader_left", soldier, false), ("no_units_left", soldier, true),
+            ("no_units_left", "", false), ("never", "", true),
+            ("always", "[leader]\ntype=Guard\n[/leader]", false),
+        ] {
+            let input = scenario.replace("CONDITION", condition).replace("TROOPS", troops);
+            let bundle = crate::scenario_bundle::Bundle::parse(input.as_bytes()).unwrap();
+            let game = bundle.start(3, |_| unreachable!()).unwrap();
+            let expected = if active { MatchState::Playing(Turn { round: 1, side: 1 }) } else { MatchState::Won(1) };
+            assert_eq!(game.state(), expected, "{condition} with {troops}");
+        }
     }
 
     #[test]
