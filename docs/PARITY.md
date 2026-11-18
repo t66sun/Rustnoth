@@ -14,6 +14,12 @@ wesnoth --preprocess-defines=SKIP_CORE,NO_TERRAIN_GFX --preprocess "<install>/da
 
 在对拍命令末尾加上 `--core-config "<out>/_main.cfg"`。场景包可只包含 `[scenario]`，也可附带自定义单位和地形。Rust 从预处理文件读取原版规则，原版裁判从自己的安装读取内置规则。
 
+修正规则后，可用原版已经执行过的那一局再次对拍。提供原先的场景包、外部地图、动作脚本、种子和核心配置。命令会从旧运行目录读取 `native.stdout` 与 `native.stderr`，按原版当时的随机数重新执行攻击和招募，将本次的 `rust.tsv` 写到新目录。
+
+```sh
+cargo run --manifest-path engine_lite/Cargo.toml --bin rustnoth-parity -- --replay-capture <capture-dir> <bundle.cfg> <actions.tsv> <seed> <new-run-dir> [--core-config <preprocessed-core.cfg>]
+```
+
 独立回放也可加载同一个预处理文件。它用指定的种子运行 Rust 裁判，并将逐步记录写入标准输出。
 
 ```sh
