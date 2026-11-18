@@ -12,7 +12,7 @@ use crate::{
     hex::Hex,
     income::Upkeep,
     map::ScenarioMap,
-    movement::{MovementTile, Occupancy, reachable_destinations},
+    movement::{MovementTile, Occupancy, reachable_with_teleports},
     rng::ReplayRng,
     starting_units::{AuthoredStartingUnit, StartingUnit},
     terrain_aliases::TerrainAliases,
@@ -459,9 +459,24 @@ impl<'rules> Battlefield<'rules> {
         terrain_known: impl Fn(Hex) -> bool,
         unit_visible: impl Fn(Hex) -> bool,
     ) -> Result<BTreeMap<Hex, u32>, MoveError> {
+        self.move_destinations_with_teleports(
+            active_side, from, movement_cost, is_enemy, terrain_known, unit_visible, &[],
+        )
+    }
+
+    pub(crate) fn move_destinations_with_teleports(
+        &self,
+        active_side: usize,
+        from: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        is_enemy: impl Fn(usize) -> bool,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+        villages: &[Hex],
+    ) -> Result<BTreeMap<Hex, u32>, MoveError> {
         self.search_walking_map(
             active_side, from, movement_cost, is_enemy, terrain_known, unit_visible,
-            |moves, tile_at| reachable_destinations(from, moves, |hex| Some(tile_at(hex)?.0)),
+            |moves, tile_at| reachable_with_teleports(from, moves, villages, |hex| Some(tile_at(hex)?.0)),
         )
     }
 
@@ -479,7 +494,7 @@ impl<'rules> Battlefield<'rules> {
         unit_visible: impl Fn(Hex) -> bool,
     ) -> Result<Vec<Hex>, MoveError> {
         self.walk_steps_in_view(active_side, from, to, movement_cost, hit_chance, is_enemy,
-            terrain_known, unit_visible)
+            terrain_known, unit_visible, &[])
             .map(|steps| steps.into_iter().map(|(hex, _)| hex).collect())
     }
 
@@ -494,10 +509,11 @@ impl<'rules> Battlefield<'rules> {
         is_enemy: impl Fn(usize) -> bool,
         terrain_known: impl Fn(Hex) -> bool,
         unit_visible: impl Fn(Hex) -> bool,
+        villages: &[Hex],
     ) -> Result<Vec<(Hex, u32)>, MoveError> {
         self.search_walking_map(
             active_side, from, movement_cost, is_enemy, terrain_known, unit_visible,
-            |moves, tile_at| walk_route::find(from, to, moves, |hex| {
+            |moves, tile_at| walk_route::find(from, to, moves, villages, |hex| {
                 let (tile, terrain) = tile_at(hex)?;
                 Some((tile, hit_chance(terrain)))
             }),

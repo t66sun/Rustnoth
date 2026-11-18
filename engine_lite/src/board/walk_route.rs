@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     hex::{Direction, Hex},
-    movement::{MovementTile, Occupancy},
+    movement::{MovementTile, Occupancy, teleport_exits},
 };
 
 struct Visit {
@@ -13,11 +13,18 @@ struct Visit {
     open: bool,
 }
 
-fn heuristic(from: Hex, to: Hex) -> f64 {
+fn heuristic(from: Hex, to: Hex, villages: &[Hex]) -> f64 {
     let dx = (f64::from(from.x) - f64::from(to.x)) * 0.75;
     let dy = f64::from(from.y) - f64::from(to.y)
         + f64::from((from.x & 1) - (to.x & 1)) * 0.5;
-    from.distance(to) as f64 + (dx * dx + dy * dy) / 900_000_000.0
+    let walking = from.distance(to) as f64 + (dx * dx + dy * dy) / 900_000_000.0;
+    if villages.is_empty() {
+        return walking;
+    }
+    // Native A* caps each walking leg of its tunnel estimate at one move.
+    let entrance = u8::from(villages.binary_search(&from).is_err());
+    let exit = u8::from(villages.binary_search(&to).is_err());
+    walking.min(f64::from(entrance + 1 + exit))
 }
 
 // Native A* updates entries in place. Its heap compares just the estimated
@@ -63,6 +70,7 @@ pub(super) fn find(
     from: Hex,
     to: Hex,
     moves: u32,
+    villages: &[Hex],
     tile_at: impl Fn(Hex) -> Option<(MovementTile, u8)>,
 ) -> Option<Vec<(Hex, u32)>> {
     if from == to || tile_at(to)?.0.occupancy != Occupancy::Empty {
@@ -71,7 +79,7 @@ pub(super) fn find(
     let mut visits = BTreeMap::from([(from, Visit {
         spent: 0.0,
         moves_left: moves,
-        estimate: heuristic(from, to),
+        estimate: heuristic(from, to, villages),
         previous: None,
         open: true,
     })]);
@@ -85,8 +93,8 @@ pub(super) fn find(
         }
         let spent = visit.spent;
         let remaining = visit.moves_left;
-        for direction in Direction::CLOCKWISE.into_iter().rev() {
-            let Some(next) = current.neighbor(direction) else { continue };
+        let adjacent = Direction::CLOCKWISE.into_iter().rev().filter_map(|dir| current.neighbor(dir));
+        for next in teleport_exits(villages, current).iter().rev().copied().chain(adjacent) {
             let old = visits.get(&next);
             let threshold = old.map_or(best, |node| node.spent);
             if spent + 1.0 >= threshold {
@@ -108,7 +116,7 @@ pub(super) fn find(
             visits.insert(next, Visit {
                 spent: candidate,
                 moves_left: remaining - movement,
-                estimate: candidate + heuristic(next, to),
+                estimate: candidate + heuristic(next, to, villages),
                 previous: Some(current),
                 open: true,
             });
@@ -148,7 +156,7 @@ mod tests {
         let north = Hex { x: 1, y: 0 };
         let south = Hex { x: 1, y: 1 };
         let to = Hex { x: 2, y: 1 };
-        let fork = |south_hit_chance, south_occupancy| find(from, to, 2, |hex| {
+        let fork = |south_hit_chance, south_occupancy| find(from, to, 2, &[], |hex| {
             if ![north, south, to].contains(&hex) {
                 return None;
             }

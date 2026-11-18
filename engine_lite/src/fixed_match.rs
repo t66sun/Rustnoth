@@ -26,6 +26,7 @@ use crate::{
 
 pub mod audit;
 mod illumination;
+mod teleport;
 mod walk;
 mod vision;
 mod recruit;
@@ -198,14 +199,16 @@ impl<'data> FixedMatch<'data> {
         let unit_visible = |hex| units.contains(&hex);
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
+            let villages = self.teleport_villages(from, unit, terrain_known, unit_visible);
             let destinations = board
-                .move_destinations_in_view(
+                .move_destinations_with_teleports(
                     turn.side,
                     from,
                     |terrain| self.rules.walking_cost(unit.unit_type, terrain),
                     is_enemy,
                     terrain_known,
                     unit_visible,
+                    &villages,
                 )
                 .expect("owned move origin");
             actions.extend(destinations.into_keys().map(|to| Action::Move { from, to }));
