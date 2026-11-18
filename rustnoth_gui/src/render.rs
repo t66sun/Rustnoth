@@ -1,5 +1,6 @@
 mod frame;
 mod minimap;
+mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
 use std::{
@@ -74,6 +75,7 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
 pub struct BoardArt {
     frame: FrameArt,
     minimap: minimap::Art,
+    lighting: lighting::Lighting,
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
@@ -86,7 +88,7 @@ pub struct BoardArt {
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
-    map_items: Vec<(Hex, Texture2D)>,
+    map_items: Vec<(Hex, Texture2D, bool)>,
     unit_status: unit_status::StatusArt,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
@@ -99,7 +101,7 @@ pub struct BoardArt {
 }
 
 impl BoardArt {
-    pub fn new(wesnoth_root: &Path) -> Self {
+    pub fn new(wesnoth_root: &Path) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -125,9 +127,10 @@ impl BoardArt {
                 .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
                 .ok()
         };
-        Self {
+        Ok(Self {
             frame: FrameArt::load(wesnoth_root),
             minimap: minimap::Art::new(wesnoth_root),
+            lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
@@ -150,19 +153,22 @@ impl BoardArt {
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
             font,
-        }
+        })
     }
 
     pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+        self.lighting.update(observation);
         self.map_items.clear();
         for (position, image) in items {
+            let unlit = image.strip_suffix("~NO_TOD_SHIFT()");
+            let image = unlit.unwrap_or(image);
             let path = Path::new(image);
             if !path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
                 || path.extension().is_none_or(|ext| ext != "png") || image.contains(['~', ':', '\\']) {
                 continue;
             }
             if let Some(texture) = assets.resolve_image(path).and_then(|p| get_texture(&mut self.paths, p)) {
-                self.map_items.push((position, texture));
+                self.map_items.push((position, texture, unlit.is_none()));
             }
         }
         self.cover = map_cover(observation);
@@ -319,11 +325,12 @@ pub fn draw(
     }
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
+        if flag_frame.is_some() { art.lighting.terrain(tile.position, x, y, size); }
         let layers = &art.terrain[&tile.terrain];
         let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
         if let Some(base) = ground.or_else(|| layers.first()) {
@@ -338,7 +345,8 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             draw_centered(overlay, center, size);
         }
         if let Some(owner) = tile.village_owner {
-            if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
+            if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
+            if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
                 draw_centered(flag, center, size);
                 continue;
             }
@@ -351,6 +359,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             );
         }
     }
+    art.lighting.flat([0; 3]);
 }
 
 pub fn minimap_point(view: &Observation, pointer: Vec2) -> Option<[f32; 2]> {
@@ -387,11 +396,14 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let frame = village_flag_frame((get_time() * 1000.0) as u64);
-    draw_terrain(view, layout, art, Some(frame));
-    for (position, texture) in &art.map_items {
+    let global_color = movement.global_time.map_or([0; 3], |time| time.color);
+    draw_terrain(view, layout, art, Some((frame, global_color)));
+    for (position, texture, use_time_color) in &art.map_items {
+        if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
     }
+    art.lighting.flat([0; 3]);
     let mut choices = BTreeMap::new();
     let mut actionable = HashSet::new();
     for action in movement.actions {
@@ -481,7 +493,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             });
         }
     }
+    art.lighting.flat(global_color);
     draw_cover(layout, art);
+    art.lighting.flat([0; 3]);
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
@@ -551,6 +565,7 @@ mod tests {
             terrain: "Gg".into(),
             visible,
             village_owner: None,
+            time_color: [0; 3],
         };
         let mut view = Observation {
             side: 1, allied_sides: vec![1], gold: None, width: 3, height: 1,
