@@ -9,6 +9,8 @@ use crate::hex::Hex;
 pub struct TimeOfDay {
     pub id: String,
     pub lawful_bonus: i32,
+    /// Additive red, green and blue shifts from the scenario WML.
+    pub color: [i32; 3],
 }
 
 /// A unit's response to time-of-day combat bonuses.
@@ -64,6 +66,7 @@ impl TimeSchedule {
             entries.push(TimeOfDay {
                 id: String::from("nulltod"),
                 lawful_bonus: 0,
+                color: [0; 3],
             });
         }
 
@@ -201,6 +204,7 @@ mod tests {
         .map(|(id, lawful_bonus)| TimeOfDay {
             id: id.into(),
             lawful_bonus,
+            color: [0; 3],
         })
         .collect()
     }
@@ -278,6 +282,7 @@ mod tests {
                 .map(|&lawful_bonus| TimeOfDay {
                     id: String::new(),
                     lawful_bonus,
+                    color: [0; 3],
                 })
                 .collect();
             TimeSchedule::new(entries, 1, 0)

@@ -196,7 +196,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
-    let mut art = render::BoardArt::new(&data.wesnoth_root);
+    let mut art = render::BoardArt::new(&data.wesnoth_root)?;
     story::show(&data.story, &data.assets, art.font.as_ref()).await;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());

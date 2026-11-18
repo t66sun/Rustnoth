@@ -35,6 +35,7 @@ pub(crate) fn time_entries(node: &Node) -> Vec<TimeOfDay> {
         .map(|(_, time)| TimeOfDay {
             id: time.attribute("id").unwrap_or_default().to_owned(),
             lawful_bonus: integer(time, "lawful_bonus").unwrap_or(0),
+            color: ["red", "green", "blue"].map(|channel| integer(time, channel).unwrap_or(0)),
         })
         .collect()
 }

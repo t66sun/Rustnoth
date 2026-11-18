@@ -186,7 +186,7 @@ mod tests {
             ("Gg^Vh".into(), Symbol { pixels: Some(grass), village: true }),
         ]);
         let tile = |x, terrain: &str, visible, owner| ObservedTile {
-            position: Hex { x, y: 0 }, terrain: terrain.into(), visible, village_owner: owner,
+            position: Hex { x, y: 0 }, terrain: terrain.into(), visible, village_owner: owner, time_color: [0; 3],
         };
         let view = Observation { width: 4, height: 2, side: 1, gold: None, allied_sides: vec![1],
             units: vec![], tiles: vec![tile(0,"Gg",true,None), tile(1,"Gg",false,None),

@@ -167,6 +167,7 @@ mod tests {
             terrain: "Gg".to_owned(),
             visible,
             village_owner: None,
+            time_color: [0; 3],
         };
         let observed_unit = |x, y| crate::observation::ObservedUnit {
                 can_recruit: false, emits_zoc: true,
