@@ -22,10 +22,12 @@ mod menu;
 mod render;
 mod setup;
 mod story;
+mod title_screen;
 
 const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
 const PAN_PIXELS_PER_SECOND: f32 = 480.0;
@@ -54,6 +56,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
+            Launch::Title(title) => title.run().await,
             Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
@@ -76,6 +79,7 @@ struct Options {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Source {
+    Title(Option<(PathBuf, PathBuf)>),
     Campaign { file: PathBuf, maps: PathBuf },
     Bundle(PathBuf),
     Skirmish,
@@ -88,6 +92,10 @@ impl Options {
             _ => (args, PathBuf::from("../wesnoth_src")),
         };
         let (source, core, seed) = match args {
+            [flag, file, maps, core, seed] if flag == "--title" => {
+                (Source::Title(Some((file.into(), maps.into()))), core, seed)
+            }
+            [flag, core, seed] if flag == "--title" => (Source::Title(None), core, seed),
             [flag, file, maps, core, seed] if flag == "--campaign" => {
                 (Source::Campaign { file: file.into(), maps: maps.into() }, core, seed)
             }
@@ -104,6 +112,7 @@ impl Options {
 }
 
 enum Launch {
+    Title(title_screen::TitleScreen),
     Campaign(campaign_browser::Browser),
     Board(BoardData),
     Skirmish(setup::Setup),
@@ -113,6 +122,9 @@ impl Launch {
     fn load(options: Options) -> Result<Self, Box<dyn Error>> {
         let core = read_file(&options.core)?;
         match options.source {
+            Source::Title(campaign) => Ok(Self::Title(title_screen::TitleScreen {
+                campaign, root: options.wesnoth_root, core, seed: options.seed,
+            })),
             Source::Campaign { file, maps } => Ok(Self::Campaign(campaign_browser::Browser::load(
                 &file, maps, core, options.wesnoth_root, options.seed,
             )?)),
@@ -127,6 +139,7 @@ impl Launch {
 
     fn title(&self) -> &str {
         match self {
+            Self::Title(_) => "The Battle for Wesnoth",
             Self::Campaign(_) => "Campaign scenarios",
             Self::Board(data) => &data.title,
             Self::Skirmish(_) => "Skirmish",
