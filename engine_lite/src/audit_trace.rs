@@ -21,6 +21,8 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
             }
             writeln!(out)?;
         }
+        MatchState::CampaignVictory => writeln!(out, "step\t{step}\tcampaign_victory")?,
+        MatchState::CampaignDefeat => writeln!(out, "step\t{step}\tcampaign_defeat")?,
         MatchState::Draw => writeln!(out, "step\t{step}\tdraw")?,
     }
     for (index, amount) in snapshot.gold.iter().enumerate() {

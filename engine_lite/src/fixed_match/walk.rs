@@ -257,6 +257,15 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn a_campaign_destination_can_finish_a_match_with_both_leaders_alive() {
+        let events = "[event]\nname=moveto\n[filter]\nx,y=4,1\nid=scout\n[/filter]\n[endlevel]\nresult=victory\n[/endlevel]\n[/event]";
+        let bundle = scenario_with_events(false, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg", events);
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        assert_eq!(game.step(Action::Move { from: START, to: STOP }).unwrap(),
+                   crate::fixed_match::MatchState::CampaignVictory);
+    }
+
+    #[test]
     fn unmatched_arrivals_leave_once_handlers_pending_and_matching_arrivals_can_repeat() {
         let reward = |once: &str, amount: i32| format!(
             "[event]\nname=moveto\nfirst_time_only={once}\n[filter]\nx=4\ny=1\nid=scout\n[/filter]\n\

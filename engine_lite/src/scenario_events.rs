@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+mod endlevel;
 mod items;
 use items::{ItemChange, MapItems};
 
@@ -35,6 +36,7 @@ enum EventAction {
 pub(crate) enum BoardChange {
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
+    EndLevel { victory: bool },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String },
@@ -415,6 +417,7 @@ impl ScenarioEvents {
             let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
                 .collect::<Option<Vec<_>>>() else { continue };
             let opening = names.split(',').all(|name| matches!(name.trim(), "prestart" | "start"));
+            let ends_level = event.children.iter().any(|(tag, _)| tag == "endlevel");
             let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
                 vec![EventAction::Board(BoardChange::CaptureVillage(capture))]
             } else {
@@ -424,10 +427,14 @@ impl ScenarioEvents {
                         && cfg.attributes.len() == 2 && cfg.attribute("name").is_some()
                         && cfg.attribute("value").is_some_and(|value| !value.contains('$')))
                 })
-                    .filter_map(|(tag, cfg)| match EventAction::read(tag, cfg, side_count, opening) {
+                    .filter_map(|(tag, cfg)| match tag.as_str() {
+                        "endlevel" => Some(endlevel::player_victory(cfg, scenario)
+                            .map(|victory| EventAction::Board(BoardChange::EndLevel { victory }))),
+                        _ => match EventAction::read(tag, cfg, side_count, opening) {
                         Some(action) => Some(Some(action)),
-                        None if opening && presentation_only(tag, cfg) => None,
+                        None if (opening || ends_level) && presentation_only(tag, cfg) => None,
                         None => Some(None),
+                        },
                     })
                     .collect::<Option<Vec<_>>>() else { continue };
                 changes
@@ -465,6 +472,7 @@ impl ScenarioEvents {
     }
 
     fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
+        if state.board_changes.iter().any(|c| matches!(c, BoardChange::EndLevel { .. })) { return; }
         self.handlers.retain(|handler| {
             if !handler.names.iter().any(|n| n == name)
                 || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref()))
