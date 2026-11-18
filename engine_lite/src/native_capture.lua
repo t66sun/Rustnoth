@@ -1,4 +1,5 @@
 local capture = {}
+local next_step = 0
 
 local escapes = {
     ["\\"] = "\\\\",
@@ -95,7 +96,7 @@ local function capture_views()
 end
 
 -- Call after an action or at side-turn refresh, inside the referee only.
-function capture.snapshot(step, time_over)
+function capture.snapshot(step, time_over, campaign_result)
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
     local sides = surviving_sides(units)
@@ -106,8 +107,10 @@ function capture.snapshot(step, time_over)
             break
         end
     end
-    local terminal = time_over or (not manual and not enemies_remain(sides))
-    if time_over or #sides == 0 then
+    local terminal = campaign_result ~= nil or time_over or (not manual and not enemies_remain(sides))
+    if campaign_result then
+        row("step", step, campaign_result)
+    elseif time_over or #sides == 0 then
         row("step", step, "draw")
     elseif terminal then
         row("step", step, "won", table.unpack(sides))
@@ -151,7 +154,28 @@ function capture.snapshot(step, time_over)
     end
     capture_views()
     row("end", step)
+    next_step = step + 1
     return terminal
+end
+
+-- Read the original result at local_victory/local_defeat before survivors are healed.
+-- The audit's own limit and ordinary terminal hooks use a different test_result.
+function capture.campaign_pending()
+    local data = wesnoth.scenario.end_level_data
+    return data and data.test_result == "rustnoth_campaign"
+end
+
+function capture.campaign_end(expected)
+    if not capture.campaign_pending() then return end
+    local data = wesnoth.scenario.end_level_data
+    local step = next_step
+    capture.snapshot(step, false, data.is_victory and "campaign_victory" or "campaign_defeat")
+    if expected and expected ~= step then
+        wesnoth.log("err", "audit script has actions after terminal step " .. step)
+        data.test_result = "fail"
+    else
+        data.test_result = "pass"
+    end
 end
 
 return capture
