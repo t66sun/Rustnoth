@@ -33,15 +33,18 @@ local function owned_villages()
 end
 
 local function surviving_sides(units)
-    local leaders = {}
+    local leaders, present = {}, {}
     for _, unit in ipairs(units) do
+        present[unit.side] = true
         if unit.canrecruit then
             leaders[unit.side] = true
         end
     end
     local sides = {}
     for side = 1, #wesnoth.sides do
-        if leaders[side] then
+        local condition = wesnoth.sides[side].defeat_condition
+        if condition == "never" or (condition == "no_units_left" and present[side])
+            or (condition == "no_leader_left" and leaders[side]) then
             sides[#sides + 1] = side
         end
     end
