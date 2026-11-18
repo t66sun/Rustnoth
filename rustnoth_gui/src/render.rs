@@ -232,10 +232,11 @@ pub fn draw(
     {
         draw_line(inset, baseline + 93.0, width - 18.0, baseline + 93.0, 1.0, BORDER);
         let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
-        label(&art.font, name, inset, baseline + 126.0, 20, TEXT);
-        label(&art.font, &format!("HP {}", unit.hitpoints), inset, baseline + 155.0, 17, MUTED);
+        label(&art.font, name, inset, baseline + 116.0, 20, TEXT);
+        label(&art.font, &format!("HP {}", unit.hitpoints), inset, baseline + 138.0, 17, MUTED);
+        label(&art.font, &format!("XP {} / {}", unit.experience, unit.max_experience), inset, baseline + 158.0, 17, MUTED);
         if let Some(moves) = unit.moves_left {
-            label(&art.font, &format!("Moves {moves}"), inset, baseline + 181.0, 17, MUTED);
+            label(&art.font, &format!("Moves {moves}"), inset, baseline + 178.0, 17, MUTED);
         }
         let condition = match (unit.poisoned, unit.slowed) {
             (true, true) => "Poisoned, Slowed",

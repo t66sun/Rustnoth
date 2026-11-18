@@ -33,6 +33,8 @@ pub struct ObservedUnit {
     pub side: usize,
     pub type_id: String,
     pub hitpoints: i32,
+    pub experience: i32,
+    pub max_experience: i32,
     pub poisoned: bool,
     pub slowed: bool,
     pub moves_left: Option<i32>,
@@ -82,6 +84,8 @@ pub fn project(
                 side: unit.side,
                 type_id: unit.unit_type.id.clone(),
                 hitpoints: unit.hitpoints,
+                experience: unit.experience,
+                max_experience: unit.max_experience(),
                 poisoned: unit.poisoned,
                 slowed: unit.slowed,
                 moves_left: own.then_some(unit.moves_left),
@@ -106,7 +110,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::{map::ScenarioMap, starting_units::read_starting_units, unit_type::UnitType, wml};
+    use crate::{map::ScenarioMap, starting_units::read_authored_starting_units, unit_type::UnitType, wml};
 
     #[test]
     fn projects_only_known_terrain_and_visible_units_with_own_action_points() {
@@ -124,6 +128,7 @@ mod tests {
             [side]
                 type=Fighter
                 id=own_unit
+                experience=11
             [/side]
             [side]
                 type=Fighter
@@ -132,6 +137,16 @@ mod tests {
                     type=Fighter
                     x,y=2,1
                     id=seen_unit
+                    experience=19
+                    [modifications]
+                        [trait]
+                            id=intelligent
+                            [effect]
+                                apply_to=max_experience
+                                increase=-20%
+                            [/effect]
+                        [/trait]
+                    [/modifications]
                 [/unit]
                 [unit]
                     type=Fighter
@@ -147,14 +162,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        let starts = read_starting_units(&config, &map).unwrap();
+        let starts = read_authored_starting_units(&config, &map).unwrap();
         let unit_types = BTreeMap::from([(
             "Fighter".to_owned(),
             UnitType::from_wml(
-                wml::parse("id=Fighter\nhitpoints=24\nmovement=5\nattacks=2").unwrap(),
+                wml::parse("id=Fighter\nhitpoints=24\nmovement=5\nattacks=2\nexperience=100").unwrap(),
             ),
         )]);
-        let board = Battlefield::new(map, starts, &unit_types).unwrap();
+        let board = Battlefield::from_authored_starting_units(map, starts, &unit_types, 50).unwrap();
         let mut vision = VisibilityMask::new(5, 1, true, true);
         vision.replace_sight([FOGGED]);
         vision.replace_sight([SEEN, CONCEALED]);
@@ -183,6 +198,8 @@ mod tests {
                     side: 1,
                     type_id: "Fighter".to_owned(),
                     hitpoints: 24,
+                    experience: 11,
+                    max_experience: 50,
                     poisoned: false,
                     slowed: false,
                     moves_left: Some(5),
@@ -193,6 +210,8 @@ mod tests {
                     side: 2,
                     type_id: "Fighter".to_owned(),
                     hitpoints: 24,
+                    experience: 19,
+                    max_experience: 40,
                     poisoned: false,
                     slowed: false,
                     moves_left: None,
