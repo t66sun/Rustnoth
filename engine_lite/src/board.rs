@@ -289,6 +289,10 @@ impl<'rules> Battlefield<'rules> {
         Ok(board)
     }
 
+    pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
+        self.map.replace_terrain(hex, code);
+    }
+
     pub fn map(&self) -> &ScenarioMap {
         &self.map
     }
