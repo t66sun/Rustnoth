@@ -1,8 +1,8 @@
 # 桌面版
 
-双击 `rustnoth_gui` 即可进入原版标题画面。程序会在 Steam 游戏库中寻找 Wesnoth 1.18.8。也可以使用 `rustnoth_gui --wesnoth-root <安装目录>` 或设置 `WESNOTH_ROOT` 指定安装位置。首次进入 Multiplayer 或 Campaigns 时，程序用原版可执行文件预处理规则并保存在当前用户的 Rustnoth 缓存中。安装了《南疆卫队》时，Campaigns 可打开该战役。
+在 Windows 双击发布版 `Rustnoth.exe` 即可进入标题画面。从源码运行可在仓库根目录执行 `cargo run --manifest-path rustnoth_gui/Cargo.toml --locked`。程序会在 Steam 游戏库中寻找 Wesnoth 1.18.8。也可以使用 `rustnoth_gui --wesnoth-root <安装目录>` 或设置 `WESNOTH_ROOT` 指定安装位置。首次进入 Multiplayer 或 Campaigns 时，程序用原版可执行文件预处理规则并保存在当前用户的 Rustnoth 缓存中。**Campaigns（战役）** 会列出本机安装的单人战役，可用所选语言搜索战役名，再选择难度。教学战役目前可体验开场的移动和攻击练习。
 
-桌面版使用 Rust 裁判运行本地对局，支持自由混战和盟军共同获胜。各阵营依次使用同一窗口，棋盘和行动范围由当前阵营的裁判视图决定。启用战争迷雾后，曾探索但当前不可见的地形会变暗；启用黑幕后，未探索的格子会被遮住。地形、精灵、队色和字体从本地 Wesnoth 源码目录读取。
+桌面版使用 Rust 裁判运行本地对局，支持自由混战和盟军共同获胜。各阵营依次使用同一窗口，棋盘和行动范围由当前阵营的裁判视图决定。启用战争迷雾后，曾探索但当前不可见的地形会变暗；启用黑幕后，未探索的格子会被遮住。地形、精灵、队色和字体取自指定的 Wesnoth 素材目录。
 
 从仓库根目录运行。准备包含 `[scenario]` 的场景包，以及[原版核心规则的预处理文件](PARITY.md)。
 
@@ -12,13 +12,15 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+**地图编辑器** 可打开原版地图、用地形笔刷绘制、撤销和重做，并将编辑结果另存为用户地图。**成就** 可查看已安装的成就分组及已有原版进度。
+
 ### 从原版标题画面开始
 
 ```sh
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5489
 ```
 
-标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。右下角 **Language** 可切换标题菜单、提示、徽标和显示偏好的语言。简体中文使用原版字库，选择会保存在当前用户的 Rustnoth 配置中。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
+标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需从标题菜单打开自备的战役包，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。右下角 **Language** 可切换标题地图地名、徽标、菜单、战役目录和难度选择的语言。简体中文使用原版字库，选择会保存在当前用户的 Rustnoth 配置中。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
 
 从 **Preferences → Display** 勾选或取消 **Full screen** 可立即切换显示模式。用 Tab 切换焦点，空格或 Enter 确认，Esc 关闭。Rustnoth 会在下次启动时恢复该选择。
 
