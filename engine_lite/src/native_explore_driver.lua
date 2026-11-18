@@ -8,6 +8,10 @@ local function marker(message)
 end
 
 local function run(time_over)
+    if time_over then
+        local limit_now = wesnoth.scenario.turns
+        if limit_now == -1 or wesnoth.current.turn <= limit_now then return end
+    end
     local turn_action_count = 0
     while true do
         -- End-turn commands reach this checkpoint on the next refresh or time over.
