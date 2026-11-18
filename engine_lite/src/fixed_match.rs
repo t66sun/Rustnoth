@@ -25,6 +25,7 @@ use crate::{
 };
 
 pub mod audit;
+mod vision;
 mod recruit;
 mod retaliation;
 
@@ -80,16 +81,17 @@ impl Rules<'_> {
     }
 }
 
-/// A headless match on a fixed, fully visible map.
+/// A headless match on a scenario map with each side's own map knowledge.
 ///
-/// This match applies ordinary recruit traits and supports stock First Strike, Magical, and Charge.
 /// It ends when no surviving leaders are enemies or the scenario reaches the round limit.
 pub struct FixedMatch<'data> {
     scenario: ScenarioStart<'data>,
     rules: Rules<'data>,
     rng: ReplayRng,
     state: MatchState,
+    current_round: i32,
     village_owners: BTreeMap<Hex, usize>,
+    vision: Vec<VisibilityMask>,
     side_order: Vec<usize>,
     gold: Vec<i64>,
 }
@@ -102,11 +104,7 @@ impl<'data> FixedMatch<'data> {
     ) -> Result<Self, MatchError> {
         let side_count = scenario.sides.len();
         if side_count < 2
-            || scenario.sides.iter().enumerate().any(|(index, side)| {
-                side.side != index + 1
-                    || side.fog
-                    || side.shroud
-            })
+            || scenario.sides.iter().enumerate().any(|(index, side)| side.side != index + 1)
             || scenario
                 .board
                 .units()
@@ -129,6 +127,10 @@ impl<'data> FixedMatch<'data> {
             }
         }
         let mut game = Self {
+            current_round: scenario.start_round,
+            vision: scenario.sides.iter().map(|side|
+                VisibilityMask::new(map.width(), map.height(), side.fog, side.shroud)
+            ).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
                 side: 1,
@@ -140,6 +142,9 @@ impl<'data> FixedMatch<'data> {
             side_order: (1..=side_count).collect(),
             gold,
         };
+        for side in 1..=side_count {
+            game.refog(side);
+        }
         game.check_leaders();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
@@ -160,15 +165,17 @@ impl<'data> FixedMatch<'data> {
     pub fn observation_for(&self, side: usize) -> Option<Observation> {
         let gold = *self.gold.get(side.checked_sub(1)?)?;
         let board = &self.scenario.board;
-        let vision = VisibilityMask::new(board.map().width(), board.map().height(), false, false);
-        let mut observation = project(board, side, &vision, |_| true);
+        let vision = self.effective_vision(side);
+        let mut observation = project(board, side, &vision, |hex| self.unit_visible_on_known_hex(side, hex));
         observation.allied_sides = self.scenario.sides.iter()
             .filter(|other| !self.scenario.sides[side - 1].is_enemy(other))
             .map(|other| other.side)
             .collect();
         observation.gold = Some(gold);
         for tile in &mut observation.tiles {
-            tile.village_owner = self.village_owners.get(&tile.position).copied();
+            tile.village_owner = self.village_owners.get(&tile.position).copied().filter(|owner|
+                tile.visible || observation.allied_sides.contains(owner)
+            );
         }
         Some(observation)
     }
@@ -182,14 +189,20 @@ impl<'data> FixedMatch<'data> {
         let board = &self.scenario.board;
         let sides = &self.scenario.sides;
         let is_enemy = |other: usize| sides[turn.side - 1].is_enemy(&sides[other - 1]);
+        let terrain: BTreeSet<_> = observation.tiles.iter().map(|tile| tile.position).collect();
+        let units: BTreeSet<_> = observation.units.iter().map(|unit| unit.position).collect();
+        let terrain_known = |hex| terrain.contains(&hex);
+        let unit_visible = |hex| units.contains(&hex);
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
             let destinations = board
-                .move_destinations(
+                .move_destinations_in_view(
                     turn.side,
                     from,
                     |terrain| self.rules.walking_cost(unit.unit_type, terrain),
                     is_enemy,
+                    terrain_known,
+                    unit_visible,
                 )
                 .expect("owned move origin");
             actions.extend(destinations.into_keys().map(|to| Action::Move { from, to }));
@@ -198,9 +211,10 @@ impl<'data> FixedMatch<'data> {
             board
                 .attack_choices(turn.side, is_enemy)
                 .into_iter()
+                .filter(|choice| unit_visible(choice.to))
                 .map(Action::Attack),
         );
-        self.extend_recruit_choices(turn.side, &mut actions);
+        self.extend_recruit_choices_in_view(turn.side, &mut actions, terrain_known, unit_visible);
         actions.push(Action::EndTurn);
         Some((observation, actions))
     }
@@ -210,9 +224,20 @@ impl<'data> FixedMatch<'data> {
             return Err(MatchError::Finished);
         };
         let sides = &self.scenario.sides;
+        let viewer = &sides[turn.side - 1];
+        if (viewer.fog || viewer.shroud) && !matches!(action, Action::EndTurn)
+            && !self.decision().expect("playing side").1.contains(&action)
+        {
+            return Err(MatchError::ActionUnavailable);
+        }
         let enemies = |first: usize, second: usize| sides[first - 1].is_enemy(&sides[second - 1]);
         match action {
             Action::Move { from, to } => {
+                let route = if viewer.fog || viewer.shroud {
+                    self.planned_route(turn.side, from, to)?
+                } else {
+                    Vec::new()
+                };
                 let board = &mut self.scenario.board;
                 let unit_type = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?.unit_type;
                 board.move_unit(
@@ -225,10 +250,17 @@ impl<'data> FixedMatch<'data> {
                 if self.capture_village(turn.side, to) {
                     self.scenario.board.stop_movement(to);
                 }
+                self.reveal_travelled_hexes(to, route);
             }
             Action::Attack(choice) => {
+                if self.scenario.board.unit_at(choice.to).is_some()
+                    && !self.unit_visible_on_known_hex(turn.side, choice.to)
+                {
+                    return Err(MatchError::ActionUnavailable);
+                }
                 let attack = self.prepare_attack(turn, choice)?;
                 let board = &mut self.scenario.board;
+                let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
                 board.apply_attack_with_relations(
                     turn.side,
                     attack,
@@ -237,9 +269,14 @@ impl<'data> FixedMatch<'data> {
                 )?;
                 board.advance_after_combat(choice.from, supports_unit);
                 board.advance_after_combat(choice.to, supports_unit);
+                self.refog(defender_side);
+                self.reveal_travelled_hexes(choice.from, [choice.from]);
                 self.check_leaders();
             }
-            Action::Recruit { unit_type, to } => self.recruit(turn.side, &unit_type, to)?,
+            Action::Recruit { unit_type, to } => {
+                self.recruit(turn.side, &unit_type, to)?;
+                self.reveal_travelled_hexes(to, [to]);
+            }
             Action::EndTurn => {
                 let surviving_sides: BTreeSet<_> = leader_sides(&self.scenario.board).collect();
                 self.village_owners.retain(|_, side| surviving_sides.contains(side));
@@ -247,12 +284,15 @@ impl<'data> FixedMatch<'data> {
                     .scenario
                     .board
                     .advance_turn(turn, &self.side_order, self.scenario.last_round);
+                self.refog(turn.side);
                 self.state = if let Some(next) = next {
+                    self.current_round = next.round;
                     self.settle_income(next);
                     let sides = &self.scenario.sides;
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
                         sides[a - 1].is_enemy(&sides[b - 1])
                     });
+                    self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
                     MatchState::Draw
@@ -424,6 +464,7 @@ fn supports_unit(unit_type: &UnitType) -> bool {
 #[derive(Debug, Eq, PartialEq)]
 pub enum MatchError {
     UnsupportedScenario,
+    ActionUnavailable,
     Finished,
     Move(MoveError),
     Attack(AttackError),
@@ -446,8 +487,9 @@ impl fmt::Display for MatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedScenario => f.write_str(
-                "fixed match requires at least two sides in order, with full visibility and supported weapons",
+                "fixed match requires at least two sides in order and supported weapons",
             ),
+            Self::ActionUnavailable => f.write_str("action is unavailable to the current side"),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
             Self::Attack(error) => error.fmt(f),
