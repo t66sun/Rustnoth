@@ -36,8 +36,14 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
             write!(out, "\t{}", escape_id(trait_id))?;
         }
         writeln!(out)?;
-        if unit.slowed {
-            writeln!(out, "status\t{x}\t{y}\tslowed")?;
+        let statuses = match (unit.slowed, unit.poisoned) {
+            (true, true) => Some("slowed\tpoisoned"),
+            (true, false) => Some("slowed"),
+            (false, true) => Some("poisoned"),
+            (false, false) => None,
+        };
+        if let Some(statuses) = statuses {
+            writeln!(out, "status\t{x}\t{y}\t{statuses}")?;
         }
     }
     for &(position, side) in &snapshot.villages {
@@ -92,6 +98,7 @@ mod tests {
                     can_recruit: true,
                     experience: 9,
                     slowed: true,
+                    poisoned: true,
                     traits: vec!["quick".to_owned(), "夜\tfighter".to_owned()],
                 },
                 SnapshotUnit {
@@ -104,6 +111,7 @@ mod tests {
                     can_recruit: false,
                     experience: 0,
                     slowed: false,
+                    poisoned: true,
                     traits: Vec::new(),
                 },
             ],
@@ -118,8 +126,9 @@ mod tests {
                 "gold\t1\t-4\n",
                 "gold\t2\t17\n",
                 "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\tquick\t夜\\tfighter\n",
-                "status\t1\t3\tslowed\n",
+                "status\t1\t3\tslowed\tpoisoned\n",
                 "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\t0\n",
+                "status\t2\t1\tpoisoned\n",
                 "village\t1\t2\t1\n",
                 "village\t5\t1\t2\n",
                 "end\t3\n",

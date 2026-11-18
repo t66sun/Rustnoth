@@ -88,7 +88,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                         && next_position(x, y, &mut last_unit) => {
                         status_owner = Some((*x, *y));
                     }
-                ["status", x, y, "slowed"]
+                ["status", x, y, "slowed" | "poisoned"] | ["status", x, y, "slowed", "poisoned"]
                     if last_village.is_none() && status_owner.take() == Some((*x, *y)) => {}
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
@@ -230,6 +230,27 @@ mod tests {
             THREE_SIDES.replacen("end\t0", &format!("{row}end\t0"), 1),
         ] {
             assert!(compare(&malformed, &malformed).unwrap_err().starts_with("malformed Rust trace"));
+        }
+    }
+
+    #[test]
+    fn compares_poison_on_its_own_and_alongside_slow() {
+        let with_status = |status| THREE_SIDES.replacen(
+            "village\t", &format!("status\t2\t1\t{status}\nvillage\t"), 1,
+        );
+        let poisoned = with_status("poisoned");
+        let slowed = with_status("slowed");
+        let both = with_status("slowed\tpoisoned");
+        assert_eq!(compare(&poisoned, &poisoned), Ok(2));
+        assert_eq!(compare(&both, &both), Ok(2));
+        for (rust, native) in [(THREE_SIDES, &poisoned), (slowed.as_str(), &both)] {
+            let difference = compare(rust, native).unwrap_err();
+            assert!(difference.starts_with("step 0 differs"));
+            assert!(difference.contains("poisoned"));
+        }
+        for invalid in ["poisoned\tslowed", "poisoned\tpoisoned", "slowed\tpoisoned\tpoisoned"] {
+            let trace = with_status(invalid);
+            assert!(compare(&trace, &trace).unwrap_err().starts_with("malformed Rust trace"));
         }
     }
 
