@@ -12,6 +12,14 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 ### 用原版地图建立遭遇战
 
+在窗口内选择地图和默认时代阵营，可从仓库根目录运行：
+
+```sh
+cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --skirmish core.cfg 5489
+```
+
+点击地图、阵营编号、阵营或领袖以打开列表。每个地图起点可独立选择阵营和领袖。上下键和 Tab 可切换表单项目，Enter 打开列表或开始游戏。列表支持方向键、Page Up、Page Down、滚轮和鼠标选择。Esc 返回表单。桌面遭遇战使用 30 回合上限。素材目录可通过 `--wesnoth-root` 指定。
+
 从仓库根目录运行下例，用原版 Hamlets 地图创建 30 回合的遭遇战。将生成的文件用作桌面、无界面或逐步对拍命令的场景包，并提供同一版本的预处理核心配置。
 
 ```sh
