@@ -123,6 +123,8 @@ impl Battlefield<'_> {
                 damage: 0,
                 hit_chance: 0,
                 firststrike: false,
+                drain_healing_cap: None,
+                undrainable: defender.is_undrainable(),
             },
             |(index, _, modifiers)| {
                 combatant(defender, index, modifiers, weapon.parry, StrikeRole::Retaliate(weapon))
@@ -170,6 +172,12 @@ fn combat_experience(opponent_level: i32, opponent_defeated: bool) -> i32 {
     }
 }
 
+impl UnitState<'_> {
+    fn is_undrainable(&self) -> bool {
+        self.traits.as_ref().is_some_and(|traits| traits.stats.undrainable)
+    }
+}
+
 pub(crate) fn within_range(weapon: &WeaponProfile, distance: i64) -> bool {
     (i64::from(weapon.min_range)..=i64::from(weapon.max_range)).contains(&distance)
 }
@@ -197,6 +205,8 @@ pub(crate) fn combatant(
         damage: u32::try_from(damage).unwrap_or(u32::MAX),
         hit_chance,
         firststrike: weapon.has_firststrike(),
+        drain_healing_cap: weapon.has_drains().then(|| unit.max_hitpoints().max(0) as u32),
+        undrainable: unit.is_undrainable(),
     }
 }
 
@@ -326,6 +336,43 @@ mod tests {
         assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (0, 10));
         assert!(board.unit_at(ATTACKER).is_none());
         assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 16);
+    }
+
+    #[test]
+    fn a_draining_attack_checks_the_actual_traits_of_an_unarmed_target() {
+        for (status_change, expected) in [
+            ("add=undrainable,unpoisonable", 3),
+            ("remove=undrainable", 7),
+        ] {
+            let mut types = unit_types();
+            let fighter = types.get_mut("Fighter").unwrap();
+            fighter.attacks[0] = WeaponProfile::from_wml(
+                wml::parse(
+                    "range=melee\ndamage=10\nnumber=1\n\
+                     [specials]\n[drains]\nid=drains\n[/drains]\n[/specials]",
+                )
+                .unwrap(),
+            );
+            let trait_ = wml::parse(format!(
+                "id=test\navailability=musthave\n[effect]\napply_to=status\nadd=undrainable\n[/effect]\n\
+                 [effect]\napply_to=status\n{status_change}\n[/effect]"
+            ))
+            .unwrap();
+            fighter.traits.available.push(trait_.into());
+
+            let mut board = board(&types);
+            let mut rng = ReplayRng::new(5489);
+            board.units.get_mut(&ATTACKER).unwrap().hitpoints = 3;
+            board.units.remove(&DEFENDER);
+            board.place_random_recruit(2, "Fighter", DEFENDER, &mut rng).unwrap();
+            board.units.get_mut(&DEFENDER).unwrap().hitpoints = 9;
+            let result = board
+                .apply_attack(1, Attack { retaliation: None, ..attack(0) }, |side| side == 2, &mut rng)
+                .unwrap();
+            assert_eq!(result.attacker_hitpoints, expected);
+            assert_eq!(result.defender_hitpoints, 0);
+            assert_eq!(rng.seed_and_calls(), (5489, 1));
+        }
     }
 
     #[test]
