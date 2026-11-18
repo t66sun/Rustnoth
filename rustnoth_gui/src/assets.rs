@@ -26,7 +26,7 @@ struct UnitAssets {
     portrait: Option<PathBuf>,
     dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
-    weapon_names: Vec<Option<String>>,
+    weapons: Vec<(Option<String>, Option<PathBuf>)>,
     ellipse: String,
     bars: UnitBars,
 }
@@ -136,7 +136,11 @@ impl AssetCatalog {
 
     /// Returns the display name at the referee's zero-based weapon index.
     pub fn weapon_name(&self, id: &str, index: usize) -> Option<&str> {
-        self.units.get(id)?.weapon_names.get(index)?.as_deref()
+        self.units.get(id)?.weapons.get(index)?.0.as_deref()
+    }
+
+    pub fn weapon_icon(&self, id: &str, index: usize) -> Option<PathBuf> {
+        self.resolve_image(self.units.get(id)?.weapons.get(index)?.1.as_deref()?)
     }
 
     /// Name of the highlighted tile as displayed in the terrain report.
@@ -227,14 +231,15 @@ impl AssetCatalog {
                             name: display_name(unit, "name").map(str::to_owned),
                             bars: UnitBars::from_unit(unit),
                             ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
-                            weapon_names: unit
+                            weapons: unit
                                 .children
                                 .iter()
                                 .filter(|(tag, _)| tag == "attack")
                                 .map(|(_, weapon)| {
-                                    display_name(weapon, "description")
-                                        .or_else(|| display_name(weapon, "name"))
-                                        .map(str::to_owned)
+                                    let name = display_name(weapon, "description").or_else(|| display_name(weapon, "name"));
+                                    let image = display_name(weapon, "icon").and_then(image_filename).map(PathBuf::from)
+                                        .or_else(|| Some(PathBuf::from(format!("attacks/{}.png", display_name(weapon, "name")?))));
+                                    (name.map(str::to_owned), image)
                                 })
                                 .collect(),
                         });
