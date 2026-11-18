@@ -273,6 +273,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             camera.layout(),
             &art,
             render::MovementView {
+                global_time: session.global_time_of_day(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
