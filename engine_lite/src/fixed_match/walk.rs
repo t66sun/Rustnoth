@@ -1,4 +1,4 @@
-use super::{FixedMatch, vision::unit_sight};
+use super::FixedMatch;
 use crate::{board::MoveError, hex::Hex, visibility::HexVisibility};
 
 impl FixedMatch<'_> {
@@ -36,7 +36,7 @@ impl FixedMatch<'_> {
                     && !self.unit_visible_on_known_hex(side, neighbor)
             }));
             if let Some(view) = &mut view {
-                let sight = unit_sight(board.map(), &self.rules, next, mover);
+                let sight = self.unit_sight(from, next, mover);
                 sighted |= sight.iter().any(|&hex| {
                     view.at(hex) != Some(HexVisibility::Visible)
                         && board.unit_at(hex).is_some_and(|unit| unit.side != side)

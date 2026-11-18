@@ -54,8 +54,12 @@ mod tests {
     fn at(x: i32) -> Hex { Hex { x, y: 0 } }
 
     fn scenario(ability: &str, start_terrain: &str, fog: bool, shroud: bool) -> Bundle {
+        Bundle::parse(scenario_wml(ability, start_terrain, fog, shroud).as_bytes()).unwrap()
+    }
+
+    fn scenario_wml(ability: &str, start_terrain: &str, fog: bool, shroud: bool) -> String {
         let border = ["Xv"; 18].join(",");
-        let wml = format!(r#"
+        format!(r#"
 [terrain_type]
     id=flat
     string=Gg
@@ -105,8 +109,7 @@ Xv,1 {start_terrain},Gg^Vh,Gg,Gg,Gg,Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg,Gg,Gg^Vh,Gg,2 Gg,Xv
             x,y=14,1
         [/village]
     [/side]
-[/scenario]"#);
-        Bundle::parse(wml.as_bytes()).unwrap()
+[/scenario]"#)
     }
 
     fn move_to(x: i32) -> Action { Action::Move { from: at(0), to: at(x) } }
@@ -159,16 +162,58 @@ Xv,1 {start_terrain},Gg^Vh,Gg,Gg,Gg,Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg,Gg,Gg^Vh,Gg,2 Gg,Xv
 
     #[test]
     fn a_hidden_exit_blocker_keeps_the_mover_at_the_entrance_without_exposing_the_blocker() {
-        let bundle = scenario(ABILITY, "Gg^Vh", true, false);
+        let bundle = scenario(ABILITY, "Gg", true, false);
         let mut game = bundle.start(1, |_| unreachable!()).unwrap();
         let initial = game.decision().unwrap();
         assert!(initial.1.contains(&move_to(8)));
-        assert_eq!(game.planned_route(1, at(0), at(8)).unwrap(), [(at(0), 5), (at(8), 3)]);
+        assert_eq!(game.planned_route(1, at(0), at(8)).unwrap(), [(at(0), 5), (at(1), 3), (at(8), 1)]);
         game.scenario.board.place_recruit(2, "Mage", at(8)).unwrap();
         assert_eq!(game.decision().unwrap(), initial);
         game.step(move_to(8)).unwrap();
         assert_eq!(game.scenario.board.unit_at(at(8)).unwrap().side, 2);
-        assert_eq!(game.scenario.board.unit_at(at(0)).unwrap().moves_left, 5);
-        assert_eq!(game.decision().unwrap(), initial);
+        assert_eq!(game.scenario.board.unit_at(at(1)).unwrap().moves_left, 3);
+        let view = game.decision().unwrap().0;
+        assert!(!view.tiles.iter().find(|tile| tile.position == at(8)).unwrap().visible);
+        assert!(!view.units.iter().any(|unit| unit.position == at(8)));
+    }
+
+    #[test]
+    fn village_vision_pays_the_exit_cost_and_rejects_occupied_or_foreign_exits() {
+        use crate::visibility::HexVisibility::{Fogged, Shrouded, Visible};
+
+        let source = scenario_wml(ABILITY, "Gg^Vh", true, true).replace("vision=0", "vision=2");
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let view = game.effective_vision(1);
+        assert_eq!(view.at(at(9)), Some(Visible));
+        assert_eq!(view.at(at(10)), Some(Shrouded));
+        assert_eq!(view.at(at(13)), Some(Shrouded));
+        game.scenario.board.place_recruit(2, "Mage", at(8)).unwrap();
+        game.refog(1);
+        assert_eq!(game.effective_vision(1).at(at(8)), Some(Fogged));
+    }
+
+    #[test]
+    fn travelling_through_a_village_unshrouds_the_remote_edge_and_shares_it() {
+        use crate::visibility::HexVisibility::{Fogged, Shrouded, Visible};
+
+        let source = scenario_wml(ABILITY, "Gg", true, true)
+            .replace("side=1\n", "side=1\n        team_name=west\n")
+            .replace("[/scenario]", "[side]\nside=3\nno_leader=yes\nteam_name=west\nfog=yes\nshroud=yes\n[/side]\n[/scenario]");
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        for side in [1, 3] {
+            assert_eq!(game.effective_vision(side).at(at(8)), Some(Shrouded));
+        }
+        game.step(move_to(1)).unwrap();
+        for side in [1, 3] {
+            assert_eq!(game.effective_vision(side).at(at(8)), Some(Visible));
+            assert_eq!(game.effective_vision(side).at(at(9)), Some(Shrouded));
+        }
+        game.step(Action::Move { from: at(1), to: at(2) }).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        for side in [1, 3] {
+            assert_eq!(game.effective_vision(side).at(at(8)), Some(Fogged));
+        }
     }
 }
