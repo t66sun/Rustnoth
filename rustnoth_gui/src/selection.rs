@@ -56,6 +56,8 @@ mod tests {
         let destination = Hex { x: 1, y: 1 };
         let keep = Hex { x: 0, y: 2 };
         let unit = |position, side| ObservedUnit {
+            poisoned: false,
+            slowed: false,
             position,
             side,
             type_id: "Fighter".to_owned(),
