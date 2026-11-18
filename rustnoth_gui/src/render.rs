@@ -349,7 +349,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             Action::Attack(attack) if Some(attack.from) == movement.selected => {
                 choices.insert(attack.to, ATTACKABLE);
             }
-            Action::Recruit { to, .. } if movement.selected.is_none() => {
+            Action::Recruit { to, .. } | Action::Recall { to, .. } if movement.selected.is_none() => {
                 choices.insert(*to, REACHABLE);
             }
             _ => {}

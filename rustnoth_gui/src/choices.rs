@@ -33,6 +33,7 @@ pub fn options_at(
                 Action::Recruit { unit_type, .. } => {
                     assets.unit_name(unit_type).unwrap_or(unit_type).to_owned()
                 }
+                Action::Recall { unit_id, .. } => format!("Recall {unit_id}"),
                 Action::Move { .. } | Action::EndTurn => return None,
             };
             Some(ActionOption { label, action: action.clone() })

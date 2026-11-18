@@ -26,8 +26,10 @@ impl Menu {
     pub fn title(&self) -> &str {
         match &self.options[0].action {
             Action::Attack(_) => "Attack",
+            Action::Recruit { .. } if self.options.iter().any(|row| matches!(row.action, Action::Recall { .. })) => "Recruit or Recall",
             Action::Recruit { .. } => "Recruit",
-            _ => unreachable!("context choices contain only attack and recruit actions"),
+            Action::Recall { .. } => "Recall",
+            _ => unreachable!("only attack, recruit and recall actions have a menu"),
         }
     }
 
