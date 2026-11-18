@@ -46,8 +46,11 @@ impl Browser {
     }
 
     async fn play_installed(&self, entry: &installed::Campaign, id: &str, selector: &mut selector::Selector<'_>) -> Result<(), Box<dyn Error>> {
+        let descriptor = self.campaign.children.iter().find(|(tag, cfg)| tag == "campaign" && cfg.attribute("first_scenario") == Some(id))
+            .map(|(_, cfg)| cfg).ok_or("Missing campaign descriptor")?;
+        let Some(difficulty) = selector.difficulty(descriptor).await else { return Ok(()) };
         let (root, selected) = (self.root.clone(), entry.clone());
-        let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &selected.difficulty));
+        let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
         while !worker.is_finished() {
             selector.draw(Some("Loading campaign…"));
             set_default_camera();

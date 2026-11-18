@@ -101,6 +101,16 @@ pub(super) fn compile(nodes: &[Node], dirs: &[PathBuf]) -> Catalog {
 fn attr<'a>(node: &'a Node, key: &str) -> &'a str {
     node.attribute(key).unwrap_or("")
 }
+fn frame_spec(frame: &str) -> (&str, u32) {
+    let mut fields = frame.split(':').map(str::trim).filter(|s| !s.is_empty());
+    let name = fields.next().unwrap_or("");
+    let duration = fields
+        .next_back()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(100);
+    (name, duration)
+}
+
 fn number(node: &Node, key: &str, default: i32) -> i32 {
     attr(node, key).trim().parse().unwrap_or(default)
 }
@@ -362,10 +372,7 @@ impl Builder {
             for v in vars.split(';') {
                 let mut frames = Vec::new();
                 for frame in pattern::expand(&template.replace("@V", v)) {
-                    let (name, time) = frame
-                        .rsplit_once(':')
-                        .and_then(|(n, t)| Some((n, t.trim().parse::<u32>().ok()?)))
-                        .unwrap_or((&frame, 100));
+                    let (name, time) = frame_spec(&frame);
                     let file = name.split('~').next().unwrap_or(name);
                     if !self.data.files.contains_key(file) {
                         continue;
@@ -403,5 +410,24 @@ impl Builder {
         let id = self.data.images.len();
         self.data.images.push(Image { variants, hash });
         Some(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_spec;
+
+    #[test]
+    fn optional_frame_time_keeps_overlays_with_an_empty_duration() {
+        assert_eq!(frame_spec("swamp/reed.png:"), ("swamp/reed.png", 100));
+        assert_eq!(frame_spec("water/ford.png"), ("water/ford.png", 100));
+        assert_eq!(
+            frame_spec("water/tile.png~CROP(54,36,72,72):125"),
+            ("water/tile.png~CROP(54,36,72,72)", 125)
+        );
+        assert_eq!(
+            frame_spec("water/tile.png:invalid"),
+            ("water/tile.png", 100)
+        );
     }
 }

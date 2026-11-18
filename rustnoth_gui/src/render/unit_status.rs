@@ -84,7 +84,7 @@ impl StatusArt {
     }
 }
 
-fn hp_color(ratio: f32) -> [u8; 3] {
+pub(super) fn hp_color(ratio: f32) -> [u8; 3] {
     if ratio > 1.0 { [100, 255, 100] }
     else if ratio == 1.0 { [33, 225, 0] }
     else if ratio >= 0.75 { [170, 255, 0] }
@@ -93,7 +93,7 @@ fn hp_color(ratio: f32) -> [u8; 3] {
     else { [255, 0, 0] }
 }
 
-fn xp_color(remaining: i32, major: bool) -> [u8; 3] {
+pub(super) fn xp_color(remaining: i32, major: bool) -> [u8; 3] {
     let thresholds = if major {
         [[255,255,255], [150,255,255], [0,205,205], [0,160,225]]
     } else {
