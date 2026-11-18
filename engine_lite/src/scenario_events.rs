@@ -10,6 +10,12 @@ use crate::{
 #[derive(Debug)]
 enum SideAction {
     Gold(i32),
+    Economy {
+        gold: Option<i32>,
+        income: Option<i32>,
+        village_gold: Option<i32>,
+        village_support: Option<i32>,
+    },
     AllowRecruit(Vec<String>),
     DisallowRecruit(Option<Vec<String>>),
 }
@@ -127,6 +133,20 @@ impl EventAction {
             if code.is_empty() || code.contains(['$', '*', ',', ' ']) || code.starts_with('^') { return None; }
             return Some(Self::Board(BoardChange::Terrain { position, code: code.into() }));
         }
+        if tag == "modify_side" {
+            if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+                !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support")
+                    || !value.translations.is_empty() || value.text.contains('$')
+            }) { return None; }
+            let number = |key| cfg.attribute(key).map(|value| value.trim().parse::<i32>()).transpose();
+            let action = SideAction::Economy {
+                gold: number("gold").ok()?,
+                income: number("income").ok()?,
+                village_gold: number("village_gold").ok()?,
+                village_support: number("village_support").ok()?,
+            };
+            return Self::side_action(cfg, side_count, action);
+        }
         let types = |value: &str| {
             value.split(',').map(str::trim).filter(|id| !id.is_empty())
                 .map(str::to_owned).collect::<Vec<_>>()
@@ -142,6 +162,10 @@ impl EventAction {
         {
             return None;
         }
+        Self::side_action(cfg, side_count, action)
+    }
+
+    fn side_action(cfg: &Node, side_count: usize, action: SideAction) -> Option<Self> {
         let mut sides: Vec<_> = (0..side_count).collect();
         if let Some(selector) = cfg.attribute("side") {
             let mut ranges = Vec::new();
@@ -165,6 +189,13 @@ impl EventAction {
         for &index in sides {
             match action {
                 SideAction::Gold(amount) => state.gold[index] += i64::from(*amount),
+                SideAction::Economy { gold, income, village_gold, village_support } => {
+                    let side = &mut state.sides[index];
+                    if let Some(value) = gold { state.gold[index] = i64::from(*value); }
+                    if let Some(value) = income { side.income_bonus = *value; }
+                    if let Some(value) = village_gold { side.village_gold = *value; }
+                    if let Some(value) = village_support { side.village_support = *value; }
+                }
                 SideAction::AllowRecruit(types) => state.sides[index].recruits.extend(types.iter().cloned()),
                 SideAction::DisallowRecruit(Some(types)) => {
                     for id in types { state.sides[index].recruits.remove(id); }
@@ -663,6 +694,34 @@ type=Archer
         assert!(!actions.contains(&recruit("Guard", 4)));
         assert!(!actions.contains(&recruit("Scout Cavalry", 4)));
         game.step(recruit("Archer", 4)).unwrap();
+    }
+
+    #[test]
+    fn modify_side_economy_changes_selected_sides_before_income() {
+        let source = r#"
+[side]
+[/side]
+[side]
+[/side]
+[event]
+name=turn 2
+[modify_side]
+side=2
+gold=19
+income=-3
+village_gold=5
+village_support=2
+[/modify_side]
+[/event]"#;
+        let scenario = wml::parse(source).unwrap();
+        let mut events = ScenarioEvents::read(&scenario, 2);
+        let mut sides = crate::scenario_sides::read_sides(&scenario);
+        let mut gold = [44; 2];
+        let mut state = EventState { gold: &mut gold, sides: &mut sides, board_changes: Vec::new() };
+        events.fire("turn_2", &mut state);
+        assert_eq!(gold, [44, 19]);
+        assert_eq!(crate::income::net_income(&sides[1], 2, 1, 3), 3);
+        assert_eq!(crate::income::net_income(&sides[0], 2, 1, 3), 1);
     }
 
     #[test]
