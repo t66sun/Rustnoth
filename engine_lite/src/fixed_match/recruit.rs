@@ -6,6 +6,16 @@ use super::{Action, FixedMatch, MatchError, supports_unit};
 
 impl FixedMatch<'_> {
     pub(super) fn extend_recruit_choices(&self, side: usize, choices: &mut Vec<Action>) {
+        self.extend_recruit_choices_in_view(side, choices, |_| true, |_| true);
+    }
+
+    pub(super) fn extend_recruit_choices_in_view(
+        &self,
+        side: usize,
+        choices: &mut Vec<Action>,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+    ) {
         let affordable: Vec<_> = self.scenario.sides[side - 1]
             .recruits
             .iter()
@@ -15,7 +25,14 @@ impl FixedMatch<'_> {
             return;
         }
 
-        let destinations = self.recruit_destinations(side);
+        let board = &self.scenario.board;
+        let own: BTreeSet<_> = board.units()
+            .filter(|(_, unit)| unit.side == side)
+            .map(|(position, _)| position)
+            .collect();
+        let destinations = self.recruit_destinations(side, terrain_known, |hex| {
+            own.contains(&hex) || (unit_visible(hex) && board.unit_at(hex).is_some())
+        });
         for unit_type in affordable {
             choices.extend(destinations.iter().map(|&to| Action::Recruit {
                 unit_type: unit_type.clone(),
@@ -28,7 +45,8 @@ impl FixedMatch<'_> {
         let cost = self
             .recruit_cost(side, unit_type)
             .ok_or(MatchError::InvalidRecruit)?;
-        if !self.recruit_destinations(side).contains(&to) {
+        let occupied = |hex| self.scenario.board.unit_at(hex).is_some();
+        if !self.recruit_destinations(side, |_| true, occupied).contains(&to) {
             return Err(MatchError::InvalidRecruit);
         }
 
@@ -51,19 +69,25 @@ impl FixedMatch<'_> {
         (cost <= self.gold[index] && supports_unit(unit)).then_some(cost)
     }
 
-    fn recruit_destinations(&self, side: usize) -> BTreeSet<Hex> {
+    fn recruit_destinations(
+        &self,
+        side: usize,
+        terrain_known: impl Fn(Hex) -> bool,
+        occupied: impl Fn(Hex) -> bool,
+    ) -> BTreeSet<Hex> {
         let board = &self.scenario.board;
         let terrain = self.rules.terrain;
         board
             .units()
             .filter(|(_, unit)| unit.side == side && unit.can_recruit)
             .flat_map(|(leader, _)| {
-                recruit_hexes::destinations(
+                recruit_hexes::destinations_in_view(
                     leader,
                     board.map(),
                     |code| terrain.features(code).keep,
                     |code| terrain.features(code).castle,
-                    |hex| board.unit_at(hex).is_some(),
+                    &terrain_known,
+                    &occupied,
                 )
             })
             .collect()
@@ -80,6 +104,58 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn recruitment_candidates_use_only_known_castle_connections_and_visible_blockers() {
+        let config = wml::parse(r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,Ch,Ch,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                side=1
+                type=Guard
+                recruit=Guard
+            [/side]
+            [side]
+                side=2
+                type=Guard
+            [/side]
+        "#).unwrap();
+        let types = read_unit_types(wml::parse(
+            "[unit_type]\nid=Guard\nhitpoints=10\ncost=1\n[/unit_type]"
+        ).unwrap());
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+             [terrain_type]\nstring=Ch\nrecruit_onto=yes\n[/terrain_type]"
+        ).unwrap());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+        let start = scenario_start::load(&config, &types, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(start, rules, 42).unwrap();
+        let bridge = Hex { x: 1, y: 0 };
+        let fogged = Hex { x: 2, y: 0 };
+        let own = Hex { x: 3, y: 0 };
+        game.scenario.board.place_recruit(1, "Guard", own).unwrap();
+
+        let candidates = |game: &FixedMatch<'_>, bridge_known, foreign_visible| {
+            let mut choices = Vec::new();
+            game.extend_recruit_choices_in_view(1, &mut choices,
+                |hex| hex != bridge || bridge_known,
+                |hex| hex == fogged && foreign_visible,
+            );
+            choices
+        };
+        let recruit = |to| Action::Recruit { unit_type: "Guard".into(), to };
+        let empty_castle = candidates(&game, true, false);
+        assert_eq!(empty_castle, [recruit(bridge), recruit(fogged)]);
+        assert!(candidates(&game, false, false).is_empty());
+
+        game.scenario.board.place_recruit(2, "Guard", fogged).unwrap();
+        assert_eq!(candidates(&game, true, false), empty_castle);
+        assert_eq!(candidates(&game, true, true), [recruit(bridge)]);
+        assert_eq!(game.step(recruit(fogged)), Err(MatchError::InvalidRecruit));
+    }
 
     #[test]
     fn new_recruits_keep_selected_traits_and_use_their_effective_stats() {
