@@ -359,7 +359,31 @@ impl<'rules> Battlefield<'rules> {
         movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
         is_enemy: impl Fn(usize) -> bool,
     ) -> Result<BTreeMap<Hex, u32>, MoveError> {
-        let unit = self.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
+        self.move_destinations_in_view(active_side, from, movement_cost, is_enemy, |_| true, |_| true)
+    }
+
+    /// Returns movement candidates using the active side's knowledge.
+    ///
+    /// Fogged terrain remains known. Shrouded terrain is never queried for a
+    /// walking cost. Only own units and visible foreign units occupy hexes
+    /// or exert zones of control for this search.
+    pub fn move_destinations_in_view(
+        &self,
+        active_side: usize,
+        from: Hex,
+        movement_cost: impl Fn(&str) -> Option<NonZeroU32>,
+        is_enemy: impl Fn(usize) -> bool,
+        terrain_known: impl Fn(Hex) -> bool,
+        unit_visible: impl Fn(Hex) -> bool,
+    ) -> Result<BTreeMap<Hex, u32>, MoveError> {
+        let known_unit_at = |hex| {
+            if !self.map.is_playable(hex) {
+                return None;
+            }
+            let visible = unit_visible(hex);
+            self.unit_at(hex).filter(|unit| visible || unit.side == active_side)
+        };
+        let unit = known_unit_at(from).ok_or(MoveError::MissingUnit(from))?;
         if unit.side != active_side {
             return Err(MoveError::WrongSide(from));
         }
@@ -367,7 +391,7 @@ impl<'rules> Battlefield<'rules> {
         let hostile = |unit: &UnitState<'rules>| unit.side != active_side && is_enemy(unit.side);
 
         Ok(reachable_destinations(from, moves_left, |position| {
-            if !self.map.is_playable(position) {
+            if !self.map.is_playable(position) || !terrain_known(position) {
                 return None;
             }
             let cost = movement_cost(self.map.terrain_at(position)?)?;
@@ -376,13 +400,13 @@ impl<'rules> Battlefield<'rules> {
             } else {
                 cost
             };
-            let occupancy = match self.unit_at(position) {
+            let occupancy = match known_unit_at(position) {
                 Some(unit) if hostile(unit) => Occupancy::Enemy,
                 Some(_) => Occupancy::Ally,
                 None => Occupancy::Empty,
             };
             let stops_movement = !unit.unit_type.skirmisher && position.neighbors().any(|neighbor| {
-                self.unit_at(neighbor)
+                known_unit_at(neighbor)
                     .is_some_and(|unit| hostile(unit) && unit.unit_type.emits_zoc)
             });
             Some(MovementTile {
@@ -962,6 +986,54 @@ mod tests {
             let mut board = corridor(&unit_types, &occupied);
             board.move_unit(1, from, to, walking_cost, is_enemy).unwrap();
             assert_eq!(board.unit_at(to).unwrap().moves_left, remaining as i32);
+        }
+    }
+
+    #[test]
+    fn concealed_hostiles_do_not_change_move_candidates_or_remaining_movement() {
+        let types = types();
+        let empty = corridor(&types, &[(0, 1), (1, 1)]);
+        let guarded = corridor(&types, &[(0, 1), (1, 1), (3, 2)]);
+        let from = corridor_hex(0);
+        let enemy = corridor_hex(3);
+        let is_enemy = |side| side == 2;
+        let concealed = guarded
+            .move_destinations_in_view(1, from, walking_cost, is_enemy, |_| true, |_| false)
+            .unwrap();
+        assert_eq!(concealed, empty.move_destinations(1, from, walking_cost, is_enemy).unwrap());
+        assert_eq!(concealed.get(&enemy), Some(&1));
+        assert_eq!(concealed.get(&corridor_hex(2)), Some(&2));
+        assert!(!concealed.contains_key(&corridor_hex(1)));
+        assert_eq!(
+            guarded.move_destinations_in_view(1, enemy, walking_cost, is_enemy, |_| true, |_| false),
+            Err(MoveError::MissingUnit(enemy)),
+        );
+
+        let revealed = guarded
+            .move_destinations_in_view(1, from, walking_cost, is_enemy, |_| true, |hex| hex == enemy)
+            .unwrap();
+        assert_eq!(revealed, BTreeMap::from([(corridor_hex(2), 0)]));
+    }
+
+    #[test]
+    fn shrouded_terrain_never_reaches_the_cost_query_or_opens_a_route() {
+        let types = types();
+        let from = corridor_hex(0);
+        let unknown = corridor_hex(2);
+        for terrain in ["Hh", "Rd"] {
+            let mut board = corridor(&types, &[(0, 1)]);
+            board.map = ScenarioMap::parse(&format!(
+                "Xv,Xv,Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,{terrain},Xv\nXv,Gg,Xv\nXv,Gg,Xv\nXv,Xv,Xv"
+            )).unwrap();
+            let moves = board.move_destinations_in_view(
+                1, from,
+                |code| {
+                    assert_eq!(code, "Gg");
+                    walking_cost(code)
+                },
+                |_| false, |hex| hex != unknown, |_| true,
+            ).unwrap();
+            assert_eq!(moves, BTreeMap::from([(corridor_hex(1), 4)]));
         }
     }
 
