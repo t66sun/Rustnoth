@@ -134,6 +134,19 @@ impl WeaponProfile {
         })
     }
 
+    /// Swarm uses starting HP for the whole exchange, including repeated combat rounds.
+    pub(crate) fn strikes_at_hp(&self, hitpoints: i32, max_hitpoints: i32) -> u32 {
+        let strikes = self.strikes.max(0) as u32;
+        let swarm = self.specials.as_ref().is_some_and(|specials| {
+            specials.children.iter().any(|(tag, definition)| is_stock_swarm(tag, definition))
+        });
+        if !swarm || hitpoints >= max_hitpoints {
+            return strikes;
+        }
+        let hp = i64::from(hitpoints.max(0));
+        (i64::from(strikes) * hp / i64::from(max_hitpoints.max(1))) as u32
+    }
+
     pub(crate) fn supports_specials(&self) -> bool {
         self.specials.as_ref().is_none_or(|specials| {
             specials.children.iter().all(|(tag, definition)| {
@@ -144,9 +157,21 @@ impl WeaponProfile {
                     || is_stock_charge(tag, definition)
                     || (matches!(tag.as_str(), "drains" | "slow" | "poison") && is_status_special(tag, definition))
                     || (self.min_range == 1 && self.max_range == 1 && is_stock_backstab(tag, definition))
+                    || is_stock_swarm(tag, definition)
             })
         })
     }
+}
+
+fn is_stock_swarm(tag: &str, definition: &Node) -> bool {
+    tag == "swarm"
+        && definition.attribute("id") == Some("swarm")
+        && definition.children.is_empty()
+        && definition.attributes.iter().all(|(key, value)| match key.as_str() {
+            "id" => value.translations.is_empty(),
+            "name" | "description" | "special_note" => true,
+            _ => false,
+        })
 }
 
 fn is_stock_backstab(tag: &str, definition: &Node) -> bool {
