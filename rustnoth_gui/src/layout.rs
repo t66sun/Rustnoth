@@ -65,6 +65,7 @@ impl BoardLayout {
         let viewport = self.viewport;
         let center = [viewport.x + viewport.width / 2.0, viewport.y + viewport.height / 2.0];
         let mut layout = *self;
+        layout.origin = [0.0, 0.0];
         layout.tile_size = 72.0;
         layout.fitted_tile_size = self.fitted_tile_size.min(layout.tile_size);
         let focus = focus.unwrap_or(Hex { x: self.width / 2, y: self.height / 2 });
