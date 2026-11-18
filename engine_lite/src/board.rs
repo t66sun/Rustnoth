@@ -724,6 +724,24 @@ mod tests {
     }
 
     #[test]
+    fn a_visible_opponent_shows_both_ailments_and_a_concealed_one_stays_hidden() {
+        use crate::{observation::project, visibility::VisibilityMask};
+        let unit_types = types();
+        let mut board = corridor(&unit_types, &[(0, 1), (1, 2), (2, 2)]);
+        for unit in board.units.values_mut().filter(|unit| unit.side == 2) {
+            unit.poisoned = true;
+            unit.slowed = true;
+        }
+        let sight = VisibilityMask::new(1, 5, false, false);
+        let seen = corridor_hex(1);
+        let view = project(&board, 1, &sight, |hex| hex == seen);
+        assert_eq!(view.units.len(), 2);
+        let enemy = view.units.iter().find(|unit| unit.position == seen).unwrap();
+        assert!(enemy.poisoned && enemy.slowed);
+        assert_eq!((enemy.moves_left, enemy.attacks_left), (None, None));
+    }
+
+    #[test]
     fn adjacent_healers_use_the_strongest_treatment_and_add_rest() {
         let mut unit_types = types();
         for (id, value) in [("Mage", 8), ("Herbalist", 4)] {
