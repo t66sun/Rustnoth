@@ -419,35 +419,59 @@ impl<'rules> Battlefield<'rules> {
     }
 
     /// Applies terrain, adjacent healers and rest before marking a new turn's rest.
-    pub(crate) fn heal_at_turn_start(&mut self, side: usize, terrain: &TerrainAliases) {
-        let mut adjacent_healing = BTreeMap::<Hex, (i32, bool)>::new();
+    pub(crate) fn heal_at_turn_start(
+        &mut self,
+        side: usize,
+        terrain: &TerrainAliases,
+        is_enemy: impl Fn(usize, usize) -> bool,
+    ) {
+        #[derive(Default)]
+        struct Treatment {
+            hitpoints: i32,
+            suppresses_poison: bool,
+            cures_poison: bool,
+        }
+        let mut treatments = BTreeMap::<Hex, Treatment>::new();
         for (&hex, healer) in &self.units {
             let amount = healer.unit_type.adjacent_healing;
             let cures = healer.unit_type.cures_adjacent;
-            if healer.side == side && (amount > 0 || cures) {
-                for neighbor in hex.neighbors() {
-                    let (best, can_cure) = adjacent_healing.entry(neighbor).or_default();
-                    *best = (*best).max(amount);
-                    *can_cure |= cures;
+            if amount == 0 && !cures {
+                continue;
+            }
+            for neighbor in hex.neighbors() {
+                let Some(patient) = self.units.get(&neighbor) else { continue };
+                if (healer.side != side && patient.side != side) || is_enemy(healer.side, patient.side) {
+                    continue;
+                }
+                let treatment = treatments.entry(neighbor).or_default();
+                treatment.suppresses_poison = true;
+                if healer.side == side {
+                    treatment.hitpoints = treatment.hitpoints.max(amount);
+                    treatment.cures_poison |= cures;
                 }
             }
         }
-        for (&hex, unit) in self.units.iter_mut().filter(|(_, unit)| unit.side == side) {
-            let terrain_healing =
-                self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
-            let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
-            let (from_healer, can_cure) = adjacent_healing.get(&hex).copied().unwrap_or_default();
+        for (&hex, unit) in &mut self.units {
+            let active = unit.side == side;
+            let treatment = treatments.remove(&hex).unwrap_or_default();
+            let (terrain_healing, regeneration) = if active {
+                let terrain_hp = self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
+                (terrain_hp, unit.unit_type.regeneration)
+            } else {
+                (0, 0)
+            };
+            let rest_healing = if active && self.resting.contains(&hex) { REST_HEALING } else { 0 };
             let main_healing = if unit.poisoned {
-                if can_cure || terrain_healing != 0 || unit.unit_type.regeneration > 0 {
+                if treatment.cures_poison || terrain_healing != 0 || regeneration > 0 {
                     unit.poisoned = false;
                     0
-                } else if from_healer > 0 {
-                    0
-                } else {
+                } else if active && !treatment.suppresses_poison {
                     -i64::from(crate::combat::POISON_AMOUNT)
+                } else {
+                    0
                 }
             } else {
-                i64::from(terrain_healing.max(from_healer).max(unit.unit_type.regeneration))
+                i64::from(terrain_healing.max(treatment.hitpoints).max(regeneration))
                     + i64::from(terrain_healing.min(0))
             };
             let healing = main_healing + rest_healing;
@@ -664,7 +688,7 @@ mod tests {
             board.resting.clear();
             board.resting.insert(WEST);
             for unit in board.units.values_mut() { unit.hitpoints = 10; }
-            board.heal_at_turn_start(1, &terrain(terrain_hp));
+            board.heal_at_turn_start(1, &terrain(terrain_hp), |a, b| a != b);
             assert_eq!(board.unit_at(EAST).unwrap().hitpoints, expected);
             assert_eq!(board.unit_at(WEST).unwrap().hitpoints, expected + 2);
         }
@@ -760,11 +784,11 @@ mod tests {
             &wml::parse("[terrain_type]\nid=hills\nstring=Hh\nheals=6\n[/terrain_type]").unwrap(),
         );
         board.begin_resting(1);
-        board.heal_at_turn_start(1, &terrain);
+        board.heal_at_turn_start(1, &terrain, |a, b| a != b);
         let hp: Vec<_> = board.units().map(|(_, unit)| unit.hitpoints).collect();
         assert_eq!(hp, [36, 12, 20, 12, 10]);
         board.units.get_mut(&corridor_hex(0)).unwrap().hitpoints = 10;
-        board.heal_at_turn_start(1, &terrain);
+        board.heal_at_turn_start(1, &terrain, |a, b| a != b);
         assert_eq!(board.unit_at(corridor_hex(0)).unwrap().hitpoints, 16);
     }
 
@@ -782,9 +806,42 @@ mod tests {
             unit.hitpoints = 10;
         }
         board.begin_resting(1);
-        board.heal_at_turn_start(1, &TerrainAliases::from_wml(&Node::default()));
+        board.heal_at_turn_start(1, &TerrainAliases::from_wml(&Node::default()), |a, b| a != b);
         let state: Vec<_> = board.units().map(|(_, u)| (u.poisoned, u.hitpoints)).collect();
         assert_eq!(state, [(true, 4), (false, 12), (true, 10)]);
+    }
+
+    #[test]
+    fn allied_healer_suppresses_poison_on_the_patients_turn_and_treats_on_its_own() {
+        let mut types = types();
+        let mut healer = UnitType::from_wml(wml::parse("id=Healer\nhitpoints=30").unwrap());
+        healer.adjacent_healing = 8;
+        healer.cures_adjacent = true;
+        types.insert("Healer".into(), healer);
+        let mut board = corridor(&types, &[(0, 3), (1, 1), (2, 2)]);
+        board.units.get_mut(&corridor_hex(1)).unwrap().unit_type = &types["Healer"];
+        for y in [0, 2] {
+            let patient = board.units.get_mut(&corridor_hex(y)).unwrap();
+            patient.hitpoints = 10;
+            patient.poisoned = true;
+        }
+        let terrain = TerrainAliases::from_wml(&Node::default());
+        let enemies = |a, b| a != b && (a == 2 || b == 2);
+        let state = |board: &Battlefield<'_>, y| {
+            let patient = board.unit_at(corridor_hex(y)).unwrap();
+            (patient.hitpoints, patient.poisoned)
+        };
+
+        board.heal_at_turn_start(3, &terrain, enemies);
+        assert_eq!(state(&board, 0), (10, true));
+        board.heal_at_turn_start(1, &terrain, enemies);
+        assert_eq!(state(&board, 0), (10, false));
+        assert_eq!(state(&board, 2), (10, true));
+        board.heal_at_turn_start(1, &terrain, enemies);
+        assert_eq!(state(&board, 0), (18, false));
+        board.heal_at_turn_start(2, &terrain, enemies);
+        assert_eq!(state(&board, 2), (2, true));
+        assert_eq!(state(&board, 0), (18, false));
     }
 
     #[test]

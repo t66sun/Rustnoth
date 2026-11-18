@@ -231,7 +231,10 @@ impl<'data> FixedMatch<'data> {
                     .advance_turn(turn, &self.side_order, self.scenario.last_round);
                 self.state = if let Some(next) = next {
                     self.settle_income(next);
-                    self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain);
+                    let sides = &self.scenario.sides;
+                    self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
+                        sides[a - 1].is_enemy(&sides[b - 1])
+                    });
                     MatchState::Playing(next)
                 } else {
                     MatchState::Draw
