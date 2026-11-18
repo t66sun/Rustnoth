@@ -20,13 +20,13 @@ pub(super) fn initial(scenario: &Node) -> Scalars {
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum ScalarChange {
     Set { name: String, initial: Option<String>, arithmetic: Vec<Arithmetic> },
     Clear(Vec<String>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Arithmetic { Add(f64), Subtract(f64), Multiply(f64), Divide(f64), Modulo(f64) }
 
 impl Arithmetic {
@@ -98,13 +98,13 @@ impl ScalarChange {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Comparison {
     name: String,
     test: Test,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Test {
     Equals(String), NotEquals(String), Contains(String),
     Boolean(bool),

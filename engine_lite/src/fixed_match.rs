@@ -35,6 +35,7 @@ mod walk;
 mod vision;
 mod recruit;
 mod plague;
+mod kill;
 mod retaliation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +112,7 @@ pub struct FixedMatch<'data> {
     rng: ReplayRng,
     state: MatchState,
     current_round: i32,
+    kill_stack: Vec<Hex>,
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     side_order: Vec<usize>,
@@ -150,6 +152,7 @@ impl<'data> FixedMatch<'data> {
         }
         let mut game = Self {
             current_round: scenario.start_round,
+            kill_stack: Vec::new(),
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
@@ -196,7 +199,9 @@ impl<'data> FixedMatch<'data> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
-        for change in state.board_changes {
+        let mut killed = false;
+        let mut pending = std::collections::VecDeque::from(state.board_changes);
+        while let Some(change) = pending.pop_front() {
             let capture = match change {
                 BoardChange::HealUnit(heal) => {
                     heal.apply(&mut self.scenario.board, primary);
@@ -204,6 +209,16 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::Dialogue(message) => {
                     self.queue_dialogue(message);
+                    continue;
+                }
+                BoardChange::Kill(kill, primary) => {
+                    killed |= self.kill_units(kill, primary)?;
+                    continue;
+                }
+                BoardChange::Resume(action, position) => {
+                    let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
+                    self.scenario.events.resume(&action, position, &mut state);
+                    for next in state.board_changes.into_iter().rev() { pending.push_front(next); }
                     continue;
                 }
                 BoardChange::TurnLimit(change) => {
@@ -274,6 +289,7 @@ impl<'data> FixedMatch<'data> {
                 }
             });
         }
+        if killed && self.kill_stack.is_empty() { self.check_victory(); }
         Ok(())
     }
 
