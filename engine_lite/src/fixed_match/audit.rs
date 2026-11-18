@@ -59,6 +59,7 @@ pub struct SnapshotUnit {
     pub experience: i32,
     pub slowed: bool,
     pub poisoned: bool,
+    pub petrified: bool,
     /// Applied trait IDs in effect order.
     pub traits: Vec<String>,
 }
@@ -99,6 +100,7 @@ impl FixedMatch<'_> {
                     experience: unit.experience,
                     slowed: unit.slowed,
                     poisoned: unit.poisoned,
+                    petrified: unit.petrified,
                     traits: unit
                         .traits()
                         .map(|trait_| trait_.attribute("id").unwrap_or_default().to_owned())
@@ -163,7 +165,7 @@ mod tests {
         let units = observation.units.iter().rev().map(|unit| SnapshotUnit {
             position: unit.position, side: unit.side, type_id: unit.type_id.clone(),
             hitpoints: unit.hitpoints, moves_left: 3, attacks_left: 1,
-            can_recruit: false, experience: 0, slowed: false, poisoned: false, traits: Vec::new(),
+            can_recruit: false, experience: 0, slowed: false, poisoned: false, petrified: false, traits: Vec::new(),
         }).collect();
         let snapshot = Snapshot {
             state: MatchState::Draw,
@@ -333,6 +335,7 @@ Xv,Xv,Xv,Xv,Xv"
             experience: 0,
             slowed: false,
             poisoned: false,
+            petrified: false,
             traits: Vec::new(),
         };
         assert_eq!(before.state, MatchState::Playing(Turn { round: 1, side: 1 }));
