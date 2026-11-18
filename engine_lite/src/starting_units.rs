@@ -20,6 +20,7 @@ pub(crate) struct AuthoredStartingUnit {
     pub(crate) attacks_left: Option<i32>,
     pub(crate) poisoned: bool,
     pub(crate) slowed: bool,
+    pub(crate) uncovered: bool,
 }
 
 /// Reads the on-map starting units from an already preprocessed scenario.
@@ -94,6 +95,7 @@ pub(crate) fn read_authored_starting_units(
                 attacks_left: integer(unit, "attacks_left"),
                 poisoned: has_status("poisoned"),
                 slowed: has_status("slowed"),
+                uncovered: has_status("uncovered"),
             });
         }
     }
