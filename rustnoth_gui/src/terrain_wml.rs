@@ -120,13 +120,20 @@ impl TerrainSource {
 
     fn expand(&self, mut source: &str, params: &Parameters, depth: usize) -> io::Result<String> {
         if depth > 100 { return Err(invalid("terrain macro nesting exceeds 100 calls")); }
+        // The native preprocessor places source-location markers between arguments.
+        // Keep adjacent quoted fragments distinct so two empty arguments are not
+        // lexed as a quoted literal containing one double quote.
         let mut expanded = String::with_capacity(source.len());
+        let append = |output: &mut String, value: &str| {
+            if output.ends_with('"') && value.starts_with('"') { output.push(' '); }
+            output.push_str(value);
+        };
         while let Some((literal, rest)) = source.split_once('{') {
-            expanded.push_str(literal);
+            append(&mut expanded, literal);
             source = rest;
-            expanded.push_str(&self.call(&mut source, params, depth + 1)?);
+            append(&mut expanded, &self.call(&mut source, params, depth + 1)?);
         }
-        expanded.push_str(source);
+        append(&mut expanded, source);
         Ok(expanded)
     }
 
@@ -205,6 +212,22 @@ impl TerrainSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjacent_quoted_water_image_modifiers_do_not_create_literal_quotes() {
+        let mut source = TerrainSource::default();
+        source.read(r#"#define WATER MASK IPF
+[terrain_graphics]
+name=water.png{MASK}{IPF}:125
+[/terrain_graphics]
+#enddef
+{WATER "" ""}
+{WATER "~MASK(terrain/masks/edge.png)" "~O(50%)"}
+"#).unwrap();
+        let rules = wml::parse(source.output).unwrap();
+        assert_eq!(rules.children[0].1.attribute("name"), Some("water.png:125"));
+        assert_eq!(rules.children[1].1.attribute("name"), Some("water.png~MASK(terrain/masks/edge.png)~O(50%):125"));
+    }
 
     #[test]
     fn expands_nested_builders_optional_defaults_and_grouped_terrain_filters_in_order() {
