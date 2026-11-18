@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    hex::Hex,
+    hex::{Direction, Hex},
     income::Upkeep,
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_with_teleports},
@@ -56,6 +56,7 @@ pub struct UnitState<'rules> {
     pub side: usize,
     pub id: Option<String>,
     pub unit_type: &'rules UnitType,
+    pub(crate) facing: Option<Direction>,
     pub(crate) display_name: Option<String>,
     pub(crate) portrait: Option<String>,
     pub hitpoints: i32,
@@ -186,6 +187,7 @@ impl<'rules> Battlefield<'rules> {
             portrait: None,
             type_id: unit.type_id,
             variation: String::new(),
+            facing: None,
             can_recruit: unit.can_recruit,
             extra_recruits: Vec::new(),
             recall_cost: None,
@@ -246,6 +248,7 @@ impl<'rules> Battlefield<'rules> {
             portrait,
             type_id,
             variation,
+            facing,
             can_recruit,
             extra_recruits,
             recall_cost,
@@ -289,6 +292,7 @@ impl<'rules> Battlefield<'rules> {
             side,
             id,
             display_name,
+            facing,
             portrait,
             unit_type,
             hitpoints: 0,
@@ -547,6 +551,7 @@ impl<'rules> Battlefield<'rules> {
             id: None,
             display_name: None,
             portrait: None,
+            facing: None,
             unit_type,
             default_amlas: 0,
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
@@ -613,14 +618,15 @@ impl<'rules> Battlefield<'rules> {
             .copied()
             .ok_or(MoveError::Unreachable(to))?;
 
-        self.finish_walk(from, to, remaining);
+        self.finish_walk(from, to, remaining, from.direction_to(to));
         Ok(())
     }
 
-    pub(crate) fn finish_walk(&mut self, from: Hex, to: Hex, remaining: u32) {
+    pub(crate) fn finish_walk(&mut self, from: Hex, to: Hex, remaining: u32, facing: Option<Direction>) {
         let mut unit = self.units.remove(&from).expect("validated move source");
         // The search can leave at most the unit's starting i32 movement budget.
         unit.moves_left = remaining as i32;
+        unit.facing = facing.or(unit.facing);
         let occupied = self.units.insert(to, unit);
         debug_assert!(occupied.is_none());
         if self.resting.remove(&from) {
@@ -1057,6 +1063,7 @@ mod tests {
             portrait: None,
             type_id: "Guard".into(),
             variation: String::new(),
+            facing: None,
             can_recruit: position == EAST,
             extra_recruits: Vec::new(),
             recall_cost: None,
