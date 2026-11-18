@@ -189,8 +189,15 @@ impl<'data> FixedMatch<'data> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
-        for change in state.board_changes {
+        let mut pending = std::collections::VecDeque::from(state.board_changes);
+        while let Some(change) = pending.pop_front() {
             let capture = match change {
+                BoardChange::Resume(action) => {
+                    let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
+                    self.scenario.events.resume(&action, &self.scenario.board, &mut state);
+                    for next in state.board_changes.into_iter().rev() { pending.push_front(next); }
+                    continue;
+                }
                 BoardChange::TurnLimit(change) => {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;

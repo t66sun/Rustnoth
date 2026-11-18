@@ -20,7 +20,7 @@ pub(super) fn initial(scenario: &Node) -> Scalars {
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum ScalarChange {
     Set(String, String),
     Clear(Vec<String>),
@@ -60,13 +60,13 @@ impl ScalarChange {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Comparison {
     name: String,
     test: Test,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Test {
     Equals(String), NotEquals(String), Contains(String),
     Boolean(bool),
