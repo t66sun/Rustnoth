@@ -55,6 +55,28 @@ local function enemies_remain(sides)
     return false
 end
 
+local function capture_views()
+    local map = wesnoth.current.map
+    for side = 1, #wesnoth.sides do
+        local team = wesnoth.sides[side]
+        if team.fog or team.shroud then
+            for y = 1, map.playable_height do
+                local tiles = {}
+                for x = 1, map.playable_width do
+                    if wesnoth.sides.is_shrouded(side, x, y) then
+                        tiles[x] = "S"
+                    elseif wesnoth.sides.is_fogged(side, x, y) then
+                        tiles[x] = "F"
+                    else
+                        tiles[x] = "V"
+                    end
+                end
+                row("view", side, y, table.concat(tiles))
+            end
+        end
+    end
+end
+
 -- Call after an action or at side-turn refresh, inside the referee only.
 function capture.snapshot(step, time_over)
     local units = wesnoth.units.find_on_map {}
@@ -91,6 +113,7 @@ function capture.snapshot(step, time_over)
     for _, village in ipairs(owned_villages()) do
         row("village", village.x, village.y, village.side)
     end
+    capture_views()
     row("end", step)
     return terminal
 end

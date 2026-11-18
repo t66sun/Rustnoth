@@ -24,6 +24,8 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
     let mut lines = text.lines().enumerate().peekable();
     let mut frames = Vec::new();
     let mut roster_size = None;
+    let mut map_width = None;
+    let mut map_height = None;
     while let Some((line, header)) = lines.next() {
         let step = frames.len();
         let bad_row = |line, message| format!("step {step}, line {}: {message}", line + 1);
@@ -75,13 +77,42 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
         let mut last_unit = None;
         let mut status_owner = None;
         let mut last_village = None;
+        let mut view_side = 0;
+        let mut view_height = 0;
         loop {
             let Some((line, row)) = lines.next() else {
                 return Err(format!("step {step}: missing end row"));
             };
             let fields: Vec<_> = row.split('\t').collect();
             match fields.as_slice() {
-                ["end", index] if index.parse::<usize>() == Ok(step) => break,
+                ["end", index] if index.parse::<usize>() == Ok(step) => {
+                    if view_height > 0 && view_height != *map_height.get_or_insert(view_height) {
+                        return Err(bad_row(line, "inconsistent view height"));
+                    }
+                    break;
+                }
+                ["view", side, y, tiles] => {
+                    let side = side_number(side).filter(|&s| s >= view_side && s <= side_count)
+                        .ok_or_else(|| bad_row(line, "expected view rows in roster order"))?;
+                    if side != view_side {
+                        if view_height > 0 && view_height != *map_height.get_or_insert(view_height) {
+                            return Err(bad_row(line, "inconsistent view height"));
+                        }
+                        view_side = side;
+                        view_height = 0;
+                    }
+                    view_height += 1;
+                    if side_number(y) != Some(view_height) {
+                        return Err(bad_row(line, "expected consecutive view rows starting at 1"));
+                    }
+                    if tiles.is_empty() || !tiles.bytes().all(|c| matches!(c, b'V' | b'F' | b'S')) {
+                        return Err(bad_row(line, "expected a nonempty view row of V, F or S"));
+                    }
+                    if tiles.len() != *map_width.get_or_insert(tiles.len()) {
+                        return Err(bad_row(line, "inconsistent view width"));
+                    }
+                }
+                _ if view_side != 0 => return Err(bad_row(line, "expected view or matching end")),
                 ["unit", x, y, side, kind, hp, mp, attacks, "0" | "1", extra @ ..]
                     if last_village.is_none()
                         && valid_side(side)
@@ -99,7 +130,7 @@ fn parse_trace(text: &str) -> Result<Vec<Vec<&str>>, String> {
                 ["village", x, y, side]
                     if valid_side(side) && next_position(x, y, &mut last_village) => {}
                 _ => {
-                    return Err(bad_row(line, "expected sorted units, their status, villages or matching end"));
+                    return Err(bad_row(line, "expected sorted units, their status, villages, views or matching end"));
                 }
             }
             rows.push(row);
@@ -149,6 +180,46 @@ mod tests {
         "unit\t2\t1\t3\tBowman\t33\t5\t1\t1\t0\nvillage\t2\t1\t3\nend\t0\n",
         "step\t1\twon\t3\ngold\t1\t34\ngold\t2\t38\ngold\t3\t42\nend\t1\n",
     );
+
+    #[test]
+    fn compares_tile_states_at_the_side_and_row_where_they_differ() {
+        let legacy = format!("{INITIAL}{AFTER_MOVE}").replace("end\t1", "village\t2\t1\t2\nend\t1");
+        let native = legacy.replace("end\t1", "view\t2\t1\tVFS\nview\t2\t2\tSSV\nend\t1");
+        assert_eq!(compare(&native, &native), Ok(2));
+        assert!(compare(&legacy, &native).unwrap_err().starts_with("step 1 differs"));
+        let rust = native.replace("SSV", "SFV");
+        assert_eq!(
+            compare(&rust, &native).unwrap_err(),
+            "step 1 differs\n  expected native: view\t2\t2\tSSV\n  actual Rust:     view\t2\t2\tSFV",
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_unordered_or_malformed_view_rows() {
+        let views = "view\t1\t1\tVF\nview\t1\t2\tVS\nview\t2\t1\tFS\nview\t2\t2\tSF\n";
+        let full = INITIAL.replace("end\t0", &format!("{views}end\t0"));
+        assert_eq!(compare(&full, &full), Ok(1));
+        for (row, replacement) in [
+            ("view\t1\t1\tVF\n", ""),
+            ("view\t2\t2\tSF\n", ""),
+            ("view\t2\t1", "view\t3\t1"),
+            ("view\t1\t1", "view\t0\t1"),
+            ("view\t2\t2", "view\t1\t2"),
+            ("view\t2\t2", "view\t2\t1"),
+            ("view\t2\t1\tFS", "view\t2\t1\tF"),
+            ("view\t1\t1\tVF", "view\t1\t1\t"),
+            ("view\t1\t1\tVF", "view\t1\t1\tVX"),
+            ("end\t0", "village\t2\t1\t2\nend\t0"),
+        ] {
+            let invalid = full.replace(row, replacement);
+            assert!(compare(&invalid, &invalid).unwrap_err().starts_with("malformed Rust trace"), "{invalid}");
+        }
+        for different_map in ["view\t2\t1\tVF\n", "view\t2\t1\tV\nview\t2\t2\tF\n"] {
+            let next = AFTER_MOVE.replace("end\t1", &format!("{different_map}end\t1"));
+            let invalid = format!("{full}{next}");
+            assert!(compare(&invalid, &invalid).unwrap_err().starts_with("malformed Rust trace: step 1"));
+        }
+    }
 
     #[test]
     fn compares_all_three_sides() {
