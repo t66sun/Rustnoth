@@ -283,7 +283,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             session.state(),
             session.observation(),
             camera.layout(),
-            &art,
+            &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
                 selected: selection.unit(),

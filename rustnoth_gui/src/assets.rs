@@ -19,6 +19,7 @@ pub struct AssetCatalog {
 #[derive(Debug)]
 struct UnitAssets {
     image: Option<PathBuf>,
+    portrait: Option<PathBuf>,
     name: Option<String>,
     weapon_names: Vec<Option<String>>,
 }
@@ -58,6 +59,11 @@ impl AssetCatalog {
     /// Returns the original sprite path of a unit type.
     pub fn unit_image(&self, id: &str) -> Option<PathBuf> {
         self.resolve_image(self.units.get(id)?.image.as_deref()?)
+    }
+
+    /// Original sidebar portrait. A missing profile or `unit_image` uses the team's board sprite.
+    pub fn unit_portrait(&self, id: &str) -> Option<PathBuf> {
+        self.resolve_image(self.units.get(id)?.portrait.as_deref()?)
     }
 
     /// Returns the unit type's display name from its WML definition.
@@ -113,6 +119,11 @@ impl AssetCatalog {
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
                             image: unit
                                 .attribute("image")
+                                .and_then(image_filename)
+                                .map(PathBuf::from),
+                            portrait: display_name(unit, "small_profile")
+                                .or_else(|| display_name(unit, "profile"))
+                                .filter(|value| *value != "unit_image")
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
@@ -185,6 +196,32 @@ mod tests {
         let catalog = AssetCatalog::parse(Path::new("wesnoth"), core, scenario).unwrap();
         assert_eq!(catalog.unit_image("Hero"), Some(Path::new("wesnoth/data/core/images/units/human/bow.png").into()));
         assert_eq!(catalog.weapon_name("Hero", 0), Some("longbow"));
+    }
+
+    #[test]
+    fn sidebar_prefers_small_profile_then_profile_and_honors_unit_image() {
+        let units = br#"[units]
+[unit_type]
+id=Guard
+small_profile=portraits/guard-small.png
+profile=portraits/guard.webp
+[/unit_type]
+[unit_type]
+id=Knight
+profile=portraits/knight.webp
+[/unit_type]
+[unit_type]
+id=Scout
+small_profile=unit_image
+profile=portraits/scout.webp
+[/unit_type]
+[/units]"#;
+        let dir = Path::new("wesnoth");
+        let catalog = AssetCatalog::parse(dir, units, b"").unwrap();
+        let portraits = dir.join("data/core/images/portraits");
+        assert_eq!(catalog.unit_portrait("Guard"), Some(portraits.join("guard-small.png")));
+        assert_eq!(catalog.unit_portrait("Knight"), Some(portraits.join("knight.webp")));
+        assert_eq!(catalog.unit_portrait("Scout"), None);
     }
 
     #[test]

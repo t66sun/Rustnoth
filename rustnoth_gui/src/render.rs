@@ -63,6 +63,7 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
 
 pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
+    portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     flag_dir: PathBuf,
@@ -109,6 +110,7 @@ impl BoardArt {
         };
         Self {
             paths: HashMap::new(),
+            portraits: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
@@ -247,7 +249,7 @@ pub fn draw(
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
-    art: &BoardArt,
+    art: &mut BoardArt,
     movement: MovementView<'_>,
 ) {
     clear_background(BACKGROUND);
@@ -299,10 +301,30 @@ pub fn draw(
         draw_line(inset, baseline + 93.0, width - 18.0, baseline + 93.0, 1.0, BORDER);
         let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
         label(&art.font, name, inset, baseline + 116.0, 20, TEXT);
-        label(&art.font, &format!("HP {}", unit.hitpoints), inset, baseline + 138.0, 17, MUTED);
-        label(&art.font, &format!("XP {} / {}", unit.experience, unit.max_experience), inset, baseline + 158.0, 17, MUTED);
-        if let Some(moves) = unit.moves_left {
-            label(&art.font, &format!("Moves {moves}"), inset, baseline + 178.0, 17, MUTED);
+        let stats = [
+            Some(format!("HP {}", unit.hitpoints)),
+            Some(format!("XP {} / {}", unit.experience, unit.max_experience)),
+            unit.moves_left.map(|moves| format!("Moves {moves}")),
+        ];
+        let mut stats_width = 0.0_f32;
+        for (row, stat) in stats.iter().flatten().enumerate() {
+            label(&art.font, stat, inset, baseline + 138.0 + 20.0 * row as f32, 17, MUTED);
+            stats_width = stats_width.max(measure_text(stat, art.font.as_ref(), 17, 1.0).width);
+        }
+        let space = vec2(panel_width - 44.0 - stats_width, (height - 104.0 - baseline - 120.0).min(60.0));
+        if space.min_element() >= 32.0 {
+            let portrait = art.portraits.entry(unit.type_id.clone()).or_insert_with(|| {
+                let path = movement.assets.unit_portrait(&unit.type_id)?;
+                get_texture(&mut art.paths, path)
+            });
+            let texture = portrait.as_ref()
+                .or_else(|| art.units.get(&unit.type_id)?.get(&unit.side)?.as_ref());
+            if let Some(texture) = texture {
+                let scale = (space.x / texture.width()).min(space.y / texture.height());
+                let size = vec2(texture.width(), texture.height()) * scale;
+                draw_texture_ex(texture, width - 18.0 - size.x, baseline + 120.0, WHITE,
+                    DrawTextureParams { dest_size: Some(size), ..Default::default() });
+            }
         }
         let condition = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
             .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
