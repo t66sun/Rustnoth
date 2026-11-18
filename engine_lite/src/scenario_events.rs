@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 mod endlevel;
 mod items;
 mod variables;
+mod time_areas;
+pub(crate) use time_areas::TimeAreaChange;
 use items::{ItemChange, MapItems};
 use variables::{Comparison, ScalarChange, Scalars};
 
@@ -42,6 +44,7 @@ pub(crate) enum BoardChange {
     HealUnit(crate::board::HealUnit),
     Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
+    TimeArea(TimeAreaChange),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
@@ -180,6 +183,9 @@ impl EventAction {
         if tag == "unit" {
             return crate::starting_units::read_event_unit(cfg, side_count)
                 .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+        }
+        if matches!(tag, "time_area" | "remove_time_area") {
+            return TimeAreaChange::read(tag, cfg).map(|area| Self::Board(BoardChange::TimeArea(area)));
         }
         if tag == "replace_schedule" {
             if cfg.attributes.keys().any(|k| k != "current_time") || cfg.children.iter().any(|(tag, time)| {
