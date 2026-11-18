@@ -147,6 +147,15 @@ impl UnitState<'_> {
     pub(crate) fn is_unplagueable(&self) -> bool {
         self.unplagueable || self.traits.as_ref().is_some_and(|traits| traits.stats.unplagueable)
     }
+
+    fn attack_damage(&self, index: usize) -> i32 {
+        self.traits
+            .as_ref()
+            .map_or_else(
+                || self.unit_type.attacks[index].damage,
+                |traits| traits.stats.attack_damage[index],
+            )
+    }
 }
 
 impl<'rules> Battlefield<'rules> {

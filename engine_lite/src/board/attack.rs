@@ -263,11 +263,8 @@ pub(crate) fn combatant(
         StrikeRole::Retaliate(attacking_weapon) if attacking_weapon.has_charge() => 2,
         StrikeRole::Retaliate(_) => 1,
     };
-    let (damage, strikes) = match &unit.traits {
-        Some(traits) => (traits.stats.attack_damage[weapon_index], traits.stats.attack_strikes[weapon_index]),
-        None => (weapon.damage, weapon.strikes),
-    };
-    let base_damage = damage.saturating_mul(factor);
+    let strikes = unit.traits.as_ref().map_or(weapon.strikes, |traits| traits.stats.attack_strikes[weapon_index]);
+    let base_damage = unit.attack_damage(weapon_index).saturating_mul(factor);
     let damage = |slowed| {
         u32::try_from(strike_damage(base_damage, modifiers.damage_multiplier, slowed)).unwrap_or(u32::MAX)
     };
