@@ -1,0 +1,172 @@
+use super::FixedMatch;
+use crate::{board::MoveError, hex::Hex};
+
+impl FixedMatch<'_> {
+    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MoveError> {
+        let route = self.planned_route(side, from, to)?;
+        let (mut position, mut moves_left) = route[0];
+        let mut travelled = 1;
+        let mut discovered = Vec::new();
+        let board = &self.scenario.board;
+        let sides = &self.scenario.sides;
+
+        // Native movement checks the plotted path for hidden units before moving the scout.
+        // An allied occupant can be traversed but cannot become the scout's final location.
+        for &(next, remaining) in &route[1..] {
+            match board.unit_at(next) {
+                Some(occupant) if sides[side - 1].is_enemy(&sides[occupant.side - 1]) => {
+                    discovered.push(next);
+                    break;
+                }
+                None => position = next,
+                Some(_) => {}
+            }
+            travelled += 1;
+            moves_left = remaining;
+            discovered.extend(next.neighbors().filter(|&neighbor| {
+                board.unit_at(neighbor).is_some()
+                    && !self.unit_visible_on_known_hex(side, neighbor)
+            }));
+            if !discovered.is_empty() {
+                moves_left = 0;
+                break;
+            }
+        }
+
+        let board = &mut self.scenario.board;
+        board.finish_walk(from, position, moves_left);
+        for hex in discovered {
+            board.uncover_unit(hex);
+        }
+        if self.capture_village(side, position) {
+            self.scenario.board.stop_movement(position);
+        }
+        self.reveal_travelled_hexes(position, route[..travelled].iter().map(|&(hex, _)| hex));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{fixed_match::Action, scenario_bundle::Bundle};
+
+    const START: Hex = Hex { x: 0, y: 0 };
+    const STOP: Hex = Hex { x: 3, y: 0 };
+    const GOAL: Hex = Hex { x: 6, y: 0 };
+
+    fn scenario(fog: bool, forest: bool, scout_row: &str) -> Bundle {
+        let fog = if fog { "yes" } else { "no" };
+        let enemy_row = if forest {
+            "Gg,Gg,Gg,Gg,2 Gg^Fp,Gg,Gg,Gg"
+        } else {
+            "Gg,Gg,Gg,Gg,Gg,Gg,Gg,2 Gg"
+        };
+        let wml = format!(r#"
+[terrain_type]
+    id=flat
+    string=Gg
+[/terrain_type]
+[terrain_type]
+    id=village
+    string=^Vh
+    aliasof=_bas
+    gives_income=yes
+[/terrain_type]
+[units]
+    [unit_type]
+        id=Elvish Scout
+        hitpoints=32
+        movement=9
+        vision=0
+        [movement_costs]
+            flat=1
+        [/movement_costs]
+    [/unit_type]
+    [unit_type]
+        id=Wose
+        hitpoints=52
+        level=2
+        [abilities]
+            [hides]
+                id=ambush
+                [filter]
+                    [filter_location]
+                        terrain=*^F*,*^Qhhf,*^Qhuf
+                    [/filter_location]
+                [/filter]
+            [/hides]
+        [/abilities]
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,{scout_row},Xv
+Xv,{enemy_row},Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+    [side]
+        side=1
+        team_name=west
+        type=Elvish Scout
+        fog={fog}
+        [unit]
+            type=Elvish Scout
+            x,y=2,1
+        [/unit]
+    [/side]
+    [side]
+        side=2
+        team_name=east
+        type=Wose
+    [/side]
+[/scenario]
+"#);
+        Bundle::parse(wml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn discovering_a_wose_stops_the_scout_and_reveals_only_the_travelled_route() {
+        let enemy = Hex { x: 4, y: 1 };
+        for fog in [false, true] {
+            let bundle = scenario(fog, true, "1 Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg^Vh,Gg");
+            let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+            let action = Action::Move { from: START, to: GOAL };
+            let (view, candidates) = game.decision().unwrap();
+            assert!(!view.units.iter().any(|unit| unit.position == enemy));
+            assert!(candidates.contains(&action));
+
+            game.step(action).unwrap();
+            let scout = game.scenario.board.unit_at(STOP).unwrap();
+            assert_eq!((scout.unit_type.id.as_str(), scout.moves_left, scout.attacks_left), ("Elvish Scout", 0, 1));
+            assert!(!game.scenario.board.uncover_unit(enemy));
+            assert_eq!(game.village_owners.get(&STOP), Some(&1));
+            assert!(!game.village_owners.contains_key(&GOAL));
+            let view = game.observation_for(1).unwrap();
+            assert!(view.units.iter().any(|unit| unit.position == enemy));
+            assert_eq!(view.tiles.iter().find(|tile| tile.position == GOAL).unwrap().visible, !fog);
+        }
+    }
+
+    #[test]
+    fn open_route_crosses_an_ally_and_charges_only_the_six_entered_hexes() {
+        let bundle = scenario(false, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg");
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        game.step(Action::Move { from: START, to: GOAL }).unwrap();
+        assert_eq!(game.scenario.board.unit_at(GOAL).unwrap().moves_left, 3);
+        assert_eq!(game.scenario.board.unit_at(Hex { x: 1, y: 0 }).unwrap().side, 1);
+    }
+
+    #[test]
+    fn an_unseen_blocker_is_not_overwritten_or_charged_as_an_entered_hex() {
+        let bundle = scenario(true, false, "1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,Gg");
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let blocker = Hex { x: 4, y: 0 };
+        game.scenario.board.place_recruit(2, "Elvish Scout", blocker).unwrap();
+        let action = Action::Move { from: START, to: GOAL };
+        assert!(game.decision().unwrap().1.contains(&action));
+        game.step(action).unwrap();
+        assert_eq!(game.scenario.board.unit_at(STOP).unwrap().moves_left, 6);
+        assert_eq!(game.scenario.board.unit_at(blocker).unwrap().side, 2);
+        assert!(!game.scenario.board.uncover_unit(blocker));
+    }
+}
