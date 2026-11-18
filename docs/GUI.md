@@ -78,3 +78,9 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 Export a complete installed map at the native 72-pixel zoom without opening a window: `rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]`. The PNG contains the terrain and its authored border, without units or interface panels.
 
 从安装版启动时，Campaigns 按原版顺序列出已安装的单人战役。选中战役后才按该战役的默认难度准备配置，并进入其首关。教学战役覆盖第一关的移动与首次攻击。战役列表中的条目仅表示已安装，具体场景脚本的支持程度取决于 Rust 裁判。
+
+### 地图编辑器
+
+主菜单 **Map Editor** 打开一张 24 × 17 的草地地图。用 **File → Open Map…** 从原版多人地图、战役地图和个人副本中选择，也可以输入本地地图路径。右栏箭头切换地形组，滚轮翻动地形列表，左右键分别选择前景和背景画笔。在地图上按对应鼠标键或拖动即可绘制，Ctrl 加鼠标键吸取地形，Shift 绘制单层地形。Ctrl+Z 与 Ctrl+Y 逐笔撤销和重做。中键拖动平移，滚轮缩放，Home 显示全图。
+
+**File → Save Map As…**（Ctrl+S）按输入的新文件名保存到个人配置目录 `Rustnoth/editor/maps`。已有同名文件会提示重新命名。保存沿用原图的起点、特殊位置、边界地形以及换行格式。

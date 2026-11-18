@@ -18,6 +18,7 @@ use camera::BoardCamera;
 mod camera;
 mod campaign_browser;
 mod desktop;
+mod editor;
 mod dialog;
 mod display_preferences;
 mod menu;
