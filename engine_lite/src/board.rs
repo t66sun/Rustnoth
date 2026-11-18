@@ -59,6 +59,21 @@ struct UnitTraits<'rules> {
     stats: RecruitStats,
 }
 
+impl<'rules> UnitTraits<'rules> {
+    fn from_definitions(
+        unit: &UnitType,
+        definitions: Vec<&'rules Node>,
+        base_max_experience: i32,
+    ) -> Option<Self> {
+        (!definitions.is_empty()).then(|| Self {
+            stats: RecruitStats::from_traits_with_base_experience(
+                unit, &definitions, base_max_experience,
+            ),
+            definitions,
+        })
+    }
+}
+
 impl UnitState<'_> {
     pub fn max_hitpoints(&self) -> i32 {
         self.traits.as_ref().map_or(self.unit_type.hitpoints, |traits| traits.stats.max_hitpoints)
@@ -87,7 +102,7 @@ impl UnitState<'_> {
 }
 
 impl<'rules> Battlefield<'rules> {
-    /// Places the authored units at their resolved locations with base type stats.
+    /// Places authored units at their resolved locations and applies mandatory traits.
     pub fn new(
         map: ScenarioMap,
         starting_units: Vec<StartingUnit>,
@@ -138,17 +153,23 @@ impl<'rules> Battlefield<'rules> {
                         position,
                         type_id: start.type_id,
                     })?;
+            let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
+            let traits = UnitTraits::from_definitions(
+                unit_type, unit_type.traits.mandatory(), base_max_experience,
+            );
+            let max_hp = traits.as_ref().map_or(unit_type.hitpoints, |t| t.stats.max_hitpoints);
+            let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
             tile.insert(UnitState {
                 side: start.side,
                 id: start.id,
                 unit_type,
-                hitpoints: hitpoints.unwrap_or(unit_type.hitpoints),
+                hitpoints: hitpoints.unwrap_or(max_hp),
                 experience,
-                base_max_experience: scaled_experience(unit_type.experience, experience_modifier),
-                moves_left: moves_left.unwrap_or(unit_type.movement).max(0),
+                base_max_experience,
+                moves_left: moves_left.unwrap_or(movement).max(0),
                 attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
                 can_recruit: start.can_recruit,
-                traits: None,
+                traits,
             });
         }
         Ok(board)
@@ -225,15 +246,9 @@ impl<'rules> Battlefield<'rules> {
         rng: &mut ReplayRng,
     ) -> Result<(), BoardError> {
         self.place_recruit_with(side, type_id, position, |unit_type, base_max_experience| {
-            let definitions = unit_type.traits.select_for_recruit(rng);
-            (!definitions.is_empty()).then(|| UnitTraits {
-                stats: RecruitStats::from_traits_with_base_experience(
-                    unit_type,
-                    &definitions,
-                    base_max_experience,
-                ),
-                definitions,
-            })
+            UnitTraits::from_definitions(
+                unit_type, unit_type.traits.select_for_recruit(rng), base_max_experience,
+            )
         })
     }
 
@@ -489,6 +504,29 @@ mod tests {
         assert!(first.can_recruit);
         let positions: Vec<_> = board.units().map(|(hex, unit)| (hex, unit.side)).collect();
         assert_eq!(positions, [(WEST, 2), (EAST, 1)]);
+    }
+
+    #[test]
+    fn starting_units_apply_only_mandatory_traits_before_current_stats() {
+        let definition = wml::parse("id=Guard\nhitpoints=10\nmovement=4\nnum_traits=2\n\
+            [trait]\nid=optional\n[/trait]\n[trait]\nid=sturdy\navailability=musthave\n\
+            [effect]\napply_to=hitpoints\nincrease_total=3\n[/effect]\n\
+            [effect]\napply_to=movement\nincrease=1\n[/effect]\n[/trait]").unwrap();
+        let types = BTreeMap::from([("Guard".to_owned(), UnitType::from_wml(definition))]);
+        let starts = [EAST, WEST].map(|position| AuthoredStartingUnit {
+            placement: StartingUnit { position, side: 1, id: None, type_id: "Guard".into(), can_recruit: position == EAST },
+            hitpoints: (position == WEST).then_some(8),
+            moves_left: (position == WEST).then_some(2),
+            attacks_left: None,
+            experience: 0,
+        });
+        let board = Battlefield::from_authored_starting_units(map(), starts, &types, 100).unwrap();
+        for (position, hp, moves) in [(EAST, 13, 5), (WEST, 8, 2)] {
+            let unit = board.unit_at(position).unwrap();
+            assert_eq!((unit.hitpoints, unit.moves_left), (hp, moves));
+            assert_eq!((unit.max_hitpoints(), unit.max_movement()), (13, 5));
+            assert_eq!(unit.traits().map(|t| t.attribute("id")).collect::<Vec<_>>(), [Some("sturdy")]);
+        }
     }
 
     #[test]
