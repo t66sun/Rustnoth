@@ -10,8 +10,25 @@ use crate::{dialog, render};
 pub(super) struct Part {
     pub(super) title: String,
     pub(super) text: String,
+    placement: Placement,
     layers: Vec<Layer>,
     markers: Vec<Marker>,
+}
+
+#[derive(Clone, Copy)]
+enum Placement { Top, Middle, Bottom }
+
+impl Placement {
+    fn panel(self, screen: Vec2, title: bool) -> Rect {
+        let start = if title { 100.0 } else { 0.0 };
+        let height = (screen.y / 4.0).max(200.0).min(screen.y - start);
+        let y = match self {
+            Self::Top => start,
+            Self::Middle => (screen.y + start - height) * 0.5,
+            Self::Bottom => screen.y - height,
+        };
+        Rect::new(0.0, y, screen.x, height)
+    }
 }
 
 struct Layer {
@@ -105,7 +122,9 @@ pub(super) fn read(scenario: &Node, name: &str) -> Vec<Part> {
             } else { String::new() };
             let text = plain_text(literal(node, "story").unwrap_or_default());
             if !text.is_empty() || !layers.is_empty() || !markers.is_empty() || !title.is_empty() {
-                parts.push(Part { title, text, layers, markers });
+                let placement = match node.attribute("text_layout") { Some("top") => Placement::Top,
+                    Some("middle") => Placement::Middle, _ => Placement::Bottom };
+                parts.push(Part { title, text, placement, layers, markers });
             }
         }
     }
@@ -152,7 +171,46 @@ fn draw_art(part: &Part, textures: &HashMap<&str, Option<Texture2D>>, screen: Ve
     }
 }
 
+struct Skin {
+    panel: [Option<Texture2D>; 3],
+    controls: [[Option<Texture2D>; 3]; 3],
+}
+
+impl Skin {
+    fn load(assets: &AssetCatalog) -> Self {
+        let fetch = |name: &str| assets.resolve_image(Path::new(name)).and_then(|p| render::load_texture(&p, None));
+        let panel = ["background","border-top","border-bottom"].map(|part| fetch(&format!("dialogs/translucent65-{part}.png")));
+        let controls = ["icons/arrows/long_arrow_ornate_left","icons/arrows/long_arrow_ornate_right","buttons/button_normal/button_H22"]
+            .map(|path| ["","-active","-pressed"].map(|state| fetch(&format!("{path}{state}.png"))));
+        Self {panel, controls}
+    }
+
+    fn panel(&self, bounds: Rect, placement: Placement, title: bool) {
+        let blit = |t: &Texture2D, r: Rect| draw_texture_ex(t,r.x,r.y,WHITE,DrawTextureParams { dest_size:Some(r.size()),..Default::default()});
+        if let Some(bg)=&self.panel[0] { blit(bg,bounds); }
+        else { draw_rectangle(bounds.x,bounds.y,bounds.w,bounds.h,Color::from_rgba(0,0,0,166)); }
+        if (!matches!(placement,Placement::Top) || title) && let Some(top)=&self.panel[1] {
+            blit(top,Rect::new(bounds.x,bounds.y,bounds.w,top.height()));
+        }
+        if !matches!(placement,Placement::Bottom) && let Some(bottom)=&self.panel[2] {
+            blit(bottom,Rect::new(bounds.x,bounds.bottom()-bottom.height(),bounds.w,bottom.height()));
+        }
+    }
+
+    fn control(&self, i: usize, r: Rect, pointer: Vec2, enabled: bool) -> bool {
+        let hover = enabled && r.contains(pointer);
+        let state = if hover && is_mouse_button_down(MouseButton::Left) {2} else {usize::from(hover)};
+        if let Some(tex) = self.controls[i][state].as_ref().or(self.controls[i][0].as_ref()) {
+            let size = if i == 2 { r.size() } else { vec2(tex.width(),tex.height()) };
+            let at = r.center()-size*0.5;
+            draw_texture_ex(tex,at.x,at.y,if enabled {WHITE} else {GRAY},DrawTextureParams{dest_size:Some(size),..Default::default()});
+        }
+        hover && is_mouse_button_pressed(MouseButton::Left)
+    }
+}
+
 pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Font>) {
+    let skin = Skin::load(assets);
     let mut index = 0;
     while let Some(part) = parts.get(index) {
         let mut textures = HashMap::new();
@@ -171,35 +229,31 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
             set_camera(&dialog::setup_camera(screen.x, screen.y));
             clear_background(BLACK);
             draw_art(part, &textures, screen);
-            let transparent = Color::from_rgba(13, 12, 9, 230);
             if !part.title.is_empty() {
-                draw_rectangle(0., 0., screen.x, 62., transparent);
-                dialog::text(font, &dialog::fit(font, part.title.clone(), screen.x - 48., 29),
-                    24., 42., 29, dialog::GOLD);
+                dialog::text(font, &dialog::fit(font, part.title.clone(), screen.x - 40.0, 26),
+                    20.0, 46.0, 26, WHITE);
             }
-            let width = (screen.x - 56.).min(980.);
-            let left = (screen.x - width) * 0.5;
+            let panel = part.placement.panel(screen, !part.title.is_empty());
+            skin.panel(panel, part.placement, !part.title.is_empty());
+            let width = panel.w - 166.0;
             if previous_width != width {
                 wrapped = lines(font, &part.text, width);
                 previous_width = width;
             }
-            let count = ((screen.y * 0.4 / 25.) as usize).max(1);
+            let count = ((panel.h - 46.0) / 25.0).floor().max(1.0) as usize;
             first = first.min(wrapped.len().saturating_sub(1));
             let shown = count.min(wrapped.len() - first);
-            let top = screen.y - 65. - shown as f32 * 25.;
-            draw_rectangle(0., top, screen.x, screen.y - top, transparent);
             for (row, line) in wrapped.iter().skip(first).take(count).enumerate() {
-                dialog::text(font, line, left, top + 25. + row as f32 * 25., 19, dialog::PALE);
+                dialog::text(font, line, 20.0, panel.y + 43.0 + row as f32 * 25.0, 19, dialog::PALE);
             }
-            let button = |x, label: &str| {
-                let rect = Rect::new(x, screen.y - 48., 91., 40.);
-                dialog::button(rect, rect.contains(mouse), false);
-                dialog::text(font, label, x + 13., rect.y + 27., 17, dialog::PALE);
-                rect.contains(mouse) && is_mouse_button_pressed(MouseButton::Left)
-            };
-            let skip = button(left, "Skip");
-            let back = (index > 0 || first > 0) && button(left + width - 192., "Back");
-            let next = button(left + width - 91., if index + 1 == parts.len() && first + shown == wrapped.len() { "Begin" } else { "Next" });
+            let skip_rect = Rect::new(panel.right() - 116.0, panel.bottom() - 53.0, 96.0, 33.0);
+            let prior = Rect::new(skip_rect.x, skip_rect.y - 67.0, 40.0, 56.0);
+            let advance = Rect::new(skip_rect.right() - 40.0, prior.y, 40.0, 56.0);
+            let back = skin.control(0, prior, mouse, index > 0 || first > 0);
+            let next = skin.control(1, advance, mouse, true);
+            let skip = skin.control(2, skip_rect, mouse, true);
+            let label_width = measure_text("Skip", font, 16, 1.0).width;
+            dialog::text(font,"Skip",skip_rect.center().x-label_width*0.5,skip_rect.center().y+5.0,16,WHITE);
             let skip = skip || is_key_pressed(KeyCode::Escape);
             let back = back || is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::PageUp);
             let next = next || [KeyCode::Right, KeyCode::PageDown, KeyCode::Enter, KeyCode::Space]
@@ -221,6 +275,14 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_story_text_layout_places_the_native_panel_below_the_title() {
+        let scenario = engine_lite::wml::parse("[story]\n[part]\ntext_layout=middle\nstory=River\n[/part]\n[/story]").unwrap();
+        let part = &read(&scenario, "River")[0];
+        assert_eq!(part.placement.panel(vec2(1200.0, 800.0), true), Rect::new(0.0, 350.0, 1200.0, 200.0));
+        assert_eq!(Placement::Bottom.panel(vec2(1000.0, 640.0), false).y, 440.0);
+    }
 
     #[test]
     fn journey_maps_preserve_the_base_layer_and_static_route_coordinates() {
