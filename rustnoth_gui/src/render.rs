@@ -26,6 +26,7 @@ mod transitions;
 mod unit_status;
 mod ground;
 mod rules;
+pub(crate) use rules::map_png;
 mod border;
 mod reach;
 mod hover;

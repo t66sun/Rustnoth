@@ -72,3 +72,5 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |
 | 平移棋盘 | 缩放后使用中键拖拽或方向键 |
 | 关闭菜单或退出 | Esc |
+
+Export a complete installed map at the native 72-pixel zoom without opening a window: `rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]`. The PNG contains the terrain and its authored border, without units or interface panels.
