@@ -27,6 +27,8 @@ pub struct Combatant {
     pub slows: bool,
     pub slowed: bool,
     pub unslowable: bool,
+    pub petrifies: bool,
+    pub unpetrifiable: bool,
     pub hit_chance: u8,
     pub firststrike: bool,
     /// Maximum HP the striker can heal to with the stock drains special.
@@ -43,6 +45,8 @@ pub struct CombatResult {
     pub defender_slowed: bool,
     /// Attacker and defender poison at the end of the exchange.
     pub poisoned: [bool; 2],
+    /// Participants newly petrified by a surviving hit.
+    pub petrified: [bool; 2],
 }
 
 /// Computes a weapon's chance to hit before specials and invulnerability.
@@ -59,10 +63,10 @@ pub(crate) fn strike_order(attacker: &Combatant, defender: &Combatant) -> [usize
     }
 }
 
-/// Applies a successful strike before death checks and the next retaliation.
+/// Applies a hit and returns whether it petrified its surviving target.
 pub(crate) fn apply_hit(
     units: &[Combatant; 2], hp: &mut [u32; 2], slowed: &mut [bool; 2], striker: usize,
-) {
+) -> bool {
     let target = 1 - striker;
     let weapon_damage = if slowed[striker] { units[striker].slow_damage } else { units[striker].damage };
     let damage = hp[target].min(weapon_damage);
@@ -73,6 +77,7 @@ pub(crate) fn apply_hit(
     if hp[target] > 0 && units[striker].slows && !units[target].unslowable {
         slowed[target] = true;
     }
+    hp[target] > 0 && units[striker].petrifies && !units[target].unpetrifiable
 }
 
 /// Resolves the strike sequence for ordinary seeded combat.
@@ -91,6 +96,7 @@ pub fn resolve_exchange(
     let mut slowed = [attacker.slowed, defender.slowed];
     let participants = [attacker, defender];
     let mut poisoned = participants.each_ref().map(|unit| unit.poison.active);
+    let mut petrified = [false; 2];
 
     if strike_limit > 0 && !hp.contains(&0) {
         'fight: for _ in 0..rounds.get() {
@@ -102,8 +108,8 @@ pub fn resolve_exchange(
                     }
                     if rng.next_u32() % 100 < u32::from(unit.hit_chance) {
                         poisoned[1 - index] |= unit.poison.affects(participants[1 - index].poison);
-                        apply_hit(&participants, &mut hp, &mut slowed, index);
-                        if hp[1 - index] == 0 {
+                        petrified[1 - index] = apply_hit(&participants, &mut hp, &mut slowed, index);
+                        if hp[1 - index] == 0 || petrified[1 - index] {
                             break 'fight;
                         }
                     }
@@ -118,6 +124,7 @@ pub fn resolve_exchange(
         attacker_slowed: slowed[0],
         defender_slowed: slowed[1],
         poisoned,
+        petrified,
     }
 }
 
@@ -143,6 +150,8 @@ mod tests {
             slows: false,
             slowed: false,
             unslowable: false,
+            petrifies: false,
+            unpetrifiable: false,
             hit_chance,
             firststrike: false,
             drain_healing_cap: None,
@@ -178,6 +187,20 @@ mod tests {
     }
 
     #[test]
+    fn a_lethal_stoning_hit_kills_and_a_nonlethal_one_stops_all_rounds() {
+        for (hp, survives) in [(5, false), (8, true)] {
+            let attacker = Combatant { petrifies: true, ..unit(10, 3, 5, 100) };
+            let mut rng = ReplayRng::new(5489);
+            let result = resolve_exchange(
+                attacker, unit(hp, 2, 3, 100), NonZeroU32::new(30).unwrap(), &mut rng,
+            );
+            assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (10, hp - 5));
+            assert_eq!(result.petrified, [false, survives]);
+            assert_eq!(rng.seed_and_calls(), (5489, 1));
+        }
+    }
+
+    #[test]
     fn firststrike_can_end_the_fight_before_retaliation() {
         let mut rng = ReplayRng::new(5489);
         let attacker = unit(4, 1, 5, 100);
@@ -201,6 +224,7 @@ mod tests {
         assert_eq!(result, CombatResult {
             attacker_hitpoints: 2, defender_hitpoints: 0,
             attacker_slowed: false, defender_slowed: false, poisoned: [false; 2],
+            petrified: [false; 2],
         });
     }
 
