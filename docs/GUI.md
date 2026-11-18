@@ -10,6 +10,16 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+### 在窗口中选择战役场景
+
+给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：
+
+```sh
+cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
+```
+
+列表按战役文件中的顺序显示场景名称和 ID。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+
 ### 用原版地图建立遭遇战
 
 在窗口内选择地图和默认时代阵营，可从仓库根目录运行：
