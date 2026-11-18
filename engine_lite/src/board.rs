@@ -25,6 +25,8 @@ use crate::{
 mod attack;
 mod concealment;
 mod recall_filter;
+mod veterans;
+pub(crate) use veterans::Veteran;
 mod walk_route;
 pub use attack::{Attack, AttackChoice, AttackError, StrikeModifiers};
 pub(crate) use attack::{StrikeRole, combatant, within_range};
