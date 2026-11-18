@@ -64,7 +64,7 @@ impl FixedMatch<'_> {
         }
         self.scenario.board.place_recall(side, unit_id, to).ok_or(MatchError::InvalidRecall)?;
         self.gold[side - 1] -= cost;
-        self.capture_village(side, to);
+        self.capture_village(side, to)?;
         Ok(())
     }
 
@@ -88,7 +88,7 @@ impl FixedMatch<'_> {
             .place_random_recruit(side, unit_type, to, &mut self.rng)
             .map_err(|_| MatchError::InvalidRecruit)?;
         self.gold[side - 1] -= cost;
-        self.capture_village(side, to);
+        self.capture_village(side, to)?;
         Ok(())
     }
 

@@ -1,8 +1,8 @@
-use super::FixedMatch;
-use crate::{board::MoveError, hex::Hex, visibility::HexVisibility};
+use super::{FixedMatch, MatchError};
+use crate::{hex::Hex, visibility::HexVisibility};
 
 impl FixedMatch<'_> {
-    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MoveError> {
+    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MatchError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
         let mut discovered = Vec::new();
@@ -62,11 +62,11 @@ impl FixedMatch<'_> {
         for hex in discovered {
             board.uncover_unit(hex);
         }
-        if self.capture_village(side, position) {
+        if self.capture_village(side, position)? {
             self.scenario.board.stop_movement(position);
         }
         if position != from {
-            self.fire_unit_event("moveto", position);
+            self.fire_unit_event("moveto", position)?;
         }
         Ok(())
     }
