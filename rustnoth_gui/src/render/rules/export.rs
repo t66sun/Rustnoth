@@ -22,6 +22,33 @@ fn position(hex: Hex) -> (i64, i64) {
     )
 }
 
+fn composite(canvas: &mut RgbaImage, sprite: &RgbaImage, left: i64, top: i64) {
+    let x0 = (-left).max(0) as u32;
+    let y0 = (-top).max(0) as u32;
+    let right = (i64::from(canvas.width()) - left).clamp(0, i64::from(sprite.width())) as u32;
+    let bottom = (i64::from(canvas.height()) - top).clamp(0, i64::from(sprite.height())) as u32;
+    for y in y0..bottom {
+        for x in x0..right {
+            let src = sprite.get_pixel(x, y);
+            let alpha = u32::from(src[3]);
+            if alpha == 0 {
+                continue;
+            }
+            let dst =
+                canvas.get_pixel_mut((left + i64::from(x)) as u32, (top + i64::from(y)) as u32);
+            if alpha == 255 {
+                *dst = *src;
+                continue;
+            }
+            for c in 0..3 {
+                let s = u32::from(src[c]) * alpha;
+                let d = u32::from(dst[c]) * (255 - alpha);
+                dst[c] = ((s + d + 127) / 255) as u8;
+            }
+        }
+    }
+}
+
 pub(crate) fn map_png(root: &Path, file: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     let map = ScenarioMap::parse(&std::fs::read_to_string(file)?)?;
     let assets = AssetCatalog::parse(root, b"", b"")?;
@@ -103,7 +130,7 @@ pub(crate) fn map_png(root: &Path, file: &Path, output: &Path) -> Result<(), Box
                         .entry((frame, part.cut))
                         .or_insert_with(|| bitmaps.pixels(&catalog, frame, part.cut));
                     if let Some(sprite) = image {
-                        imageops::overlay(
+                        composite(
                             &mut canvas,
                             sprite.as_ref(),
                             x + (72 - i64::from(sprite.width())) / 2,
@@ -122,6 +149,15 @@ pub(crate) fn map_png(root: &Path, file: &Path, output: &Path) -> Result<(), Box
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn framebuffer_blending_rounds_each_channel_and_clips_tiles_at_the_edge() {
+        let mut canvas = RgbaImage::from_pixel(2, 1, Rgba([0, 15, 80, 255]));
+        let sprite = RgbaImage::from_pixel(2, 1, Rgba([3, 254, 180, 128]));
+        composite(&mut canvas, &sprite, -1, 0);
+        assert_eq!(canvas.get_pixel(0, 0).0, [2, 135, 130, 255]);
+        assert_eq!(canvas.get_pixel(1, 0).0, [0, 15, 80, 255]);
+    }
+
     #[test]
     fn full_map_png_includes_the_default_half_hex_border_and_odd_column_offset() {
         let map = ScenarioMap::parse("Gg,Gg,Gg,Gg\nGg,Gg,Gg,Gg\nGg,Gg,Gg,Gg").unwrap();
