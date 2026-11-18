@@ -296,7 +296,6 @@ pub(crate) fn combatant(
         StrikeRole::Retaliate(attacking_weapon) if attacking_weapon.has_charge() => 2,
         StrikeRole::Retaliate(_) => 1,
     };
-    let strikes = unit.traits.as_ref().map_or(weapon.strikes, |traits| traits.stats.attack_strikes[weapon_index]);
     let base_damage = unit.attack_damage(weapon_index).saturating_mul(factor);
     let damage = |slowed| {
         u32::try_from(strike_damage(base_damage, modifiers.damage_multiplier, slowed)).unwrap_or(u32::MAX)
@@ -305,7 +304,7 @@ pub(crate) fn combatant(
     let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack { .. }));
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
-        strikes: weapon.strikes_at_hp(strikes, unit.hitpoints, unit.max_hitpoints()),
+        strikes: unit.attack_strikes(weapon_index),
         damage: damage(false),
         slow_damage: damage(true),
         slows: weapon.has_slow(),
