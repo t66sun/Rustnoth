@@ -243,10 +243,19 @@ impl<'rules> Battlefield<'rules> {
         self.unit_types.get(id)
     }
 
-    /// Applies standard type advancement after experience has been awarded.
+    pub(crate) fn can_advance_to(
+        &self, position: Hex, target: &str, supports_type: impl Fn(&UnitType) -> bool,
+    ) -> bool {
+        self.unit_at(position).is_some_and(|unit|
+            advancement_target(self.unit_types, unit.unit_type, Some(target), &supports_type).is_some()
+        )
+    }
+
+    /// Applies type advancements in WML declaration order unless the first choice is supplied.
     pub(crate) fn advance_after_combat(
         &mut self,
         position: Hex,
+        mut preferred: Option<&str>,
         supports_type: impl Fn(&UnitType) -> bool,
     ) {
         let Some(unit) = self.units.get_mut(&position) else {
@@ -259,11 +268,9 @@ impl<'rules> Battlefield<'rules> {
             if unit.experience < required {
                 break;
             }
-            let [target] = unit.unit_type.advances_to.as_slice() else {
-                break;
-            };
-            let Some(next_type) = self.unit_types.get(target)
-                .map(|next| next.variation(&unit.unit_type.variation_id)).filter(|next| supports_type(next))
+            let Some(next_type) = advancement_target(
+                self.unit_types, unit.unit_type, preferred.take(), &supports_type,
+            )
             else {
                 break;
             };
@@ -657,6 +664,21 @@ impl<'rules> Battlefield<'rules> {
     }
 }
 
+fn advancement_target<'a>(
+    catalog: &'a BTreeMap<String, UnitType>,
+    current: &UnitType,
+    preferred: Option<&str>,
+    supports_type: &impl Fn(&UnitType) -> bool,
+) -> Option<&'a UnitType> {
+    let id = match preferred {
+        Some(id) if current.advances_to.iter().any(|target| target == id) => id,
+        Some(_) => return None,
+        None => current.advances_to.first()?,
+    };
+    let candidate = catalog.get(id)?.variation(&current.variation_id);
+    supports_type(candidate).then_some(candidate)
+}
+
 fn scaled_experience(base: i32, modifier: i32) -> i32 {
     let scaled = (i64::from(base) * i64::from(modifier) + 50) / 100;
     scaled.clamp(1, i64::from(i32::MAX)) as i32
@@ -768,7 +790,7 @@ mod tests {
         let unit = board.units.get_mut(&EAST).unwrap();
         unit.poisoned = true;
         unit.experience = unit.max_experience();
-        board.advance_after_combat(EAST, |_| true);
+        board.advance_after_combat(EAST, None, |_| true);
         assert_eq!(board.unit_at(EAST).unwrap().unit_type.id, "Pikeman");
         assert!(!board.unit_at(EAST).unwrap().poisoned);
     }
@@ -1117,7 +1139,7 @@ mod tests {
         let unit = board.units.get_mut(&hex).unwrap();
         unit.slowed = true;
         unit.experience = unit.max_experience();
-        board.advance_after_combat(hex, |_| true);
+        board.advance_after_combat(hex, None, |_| true);
         let advanced = board.unit_at(hex).unwrap();
         assert_eq!(advanced.unit_type.id, "Veteran");
         assert!(!advanced.slowed);
