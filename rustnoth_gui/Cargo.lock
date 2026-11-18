@@ -265,6 +265,7 @@ name = "rustnoth_gui"
 version = "0.1.0"
 dependencies = [
  "engine_lite",
+ "image",
  "macroquad",
 ]
 

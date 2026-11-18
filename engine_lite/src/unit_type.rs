@@ -373,6 +373,43 @@ pub fn read_unit_types(units: Node) -> BTreeMap<String, UnitType> {
     types
 }
 
+/// Expand [base_unit] after combining core and campaign catalogs. Both the rules
+/// loader and the desktop art catalog then see attacks in the same WML order.
+pub fn resolve_base_units(units: &mut Node) -> Result<(), String> {
+    let mut indices = BTreeMap::new();
+    for (index, (tag, unit)) in units.children.iter().enumerate() {
+        if tag == "unit_type" && let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) {
+            indices.entry(id.to_owned()).or_insert(index);
+        }
+    }
+    let mut resolved = std::collections::BTreeSet::new();
+    for &index in indices.values() {
+        let mut path = Vec::new();
+        let mut current = index;
+        while !resolved.contains(&current) {
+            let unit = &units.children[current].1;
+            let Some(base) = unit.children.iter().find(|(tag, _)| tag == "base_unit")
+                .and_then(|(_, cfg)| cfg.attribute("id")).filter(|id| !id.is_empty()) else {
+                resolved.insert(current);
+                break;
+            };
+            if path.contains(&current) {
+                return Err(format!("recursive [base_unit] chain at {base}"));
+            }
+            path.push(current);
+            current = *indices.get(base).ok_or_else(|| format!("unknown [base_unit] {base}"))?;
+        }
+        for child in path.into_iter().rev() {
+            let mut inherited = units.children[current].1.clone();
+            variations::merge(&mut inherited, std::mem::take(&mut units.children[child].1));
+            units.children[child].1 = inherited;
+            resolved.insert(child);
+            current = child;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

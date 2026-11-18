@@ -28,6 +28,11 @@ const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
+const FLAG_FRAMES: usize = 4;
+
+fn village_flag_frame(elapsed_ms: u64) -> usize {
+    ((elapsed_ms / 150) % FLAG_FRAMES as u64) as usize
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Cover {
@@ -58,9 +63,14 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
 
 pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
+    portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    flag_dir: PathBuf,
+    flag_colors: Option<TeamColors>,
+    flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
+    map_items: Vec<(Hex, Texture2D)>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
@@ -90,29 +100,58 @@ impl BoardArt {
             let image = load_texture(&clock_dir.join(format!("schedule-{file}.png")), None);
             (id, (name, image))
         }).collect();
-        let team_colors = fs::read(&palette_path)
-            .and_then(|bytes| TeamColors::parse(&bytes))
+        let palette_bytes = fs::read(&palette_path)
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
             .ok();
+        let palette = |parse: fn(&[u8]) -> std::io::Result<TeamColors>| {
+            parse(palette_bytes.as_deref()?)
+                .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
+                .ok()
+        };
         Self {
             paths: HashMap::new(),
+            portraits: HashMap::new(),
             terrain: BTreeMap::new(),
             units: BTreeMap::new(),
+            flag_dir: wesnoth_root.join("data/core/images/flags"),
+            flag_colors: palette(TeamColors::parse_flags),
+            flags: BTreeMap::new(),
             periods,
+            map_items: Vec::new(),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             cover: Vec::new(),
-            team_colors,
+            team_colors: palette(TeamColors::parse),
             font,
         }
     }
 
-    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog) {
+    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+        self.map_items.clear();
+        for (position, image) in items {
+            let path = Path::new(image);
+            if !path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+                || path.extension().is_none_or(|ext| ext != "png") || image.contains(['~', ':', '\\']) {
+                continue;
+            }
+            if let Some(texture) = assets.resolve_image(path).and_then(|p| get_texture(&mut self.paths, p)) {
+                self.map_items.push((position, texture));
+            }
+        }
         self.cover = map_cover(observation);
         for tile in &observation.tiles {
+            if let Some(owner) = tile.village_owner
+                && let Some(colors) = self.flag_colors.as_ref()
+                && colors.marker_color(owner).is_some()
+            {
+                self.flags.entry(owner).or_insert_with(|| std::array::from_fn(|i| {
+                    let path = self.flag_dir.join(format!("flag-{}.png", i + 1));
+                    load_texture(&path, Some((colors, owner)))
+                }));
+            }
             self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
                 assets
                     .terrain_images(&tile.terrain)
@@ -210,7 +249,7 @@ pub fn draw(
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
-    art: &BoardArt,
+    art: &mut BoardArt,
     movement: MovementView<'_>,
 ) {
     clear_background(BACKGROUND);
@@ -237,9 +276,12 @@ pub fn draw(
     match state {
         MatchState::Playing(turn) => {
             label(&art.font, &format!("Round {}", turn.round), inset, baseline, 25, TEXT);
-            label(&art.font, &format!("Side {}", turn.side), inset, baseline + 38.0, 19, TEXT);
+            let computer = observation.is_some_and(|view| view.side != turn.side);
+            let controller = if computer { " (computer)" } else { "" };
+            label(&art.font, &format!("Side {}{controller}", turn.side), inset, baseline + 38.0, 19, TEXT);
             if let Some(gold) = observation.and_then(|view| view.gold) {
-                label(&art.font, &format!("Gold {gold}"), inset, baseline + 69.0, 18, MUTED);
+                let label_text = if computer { "Your gold" } else { "Gold" };
+                label(&art.font, &format!("{label_text} {gold}"), inset, baseline + 69.0, 18, MUTED);
             }
         }
         MatchState::Won(side) => {
@@ -249,6 +291,8 @@ pub fn draw(
             let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
             label(&art.font, &format!("Sides {winners} won"), inset, baseline, 22, TEXT);
         }
+        MatchState::CampaignVictory => label(&art.font, "Campaign victory", inset, baseline, 22, TEXT),
+        MatchState::CampaignDefeat => label(&art.font, "Campaign defeat", inset, baseline, 22, TEXT),
         MatchState::Draw => label(&art.font, "Draw", inset, baseline, 22, TEXT),
     }
     if let Some(unit) = observation
@@ -257,10 +301,30 @@ pub fn draw(
         draw_line(inset, baseline + 93.0, width - 18.0, baseline + 93.0, 1.0, BORDER);
         let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
         label(&art.font, name, inset, baseline + 116.0, 20, TEXT);
-        label(&art.font, &format!("HP {}", unit.hitpoints), inset, baseline + 138.0, 17, MUTED);
-        label(&art.font, &format!("XP {} / {}", unit.experience, unit.max_experience), inset, baseline + 158.0, 17, MUTED);
-        if let Some(moves) = unit.moves_left {
-            label(&art.font, &format!("Moves {moves}"), inset, baseline + 178.0, 17, MUTED);
+        let stats = [
+            Some(format!("HP {}", unit.hitpoints)),
+            Some(format!("XP {} / {}", unit.experience, unit.max_experience)),
+            unit.moves_left.map(|moves| format!("Moves {moves}")),
+        ];
+        let mut stats_width = 0.0_f32;
+        for (row, stat) in stats.iter().flatten().enumerate() {
+            label(&art.font, stat, inset, baseline + 138.0 + 20.0 * row as f32, 17, MUTED);
+            stats_width = stats_width.max(measure_text(stat, art.font.as_ref(), 17, 1.0).width);
+        }
+        let space = vec2(panel_width - 44.0 - stats_width, (height - 104.0 - baseline - 120.0).min(60.0));
+        if space.min_element() >= 32.0 {
+            let portrait = art.portraits.entry(unit.type_id.clone()).or_insert_with(|| {
+                let path = movement.assets.unit_portrait(&unit.type_id)?;
+                get_texture(&mut art.paths, path)
+            });
+            let texture = portrait.as_ref()
+                .or_else(|| art.units.get(&unit.type_id)?.get(&unit.side)?.as_ref());
+            if let Some(texture) = texture {
+                let scale = (space.x / texture.width()).min(space.y / texture.height());
+                let size = vec2(texture.width(), texture.height()) * scale;
+                draw_texture_ex(texture, width - 18.0 - size.x, baseline + 120.0, WHITE,
+                    DrawTextureParams { dest_size: Some(size), ..Default::default() });
+            }
         }
         let condition = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
             .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
@@ -350,7 +414,7 @@ fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, colo
     }
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_marker: f32) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
@@ -364,6 +428,11 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_ma
             }
         }
         if let Some(owner) = tile.village_owner {
+            if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
+                draw_centered(flag, center, size);
+                continue;
+            }
+            let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
             draw_circle(
                 center.x + size * 0.27,
                 center.y - size * 0.26,
@@ -375,7 +444,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_ma
 }
 
 fn draw_minimap(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
-    draw_terrain(view, layout, art, 0.0);
+    draw_terrain(view, layout, art, None);
     let size = layout.tile_size();
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
@@ -412,7 +481,12 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
-    draw_terrain(view, layout, art, 2.0);
+    let frame = village_flag_frame((get_time() * 1000.0) as u64);
+    draw_terrain(view, layout, art, Some(frame));
+    for (position, texture) in &art.map_items {
+        let [x, y] = layout.tile_origin(*position);
+        draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
+    }
     let mut choices = BTreeMap::new();
     for action in movement.actions {
         match action {
@@ -514,6 +588,12 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn village_flag_cycles_through_four_original_frames_every_600ms() {
+        assert_eq!([0, 149, 150, 300, 450, 599, 600].map(village_flag_frame),
+                   [0, 0, 1, 2, 3, 3, 0]);
+    }
 
     #[test]
     fn map_cover_follows_the_viewing_side_and_stops_at_the_board_edge() {

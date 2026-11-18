@@ -109,6 +109,25 @@ impl Battlefield<'_> {
         sides_are_enemies: impl Fn(usize, usize) -> bool,
         rng: &mut ReplayRng,
     ) -> Result<CombatResult, AttackError> {
+        let (from, to) = (action.from, action.to);
+        let result = self.resolve_attack(active_side, action, sides_are_enemies, rng)?;
+        if result.attacker_hitpoints == 0 { self.remove_casualty(from); }
+        if result.defender_hitpoints == 0 { self.remove_casualty(to); }
+        Ok(result)
+    }
+
+    pub(crate) fn remove_casualty(&mut self, position: Hex) {
+        self.units.remove(&position);
+    }
+
+    /// Commit the exchange, retaining the dying unit for the scenario's die event.
+    pub(crate) fn resolve_attack(
+        &mut self,
+        active_side: usize,
+        action: Attack,
+        sides_are_enemies: impl Fn(usize, usize) -> bool,
+        rng: &mut ReplayRng,
+    ) -> Result<CombatResult, AttackError> {
         let from = action.from;
         let to = action.to;
         let attacker = self.units.get(&from).ok_or(AttackError::MissingAttacker)?;
@@ -184,12 +203,10 @@ impl Battlefield<'_> {
 
         self.resting.remove(&from);
         self.resting.remove(&to);
-        if result.attacker_hitpoints == 0 {
-            self.units.remove(&from);
-        } else {
-            let unit = self.units.get_mut(&from).expect("validated attacker");
+        let unit = self.units.get_mut(&from).expect("validated attacker");
+        unit.hitpoints = result.attacker_hitpoints as i32;
+        if result.attacker_hitpoints > 0 {
             unit.uncovered = true;
-            unit.hitpoints = result.attacker_hitpoints as i32;
             unit.slowed = result.attacker_slowed;
             unit.poisoned = result.poisoned[0];
             unit.petrified |= result.petrified[0];
@@ -197,11 +214,9 @@ impl Battlefield<'_> {
             unit.moves_left = unit.moves_left.saturating_sub(movement_used).max(0);
             unit.attacks_left = unit.attacks_left.saturating_sub(attacks_used).max(0);
         }
-        if result.defender_hitpoints == 0 {
-            self.units.remove(&to);
-        } else {
-            let unit = self.units.get_mut(&to).expect("validated defender");
-            unit.hitpoints = result.defender_hitpoints as i32;
+        let unit = self.units.get_mut(&to).expect("validated defender");
+        unit.hitpoints = result.defender_hitpoints as i32;
+        if result.defender_hitpoints > 0 {
             unit.slowed = result.defender_slowed;
             unit.poisoned = result.poisoned[1];
             unit.petrified |= result.petrified[1];
@@ -263,6 +278,7 @@ pub(crate) fn combatant(
         StrikeRole::Retaliate(attacking_weapon) if attacking_weapon.has_charge() => 2,
         StrikeRole::Retaliate(_) => 1,
     };
+    let strikes = unit.traits.as_ref().map_or(weapon.strikes, |traits| traits.stats.attack_strikes[weapon_index]);
     let base_damage = unit.attack_damage(weapon_index).saturating_mul(factor);
     let damage = |slowed| {
         u32::try_from(strike_damage(base_damage, modifiers.damage_multiplier, slowed)).unwrap_or(u32::MAX)
@@ -271,7 +287,7 @@ pub(crate) fn combatant(
     let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack { .. }));
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
-        strikes: weapon.strikes_at_hp(unit.hitpoints, unit.max_hitpoints()),
+        strikes: weapon.strikes_at_hp(strikes, unit.hitpoints, unit.max_hitpoints()),
         damage: damage(false),
         slow_damage: damage(true),
         slows: weapon.has_slow(),
@@ -442,6 +458,29 @@ mod tests {
     }
 
     #[test]
+    fn trait_strike_counts_apply_to_offense_and_retaliation_before_swarm() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.hitpoints = 20;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "name=sword\nrange=melee\ndamage=1\nnumber=4\n[specials]\n[swarm]\nid=swarm\n[/swarm]\n[/specials]"
+        ).unwrap());
+        let side = |hp, effects: &str| format!(
+            "[side]\ntype=Fighter\nhitpoints={hp}\n[modifications]\n[trait]\nid=trained\n\
+             [effect]\napply_to=attack\nname=sword\n{effects}\n[/effect]\n\
+             [effect]\napply_to=attack\nname=axe\nset_attacks=0\n[/effect]\n\
+             [/trait]\n[/modifications]\n[/side]\n"
+        );
+        let scenario = wml::parse(format!(
+            "map_data=\"Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv\"\n{}{}",
+            side(20, "set_attacks=2\nincrease_attacks=50%"), side(10, "increase_attacks=6")
+        )).unwrap();
+        let mut board = crate::scenario_start::load(&scenario, &types, |_| unreachable!()).unwrap().board;
+        let result = board.apply_attack(1, attack(0), |side| side == 2, &mut ReplayRng::new(7)).unwrap();
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (15, 7));
+    }
+
+    #[test]
     fn swarm_fixes_each_sides_strike_count_from_its_starting_health() {
         let mut types = unit_types();
         let fighter = types.get_mut("Fighter").unwrap();
@@ -451,8 +490,8 @@ mod tests {
         ).unwrap());
         let swarm = &fighter.attacks[0];
         assert!(swarm.supports_specials());
-        assert_eq!(swarm.strikes_at_hp(1, 20), 0);
-        assert_eq!(swarm.strikes_at_hp(22, 20), 10);
+        assert_eq!(swarm.strikes_at_hp(swarm.strikes, 1, 20), 0);
+        assert_eq!(swarm.strikes_at_hp(swarm.strikes, 22, 20), 10);
 
         let mut board = board(&types);
         board.units.get_mut(&ATTACKER).unwrap().hitpoints = 13;

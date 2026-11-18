@@ -50,10 +50,29 @@ pub fn generate_for_sides(
     last_round: Option<i32>,
     sides: &[usize],
 ) -> io::Result<NativeScript> {
+    generate_groups(actions, first_round, last_round, sides, false)
+}
+
+/// Campaign events can change the limit after the native script is installed.
+pub(crate) fn generate_with_turn_changes(actions: &[Action], first_round: i32, sides: &[usize]) -> io::Result<NativeScript> {
+    generate_groups(actions, first_round, None, sides, true)
+}
+
+fn generate_groups(
+    actions: &[Action], first_round: i32, last_round: Option<i32>, sides: &[usize], dynamic_limit: bool,
+) -> io::Result<NativeScript> {
     let groups = native_turns::partition_for_sides(actions, first_round, sides)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut events = Vec::with_capacity(groups.len());
     let mut lua = format!("local last_step = {}\n{LUA_HEADER}", actions.len());
+
+    if dynamic_limit {
+        let mut expired = event("time over".into(), 0);
+        expired.attributes.insert("first_time_only".into(), value("no".into()));
+        expired.attributes.insert("priority".into(), value("-1000".into()));
+        events.push(expired);
+        lua.push_str("local pending_end = 0\ngroups[0] = function()\n    local limit = wesnoth.scenario.turns\n    if limit ~= -1 and wesnoth.current.turn > limit then checkpoint(pending_end, true) end\nend\n");
+    }
 
     for (index, group) in groups.iter().enumerate() {
         let index = index + 1;
@@ -82,6 +101,9 @@ pub fn generate_for_sides(
             write_checkpoint(&mut lua, step, false);
         }
         if group.end_turn {
+            if dynamic_limit {
+                writeln!(lua, "    pending_end = {}", group.before_step + group.actions.len() + 1).unwrap();
+            }
             lua.push_str("    actions.end_turn()\n");
         }
         lua.push_str("end\n\n");
@@ -93,7 +115,9 @@ pub fn generate_for_sides(
 pub(crate) fn generate_exploration(limit: usize, seed: u32) -> NativeScript {
     let mut refresh = event("turn refresh".to_owned(), false);
     refresh.attributes.insert("first_time_only".to_owned(), value("no".to_owned()));
-    let time_over = event("time over".to_owned(), true);
+    let mut time_over = event("time over".to_owned(), true);
+    time_over.attributes.insert("first_time_only".into(), value("no".into()));
+    time_over.attributes.insert("priority".into(), value("-1000".into()));
     let driver = include_str!("native_explore_driver.lua");
     NativeScript {
         events: vec![refresh, time_over],

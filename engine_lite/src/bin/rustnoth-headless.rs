@@ -2,8 +2,7 @@ use std::{env, error::Error, fs, io, num::NonZeroUsize, path::Path, process::Exi
 
 use engine_lite::{
     fixed_match::{Action, MatchState},
-    hex::Hex,
-    observation::Observation,
+    opponent::attack_or_approach,
     scenario_bundle::Bundle,
 };
 
@@ -60,6 +59,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
             println!("Sides {winners} won.");
         }
+        MatchState::CampaignVictory => println!("Campaign victory."),
+        MatchState::CampaignDefeat => println!("Campaign defeat."),
         MatchState::Draw => println!("Draw."),
         MatchState::Playing(_) => unreachable!("play_bundle returns a terminal match"),
     }
@@ -82,7 +83,8 @@ fn play_bundle(
         let Some((observation, actions)) = game.decision() else {
             break;
         };
-        game.step(choose_action(&observation, actions))?;
+        let action = attack_or_approach(&observation, &actions).cloned().unwrap_or(Action::EndTurn);
+        game.step(action)?;
     }
     match game.state() {
         MatchState::Playing(_) => {
@@ -90,32 +92,6 @@ fn play_bundle(
         }
         state => Ok(state),
     }
-}
-
-fn choose_action(observation: &Observation, actions: Vec<Action>) -> Action {
-    let nearest_enemy = |hex: Hex| {
-        observation
-            .units
-            .iter()
-            .filter(|unit| !observation.allied_sides.contains(&unit.side))
-            .map(|unit| hex.distance(unit.position))
-            .min()
-    };
-    let mut approach = None;
-    for action in actions {
-        match &action {
-            Action::Attack(_) => return action,
-            Action::Move { from, to } if approach.is_none() => {
-                if let (Some(before), Some(after)) = (nearest_enemy(*from), nearest_enemy(*to))
-                    && after < before
-                {
-                    approach = Some(action);
-                }
-            }
-            _ => {}
-        }
-    }
-    approach.unwrap_or(Action::EndTurn)
 }
 
 #[cfg(test)]

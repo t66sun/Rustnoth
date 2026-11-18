@@ -17,6 +17,7 @@ use crate::{
 pub struct ScenarioStart<'rules> {
     pub board: Battlefield<'rules>,
     pub(crate) events: ScenarioEvents,
+    pub(crate) manual_victory_sides: Vec<usize>,
     pub sides: Vec<SideConfig>,
     pub schedule: TimeSchedule,
     pub start_round: i32,
@@ -42,11 +43,23 @@ pub fn load<'rules>(
     Ok(ScenarioStart {
         board,
         events: ScenarioEvents::read(scenario, sides.len()),
+        manual_victory_sides: manual_victory_sides(scenario),
         sides,
         schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
         last_round: integer(scenario, "turns").filter(|&turns| turns != -1),
     })
+}
+
+/// Human-controlled survivors can keep playing after eliminating every enemy.
+pub(crate) fn manual_victory_sides(scenario: &Node) -> Vec<usize> {
+    if crate::scenario_sides::bool_attribute(scenario, "victory_when_enemies_defeated", true) {
+        return Vec::new();
+    }
+    scenario.children.iter().filter(|(tag, _)| tag == "side").enumerate()
+        .filter(|(_, (_, side))| side.attribute("controller") == Some("human"))
+        .map(|(index, _)| index + 1)
+        .collect()
 }
 
 #[derive(Debug)]
@@ -127,6 +140,19 @@ mod tests {
         assert_eq!(start.sides[0].starting_gold, 120);
         let second = start.board.unit_at(Hex { x: 1, y: 0 }).unwrap();
         assert_eq!((second.side, second.hitpoints), (2, 28));
+    }
+
+    #[test]
+    fn explicit_unit_variations_apply_on_the_map_and_in_reserve() {
+        let fighter = UnitType::from_wml(wml::parse("id=Fighter\nhitpoints=12\n[variation]\nvariation_id=mounted\ninherit=yes\nhitpoints=31\nmovement=8\n[/variation]").unwrap());
+        let units = BTreeMap::from([(fighter.id.clone(), fighter)]);
+        let scenario = wml::parse("[side]\ntype=Fighter\nvariation=mounted\n[unit]\nplacement=recall\ntype=Fighter\nvariation=mounted\n[/unit]\n[/side]\n\
+            [side]\ntype=Fighter\nvariation=unknown\n[/side]\nmap_file=fixed.map").unwrap();
+        let start = load(&scenario, &units, |_| Ok(MAP.into())).unwrap();
+        let placed = start.board.unit_at(Hex { x: 0, y: 0 }).unwrap();
+        assert_eq!((placed.hitpoints, placed.max_movement()), (31, 8));
+        assert_eq!(start.board.recall_roster(1)[0].max_hitpoints(), 31);
+        assert_eq!(start.board.unit_at(Hex { x: 1, y: 0 }).unwrap().hitpoints, 12);
     }
 
     #[test]

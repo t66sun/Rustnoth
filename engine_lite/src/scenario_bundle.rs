@@ -37,7 +37,7 @@ impl Bundle {
         let mut bundle = wml::parse(bytes)?;
         let units = take_block(&mut bundle, "units")?;
         let scenario = take_block(&mut bundle, "scenario")?;
-        let (config, units) = if let Some(bytes) = core_bytes {
+        let (config, mut units) = if let Some(bytes) = core_bytes {
             let mut core = wml::parse(bytes)?;
             let mut core_units =
                 take_block(&mut core, "units")?.ok_or("missing [units] block in core catalog")?;
@@ -49,6 +49,7 @@ impl Bundle {
         } else {
             (bundle, units.ok_or("missing [units] block")?)
         };
+        crate::unit_type::resolve_base_units(&mut units)?;
         Ok(Self {
             scenario: scenario.ok_or("missing [scenario] block")?,
             terrain: TerrainAliases::from_wml(&config),
@@ -112,6 +113,53 @@ mod tests {
     use crate::fixed_match::Action;
 
     #[test]
+    fn campaign_victory_can_wait_for_an_explicit_objective() {
+        use crate::fixed_match::MatchState;
+        for (controller, expected) in [
+            ("human", MatchState::Playing(crate::turn::Turn { round: 1, side: 1 })),
+            ("ai", MatchState::Won(1)),
+        ] {
+            let config = format!(r#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+victory_when_enemies_defeated=no
+[side]
+type=Guard
+controller={controller}
+[/side]
+[side]
+no_leader=yes
+[/side]
+[/scenario]"#);
+            let bundle = Bundle::parse(config.as_bytes()).unwrap();
+            assert_eq!(bundle.start(1, |_| unreachable!()).unwrap().state(), expected);
+        }
+    }
+
+    #[test]
+    fn campaign_replaces_the_global_schedule_at_the_active_round() {
+        let config = b"[units]\n[unit_type]\nid=Guard\nhitpoints=24\n[/unit_type]\n[/units]\n\
+            [scenario]\nmap_file=test.map\n[side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n\
+            [time]\nid=day\n[/time]\n[event]\nname=turn 2\n[replace_schedule]\ncurrent_time=1\n\
+            [time]\nid=dusk\n[/time]\n[time]\nid=night\nlawful_bonus=-25\n[/time]\n[/replace_schedule]\n[/event]\n[/scenario]";
+        let bundle = Bundle::parse(config).unwrap();
+        let mut game = bundle.start(1, |_| Ok("Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Xv\nXv,Xv,Xv,Xv".into())).unwrap();
+        assert_eq!(game.global_time_of_day().unwrap().id, "day");
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        let night = game.global_time_of_day().unwrap();
+        assert_eq!((night.id.as_str(), night.lawful_bonus), ("night", -25));
+        for _ in 0..2 { game.step(Action::EndTurn).unwrap(); }
+        assert_eq!(game.global_time_of_day().unwrap().id, "dusk");
+    }
+
+    #[test]
     fn a_parsed_bundle_starts_independent_matches() {
         let bundle = Bundle::parse(
             br#"
@@ -146,6 +194,23 @@ mod tests {
         assert_eq!(first.decision().unwrap().0.side, 2);
         assert_eq!(second.decision().unwrap().0.side, 1);
         assert_eq!(second.state(), initial_state);
+    }
+
+    #[test]
+    fn derived_campaign_units_inherit_core_weapons_with_ordinal_overrides() {
+        let core = b"[units]\n[unit_type]\nid=Base\nhitpoints=32\n[attack]\nname=sword\ndamage=4\n[/attack]\n[attack]\nname=bow\n[/attack]\n[/unit_type]\n[/units]";
+        let bundle = b"[scenario]\n[/scenario]\n[units]\n[unit_type]\nid=Hero\n[base_unit]\nid=Veteran\n[/base_unit]\n[/unit_type]\n\
+            [unit_type]\nid=Veteran\n[base_unit]\nid=Base\n[/base_unit]\n[attack]\ndamage=7\n[/attack]\n[/unit_type]\n[/units]";
+        let parsed = Bundle::parse_with_core(bundle, core).unwrap();
+        let hero = &parsed.unit_types["Hero"];
+        assert_eq!((hero.hitpoints, hero.attacks.len()), (32, 2));
+        assert_eq!((hero.attacks[0].id.as_str(), hero.attacks[0].damage), ("sword", 7));
+        assert_eq!(hero.attacks[1].id, "bow");
+        let text = std::str::from_utf8(bundle).unwrap();
+        for base in ["Missing", "Hero"] {
+            let broken = text.replace("id=Base", &format!("id={base}"));
+            assert!(Bundle::parse_with_core(broken.as_bytes(), core).is_err());
+        }
     }
 
     #[test]

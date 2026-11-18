@@ -11,7 +11,7 @@ use engine_lite::{
     fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml,
 };
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::Session};
+use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::{Players, Session}};
 
 use camera::BoardCamera;
 
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
-            Launch::Board(data) => show_board(data).await,
+            Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
         };
         if let Err(error) = result {
@@ -158,14 +158,14 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     fs::read(path).map_err(|error| format!("could not read {} ({error})", path.display()).into())
 }
 
-async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
+async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
     let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
-    let mut session = Session::new(game);
+    let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root);
     if let Some(observation) = session.observation() {
-        art.load(observation, &data.assets);
+        art.load(observation, &data.assets, session.map_item_images());
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
@@ -198,8 +198,12 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
-        let clicked = is_mouse_button_pressed(MouseButton::Left);
-        if is_key_pressed(KeyCode::D) && menu.is_none() {
+        let computer_acted = session.play_computer_action()?;
+        if computer_acted && let Some(view) = session.observation() {
+            art.load(view, &data.assets, session.map_item_images());
+        }
+        let clicked = !computer_acted && is_mouse_button_pressed(MouseButton::Left);
+        if !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -227,7 +231,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             }?;
             menu.activate(action)
         });
-        let requested = if can_end
+        let requested = if !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -268,7 +272,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
                         if let Some(position) = reselect {
                             selection.select_own(position, observation);
                         }
-                        art.load(observation, &data.assets);
+                        art.load(observation, &data.assets, session.map_item_images());
                     }
                 }
                 Err(error) => message = Some(error.to_string()),
@@ -279,7 +283,7 @@ async fn show_board(data: BoardData) -> Result<(), Box<dyn Error>> {
             session.state(),
             session.observation(),
             camera.layout(),
-            &art,
+            &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
                 selected: selection.unit(),
