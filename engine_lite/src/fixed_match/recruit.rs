@@ -15,21 +15,56 @@ impl FixedMatch<'_> {
         let board = &self.scenario.board;
         let team_types = &self.scenario.sides[side - 1].recruits;
         let leaders = board.units().filter(|(_, unit)| unit.side == side && unit.can_recruit);
+        let reserves: Vec<_> = self.affordable_recalls(side).collect();
+        let mut recall_destinations = BTreeSet::new();
         let mut placements = BTreeSet::new();
         for (leader, unit) in leaders {
             let types: Vec<_> = team_types.iter().chain(&unit.extra_recruits)
                 .filter(|id| self.recruit_cost(side, id).is_some()).collect();
-            if types.is_empty() {
+            if types.is_empty() && reserves.is_empty() {
                 continue;
             }
             let destinations = self.leader_castle(leader, &terrain_known, |hex| {
                 board.unit_at(hex).is_some_and(|occupant| occupant.side == side || unit_visible(hex))
             });
+            if !reserves.is_empty() {
+                recall_destinations.extend(destinations.iter().copied());
+            }
             for id in types {
                 placements.extend(destinations.iter().map(|&to| (id, to)));
             }
         }
         choices.extend(placements.into_iter().map(|(id, to)| Action::Recruit { unit_type: id.clone(), to }));
+        for (id, _) in reserves {
+            choices.extend(recall_destinations.iter().map(|&to| Action::Recall { unit_id: id.to_owned(), to }));
+        }
+    }
+
+    fn affordable_recalls(&self, side: usize) -> impl Iterator<Item = (&str, i64)> {
+        let default_cost = self.scenario.sides[side - 1].recall_cost;
+        let gold = self.gold[side - 1];
+        self.scenario.board.recall_roster(side).iter().filter_map(move |unit| {
+            let id = unit.id.as_deref()?;
+            let cost = i64::from(unit.recall_cost(default_cost));
+            (cost <= gold && supports_unit(unit.unit_type)).then_some((id, cost))
+        })
+    }
+
+    pub(super) fn recall(&mut self, side: usize, unit_id: &str, to: Hex) -> Result<(), MatchError> {
+        let cost = self.affordable_recalls(side)
+            .find_map(|(id, cost)| (id == unit_id).then_some(cost))
+            .ok_or(MatchError::InvalidRecall)?;
+        let occupied = |hex| self.scenario.board.unit_at(hex).is_some();
+        let allowed = self.scenario.board.units().any(|(leader, unit)| {
+            unit.side == side && unit.can_recruit && self.leader_castle(leader, |_| true, occupied).contains(&to)
+        });
+        if !allowed {
+            return Err(MatchError::InvalidRecall);
+        }
+        self.scenario.board.place_recall(side, unit_id, to).ok_or(MatchError::InvalidRecall)?;
+        self.gold[side - 1] -= cost;
+        self.capture_village(side, to);
+        Ok(())
     }
 
     pub(super) fn recruit(&mut self, side: usize, unit_type: &str, to: Hex) -> Result<(), MatchError> {
@@ -87,6 +122,92 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn recalls_the_selected_reserve_once_at_its_own_cost_with_its_existing_stats() {
+        let config = wml::parse(r#"
+            map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Kh,Ch,Gg,Ch,2 Kh,Ch,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+            [side]
+                type=Guard
+                gold=50
+                recall_cost=18
+                [unit]
+                    id=veteran
+                    type=Guard
+                    placement=recall
+                    experience=15
+                    hitpoints=33
+                    recall_cost=13
+                    [modifications]
+                        [trait]
+                            id=loyal
+                        [/trait]
+                    [/modifications]
+                [/unit]
+                [unit]
+                    id=reserve
+                    type=Guard
+                    placement=recall
+                [/unit]
+                [unit]
+                    id=expensive
+                    type=Guard
+                    placement=recall
+                    recall_cost=51
+                [/unit]
+            [/side]
+            [side]
+                type=Guard
+                [unit]
+                    id=enemy_veteran
+                    type=Guard
+                    placement=recall
+                [/unit]
+            [/side]
+        "#).unwrap();
+        let types = read_unit_types(wml::parse(
+            "[unit_type]\nid=Guard\nhitpoints=55\nmovement=5\n[/unit_type]"
+        ).unwrap());
+        let terrain = TerrainAliases::from_wml(&wml::parse(
+            "[terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+             [terrain_type]\nstring=Ch\nrecruit_onto=yes\n[/terrain_type]"
+        ).unwrap());
+        let movement = BTreeMap::new();
+        let resistance = BTreeMap::new();
+        let rules = Rules { terrain: &terrain, movement: &movement, resistance: &resistance };
+        let start = scenario_start::load(&config, &types, |_| unreachable!()).unwrap();
+        let mut game = FixedMatch::new(start, rules, 42).unwrap();
+
+        let castle = Hex { x: 1, y: 0 };
+        let recall = |id: &str, to| Action::Recall { unit_id: id.into(), to };
+        let before = game.decision().unwrap();
+        let recalls: Vec<_> = before.1.iter().filter(|a| matches!(a, Action::Recall { .. })).cloned().collect();
+        assert_eq!(recalls, [recall("veteran", castle), recall("reserve", castle)]);
+        for action in [
+            recall("veteran", Hex { x: 3, y: 0 }),
+            recall("expensive", castle),
+            recall("enemy_veteran", castle),
+        ] {
+            assert_eq!(game.step(action), Err(MatchError::InvalidRecall));
+            assert_eq!(game.decision().unwrap(), before);
+        }
+        game.step(recall("veteran", castle)).unwrap();
+        let unit = game.scenario.board.unit_at(castle).unwrap();
+        assert_eq!(unit.id.as_deref(), Some("veteran"));
+        assert_eq!(unit.traits().next().unwrap().attribute("id"), Some("loyal"));
+        assert_eq!((unit.hitpoints, unit.experience, unit.moves_left, unit.attacks_left), (33, 15, 0, 0));
+        assert_eq!(game.gold[0], 37);
+        assert_eq!(game.rng.seed_and_calls(), (42, 0));
+        assert_eq!(game.scenario.board.recall_roster(1).len(), 2);
+        assert_eq!(game.step(recall("veteran", castle)), Err(MatchError::InvalidRecall));
+        assert_eq!(game.gold[0], 37);
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let unit = game.scenario.board.unit_at(castle).unwrap();
+        assert_eq!((unit.moves_left, unit.attacks_left), (5, 1));
+    }
 
     #[test]
     fn personal_recruits_are_limited_to_the_eligible_leaders_castle() {

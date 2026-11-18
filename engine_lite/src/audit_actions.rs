@@ -88,10 +88,17 @@ fn parse_action(line: &str) -> Result<Action, &'static str> {
                 to: parse_hex(x, y)?,
             })
         }
+        ["recall", x, y, unit_id] => {
+            if unit_id.trim().is_empty() {
+                return Err("missing recall unit ID");
+            }
+            Ok(Action::Recall { unit_id: (*unit_id).to_owned(), to: parse_hex(x, y)? })
+        }
         ["end_turn"] => Ok(Action::EndTurn),
         ["move", ..] => Err("move requires four arguments"),
         ["attack", ..] => Err("attack requires five arguments"),
         ["recruit", ..] => Err("recruit requires three arguments"),
+        ["recall", ..] => Err("recall requires three arguments"),
         ["end_turn", ..] => Err("end_turn takes no arguments"),
         _ => Err("unknown action"),
     }
