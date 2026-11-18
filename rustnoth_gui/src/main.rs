@@ -438,6 +438,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                     window.choose(attack_menu, &data.assets, || {
                         render::draw(session.state(), Some(observation), camera.layout(), &mut art,
                             render::MovementView {
+                                session: &session,
+                                route: None,
                                 global_time: session.global_time_of_day(),
                                 selected: selection.unit(), actions: session.legal_actions(), message: None,
                                 assets: &data.assets, menu: None,
@@ -475,13 +477,18 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
+        let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
+            .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
+        session.track_hovered_move(hovered);
         render::draw(
             session.state(),
             session.observation(),
             camera.layout(),
             &mut art,
             render::MovementView {
+                session: &session,
                 global_time: session.global_time_of_day(),
+                route: session.hovered_move(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
@@ -577,6 +584,7 @@ mod tests {
             height: 2,
             tiles: Vec::new(),
             units: vec![ObservedUnit {
+                facing: None,
                 can_recruit: false, emits_zoc: true,
                 max_hitpoints: 33, full_action_points: Some(true),
                 position: start, side: 1, type_id: "Bowman".into(),

@@ -1,5 +1,7 @@
 #[path = "campaign_selector.rs"]
 mod selector;
+#[path = "installed_campaigns.rs"]
+mod installed;
 use std::{error::Error, fs, path::{Path, PathBuf}};
 
 use engine_lite::{campaign, fixed_match::carryover::{CampaignCarryover, CampaignGold}, wml, wml_emit};
@@ -14,7 +16,7 @@ pub(super) struct Browser {
     core: Vec<u8>,
     root: PathBuf,
     seed: u32,
-    training: bool,
+    installed: std::collections::HashMap<String, installed::Campaign>,
 }
 
 impl Browser {
@@ -25,16 +27,12 @@ impl Browser {
         if campaign::scenarios(&campaign).next().is_none() {
             return Err("campaign contains no scenarios with an ID".into());
         }
-        Ok(Self { campaign, maps, core, root, seed, training: false })
+        Ok(Self { campaign, maps, core, root, seed, installed: Default::default() })
     }
 
-    pub(super) fn include_installed_training(&mut self) -> Result<(), Box<dyn Error>> {
-        let file = self.root.join(crate::desktop::TUTORIAL).join("_main.cfg");
-        if file.is_file() {
-            crate::tutorial::insert_entry(&mut self.campaign, &fs::read_to_string(file)?)?;
-            self.training = true;
-        }
-        Ok(())
+    pub(super) fn installed(file: &Path, folders: &Path, core: Vec<u8>, root: PathBuf, seed: u32) -> Result<Self, Box<dyn Error>> {
+        let (campaign, installed) = installed::catalog(wml::parse(read_file(file)?)?, folders)?;
+        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed })
     }
 
     fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
@@ -45,6 +43,23 @@ impl Browser {
         let mut source = Vec::new();
         wml_emit::write_config(&mut source, &selected)?;
         BoardData::from_source(&source, &self.core, self.maps.clone(), self.root.clone(), self.seed)
+    }
+
+    async fn play_installed(&self, entry: &installed::Campaign, id: &str, selector: &mut selector::Selector<'_>) -> Result<(), Box<dyn Error>> {
+        let descriptor = self.campaign.children.iter().find(|(tag, cfg)| tag == "campaign" && cfg.attribute("first_scenario") == Some(id))
+            .map(|(_, cfg)| cfg).ok_or("Missing campaign descriptor")?;
+        let Some(difficulty) = selector.difficulty(descriptor).await else { return Ok(()) };
+        let (root, selected) = (self.root.clone(), entry.clone());
+        let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
+        while !worker.is_finished() {
+            selector.draw(Some("Loading campaign…"));
+            set_default_camera();
+            next_frame().await;
+        }
+        let file = worker.join().map_err(|_| "Campaign preparation stopped")??;
+        let maps = self.root.join("data/campaigns").join(&entry.folder).join("maps");
+        let game = Self::load(&file, maps, self.core.clone(), self.root.clone(), self.seed)?;
+        game.play_from(id.into()).await
     }
 
     async fn play_from(&self, mut id: String) -> Result<(), Box<dyn Error>> {
@@ -60,6 +75,7 @@ impl Browser {
     pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
         let scenarios: Vec<_> = campaign::scenarios(&self.campaign).collect();
         let mut selector = selector::Selector::new(&self.root, &self.campaign, &scenarios);
+        selector.campaigns_only = !self.installed.is_empty();
 
         let mut error: Option<String> = None;
         loop {
@@ -69,8 +85,12 @@ impl Browser {
                 ListAction::Choose(index) => {
                     next_frame().await;
                     let (id, _) = scenarios[index];
-                    let result = if self.training && id == crate::tutorial::FIRST_SCENARIO {
-                        crate::tutorial::run(&self.root, &self.core, self.seed).await
+                    let result = if let Some(entry) = self.installed.get(id) {
+                        if id == crate::tutorial::FIRST_SCENARIO {
+                            crate::tutorial::run(&self.root, &self.core, self.seed).await
+                        } else {
+                            self.play_installed(entry, id, &mut selector).await
+                        }
                     } else {
                         self.play_from(id.to_owned()).await
                     };

@@ -1,4 +1,6 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
+#[path = "campaign_difficulty.rs"]
+mod difficulty;
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -59,6 +61,7 @@ fn filtered(entries: &[Entry<'_>], filter: &str) -> Vec<usize> {
 pub(super) struct Selector<'a> {
     campaigns: Vec<Entry<'a>>,
     levels: Vec<Entry<'a>>,
+    pub(super) campaigns_only: bool,
     show_levels: bool,
     cursor: usize,
     first: usize,
@@ -73,10 +76,14 @@ impl<'a> Selector<'a> {
     pub fn new(root: &Path, campaign: &'a Node, scenarios: &[(&'a str, &'a str)]) -> Self {
         let (campaigns, levels) = entries(campaign, scenarios);
         Self {
-            show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
+            campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
             query: String::new(), editing: false, description_offset: 0, last_click: None,
             art: Art::new(root, campaign),
         }
+    }
+
+    pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
+        difficulty::choose(&mut self.art, campaign).await
     }
 
     pub fn draw(&mut self, error: Option<&str>) -> ListAction {
@@ -102,7 +109,7 @@ impl<'a> Selector<'a> {
         let pointer = vec2(mx/scale, my/scale);
         let click = is_mouse_button_pressed(MouseButton::Left);
         if is_key_pressed(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
-        if !self.campaigns.is_empty() && (click && toggle.contains(pointer) || is_key_pressed(KeyCode::Tab)) {
+        if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || is_key_pressed(KeyCode::Tab)) {
             self.show_levels = !self.show_levels;
             self.editing = false;
             self.query.clear();
@@ -223,11 +230,11 @@ impl<'a> Selector<'a> {
                 if space.h > 0.0 { contain(&art, space, false); }
             }
         }
-        if !self.campaigns.is_empty() {
+        if !self.campaigns_only && !self.campaigns.is_empty() {
             self.art.button(toggle, if self.show_levels {"Campaigns"} else {"Scenarios"}, pointer);
         }
         if let Some(message) = error {
-            let left = if self.campaigns.is_empty() { panel.x } else { toggle.right()+8.0 };
+            let left = if self.campaigns_only || self.campaigns.is_empty() { panel.x } else { toggle.right()+8.0 };
             let message = fit(self.art.font.as_ref(), message.into(), play.x-left-8.0, 15);
             self.art.label(&message, left, bottom+24.0, 15, Color::from_rgba(255,180,146,255));
         }

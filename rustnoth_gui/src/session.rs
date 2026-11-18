@@ -17,6 +17,8 @@ pub struct Session<'rules> {
     dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
+    hovered_move: Option<(Hex, Hex)>,
+    route: Option<engine_lite::fixed_match::move_preview::MovePreview>,
     computer_action: Option<Action>,
     observation: Option<Observation>,
     legal_actions: Vec<Action>,
@@ -29,6 +31,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
+            hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
@@ -36,6 +39,8 @@ impl<'rules> Session<'rules> {
     }
 
     fn refresh(&mut self) {
+        self.hovered_move = None;
+        self.route = None;
         self.computer_action = None;
         self.legal_actions.clear();
         match self.game.decision() {
@@ -122,6 +127,23 @@ impl<'rules> Session<'rules> {
 
     pub fn legal_actions(&self) -> &[Action] {
         &self.legal_actions
+    }
+
+    pub fn track_hovered_move(&mut self, endpoints: Option<(Hex, Hex)>) {
+        if self.hovered_move == endpoints { return; }
+        self.hovered_move = endpoints;
+        self.route = endpoints.and_then(|(from, to)| {
+            if !self.legal_actions.contains(&Action::Move { from, to }) { return None; }
+            self.game.move_preview(from, to)
+        });
+    }
+
+    pub fn hovered_move(&self) -> Option<&engine_lite::fixed_match::move_preview::MovePreview> {
+        self.route.as_ref()
+    }
+
+    pub fn unit_report(&self, position: Hex, pointer: Hex) -> Option<engine_lite::fixed_match::unit_report::UnitReport> {
+        self.game.unit_report(self.observation.as_ref()?.side, position, pointer)
     }
 
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {

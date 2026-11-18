@@ -18,6 +18,18 @@ pub enum Direction {
 }
 
 impl Direction {
+    pub fn from_wml(name: &str) -> Option<Self> {
+        match name.trim() {
+            "n" => Some(Self::North),
+            "ne" => Some(Self::NorthEast),
+            "se" => Some(Self::SouthEast),
+            "s" => Some(Self::South),
+            "sw" => Some(Self::SouthWest),
+            "nw" => Some(Self::NorthWest),
+            _ => None,
+        }
+    }
+
     pub const CLOCKWISE: [Self; 6] = [
         Self::North,
         Self::NorthEast,
@@ -57,6 +69,31 @@ impl Hex {
             x: self.x.checked_add(dx)?,
             y: self.y.checked_add(dy)?,
         })
+    }
+
+    /// Native radial direction. Ties rotate clockwise at each sector boundary.
+    pub fn direction_to(self, other: Self) -> Option<Direction> {
+        let dx = i64::from(other.x) - i64::from(self.x);
+        let dy = 2 * (i64::from(other.y) - i64::from(self.y))
+            + i64::from(other.x.rem_euclid(2) - self.x.rem_euclid(2));
+        // Vertical displacements after rotating the hex vector clockwise by 60 and 120 degrees.
+        let after_one = 3 * dx + dy;
+        let after_two = 3 * dx - dy;
+        Some(match dy.cmp(&0) {
+            std::cmp::Ordering::Less if after_one >= 0 => Direction::NorthEast,
+            std::cmp::Ordering::Less if after_two >= 0 => Direction::North,
+            std::cmp::Ordering::Less => Direction::NorthWest,
+            std::cmp::Ordering::Greater if after_one <= 0 => Direction::SouthWest,
+            std::cmp::Ordering::Greater if after_two <= 0 => Direction::South,
+            std::cmp::Ordering::Greater => Direction::SouthEast,
+            std::cmp::Ordering::Equal if dx > 0 => Direction::SouthEast,
+            std::cmp::Ordering::Equal if dx < 0 => Direction::NorthWest,
+            _ => return None,
+        })
+    }
+
+    pub fn direction_to_neighbor(self, other: Self) -> Option<Direction> {
+        Direction::CLOCKWISE.into_iter().find(|&dir| self.neighbor(dir) == Some(other))
     }
 
     pub fn neighbors(self) -> impl Iterator<Item = Self> {

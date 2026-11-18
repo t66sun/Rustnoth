@@ -148,6 +148,8 @@ impl Battlefield<'_> {
         unit.uncovered = true;
         unit.moves_left = unit.moves_left.saturating_sub(moves).max(0);
         unit.attacks_left = unit.attacks_left.saturating_sub(attacks).max(0);
+        unit.facing = from.direction_to(to);
+        self.units.get_mut(&to).expect("validated defender").facing = to.direction_to(from);
         Ok(participants)
     }
 
@@ -294,7 +296,6 @@ pub(crate) fn combatant(
         StrikeRole::Retaliate(attacking_weapon) if attacking_weapon.has_charge() => 2,
         StrikeRole::Retaliate(_) => 1,
     };
-    let strikes = unit.traits.as_ref().map_or(weapon.strikes, |traits| traits.stats.attack_strikes[weapon_index]);
     let base_damage = unit.attack_damage(weapon_index).saturating_mul(factor);
     let damage = |slowed| {
         u32::try_from(strike_damage(base_damage, modifiers.damage_multiplier, slowed)).unwrap_or(u32::MAX)
@@ -303,7 +304,7 @@ pub(crate) fn combatant(
     let hit_chance = weapon.hit_chance(base_chance, matches!(role, StrikeRole::Attack { .. }));
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
-        strikes: weapon.strikes_at_hp(strikes, unit.hitpoints, unit.max_hitpoints()),
+        strikes: unit.attack_strikes(weapon_index),
         damage: damage(false),
         slow_damage: damage(true),
         slows: weapon.has_slow(),
@@ -638,6 +639,8 @@ mod tests {
         assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (20, 10));
         assert_eq!(board.unit_at(ATTACKER).unwrap().experience, 2);
         assert_eq!(board.unit_at(DEFENDER).unwrap().experience, 2);
+        assert_eq!(board.unit_at(ATTACKER).unwrap().facing, Some(crate::hex::Direction::SouthEast));
+        assert_eq!(board.unit_at(DEFENDER).unwrap().facing, Some(crate::hex::Direction::NorthWest));
     }
 
     #[test]
