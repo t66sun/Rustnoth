@@ -1,4 +1,6 @@
 //! Shared artwork, panel layout and scrollable choices for desktop launch menus.
+mod skin;
+pub(crate) use skin::Skin;
 use std::{fs, path::Path};
 use macroquad::prelude::*;
 

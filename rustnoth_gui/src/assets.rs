@@ -26,6 +26,8 @@ struct UnitAssets {
     portrait: Option<PathBuf>,
     dialogue_portrait: Option<PathBuf>,
     name: Option<String>,
+    race_name: Option<String>,
+    abilities: Vec<String>,
     weapons: Vec<(Option<String>, Option<PathBuf>)>,
     ellipse: String,
     bars: UnitBars,
@@ -66,6 +68,15 @@ impl UnitBars {
 impl AssetCatalog {
     /// Reads core definitions before custom scenario definitions.
     pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_config(wesnoth_root, core, bundle, true)
+    }
+
+    /// Load presentation metadata for the map and leader previews in multiplayer setup.
+    pub fn for_setup(root: &Path, core: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_config(root, core, &[], false)
+    }
+
+    fn from_config(wesnoth_root: &Path, core: &[u8], bundle: &[u8], terrain_graphics: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut prefixes = BTreeSet::from([String::new(), "data/core".into()]);
         let mut catalog = Self::default();
         let mut units = Node::default();
@@ -76,6 +87,7 @@ impl AssetCatalog {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" if !terrain_graphics => {},
                     "terrain_graphics" if is_core => core_graphics.push(node),
                     "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
@@ -89,7 +101,7 @@ impl AssetCatalog {
                 }
             }
         }
-        if core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
+        if terrain_graphics && core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
             core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
         }
         catalog.terrain_rules.extend(core_graphics);
@@ -104,6 +116,14 @@ impl AssetCatalog {
 
     pub fn standing_animations(&self, id: &str) -> &[Node] {
         self.units.get(id).map_or(&[], |unit| unit.standing.as_slice())
+    }
+
+    pub fn unit_race_name(&self, id: &str) -> Option<&str> {
+        self.units.get(id)?.race_name.as_deref()
+    }
+
+    pub fn unit_ability_names(&self, id: &str) -> &[String] {
+        self.units.get(id).map_or(&[], |u| u.abilities.as_slice())
     }
 
     pub fn unit_bars(&self, id: &str) -> Option<UnitBars> {
@@ -217,6 +237,15 @@ impl AssetCatalog {
                     });
                 }
                 "units" => {
+                    let races: BTreeMap<_, _> = node.children.iter().filter(|(tag, _)| tag == "race")
+                        .filter_map(|(_, race)| {
+                            let label = |name| display_name(race, name).map(|s| s.rsplit('^').next().unwrap_or(s));
+                            let shared_name = label("name").or_else(|| {
+                                let male = label("male_name")?;
+                                label("female_name").is_none_or(|female| female == male).then_some(male)
+                            })?;
+                            Some((race.attribute("id")?, shared_name))
+                        }).collect();
                     for (_, unit) in node.children.iter().filter(|(tag, _)| tag == "unit_type") {
                         let Some(id) = unit.attribute("id").filter(|id| !id.is_empty()) else {
                             continue;
@@ -236,6 +265,11 @@ impl AssetCatalog {
                                 .and_then(image_filename)
                                 .map(PathBuf::from),
                             name: display_name(unit, "name").map(str::to_owned),
+                            race_name: unit.attribute("race").and_then(|race| races.get(race)).map(|s| (*s).to_owned()),
+                            abilities: unit.children.iter().filter(|(tag, _)| tag == "abilities")
+                                .flat_map(|(_, list)| &list.children)
+                                .filter_map(|(_, ability)| display_name(ability, "name"))
+                                .map(|s| s.rsplit('^').next().unwrap_or(s).to_owned()).collect(),
                             bars: UnitBars::from_unit(unit),
                             ellipse: unit.attribute("ellipse").filter(|s| !s.is_empty()).unwrap_or("misc/ellipse").into(),
                             weapons: unit

@@ -1,5 +1,6 @@
 //! Geometry and bitmaps of the default Wesnoth 1.18 battlefield theme.
 use super::*;
+mod unit_report;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -60,12 +61,15 @@ pub(super) struct FrameArt {
     sidebar: Texture,
     minimap: [Texture; 2],
     buttons: [[Texture; 3]; 2],
-    reports: [Texture; 3],
+    reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
+    unit_report: unit_report::Art,
     status: [Texture; 9],
 }
 
 impl FrameArt {
+    pub fn clear_unit_report(&mut self) { self.unit_report.cached = None; }
+
     pub fn load(root: &Path) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
@@ -78,7 +82,8 @@ impl FrameArt {
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
             buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
             side_flags: BTreeMap::new(),
-            reports: ["gold.png", "villages.png", "units.png"].map(theme),
+            unit_report: unit_report::Art::new(root),
+            reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: [
                 "border-topleft", "border-top", "border-topright", "border-left", "background",
                 "border-right", "border-botleft", "border-bottom", "border-botright",
@@ -148,7 +153,7 @@ pub fn draw(
     paint(&art.frame.sidebar, frame.sidebar);
     let s = frame.scale;
     if s <= 0.0 { return; }
-    draw_reports(frame, state, observation, art);
+    draw_reports(frame, state, observation, movement.session.economy(), art);
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
@@ -186,31 +191,10 @@ pub fn draw(
             text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
         art.frame.status_box(rect(0.0, 90.0, 78.0, 78.0), s);
-        if let Some(unit) = observation.and_then(|view| view.units.iter().find(|u| Some(u.position) == movement.selected)) {
-            let portrait = art.portraits.entry(unit.type_id.clone()).or_insert_with(|| {
-                let path = movement.assets.unit_portrait(&unit.type_id)?;
-                get_texture(&mut art.paths, path)
-            });
-            if let Some(image) = portrait.as_ref().or_else(|| art.units.get(&unit.type_id)?.get(&unit.side)?.as_ref()) {
-                let frame = rect(3.0, 93.0, 72.0, 72.0);
-                let fit = (frame.w / image.width()).min(frame.h / image.height());
-                let size = vec2(image.width(), image.height()) * fit;
-                let origin = frame.center() - size * 0.5;
-                draw_texture_ex(image, origin.x, origin.y, WHITE, DrawTextureParams {
-                    dest_size: Some(size), ..Default::default()
-                });
-            }
-            let stats = [Some(format!("HP   {}", unit.hitpoints)),
-                Some(format!("XP   {}/{}", unit.experience, unit.max_experience)),
-                unit.moves_left.map(|mp| format!("MP   {mp}"))];
-            for (row, stat) in stats.iter().flatten().enumerate() {
-                text_in(&art.font, stat, rect(83.0, 92.0 + row as f32 * 24.0, 84.0, 20.0), 14, TEXT, false);
-            }
-            let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
-            text_in(&art.font, name, rect(3.0, 173.0, 164.0, 23.0), 17, TEXT, false);
-            let conditions = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
-                .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
-            text_in(&art.font, &conditions, rect(3.0, 197.0, 164.0, 19.0), 14, MUTED, false);
+        if let Some(view) = observation
+            && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
+        {
+            unit_report::draw(frame, art, unit, hovered.unwrap_or(unit.position), movement);
         }
     }
     let hint = Rect::new(frame.sidebar.x + 8.0 * s, frame.end_turn.y - 22.0 * s, frame.sidebar.w - 16.0 * s, 19.0 * s);
@@ -221,7 +205,7 @@ pub fn draw(
     }
 }
 
-fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Observation>, art: &mut BoardArt) {
+fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Observation>, economy: Option<engine_lite::income::EconomyReport>, art: &mut BoardArt) {
     let s = frame.scale;
     let rect = |x, w| Rect::new(x * s, 3.0 * s, w * s, 20.0 * s);
     let narrow = frame.compact;
@@ -235,8 +219,8 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
             });
             paint(flag, Rect::new((x + 6.0) * s, 5.0 * s, 25.0 * s, 17.0 * s));
             text_x += 35.0;
-            let side = if view.is_some_and(|v| v.side != turn.side) { "CPU" } else { "Side" };
-            format!("{}  {side} {}", turn.round, turn.side)
+            economy.and_then(|report| report.last_round).map_or_else(||turn.round.to_string(),
+                |limit| format!("{}/{limit}", turn.round))
         }
         MatchState::Won(side) => format!("Side {side} won"),
         MatchState::AlliedVictory(sides) => format!("Sides {} won", sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")),
@@ -244,17 +228,20 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
         MatchState::CampaignDefeat => "Campaign defeat".into(),
         MatchState::Draw => "Draw".into(),
     };
-    let icons = if narrow { [215.0, 282.0, 344.0] } else { [319.0, 407.0, 490.0] };
+    let icons = if narrow { [215.0, 282.0, 344.0, 400.0, 475.0] } else { [319.0, 407.0, 490.0, 568.0, 666.0] };
     text_in(&art.font, &status, rect(text_x, icons[0] - text_x - 6.0), 15, TEXT, false);
-    if let Some(view) = view {
-        let villages = view.tiles.iter().filter(|tile| tile.village_owner == Some(view.side)).count();
+    if let (Some(view), Some(economy)) = (view, economy) {
         let units = view.units.iter().filter(|unit| unit.side == view.side).count();
-        let values = [view.gold.map(|v| v.to_string()), Some(villages.to_string()), Some(units.to_string())];
+        let values = [view.gold.map(|v| v.to_string()), Some(format!("{}/{}",economy.villages,economy.known_villages)),
+            Some(units.to_string()), Some(format!("{} ({})",economy.expenses,economy.upkeep)), Some(economy.income.to_string())];
         for (index, value) in values.into_iter().enumerate() {
             if let Some(value) = value {
                 let left = icons[index];
-                paint(&art.frame.reports[index], Rect::new(left * s, 5.0 * s, 17.0 * s, 17.0 * s));
-                text_in(&art.font, &value, rect(left + 21.0, 42.0), 15, TEXT, false);
+                let icon_width = if index < 3 {17.0} else {25.0};
+                paint(&art.frame.reports[index], Rect::new(left * s, 5.0 * s, icon_width * s, 17.0 * s));
+                let text_width = icons.get(index+1).copied().unwrap_or(left+83.0)-left-icon_width-5.0;
+                let color = if matches!(index,0|4) && value.starts_with('-') { Color::from_rgba(255,96,96,255) } else {TEXT};
+                text_in(&art.font, &value, rect(left + icon_width + 4.0, text_width), 15, color, false);
             }
         }
     }

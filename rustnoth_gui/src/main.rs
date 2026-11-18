@@ -29,6 +29,7 @@ mod setup;
 mod story;
 mod saved_game;
 mod save_dialog;
+mod unit_list;
 mod title_screen;
 mod tutorial;
 
@@ -281,6 +282,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
             session.legal_actions(),
         );
+        if session.observation().is_some_and(|view| view.units.iter().any(|unit| unit.side == view.side)) {
+            commands.insert(0, map_menus::Command::UnitList);
+        }
         if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
         let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = dialogue_open || top.handled;
@@ -291,6 +295,17 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Ok(()) => art.show_grid = !art.show_grid,
                 Err(error) => message = Some(format!("Could not save grid preference: {error}")),
             }
+        }
+        let unit_list = top.command == Some(map_menus::Command::UnitList)
+            || !input_blocked && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
+        if unit_list && let Some(view) = session.observation() {
+            if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
+                selection.select_own(at, view);
+                camera.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
+                menu = None;
+            }
+            next_frame().await;
+            continue;
         }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
@@ -439,8 +454,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                     window.choose(attack_menu, &data.assets, || {
                         render::draw(session.state(), Some(observation), camera.layout(), &mut art,
                             render::MovementView {
-                                global_time: session.global_time_of_day(),                                route: None,
-
+                                session: &session,
+                                route: None,
+                                global_time: session.global_time_of_day(),
                                 selected: selection.unit(), actions: session.legal_actions(), message: None,
                                 assets: &data.assets, menu: None,
                             });
@@ -486,6 +502,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             camera.layout(),
             &mut art,
             render::MovementView {
+                session: &session,
                 global_time: session.global_time_of_day(),
                 route: session.hovered_move(),
                 selected: selection.unit(),

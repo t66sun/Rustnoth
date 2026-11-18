@@ -6,6 +6,8 @@ use macroquad::prelude::*;
 
 mod preferences;
 mod help;
+mod locale;
+mod languages;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -21,7 +23,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Quit, Help, Previous, Next }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -32,6 +34,7 @@ impl Command {
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
             Self::Quit => "Quit",
+            Self::Language => "Language",
             Self::Help => "Help",
             Self::Previous => "Previous",
             Self::Next => "Next",
@@ -46,13 +49,15 @@ fn menu(campaign: bool) -> &'static [Command] {
 
 impl TitleScreen {
     pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
-        let art = Art::load(&self.root)?;
-        let tips = tips(&fs::read_to_string(self.root.join("data/tips.cfg"))?)?;
+        let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
+        let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
+        let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
+        let mut entries = tips(&tip_source, &art.locale)?;
         let actions = menu(match &self.games {
             Games::Prepared(data) => data.campaign.is_some(),
             Games::Installed => desktop::campaign_available(&self.root),
         });
-        let mut tip = self.seed as usize % tips.len();
+        let mut tip = self.seed as usize % entries.len();
         let mut focus = 0;
         let mut pressed = None;
         let mut last_pointer = mouse_position();
@@ -66,9 +71,9 @@ impl TitleScreen {
             let pointer = vec2(mx / scale, my / scale);
             set_camera(&dialog::setup_camera(w, h));
             art.draw_background(w, h);
-            let (tip_body, tip_source) = &tips[tip];
+            let (tip_body, attribution) = &entries[tip];
             let buttons = art.draw_panels(w, h, actions, error.as_deref().unwrap_or(tip_body),
-                if error.is_none() { tip_source } else { "" });
+                if error.is_none() { attribution } else { "" });
             let hovered = buttons.iter().position(|(_, rect)| rect.contains(pointer));
             if last_pointer != (mx, my) {
                 if let Some(index) = hovered { focus = index; }
@@ -85,7 +90,7 @@ impl TitleScreen {
                 pressed.take().filter(|index| Some(*index) == hovered)
             } else { None };
             for (index, (command, rect)) in buttons.iter().enumerate() {
-                art.button(*rect, command.label(), index == focus, pressed == Some(index) && hovered == pressed);
+                art.command(*rect, *command, index == focus, pressed == Some(index) && hovered == pressed);
             }
             dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
             set_default_camera();
@@ -99,8 +104,34 @@ impl TitleScreen {
                 } else { click.map(|index| buttons[index].0) };
             match command {
                 Some(Command::Quit) => return Ok(()),
-                Some(Command::Previous) => { error = None; tip = (tip + tips.len() - 1) % tips.len(); }
-                Some(Command::Next) => { error = None; tip = (tip + 1) % tips.len(); }
+                Some(Command::Previous) => { error = None; tip = (tip + entries.len() - 1) % entries.len(); }
+                Some(Command::Next) => { error = None; tip = (tip + 1) % entries.len(); }
+                Some(Command::Language) => {
+                    next_frame().await;
+                    let result = languages::show(&self.root, &art, |w,h| {
+                        art.draw_background(w,h);
+                        let (body, source) = &entries[tip];
+                        for (command, rect) in art.draw_panels(w,h,actions,body,source) {
+                            art.command(rect,command,command==Command::Language,false);
+                        }
+                    }).await;
+                    match result {
+                        Ok(Some(id)) => {
+                            let change = (|| -> Result<(),Box<dyn Error>> {
+                                let locale = locale::Locale::load(&self.root,id.clone())?;
+                                let translated = tips(&tip_source, &locale)?;
+                                let logo = load_texture(&self.root, &locale.logo(&self.root))?;
+                                locale::save(&crate::display_preferences::config_directory()?, &id)?;
+                                art.set_locale(&self.root,locale,logo);
+                                entries = translated;
+                                Ok(())
+                            })();
+                            error = change.err().map(|e|e.to_string());
+                        }
+                        Ok(None) => {}
+                        Err(e) => error = Some(e.to_string()),
+                    }
+                }
                 Some(Command::Load) => {
                     next_frame().await;
                     error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
@@ -109,9 +140,9 @@ impl TitleScreen {
                     next_frame().await;
                     let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
                         art.draw_background(w, h);
-                        let (body, source) = &tips[tip];
+                        let (body, source) = &entries[tip];
                         for (command, bounds) in art.draw_panels(w, h, actions, body, source) {
-                            art.button(bounds, command.label(), command == Command::Preferences, false);
+                            art.command(bounds, command, command == Command::Preferences, false);
                         }
                         dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
                     }).await;
@@ -161,10 +192,10 @@ impl TitleScreen {
     }
 }
 
-fn tips(source: &str) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     // The final, retired tip in the native file is enclosed in this preprocessor block.
     let active = source.split_once("#ifdef __UNUSED__").map_or(source, |(active, _)| active);
-    let plain = |text: &str| text.replace("<i>", "").replace("</i>", "").replace("<b>", "").replace("</b>", "");
+    let plain = |text: &str| locale.game(text).replace("<i>", "").replace("</i>", "").replace("<b>", "").replace("</b>", "");
     let entries: Vec<_> = wml::parse(active)?.children.iter().filter(|(tag, _)| tag == "tip")
         .filter_map(|(_, config)| Some((plain(config.attribute("text")?), plain(config.attribute("source")?))))
         .collect();
@@ -173,6 +204,8 @@ fn tips(source: &str) -> Result<Vec<(String, String)>, Box<dyn Error>> {
 }
 
 struct Art {
+    locale: locale::Locale,
+    language_icons: [Texture2D; 3],
     background: Texture2D,
     map: Texture2D,
     logo_shadow: Texture2D,
@@ -211,19 +244,49 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     Ok(texture)
 }
 
+fn load_font(root:&Path,name:&str)->Option<Font> {
+    fs::read(root.join("fonts").join(name)).ok().and_then(|bytes|load_ttf_font_from_bytes(&bytes).ok())
+}
+
+fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
+    let name = locale::font_name(id);
+    let font = load_font(root,name).or_else(||load_font(root,"DroidSansFallbackFull.ttf"));
+    let italic = if name=="Lato-Regular.ttf" { load_font(root,"Lato-Italic.ttf") } else { font.clone() };
+    (font,italic)
+}
+
 impl Art {
-    fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
+    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D) {
+        self.logo = logo;
+        if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
+            (self.font,self.italic)=title_fonts(root,&locale.effective);
+        }
+        self.locale=locale;
+    }
+
+    fn command(&self, rect:Rect, cmd:Command, focused:bool, pressed:bool) {
+        let text=self.locale.ui(cmd.label());
+        if cmd==Command::Language {
+            self.button_frame(rect, focused, pressed);
+            let icon=&self.language_icons[if pressed {2} else {usize::from(focused)}];
+            image(Rect::new(rect.x+5.0,rect.y+(rect.h-20.0)/2.0,20.0,20.0),icon);
+            dialog::text(self.font.as_ref(),text,rect.x+30.0,rect.y+rect.h/2.0+5.0,14,Color::from_rgba(186,172,125,255));
+        } else { self.button(rect,text,focused,pressed); }
+    }
+    fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
-        let font = |name: &str| fs::read(root.join("fonts").join(name)).ok()
-            .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+        let (font, italic) = title_fonts(root, &locale.effective);
+        let logo = texture(&locale.logo(root))?;
         Ok(Self {
+            locale, language_icons: [texture("images/icons/action/language_25.png")?,
+                texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
             map: texture("data/core/images/maps/titlescreen.webp")?,
-            logo_shadow: texture("images/misc/logo-bg.png")?, logo: texture("images/misc/logo.png")?,
+            logo_shadow: texture("images/misc/logo-bg.png")?, logo,
             buttons: [texture("images/buttons/button_normal/background.png")?,
                 texture("images/buttons/button_normal/background-active.png")?,
                 texture("images/buttons/button_normal/background-pressed.png")?],
-            font: font("Lato-Regular.ttf"), italic: font("Lato-Italic.ttf"),
+            font, italic,
         })
     }
 
@@ -278,10 +341,12 @@ impl Art {
         buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
         buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
         buttons.push((Command::Next, next));
+        let language_w = (measure_text(self.locale.ui("Language"), font, 14, 1.0).width + 40.0).max(80.0);
+        buttons.push((Command::Language,Rect::new(w-10.0-language_w,h-35.0,language_w,25.0)));
         buttons
     }
 
-    fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
+    fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
         let Rect { x, y, w, h } = rect;
         let state = if pressed { 2 } else { usize::from(focused) };
         let dark = Color::from_rgba(1, 10, 16, 255);
@@ -296,6 +361,11 @@ impl Art {
         draw_rectangle(x + 2.0, y + h - 2.0, w - 3.0, 1.0, dark_gold);
         draw_rectangle(x + 3.0, y + 2.0, w - 5.0, 1.0, highlight);
         draw_rectangle(x + w - 3.0, y + 2.0, 1.0, h - 5.0, highlight);
+    }
+
+    fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
+        self.button_frame(rect,focused,pressed);
+        let Rect{x,y,w,h}=rect;
         let font = self.font.as_ref();
         let metrics = measure_text(label, font, 16, 1.0);
         let shift = if pressed { 1.0 } else { 0.0 };
@@ -318,8 +388,19 @@ fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
                 used = 0.0;
             }
             if !line.is_empty() { line.push(' '); used += space; }
-            line.push_str(word);
-            used += advance;
+            if advance <= width { line.push_str(word); used += advance; }
+            else {
+                for glyph in word.chars() {
+                    let mut utf8 = [0u8;4];
+                    let next = measure_text(glyph.encode_utf8(&mut utf8),font,16,1.0).width;
+                    if used+next>width && !line.is_empty() {
+                        lines.push(std::mem::take(&mut line));
+                        used=0.0;
+                    }
+                    line.push(glyph);
+                    used+=next;
+                }
+            }
         }
         lines.push(line);
     }
@@ -351,7 +432,7 @@ mod tests {
     #[test]
     fn title_shows_the_active_native_tips_and_their_attribution() {
         let tip = "[tip]\ntext=_ \"Use <b>Recruit</b>.\"\nsource=_ \"<i>Konrad</i>\"\n[/tip]\n";
-        assert_eq!(tips(&format!("{tip}#ifdef __UNUSED__\n{tip}#endif")).unwrap(),
+        assert_eq!(tips(&format!("{tip}#ifdef __UNUSED__\n{tip}#endif"), &locale::Locale::default()).unwrap(),
             [("Use Recruit.".to_owned(), "Konrad".to_owned())]);
     }
 }

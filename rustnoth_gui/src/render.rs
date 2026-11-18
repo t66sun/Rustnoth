@@ -1,5 +1,6 @@
 mod frame;
 mod minimap;
+pub(crate) use minimap::skirmish_preview;
 mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
@@ -84,7 +85,6 @@ pub struct BoardArt {
     minimap: minimap::Art,
     lighting: lighting::Lighting,
     paths: HashMap<PathBuf, Option<Texture2D>>,
-    portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     transitions: transitions::Transitions,
     ground: ground::Ground,
@@ -146,7 +146,6 @@ impl BoardArt {
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
-            portraits: HashMap::new(),
             terrain: BTreeMap::new(),
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
@@ -178,6 +177,7 @@ impl BoardArt {
     }
 
     pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+        self.frame.clear_unit_report();
         self.lighting.update(observation);
         self.map_items.clear();
         for (position, image) in items {
@@ -275,6 +275,7 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 
 pub struct MovementView<'a> {
     pub route: Option<&'a engine_lite::fixed_match::move_preview::MovePreview>,
+    pub session: &'a rustnoth_gui::session::Session<'a>,
     pub global_time: Option<&'a TimeOfDay>,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],

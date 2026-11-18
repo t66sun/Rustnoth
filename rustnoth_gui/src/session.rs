@@ -17,6 +17,7 @@ pub struct Session<'rules> {
     dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
+    economy: Option<engine_lite::income::EconomyReport>,
     hovered_move: Option<(Hex, Hex)>,
     route: Option<engine_lite::fixed_match::move_preview::MovePreview>,
     computer_action: Option<Action>,
@@ -31,7 +32,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            hovered_move: None, route: None,
+            economy: None, hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
@@ -57,6 +58,7 @@ impl<'rules> Session<'rules> {
                 self.observation = self.game.observation_for(viewer);
             }
         }
+        self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
             self.dialogue.extend(self.game.take_dialogue(viewer));
         }
@@ -65,6 +67,8 @@ impl<'rules> Session<'rules> {
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
         self.dialogue.front()
     }
+
+    pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
 
     pub fn history(&self) -> &[crate::save_replay::Event] { &self.history }
 
@@ -140,6 +144,10 @@ impl<'rules> Session<'rules> {
 
     pub fn hovered_move(&self) -> Option<&engine_lite::fixed_match::move_preview::MovePreview> {
         self.route.as_ref()
+    }
+
+    pub fn unit_report(&self, position: Hex, pointer: Hex) -> Option<engine_lite::fixed_match::unit_report::UnitReport> {
+        self.game.unit_report(self.observation.as_ref()?.side, position, pointer)
     }
 
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {

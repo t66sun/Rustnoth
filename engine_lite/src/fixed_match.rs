@@ -40,6 +40,7 @@ mod kill;
 mod retaliation;
 pub mod attack_preview;
 pub mod move_preview;
+pub mod unit_report;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -565,26 +566,42 @@ impl<'data> FixedMatch<'data> {
         Ok(true)
     }
 
-    fn settle_income(&mut self, turn: Turn) {
-        if turn.round <= 1 {
-            return;
-        }
-
+    fn side_costs(&self, side: usize) -> (usize, i32) {
         let villages = self
             .village_owners
             .values()
-            .filter(|&&side| side == turn.side)
+            .filter(|&&owner| owner == side)
             .count();
         let upkeep = self
             .scenario
             .board
             .units()
-            .filter(|(_, unit)| unit.side == turn.side)
+            .filter(|(_, unit)| unit.side == side)
             .map(|(_, unit)| unit.upkeep())
             .sum();
+        (villages, upkeep)
+    }
+
+    pub fn economy_for(&self, view: &crate::observation::Observation) -> Option<crate::income::EconomyReport> {
+        let side = self.scenario.sides.get(view.side.checked_sub(1)?)?;
+        let (villages, upkeep) = self.side_costs(view.side);
+        let known_villages = view.tiles.iter().filter(|tile| self.rules.terrain.features(&tile.terrain).village).count();
+        Some(crate::income::EconomyReport {
+            villages, known_villages, upkeep,
+            expenses: crate::income::expenses(side, villages, upkeep),
+            income: net_income(side, DEFAULT_BASE_INCOME, villages, upkeep),
+            last_round: self.scenario.last_round,
+        })
+    }
+
+    fn settle_income(&mut self, turn: Turn) {
+        if turn.round <= 1 {
+            return;
+        }
+
+        let (villages, upkeep) = self.side_costs(turn.side);
         let index = turn.side - 1;
-        let side = &self.scenario.sides[index];
-        self.gold[index] += net_income(side, DEFAULT_BASE_INCOME, villages, upkeep);
+        self.gold[index] += net_income(&self.scenario.sides[index], DEFAULT_BASE_INCOME, villages, upkeep);
     }
 
     fn prepare_attack(&self, turn: Turn, choice: AttackChoice) -> Result<Attack, AttackError> {
