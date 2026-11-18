@@ -1,6 +1,30 @@
-//! Apply ordinary recruit trait effects to base unit statistics.
+//! Apply unit modification effects to base statistics.
 
 use crate::{income::Upkeep, scenario_time::integer, unit_type::UnitType, wml::Node};
+
+/// Modifications are replayed in WML child order when a unit changes type.
+#[derive(Clone, Debug)]
+pub(crate) enum Modification<'a> {
+    Trait(std::borrow::Cow<'a, Node>),
+    Object(Node),
+    DefaultAdvancement(Node),
+}
+
+impl Modification<'_> {
+    pub(crate) fn as_trait(&self) -> Option<&Node> {
+        match self {
+            Self::Trait(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn definition(&self) -> &Node {
+        match self {
+            Self::Trait(node) => node,
+            Self::Object(node) | Self::DefaultAdvancement(node) => node,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CombatImmunities {
@@ -44,12 +68,12 @@ pub struct RecruitStats {
 impl RecruitStats {
     /// Applies direct HP, movement, experience and attack damage effects in trait order.
     pub fn from_traits(unit: &UnitType, traits: &[&Node]) -> Self {
-        Self::from_traits_with_base_experience(unit, traits.iter().copied(), unit.experience, CombatImmunities::default())
+        Self::from_modifications(unit, traits.iter().copied(), unit.experience, CombatImmunities::default())
     }
 
-    pub(crate) fn from_traits_with_base_experience<'a>(
+    pub(crate) fn from_modifications<'a>(
         unit: &UnitType,
-        traits: impl IntoIterator<Item = &'a Node>,
+        modifications: impl IntoIterator<Item = &'a Node>,
         base_max_experience: i32,
         immunities: CombatImmunities,
     ) -> Self {
@@ -71,8 +95,8 @@ impl RecruitStats {
             unplagueable: false,
             fearless: false,
         };
-        for trait_ in traits {
-            for (tag, effect) in &trait_.children {
+        for modification in modifications {
+            for (tag, effect) in &modification.children {
                 if tag != "effect" || !effect.children.is_empty() {
                     continue;
                 }

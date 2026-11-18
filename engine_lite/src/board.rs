@@ -16,7 +16,7 @@ use crate::{
     rng::ReplayRng,
     starting_units::{AuthoredStartingUnit, StartingUnit},
     terrain_aliases::TerrainAliases,
-    trait_effects::{CombatImmunities, RecruitStats, increase_percent},
+    trait_effects::{CombatImmunities, Modification, RecruitStats, increase_percent},
     turn::Turn,
     unit_type::UnitType,
     wml::Node,
@@ -62,6 +62,7 @@ pub struct UnitState<'rules> {
     pub(crate) slowed: bool,
     uncovered: bool,
     base_max_experience: i32,
+    /// Awards earned after loading the ordered WML modifications.
     default_amlas: u8,
     pub moves_left: i32,
     pub attacks_left: i32,
@@ -70,24 +71,24 @@ pub struct UnitState<'rules> {
     upkeep_override: Option<Upkeep>,
     recall_cost: i32,
     recall_filter: recall_filter::RecallFilter,
-    traits: Option<UnitTraits<'rules>>,
+    traits: Option<UnitModifications<'rules>>,
 }
 
 #[derive(Debug)]
-struct UnitTraits<'rules> {
-    definitions: Vec<Cow<'rules, Node>>,
+struct UnitModifications<'rules> {
+    definitions: Vec<Modification<'rules>>,
     stats: RecruitStats,
 }
 
-impl<'rules> UnitTraits<'rules> {
+impl<'rules> UnitModifications<'rules> {
     fn from_definitions(
         unit: &UnitType,
-        definitions: Vec<Cow<'rules, Node>>,
+        definitions: Vec<Modification<'rules>>,
         base_max_experience: i32,
     ) -> Option<Self> {
         (!definitions.is_empty()).then(|| Self {
-            stats: RecruitStats::from_traits_with_base_experience(
-                unit, definitions.iter().map(Cow::as_ref), base_max_experience, CombatImmunities::default(),
+            stats: RecruitStats::from_modifications(
+                unit, definitions.iter().map(Modification::definition), base_max_experience, CombatImmunities::default(),
             ),
             definitions,
         })
@@ -129,7 +130,7 @@ impl UnitState<'_> {
     }
 
     pub fn traits(&self) -> impl Iterator<Item = &Node> {
-        self.traits.iter().flat_map(|traits| traits.definitions.iter().map(Cow::as_ref))
+        self.traits.iter().flat_map(|mods| mods.definitions.iter().filter_map(Modification::as_trait))
     }
 
     pub fn recall_cost(&self, side_default: i32) -> i32 {
@@ -177,10 +178,9 @@ impl<'rules> Battlefield<'rules> {
             can_recruit: unit.can_recruit,
             extra_recruits: Vec::new(),
             recall_cost: None,
-            default_amlas: 0,
             recall_filter: None,
             upkeep: None,
-            traits: Vec::new(),
+            modifications: Vec::new(),
             hitpoints: None,
             experience: 0,
             moves_left: None,
@@ -234,10 +234,9 @@ impl<'rules> Battlefield<'rules> {
             can_recruit,
             extra_recruits,
             recall_cost,
-            default_amlas,
             recall_filter,
             upkeep,
-            traits: authored_traits,
+            modifications,
             hitpoints,
             experience,
             moves_left,
@@ -261,20 +260,20 @@ impl<'rules> Battlefield<'rules> {
             None => BoardError::UnknownRecallType { side, type_id },
         })?;
         let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
-        let mut definitions: Vec<Cow<'_, Node>> = authored_traits.into_iter().map(Cow::Owned).collect();
+        let mut definitions: Vec<Modification<'rules>> = modifications;
         for mandatory in unit_type.traits.mandatory() {
-            if !definitions.iter().any(|t| t.attribute("id") == mandatory.attribute("id")) {
-                definitions.push(Cow::Borrowed(mandatory));
+            if !definitions.iter().filter_map(Modification::as_trait).any(|t| t.attribute("id") == mandatory.attribute("id")) {
+                definitions.push(Modification::Trait(Cow::Borrowed(mandatory)));
             }
         }
-        let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
+        let traits = UnitModifications::from_definitions(unit_type, definitions, base_max_experience);
         let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
         let mut unit = UnitState {
             side,
             id,
             unit_type,
             hitpoints: 0,
-            default_amlas,
+            default_amlas: 0,
             immunities: traits.as_ref().map_or(immunities, |t| immunities.with_traits(&t.stats)),
             poisoned,
             petrified,
@@ -366,13 +365,16 @@ impl<'rules> Battlefield<'rules> {
             return;
         };
 
+        let saved_amlas = unit.traits.iter().flat_map(|mods| &mods.definitions)
+            .filter(|m| matches!(m, Modification::DefaultAdvancement(_))).count();
+
         // Wesnoth limits successive advancements at one action boundary to 20.
         for _ in 0..20 {
             let required = unit.max_experience().max(1);
             if unit.experience < required {
                 break;
             }
-            if unit.unit_type.advances_to.is_empty() && unit.unit_type.default_amla && unit.default_amlas < 100 {
+            if unit.unit_type.advances_to.is_empty() && unit.unit_type.default_amla && saved_amlas + usize::from(unit.default_amlas) < 100 {
                 unit.experience -= required;
                 unit.default_amlas += 1;
                 unit.hitpoints = unit.max_hitpoints();
@@ -395,9 +397,9 @@ impl<'rules> Battlefield<'rules> {
             unit.base_max_experience =
                 scaled_experience(next_type.experience, self.experience_modifier);
             if let Some(traits) = &mut unit.traits {
-                traits.stats = RecruitStats::from_traits_with_base_experience(
+                traits.stats = RecruitStats::from_modifications(
                     next_type,
-                    traits.definitions.iter().map(Cow::as_ref),
+                    traits.definitions.iter().map(Modification::definition),
                     unit.base_max_experience, unit.immunities,
                 );
                 unit.immunities = CombatImmunities::default().with_traits(&traits.stats);
@@ -428,8 +430,9 @@ impl<'rules> Battlefield<'rules> {
         rng: &mut ReplayRng,
     ) -> Result<(), BoardError> {
         self.place_recruit_with(side, type_id, position, |unit_type, base_max_experience| {
-            UnitTraits::from_definitions(
-                unit_type, unit_type.traits.select_for_recruit(rng).into_iter().map(Cow::Borrowed).collect(),
+            UnitModifications::from_definitions(
+                unit_type, unit_type.traits.select_for_recruit(rng).into_iter()
+                    .map(|node| Modification::Trait(Cow::Borrowed(node))).collect(),
                 base_max_experience,
             )
         })
@@ -447,8 +450,8 @@ impl<'rules> Battlefield<'rules> {
             raised.recall_cost = variation.recall_cost;
             raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
             if let Some(traits) = &mut raised.traits {
-                traits.stats = RecruitStats::from_traits_with_base_experience(
-                    variation, traits.definitions.iter().map(Cow::as_ref), raised.base_max_experience, raised.immunities,
+                traits.stats = RecruitStats::from_modifications(
+                    variation, traits.definitions.iter().map(Modification::definition), raised.base_max_experience, raised.immunities,
                 );
                 raised.immunities = CombatImmunities::default().with_traits(&traits.stats);
             }
@@ -461,7 +464,7 @@ impl<'rules> Battlefield<'rules> {
         side: usize,
         type_id: &str,
         position: Hex,
-        select: impl FnOnce(&'rules UnitType, i32) -> Option<UnitTraits<'rules>>,
+        select: impl FnOnce(&'rules UnitType, i32) -> Option<UnitModifications<'rules>>,
     ) -> Result<(), BoardError> {
         let experience_modifier = self.experience_modifier;
         let unit_type = self.unit_type(type_id);
@@ -975,8 +978,7 @@ mod tests {
             [effect]\napply_to=movement\nincrease=1\n[/effect]\n[/trait]").unwrap();
         let types = BTreeMap::from([("Guard".to_owned(), UnitType::from_wml(definition))]);
         let starts = [EAST, WEST].map(|position| AuthoredStartingUnit {
-            traits: Vec::new(),
-            default_amlas: 0,
+            modifications: Vec::new(),
             upkeep: None,
             position: Some(position),
             side: 1,
@@ -1008,6 +1010,78 @@ mod tests {
             assert_eq!(unit.vision_range(), 5);
             assert_eq!(unit.traits().map(|t| t.attribute("id")).collect::<Vec<_>>(), [Some("sturdy")]);
         }
+    }
+
+    #[test]
+    fn recall_and_advancement_keep_ordered_permanent_objects_separate_from_traits() {
+        let unit_types = crate::unit_type::read_unit_types(wml::parse(r#"
+[unit_type]
+    id=Guard
+    hitpoints=20
+    experience=20
+    advances_to=Veteran
+    [attack]
+        name=sword
+        damage=7
+    [/attack]
+[/unit_type]
+[unit_type]
+    id=Veteran
+    hitpoints=30
+    [attack]
+        name=sword
+        damage=10
+    [/attack]
+[/unit_type]"#).unwrap());
+        let scenario = wml::parse(r#"
+[side]
+    no_leader=yes
+    [unit]
+        id=West
+        type=Guard
+        placement=recall
+        hitpoints=9
+        experience=20
+        [modifications]
+            [object]
+                id=armour
+                [effect]
+                    apply_to=hitpoints
+                    increase_total=4
+                [/effect]
+            [/object]
+            [trait]
+                id=resilient
+                [effect]
+                    apply_to=hitpoints
+                    set_total=150%
+                [/effect]
+            [/trait]
+            [object]
+                id=blade
+                duration=forever
+                [effect]
+                    apply_to=attack
+                    name=sword
+                    increase_damage=2
+                [/effect]
+            [/object]
+        [/modifications]
+    [/unit]
+[/side]"#).unwrap();
+        let map = map();
+        let starts = crate::starting_units::read_authored_starting_units(&scenario, &map).unwrap();
+        let mut board = Battlefield::from_authored_starting_units(map, starts, &unit_types, 100).unwrap();
+        let reserve = &board.recall_roster(1)[0];
+        assert_eq!((reserve.hitpoints, reserve.max_hitpoints(), reserve.attack_damage(0)), (9, 36, 9));
+        assert_eq!(reserve.traits().map(|t| t.attribute("id")).collect::<Vec<_>>(), [Some("resilient")]);
+
+        board.place_recall(1, "West", WEST).unwrap();
+        assert_eq!(board.unit_at(WEST).unwrap().hitpoints, 9);
+        board.advance_after_combat(WEST, None, |_| true);
+        let veteran = board.unit_at(WEST).unwrap();
+        assert_eq!(veteran.unit_type.id, "Veteran");
+        assert_eq!((veteran.hitpoints, veteran.max_hitpoints(), veteran.attack_damage(0)), (51, 51, 12));
     }
 
     #[test]
