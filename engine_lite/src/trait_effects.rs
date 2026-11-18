@@ -15,6 +15,7 @@ pub struct RecruitStats {
     pub undrainable: bool,
     pub unslowable: bool,
     pub unpoisonable: bool,
+    pub unplagueable: bool,
     pub fearless: bool,
 }
 
@@ -39,6 +40,7 @@ impl RecruitStats {
             undrainable: false,
             unslowable: false,
             unpoisonable: false,
+            unplagueable: false,
             fearless: false,
         };
         for trait_ in traits {
@@ -105,6 +107,7 @@ impl RecruitStats {
                             "undrainable" => self.undrainable = enabled,
                             "unslowable" => self.unslowable = enabled,
                             "unpoisonable" => self.unpoisonable = enabled,
+                            "unplagueable" => self.unplagueable = enabled,
                             _ => {}
                         }
                     }

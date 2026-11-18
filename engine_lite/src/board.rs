@@ -48,6 +48,8 @@ pub struct UnitState<'rules> {
     pub unit_type: &'rules UnitType,
     pub hitpoints: i32,
     pub poisoned: bool,
+    pub(crate) unplagueable: bool,
+    pub(crate) undead_variation: Option<String>,
     pub(crate) experience: i32,
     pub(crate) slowed: bool,
     uncovered: bool,
@@ -106,6 +108,10 @@ impl UnitState<'_> {
         self.traits.as_ref().is_some_and(|traits| traits.stats.fearless)
     }
 
+    pub(crate) fn is_unplagueable(&self) -> bool {
+        self.unplagueable || self.traits.as_ref().is_some_and(|traits| traits.stats.unplagueable)
+    }
+
     fn attack_damage(&self, index: usize) -> i32 {
         self.traits
             .as_ref()
@@ -130,6 +136,8 @@ impl<'rules> Battlefield<'rules> {
             moves_left: None,
             attacks_left: None,
             poisoned: false,
+            unplagueable: false,
+            undead_variation: None,
             slowed: false,
             uncovered: false,
         });
@@ -161,6 +169,8 @@ impl<'rules> Battlefield<'rules> {
             moves_left,
             attacks_left,
             poisoned,
+            unplagueable,
+            undead_variation,
             slowed,
             uncovered,
         } in starting_units
@@ -186,6 +196,8 @@ impl<'rules> Battlefield<'rules> {
                 unit_type,
                 hitpoints: hitpoints.unwrap_or(max_hp),
                 poisoned,
+                unplagueable,
+                undead_variation,
                 experience,
                 slowed,
                 uncovered,
@@ -230,13 +242,15 @@ impl<'rules> Battlefield<'rules> {
             let [target] = unit.unit_type.advances_to.as_slice() else {
                 break;
             };
-            let Some(next_type) = self.unit_types.get(target).filter(|next| supports_type(next))
+            let Some(next_type) = self.unit_types.get(target)
+                .map(|next| next.variation(&unit.unit_type.variation_id)).filter(|next| supports_type(next))
             else {
                 break;
             };
 
             unit.experience -= required;
             unit.unit_type = next_type;
+            unit.undead_variation = None;
             unit.base_max_experience =
                 scaled_experience(next_type.experience, self.experience_modifier);
             if let Some(traits) = &mut unit.traits {
@@ -278,6 +292,25 @@ impl<'rules> Battlefield<'rules> {
         })
     }
 
+    pub(crate) fn place_plague_unit(
+        &mut self, side: usize, base: &'rules UnitType, victim_variation: &str, position: Hex, rng: &mut ReplayRng,
+    ) {
+        self.place_random_recruit(side, &base.id, position, rng)
+            .expect("validated plague type and newly vacated hex");
+        let raised = self.units.get_mut(&position).expect("just placed plague unit");
+        let variation = base.variation(victim_variation);
+        if variation.variation_id != base.variation_id {
+            raised.unit_type = variation;
+            raised.base_max_experience = scaled_experience(variation.experience, self.experience_modifier);
+            if let Some(traits) = &mut raised.traits {
+                traits.stats = RecruitStats::from_traits_with_base_experience(
+                    variation, &traits.definitions, raised.base_max_experience,
+                );
+            }
+            raised.hitpoints = raised.max_hitpoints();
+        }
+    }
+
     fn place_recruit_with(
         &mut self,
         side: usize,
@@ -301,6 +334,8 @@ impl<'rules> Battlefield<'rules> {
             hitpoints: traits.as_ref().map_or(unit_type.hitpoints, |traits| traits.stats.max_hitpoints),
             poisoned: false,
             experience: 0,
+            unplagueable: false,
+            undead_variation: None,
             base_max_experience,
             slowed: false,
             uncovered: false,
@@ -725,6 +760,8 @@ mod tests {
             attacks_left: None,
             experience: 0,
             poisoned: false,
+            unplagueable: false,
+            undead_variation: None,
             slowed: false,
             uncovered: false,
         });
