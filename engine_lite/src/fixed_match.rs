@@ -281,7 +281,9 @@ impl<'data> FixedMatch<'data> {
             .get(choice.weapon)
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
-        let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to);
+        let attack_leadership = self.leadership_bonus(choice.from, attacker);
+        let defense_leadership = self.leadership_bonus(choice.to, defender);
+        let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to, attack_leadership);
         let offensive_role = StrikeRole::Attack {
             backstab: board.backstabs(choice.from, choice.to, weapon, defender.side),
         };
@@ -296,7 +298,9 @@ impl<'data> FixedMatch<'data> {
                     && within_range(response, distance)
             })
             .map(|(index, response)| {
-                let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
+                let response_modifiers = self.modifiers(
+                    turn, defender, attacker, response, choice.from, defense_leadership,
+                );
                 let attacker_stats = combatant(
                     attacker, choice.weapon, &modifiers, response.parry, offensive_role,
                 );
@@ -315,6 +319,14 @@ impl<'data> FixedMatch<'data> {
         })
     }
 
+    fn leadership_bonus(&self, position: Hex, recipient: &UnitState<'_>) -> i64 {
+        position.neighbors()
+            .filter_map(|hex| self.scenario.board.unit_at(hex))
+            .filter(|unit| unit.side == recipient.side && unit.unit_type.leadership)
+            .map(|unit| i64::from(unit.unit_type.level) - i64::from(recipient.unit_type.level))
+            .max().unwrap_or(0).max(0) * 25
+    }
+
     fn modifiers(
         &self,
         turn: Turn,
@@ -322,6 +334,7 @@ impl<'data> FixedMatch<'data> {
         target: &UnitState<'_>,
         weapon: &WeaponProfile,
         target_hex: Hex,
+        leadership: i64,
     ) -> StrikeModifiers {
         let terrain = self.scenario.board.map().terrain_at(target_hex).expect("unit on map");
         let target_movement = &target.unit_type.movement_type;
@@ -338,7 +351,7 @@ impl<'data> FixedMatch<'data> {
         let schedule = &self.scenario.schedule;
         let lawful_bonus = schedule.at_turn(turn.round).lawful_bonus;
         let alignment = schedule.combat_modifier(lawful_bonus, striker.unit_type.alignment, false);
-        let multiplier = (100 + alignment).saturating_mul(i64::from(damage_taken));
+        let multiplier = (100 + alignment + leadership).saturating_mul(i64::from(damage_taken));
         StrikeModifiers {
             target_hit_chance,
             damage_multiplier: multiplier.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
@@ -921,6 +934,85 @@ Xv,Xv,Xv,Xv"
         assert!(game.scenario.board.unit_at(from).is_none());
         assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 10);
         assert_eq!(game.rng.seed_and_calls(), (5489, 1));
+    }
+
+    #[test]
+    fn strongest_adjacent_same_side_leadership_adds_to_daylight_for_each_striker() {
+        let leader = |id: &str, level: i32| format!(r#"[unit_type]
+            id={id}
+            level={level}
+            [abilities]
+                [leadership]
+                    id=leadership
+                    value="(25 * (level - other.level))"
+                    cumulative=no
+                    affect_self=no
+                    [affect_adjacent]
+                        [filter]
+                            formula="level < other.level"
+                        [/filter]
+                    [/affect_adjacent]
+                [/leadership]
+            [/abilities]
+        [/unit_type]"#);
+        let data = format!(r#"[units]
+            {strong}
+            {weak}
+            {enemy}
+            [unit_type]
+                id=Soldier
+                level=1
+                alignment=lawful
+                hitpoints=40
+                [attack]
+                    range=melee
+                    damage=8
+                    number=1
+                    accuracy=100
+                [/attack]
+            [/unit_type]
+        [/units]
+        [scenario]
+            map_data="Xv,Xv,Xv,Xv,Xv
+Xv,Gg,Gg,Gg,Xv
+Xv,1 Gg,Gg,Gg,Xv
+Xv,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+            [time]
+                id=day
+                lawful_bonus=25
+            [/time]
+            [side]
+                side=1
+                type=Commander
+                [unit]
+                    type=Lieutenant
+                    x,y=2,1
+                [/unit]
+                [unit]
+                    type=Soldier
+                    x,y=2,2
+                [/unit]
+            [/side]
+            [side]
+                side=2
+                type=Marshal
+                [unit]
+                    type=Soldier
+                    x,y=3,2
+                [/unit]
+            [/side]
+        [/scenario]"#,
+            strong = leader("Commander", 3), weak = leader("Lieutenant", 2),
+            enemy = leader("Marshal", 4),
+        );
+        let bundle = crate::scenario_bundle::Bundle::parse(data.as_bytes()).unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let from = Hex { x: 1, y: 1 };
+        let to = Hex { x: 2, y: 1 };
+        game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })).unwrap();
+        assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 24);
+        assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 26);
     }
 
     #[test]
