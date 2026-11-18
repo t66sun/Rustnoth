@@ -113,7 +113,7 @@ fn read_share_vision(cfg: &Node) -> ShareVision {
     }
 }
 
-fn bool_attribute(cfg: &Node, key: &str, default: bool) -> bool {
+pub(crate) fn bool_attribute(cfg: &Node, key: &str, default: bool) -> bool {
     match cfg.attributes.get(key) {
         Some(value) if value.translations.is_empty() => match value.text.as_str() {
             "yes" | "true" => true,
