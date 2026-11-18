@@ -116,6 +116,7 @@ pub struct FixedMatch<'data> {
     rules: Rules<'data>,
     rng: ReplayRng,
     state: MatchState,
+    show_end_report: bool,
     current_round: i32,
     kill_stack: Vec<Hex>,
     village_owners: BTreeMap<Hex, usize>,
@@ -156,6 +157,7 @@ impl<'data> FixedMatch<'data> {
             }
         }
         let mut game = Self {
+            show_end_report: true,
             current_round: scenario.start_round,
             kill_stack: Vec::new(),
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
@@ -230,8 +232,9 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory, next_scenario, gold } => {
+                BoardChange::EndLevel { victory, report, next_scenario, gold } => {
                     if matches!(self.state, MatchState::Playing(_)) {
+                        self.show_end_report = report;
                         for (treasury, settings) in self.scenario.treasuries.iter_mut().zip(gold) {
                             treasury.override_with(settings);
                         }
@@ -303,6 +306,10 @@ impl<'data> FixedMatch<'data> {
         }
         if killed && self.kill_stack.is_empty() { self.check_victory(); }
         Ok(())
+    }
+
+    pub fn show_end_report(&self) -> bool {
+        self.show_end_report && !matches!(self.state, MatchState::Playing(_))
     }
 
     pub fn state(&self) -> MatchState {
