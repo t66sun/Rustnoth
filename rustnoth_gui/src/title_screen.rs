@@ -5,6 +5,7 @@ use engine_lite::wml;
 use macroquad::prelude::*;
 
 mod preferences;
+mod help;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -20,15 +21,17 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Preferences, Quit, Previous, Next }
+enum Command { Campaigns, Multiplayer, Load, Preferences, Quit, Help, Previous, Next }
 
 impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
+            Self::Load => "Load",
             Self::Preferences => "Preferences",
             Self::Quit => "Quit",
+            Self::Help => "Help",
             Self::Previous => "Previous",
             Self::Next => "Next",
         }
@@ -36,8 +39,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Preferences, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -87,6 +90,7 @@ impl TitleScreen {
             set_default_camera();
 
             let command = if is_key_pressed(KeyCode::Escape) { Some(Command::Quit) }
+                else if is_key_pressed(KeyCode::F1) { Some(Command::Help) }
                 else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
                 else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
                 else if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
@@ -96,6 +100,10 @@ impl TitleScreen {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::Previous) => { error = None; tip = (tip + tips.len() - 1) % tips.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % tips.len(); }
+                Some(Command::Load) => {
+                    next_frame().await;
+                    error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
+                }
                 Some(Command::Preferences) => {
                     next_frame().await;
                     let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
@@ -108,7 +116,7 @@ impl TitleScreen {
                     }).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
-                Some(command @ (Command::Campaigns | Command::Multiplayer)) => {
+                Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help)) => {
                     next_frame().await;
                     error = self.open(command, &art).await.err().map(|cause| cause.to_string());
                 }
@@ -137,9 +145,14 @@ impl TitleScreen {
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
-                Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?.run().await
+                let mut browser = Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?;
+                if matches!(&self.games, Games::Installed) {
+                    browser.include_installed_training()?;
+                }
+                browser.run().await
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
+            Command::Help => help::show(&self.root, &data.core, art).await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
@@ -259,6 +272,7 @@ impl Art {
         let mut buttons: Vec<_> = actions.iter().enumerate().map(|(i, action)| (*action,
             Rect::new(menu.x + inset, menu.y + inset + i as f32 * (bh + 10.0), bw, bh))).collect();
         let next = Rect::new(tip.right() - inset - 62.0, bottom - inset - 26.0, 62.0, 26.0);
+        buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
         buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
         buttons.push((Command::Next, next));
         buttons
@@ -320,8 +334,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Preferences, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Preferences, Command::Quit]);
     }
 
     #[test]

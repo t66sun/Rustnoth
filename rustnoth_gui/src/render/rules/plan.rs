@@ -25,26 +25,40 @@ pub(super) struct Tile {
 /// Geometry and terrain come exclusively from the current observation. Unknown neighbors
 /// have no terrain code which could match an authored road, shore or forest.
 pub(super) fn build(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
-    let mut tiles = build_with_flags(catalog, view);
+    sorted(view, build_with_flags(catalog, view))
+}
+
+/// Standalone map export can use the map file's authored border. Gameplay only
+/// supplies terrain that is present in the current side's observation.
+pub(super) fn map_tiles(catalog: &Catalog, view: &Observation, map: &engine_lite::map::ScenarioMap) -> HashMap<Hex, Tile> {
+    sorted(view, apply(catalog, view, |at| map.terrain_at(at)))
+}
+
+fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Tile> {
     tiles.retain(|hex, tile| {
         tile.layers.sort_by_key(|p| (p.layer, p.y));
-        hex.x >= 0
-            && hex.y >= 0
-            && hex.x < view.width
-            && hex.y < view.height
+        hex.x >= -1
+            && hex.y >= -1
+            && hex.x <= view.width
+            && hex.y <= view.height
             && !tile.layers.is_empty()
     });
     tiles
 }
 
 pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
+    apply(catalog, view, |_| None)
+}
+
+fn apply<'a>(catalog: &Catalog, view: &'a Observation, border: impl Fn(Hex) -> Option<&'a str>) -> HashMap<Hex, Tile> {
     let mut groups: BTreeMap<&str, Vec<Hex>> = BTreeMap::new();
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
     }
     for (x, y) in (-2..=view.width).flat_map(|x| (-2..=view.height).map(move |y| (x, y))) {
         if x < 0 || y < 0 || x >= view.width || y >= view.height {
-            groups.entry("_off^_usr").or_default().push(Hex { x, y });
+            let at = Hex { x, y };
+            groups.entry(border(at).unwrap_or("_off^_usr")).or_default().push(at);
         }
     }
     let groups: Vec<_> = groups
@@ -84,6 +98,7 @@ pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
+            if !inside && border(hex).is_none_or(|code| code.starts_with("_off")) { tile.flags.insert("base".into()); }
             tile.flags
                 .insert(if inside { "_board" } else { "_border" }.into());
             (hex, tile)

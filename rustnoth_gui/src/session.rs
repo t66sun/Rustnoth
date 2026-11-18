@@ -16,6 +16,7 @@ pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
     players: Players,
+    history: Vec<crate::save_replay::Event>,
     computer_action: Option<Action>,
     observation: Option<Observation>,
     legal_actions: Vec<Action>,
@@ -28,7 +29,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            dialogue: Default::default(), game, players, observation: None, legal_actions: Vec::new(), computer_action: None,
+            dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
         session
@@ -60,8 +61,10 @@ impl<'rules> Session<'rules> {
         self.dialogue.front()
     }
 
+    pub fn history(&self) -> &[crate::save_replay::Event] { &self.history }
+
     pub fn dismiss_dialogue(&mut self) {
-        self.dialogue.pop_front();
+        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
     }
 
     /// Apply at most one computer command per desktop frame.
@@ -81,6 +84,7 @@ impl<'rules> Session<'rules> {
         if matches!(action, Action::Move { .. }) && self.computer_action.as_ref() == Some(&action) {
             self.computer_action = Some(Action::EndTurn);
         }
+        self.history.push(crate::save_replay::Event::Computer);
         Ok(true)
     }
 
@@ -120,6 +124,15 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {
+        if self.computer_action.is_some() { return Vec::new(); }
+        self.game.attack_previews(from, to)    }
+
+    /// Limit the actions offered by the interface during a scripted tutorial step.
+    pub fn retain_actions(&mut self, allowed: impl FnMut(&Action) -> bool) {
+        self.legal_actions.retain(allowed);
+    }
+
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
         if self.computer_action.is_some() { return Vec::new(); }
         self.game.advancement_choices(position)
@@ -138,10 +151,11 @@ impl<'rules> Session<'rules> {
         if self.computer_action.is_some() || self.dialogue().is_some() {
             return Err(MatchError::ActionUnavailable);
         }
-        let state = match action {
+        let state = match action.clone() {
             Action::Attack(attack) => self.game.attack_with_advancements(attack, attacker, None)?,
             action => self.game.step(action)?,
         };
+        self.history.push(crate::save_replay::Event::Player(action, attacker.map(str::to_owned)));
         self.refresh();
         Ok(state)
     }

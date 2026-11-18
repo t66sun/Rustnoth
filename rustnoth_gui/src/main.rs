@@ -21,16 +21,22 @@ mod desktop;
 mod dialog;
 mod display_preferences;
 mod menu;
+mod recruit_dialog;
+mod map_menus;
 mod render;
 mod setup;
 mod story;
+mod saved_game;
+mod save_dialog;
 mod title_screen;
+mod tutorial;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
 rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
 const PAN_PIXELS_PER_SECOND: f32 = 480.0;
@@ -42,6 +48,19 @@ fn main() -> ExitCode {
     {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+    if args.first().is_some_and(|flag| flag == "--screenshot") {
+        let (map, output, explicit) = match &args[1..] {
+            [map, output] => (map, output, None),
+            [map, output, flag, root] if flag == "--wesnoth-root" => (map, output, Some(Path::new(root))),
+            _ => { eprintln!("{USAGE}"); return ExitCode::FAILURE; }
+        };
+        let result = desktop::locate(explicit).map_err(Box::<dyn Error>::from)
+            .and_then(|root| render::map_png(&root, Path::new(map), Path::new(output)));
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => { eprintln!("{err}"); ExitCode::FAILURE }
+        };
     }
     let launch = match Launch::from_args(&args) {
         Ok(data) => data,
@@ -168,6 +187,9 @@ impl Launch {
 }
 
 struct BoardData {
+    source: Vec<u8>,
+    core: Vec<u8>,
+    restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
     scenario: Bundle,
     story: Vec<story::Part>,
     assets: AssetCatalog,
@@ -191,7 +213,9 @@ impl BoardData {
         let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
         let story = story::read(config, &title);
         Ok(Self {
+            source: source.to_vec(), core: core.to_vec(), restore: None,
             scenario,
+            lesson: None,
             story,
             assets,
             title,
@@ -210,28 +234,102 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
+async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
     let campaign = carryover.is_some();
-    let game = data.scenario.start_campaign(data.seed, |name| fs::read_to_string(data.directory.join(name)), carryover.as_deref_mut())?;
+    let restore = data.restore.take();
+    let mut saved_map = None;
+    let game = data.scenario.start_campaign(data.seed, |name| {
+        let map = match &restore {
+            Some(checkpoint) => checkpoint.map.clone().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,"Saved scenario is missing its external map"))?,
+            None => fs::read_to_string(data.directory.join(name))?,
+        };
+        saved_map = Some(map.clone());
+        Ok(map)
+    }, carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
+    if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut art = render::BoardArt::new(&data.wesnoth_root)?;
-    story::show(&data.story, &data.assets, art.font.as_ref()).await;
+    if let Some(checkpoint) = restore {
+        for event in checkpoint.events { event.apply(&mut session)?; }
+        if let Some(view) = session.observation() {
+            if let Some(hex) = checkpoint.selected { selection.select_own(hex,view); }
+            camera.update(render::board_viewport(),view,false);
+            if let Some(focus) = checkpoint.camera { camera.restore(focus); }
+        }
+    } else {
+        story::show(&data.story, &data.assets, art.font.as_ref()).await;
+    }
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
+    let mut confirmed_recruit = None;
+    let top_art = map_menus::Art::new(&data.wesnoth_root);
+    let mut top_menu = map_menus::State::default();
     loop {
         let dialogue_open = session.dialogue().is_some();
-        if !dialogue_open && is_key_pressed(KeyCode::Escape) {
+        if !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
+            return Ok(None);
+        }
+        let mut commands = map_menus::available(
+            session.objectives().is_some(),
+            session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
+            session.legal_actions(),
+        );
+        if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
+        let top = if dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
+        let input_blocked = dialogue_open || top.handled;
+        if !input_blocked && is_key_pressed(KeyCode::G)
+            && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+                || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
+            match display_preferences::save_grid(!art.show_grid) {
+                Ok(()) => art.show_grid = !art.show_grid,
+                Err(error) => message = Some(format!("Could not save grid preference: {error}")),
+            }
+        }
+        match top.command {
+            Some(map_menus::Command::Quit) => return Ok(None),
+            Some(map_menus::Command::NextUnit) => {
+                if let Some(view) = session.observation() && let Some(hex) = map_menus::next_unit(view, selection.unit()) {
+                    selection.select_own(hex, view);
+                    camera.center_world([hex.x as f32 * 0.75 + 0.5, hex.y as f32 + hex.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
+                    menu = None;
+                }
+            }
+            Some(cmd @ (map_menus::Command::Recruit | map_menus::Command::Recall)) => {
+                if let Some(view) = session.observation()
+                    && let Some(hex) = map_menus::destination(cmd,session.legal_actions(),selection.unit()) {
+                    selection.clear();
+                    let mut options = options_at(&selection,hex,view,session.legal_actions(),&data.assets,|id| session.recall_info(id));
+                    options.retain(|option| matches!((cmd,&option.action),
+                        (map_menus::Command::Recruit,Action::Recruit{..}) | (map_menus::Command::Recall,Action::Recall{..})));
+                    menu = menu::Menu::new(hex, options, |_|Vec::new());
+                }
+            }
+            _ => {}
+        }
+        if !campaign && data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
+            next_frame().await;
+            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
+                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit())) {
+                    Ok(()) => format!("Saved {name}"),
+                    Err(e) => format!("Save failed: {e}"),
+                });
+            }
+            next_frame().await;
+            continue;
+        }
+        if !input_blocked && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
                 return Ok(None);
             }
         }
-        if !dialogue_open && is_mouse_button_pressed(MouseButton::Right) {
+        if !input_blocked && is_mouse_button_pressed(MouseButton::Right) {
             selection.clear();
             menu = None;
             message = None;
@@ -239,9 +337,8 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
         if !dialogue_open && let Some(objectives) = session.objectives() {
-            let opened = render::objectives::hotkey()
-                || (is_mouse_button_pressed(MouseButton::Left)
-                    && render::objectives::button(screen_width(), screen_height()).is_some_and(|r| r.contains(pointer)));
+            let opened = top.command == Some(map_menus::Command::Objectives)
+                || (!input_blocked && render::objectives::hotkey());
             if opened {
                 render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
                 next_frame().await;
@@ -251,7 +348,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
-            if !reset && !dialogue_open {
+            if !reset && !input_blocked {
                 if is_mouse_button_pressed(MouseButton::Left)
                     && let Some(point) = render::minimap_point(observation, pointer)
                 {
@@ -269,12 +366,12 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
-        let computer_acted = session.play_computer_action()?;
+        let computer_acted = !top.handled && session.play_computer_action()?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
         }
-        let clicked = !dialogue_open && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        let clicked = !input_blocked && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
+        if data.lesson.is_none() && !input_blocked && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -282,7 +379,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let next = if campaign && !dialogue_open { session.next_scenario() } else { None };
+        let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
         if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
@@ -290,7 +387,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
             return Ok(Some(id.to_owned()));
         }
-        let menu_action = menu.as_mut().filter(|_| !dialogue_open).and_then(|menu| {
+        let menu_action = menu.as_mut().filter(|_| !input_blocked).and_then(|menu| {
             let area = render::menu_area();
             if is_key_pressed(KeyCode::P)
                 || (clicked && menu.advancement_button(area).is_some_and(|bounds| bounds.contains(pointer)))
@@ -309,7 +406,9 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             }?;
             menu.activate(action)
         });
-        let requested = if !dialogue_open && !computer_acted && can_end
+        let requested = if let Some(action) = confirmed_recruit.take() {
+            Some(action)
+        } else if !input_blocked && !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -330,7 +429,26 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                     |from| session.advancement_choices(from),
                 )
             };
-            movement
+            if let Some(attack_menu) = menu.as_mut()
+                && let Action::Attack(choice) = attack_menu.focused_action()
+            {
+                let previews = session.attack_previews(choice.from, choice.to);
+                let window = render::attack_dialog::AttackDialog::new(observation, previews, &data.assets, &mut art, &data.wesnoth_root);
+                let action = if let Some(window) = window {
+                    window.choose(attack_menu, &data.assets, || {
+                        render::draw(session.state(), Some(observation), camera.layout(), &mut art,
+                            render::MovementView {
+                                global_time: session.global_time_of_day(),
+                                selected: selection.unit(), actions: session.legal_actions(), message: None,
+                                assets: &data.assets, menu: None,
+                            });
+                    }).await
+                } else { None };
+                if action.is_none() { menu = None; }
+                action
+            } else {
+                movement
+            }
         } else {
             None
         };
@@ -343,6 +461,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
             match session.apply_with_advancement(action, advancement) {
                 Ok(_) => {
+                    if let Some(lesson) = &mut data.lesson { lesson.advance(&mut session); }
                     message = None;
                     menu = None;
                     selection.clear();
@@ -353,25 +472,26 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
                         art.load(observation, &data.assets, session.map_item_images());
                     }
                 }
-                Err(error) => message = Some(error.to_string()),
+                Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
         render::draw(
-            &data.title,
             session.state(),
             session.observation(),
             camera.layout(),
             &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
-                has_objectives: session.objectives().is_some(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
                 assets: &data.assets,
-                menu: menu.as_ref(),
+                menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
         );
+        if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
+            lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+        }
         if session.legal_actions().contains(&Action::EndTurn)
             && let Some(bounds) = button
         {
@@ -381,6 +501,17 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
+        }
+        top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        if menu.as_ref().is_some_and(menu::Menu::offers_recruit)
+            && let Some(view) = session.observation()
+            && let Some(choices) = menu.take()
+        {
+            match recruit_dialog::show(&data, choices.options(), view.side).await {
+                recruit_dialog::Result::Recruit(action) => confirmed_recruit = Some(action),
+                recruit_dialog::Result::Recall => menu = choices.into_recall(),
+                recruit_dialog::Result::Cancel => {}
+            }
         }
         if let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);

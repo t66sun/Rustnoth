@@ -20,6 +20,7 @@ use rustnoth_gui::{
 use crate::menu::Menu;
 
 pub mod objectives;
+pub mod attack_dialog;
 mod dialogue;
 pub use dialogue::draw_dialogue;
 mod transitions;
@@ -27,9 +28,12 @@ mod unit_status;
 mod standing;
 mod ground;
 mod rules;
+pub(crate) use rules::map_png;
+mod border;
 mod reach;
 mod hover;
 
+const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -83,6 +87,8 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
+    border_background: Option<Texture2D>,    grid: [Option<Texture2D>; 2],
+    pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     ellipse_colors: Option<TeamColors>,
@@ -142,6 +148,8 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
+            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
+            show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             standing: HashMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
@@ -263,7 +271,6 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
-    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -289,7 +296,6 @@ pub fn menu_area() -> Rect {
 }
 
 pub fn draw(
-    title: &str,
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
@@ -298,13 +304,11 @@ pub fn draw(
 ) {
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
+    if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
     if let (Some(view), Some(layout)) = (observation, layout) {
         draw_board(view, layout, art, &movement);
     }
-    frame::draw(&frame, title, state, observation, layout, art, &movement);
-    if movement.has_objectives && let Some(bounds) = objectives::button(screen_width(), screen_height()) {
-        objectives::draw_button(art, bounds, "Objectives");
-    }
+    frame::draw(&frame, state, observation, layout, art, &movement);
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
@@ -364,7 +368,13 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             draw_centered(overlay, center, size);
         }
         }
-        if flag_frame.is_some() { art.rules.draw(tile.position, center, size, false, tod, now); }
+        if flag_frame.is_some() {
+            art.rules.draw(tile.position, center, size, false, tod, now);
+            if art.show_grid {
+                if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
+                for grid in art.grid.iter().flatten() { draw_centered(grid, center, size); }
+            }
+        }
         if let Some(owner) = tile.village_owner {
             if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
             if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
@@ -417,6 +427,13 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
+    let border_period = movement.global_time.map_or("", |t| t.id.as_str());
+    for hex in border::ring(view.width, view.height) {
+        let [x,y] = layout.tile_origin(hex);
+        let center = vec2(x + size / 2.0, y + size / 2.0);
+        art.rules.draw(hex, center, size, false, border_period, now);
+        art.rules.draw(hex, center, size, true, border_period, now);
+    }
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
@@ -447,8 +464,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
-    if let Some(focus) = &hover { focus.draw(layout, false); }
+    let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
+    if let Some(focus) = &hover_art { focus.draw(layout, false); }
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
@@ -522,7 +539,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat(global_color);
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
-    if let Some(focus) = &hover { focus.draw(layout, true); }
+    if let Some(focus) = &hover_art { focus.draw(layout, true); }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {

@@ -1,5 +1,7 @@
 //! Compile [terrain_graphics] into per-hex sprites from the observed map.
 mod bitmap;
+mod export;
+pub(crate) use export::map_png;
 mod compile;
 pub(super) mod pattern;
 mod plan;
