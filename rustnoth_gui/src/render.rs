@@ -26,6 +26,7 @@ pub use dialogue::draw_dialogue;
 mod transitions;
 mod unit_status;
 mod standing;
+pub(super) mod combat_motion;
 mod ground;
 mod rules;
 pub(crate) use rules::map_png;
@@ -91,6 +92,7 @@ pub struct BoardArt {
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
+    combat_pose: Option<combat_motion::Pose>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
@@ -152,6 +154,7 @@ impl BoardArt {
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             standing: HashMap::new(),
+            combat_pose: None,
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
@@ -496,8 +499,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 ).ok().map(|index| view.tiles[index].terrain.as_str());
                 sprites.frame(direction, terrain, now)
             });
-        if let Some((texture, flipped)) = standing_frame.or_else(|| base.map(|image| (image, standing::west(direction)))) {
-            draw_centered_flipped(texture, center, size, flipped);
+        let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, layout));
+        let (at, attack_frame) = posed.unwrap_or((center, None));
+        if let Some((texture, flipped)) = attack_frame.or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
+            draw_centered_flipped(texture, at, size, flipped);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
         }
@@ -545,6 +550,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     draw_cover(layout, art);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
 }
 
