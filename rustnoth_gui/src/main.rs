@@ -232,6 +232,11 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
             if !reset && !dialogue_open {
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && let Some(point) = render::minimap_point(observation, pointer)
+                {
+                    camera.center_world(point);
+                }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],
