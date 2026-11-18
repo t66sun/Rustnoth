@@ -14,7 +14,7 @@ fn unit_sight(map: &ScenarioMap, rules: &Rules<'_>, origin: Hex, unit: &UnitStat
 impl FixedMatch<'_> {
     pub(super) fn unit_visible_on_known_hex(&self, side: usize, position: Hex) -> bool {
         let sides = &self.scenario.sides;
-        let lawful = self.scenario.schedule.at_turn(self.current_round).lawful_bonus;
+        let lawful = self.lawful_bonus_at(self.current_round, position);
         self.scenario.board.unit_visible_on_known_hex(side, position, lawful, |a, b|
             sides[a - 1].is_enemy(&sides[b - 1])
         )
