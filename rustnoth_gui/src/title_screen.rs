@@ -130,9 +130,10 @@ impl TitleScreen {
                             let change = (|| -> Result<(),Box<dyn Error>> {
                                 let locale = locale::Locale::load(&self.root,id.clone())?;
                                 let translated = tips(&tip_source, &locale)?;
+                                let map = localized_map(&self.root, &locale)?;
                                 let logo = load_texture(&self.root, &locale.logo(&self.root))?;
                                 locale::save(&crate::display_preferences::config_directory()?, &id)?;
-                                art.set_locale(&self.root,locale,logo);
+                                art.set_locale(&self.root,locale,logo,map);
                                 entries = translated;
                                 Ok(())
                             })();
@@ -268,6 +269,17 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     Ok(texture)
 }
 
+fn localized_map(root: &Path, locale: &locale::Locale) -> Result<Texture2D, Box<dyn Error>> {
+    let (base, overlay) = locale.title_map(root);
+    let Some(overlay) = overlay else { return load_texture(root, &base) };
+    let mut pixels = ::image::load_from_memory(&read_file(&root.join(base))?)?.into_rgba8();
+    let names = ::image::load_from_memory(&read_file(&root.join(overlay))?)?.into_rgba8();
+    ::image::imageops::overlay(&mut pixels, &names, 0, 0);
+    let texture = Texture2D::from_rgba8(pixels.width().try_into()?, pixels.height().try_into()?, pixels.as_raw());
+    texture.set_filter(FilterMode::Linear);
+    Ok(texture)
+}
+
 fn load_font(root:&Path,name:&str)->Option<Font> {
     fs::read(root.join("fonts").join(name)).ok().and_then(|bytes|load_ttf_font_from_bytes(&bytes).ok())
 }
@@ -280,7 +292,8 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 }
 
 impl Art {
-    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D) {
+    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+        self.map = map;
         self.logo = logo;
         if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
             (self.font,self.italic)=title_fonts(root,&locale.effective);
@@ -301,11 +314,12 @@ impl Art {
         let texture = |name: &str| load_texture(root, name);
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
+        let map = localized_map(root, &locale)?;
         Ok(Self {
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
-            map: texture("data/core/images/maps/titlescreen.webp")?,
+            map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
             buttons: [texture("images/buttons/button_normal/background.png")?,
                 texture("images/buttons/button_normal/background-active.png")?,
