@@ -1,13 +1,15 @@
 use engine_lite::{fixed_match::Action, hex::Hex};
 use macroquad::prelude::{Rect, Vec2};
 use rustnoth_gui::choices::ActionOption;
+use rustnoth_gui::session::Session;
 
 const ROW_HEIGHT: f32 = 44.0;
 const ROW_STEP: f32 = 49.0;
 
 pub struct Menu {
-    pub target: Hex,
+    pub target: Option<Hex>,
     options: Vec<ActionOption>,
+    confirming_disband: bool,
     focused: usize,
     advancements: Vec<String>,
     advancement: Option<usize>,
@@ -26,7 +28,28 @@ impl Menu {
             Action::Attack(attack) => choices(attack.from),
             _ => Vec::new(),
         };
-        Some(Self { target, options, focused: 0, advancements, advancement: None })
+        Some(Self { target: Some(target), options, focused: 0, advancements, advancement: None, confirming_disband: false })
+    }
+
+    pub fn disband(session: &Session<'_>, unit_name: impl Fn(&str) -> String) -> Option<Self> {
+        let options: Vec<_> = session.legal_actions().iter().filter_map(|action| {
+            let Action::Disband { unit_id } = action else { return None };
+            let unit = session.recall_info(unit_id)?;
+            Some(ActionOption { action: action.clone(), label: format!("{}\n{unit_id}", unit_name(unit.type_id)) })
+        }).collect();
+        if options.is_empty() { return None; }
+        Some(Self { target: None, options, confirming_disband: false, focused: 0, advancements: Vec::new(), advancement: None })
+    }
+
+    pub fn activate(&mut self, action: Action) -> Option<Action> {
+        if matches!(action, Action::Disband { .. }) && !self.confirming_disband {
+            self.options.retain(|option| option.action == action);
+            self.focused = 0;
+            self.options[0].label.push_str("\nEnter to dismiss / Esc to cancel");
+            self.confirming_disband = true;
+            return None;
+        }
+        Some(action)
     }
 
     pub fn preferred_advancement(&self) -> Option<&str> {
@@ -51,7 +74,9 @@ impl Menu {
             Action::Recruit { .. } if self.options.iter().any(|row| matches!(row.action, Action::Recall { .. })) => "Recruit or Recall",
             Action::Recruit { .. } => "Recruit",
             Action::Recall { .. } => "Recall",
-            _ => unreachable!("only attack, recruit and recall actions have a menu"),
+            Action::Disband { .. } if self.confirming_disband => "Confirm dismissal?",
+            Action::Disband { .. } => "Dismiss veteran",
+            _ => unreachable!("moves and end turns have no menu"),
         }
     }
 
@@ -92,6 +117,57 @@ impl Menu {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn dismissal_requires_confirmation_and_refreshes_only_the_current_roster() {
+        let bundle = engine_lite::scenario_bundle::Bundle::parse(br#"
+[units]
+    [unit_type]
+        id=Guard
+        hitpoints=20
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+    [side]
+        type=Guard
+        gold=0
+        [unit]
+            id=my_guard
+            type=Guard
+            placement=recall
+            recall_cost=40
+        [/unit]
+    [/side]
+    [side]
+        type=Guard
+        [unit]
+            id=their_guard
+            type=Guard
+            placement=recall
+        [/unit]
+    [/side]
+[/scenario]"#).unwrap();
+        let mut session = Session::new(bundle.start(7, |_| unreachable!()).unwrap());
+        let mut menu = Menu::disband(&session, str::to_owned).unwrap();
+        assert_eq!(menu.options.len(), 1);
+        assert_eq!(menu.options[0].label, "Guard\nmy_guard");
+        let action = menu.focused_action().clone();
+        assert_eq!(menu.activate(action.clone()), None);
+        assert_eq!(menu.title(), "Confirm dismissal?");
+        drop(menu);
+        let mut reopened = Menu::disband(&session, str::to_owned).unwrap();
+        assert_eq!(reopened.title(), "Dismiss veteran");
+        assert_eq!(reopened.activate(action.clone()), None);
+        session.apply(reopened.activate(action).unwrap()).unwrap();
+        assert!(Menu::disband(&session, str::to_owned).is_none());
+        assert_eq!(session.observation().unwrap().gold, Some(0));
+        session.apply(Action::EndTurn).unwrap();
+        let enemy_menu = Menu::disband(&session, str::to_owned).unwrap();
+        assert_eq!(enemy_menu.options[0].label, "Guard\ntheir_guard");
+    }
 
     #[test]
     fn the_attack_menu_can_choose_its_own_promotion_and_keeps_the_default_for_the_defender() {
