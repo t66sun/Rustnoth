@@ -195,7 +195,7 @@ pub(crate) fn combatant(
     });
     Combatant {
         hitpoints: unit.hitpoints.max(0) as u32,
-        strikes: weapon.strikes.max(0) as u32,
+        strikes: weapon.strikes_at_hp(unit.hitpoints, unit.max_hitpoints()),
         damage: u32::try_from(damage).unwrap_or(u32::MAX),
         hit_chance,
         firststrike: weapon.has_firststrike(),
@@ -265,6 +265,28 @@ mod tests {
             modifiers: StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 },
             retaliation: Some((0, StrikeModifiers { target_hit_chance: 100, damage_multiplier: 10_000 })),
         }
+    }
+
+    #[test]
+    fn swarm_fixes_each_sides_strike_count_from_its_starting_health() {
+        let mut types = unit_types();
+        let fighter = types.get_mut("Fighter").unwrap();
+        fighter.hitpoints = 20;
+        fighter.attacks[0] = WeaponProfile::from_wml(wml::parse(
+            "range=melee\ndamage=1\nnumber=10\n[specials]\n[swarm]\nid=swarm\n[/swarm]\n[/specials]",
+        ).unwrap());
+        let swarm = &fighter.attacks[0];
+        assert!(swarm.supports_specials());
+        assert_eq!(swarm.strikes_at_hp(1, 20), 0);
+        assert_eq!(swarm.strikes_at_hp(22, 20), 10);
+
+        let mut board = board(&types);
+        board.units.get_mut(&ATTACKER).unwrap().hitpoints = 13;
+        board.units.get_mut(&DEFENDER).unwrap().hitpoints = 11;
+        let mut rng = ReplayRng::new(5489);
+        let result = board.apply_attack(1, attack(0), |side| side == 2, &mut rng).unwrap();
+        assert_eq!((result.attacker_hitpoints, result.defender_hitpoints), (8, 5));
+        assert_eq!(rng.seed_and_calls(), (5489, 11));
     }
 
     #[test]
