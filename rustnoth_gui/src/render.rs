@@ -14,6 +14,9 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+mod dialogue;
+pub use dialogue::draw_dialogue;
+
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);

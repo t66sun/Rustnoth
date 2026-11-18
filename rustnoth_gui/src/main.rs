@@ -169,13 +169,15 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
+    let mut dialogue_page = 0;
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        let dialogue_open = session.dialogue().is_some();
+        if !dialogue_open && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
                 return Ok(());
             }
         }
-        if is_mouse_button_pressed(MouseButton::Right) {
+        if !dialogue_open && is_mouse_button_pressed(MouseButton::Right) {
             selection.clear();
             menu = None;
             message = None;
@@ -185,7 +187,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.fit(render::board_viewport(), observation.width, observation.height, reset);
-            if !reset {
+            if !reset && !dialogue_open {
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],
@@ -202,8 +204,8 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
         }
-        let clicked = !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        let clicked = !dialogue_open && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
+        if !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -212,7 +214,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let button = render::end_turn_button(screen_width(), screen_height(), can_end);
-        let menu_action = menu.as_mut().and_then(|menu| {
+        let menu_action = menu.as_mut().filter(|_| !dialogue_open).and_then(|menu| {
             let area = render::menu_area();
             if is_key_pressed(KeyCode::P)
                 || (clicked && menu.advancement_button(area).is_some_and(|bounds| bounds.contains(pointer)))
@@ -231,7 +233,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             }?;
             menu.activate(action)
         });
-        let requested = if !computer_acted && can_end
+        let requested = if !dialogue_open && !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -298,6 +300,15 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         {
             let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
             render::draw_end_turn_button(bounds, highlighted, &art);
+        }
+        if let Some(line) = session.dialogue() {
+            let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
+            if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+                || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
+            {
+                if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
+                else { dialogue_page += 1; }
+            }
         }
         next_frame().await;
     }

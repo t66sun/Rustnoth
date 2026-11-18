@@ -34,6 +34,7 @@ enum EventAction {
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool },
@@ -158,6 +159,9 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize, opening: bool) -> Option<Self> {
+        if tag == "message" {
+            return crate::fixed_match::dialogue::Message::read(cfg).map(|message| Self::Board(BoardChange::Dialogue(message)));
+        }
         if tag == "modify_turns" {
             return TurnLimitChange::read(cfg).map(|change| Self::Board(BoardChange::TurnLimit(change)));
         }

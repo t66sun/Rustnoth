@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub mod audit;
+pub mod dialogue;
 #[cfg(test)]
 mod amla_tests;
 mod illumination;
@@ -113,6 +114,7 @@ pub struct FixedMatch<'data> {
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     side_order: Vec<usize>,
+    dialogue: Vec<(Vec<usize>, dialogue::DialogueLine)>,
     gold: Vec<i64>,
 }
 
@@ -157,6 +159,7 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
+            dialogue: Vec::new(),
             side_order: (1..=side_count).collect(),
             gold,
         };
@@ -191,6 +194,10 @@ impl<'data> FixedMatch<'data> {
         handle(&mut self.scenario.events, &mut state);
         for change in state.board_changes {
             let capture = match change {
+                BoardChange::Dialogue(message) => {
+                    self.queue_dialogue(message);
+                    continue;
+                }
                 BoardChange::TurnLimit(change) => {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
@@ -377,6 +384,7 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
+        self.dialogue.clear();
         let sides = &self.scenario.sides;
         let viewer = &sides[turn.side - 1];
         if (viewer.fog || viewer.shroud || attacker.is_some() || defender.is_some()) && !matches!(action, Action::EndTurn)
