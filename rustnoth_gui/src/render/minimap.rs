@@ -135,6 +135,28 @@ fn paint(image: &mut RgbaImage, rect: Rect, mut sample: impl FnMut(u32, u32) -> 
     }
 }
 
+/// Build the create-game minimap from the public scenario map, before a match exists.
+pub(crate) fn skirmish_preview(root: &Path, assets: &AssetCatalog, map: &engine_lite::map::ScenarioMap, size: f32) -> Option<Texture2D> {
+    use engine_lite::observation::ObservedTile;
+    let mut tiles = Vec::new();
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let position = Hex { x, y };
+            let terrain = map.terrain_at(position)?.to_owned();
+            tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
+        }
+    }
+    let view = Observation { width: map.width(), height: map.height(), side: 1, gold: None,
+        allied_sides: vec![], tiles, units: vec![] };
+    let geometry = Geometry::new(view.width, view.height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
+    let mut art = Art::new(root);
+    art.load(&view, assets);
+    let pixels = raster(&view, &geometry, &art.symbols, None, &HashSet::new());
+    let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
+    texture.set_filter(FilterMode::Nearest);
+    Some(texture)
+}
+
 fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Symbol>,
           colors: Option<&TeamColors>, reachable: &HashSet<Hex>) -> RgbaImage {
     let mut image = RgbaImage::from_pixel(geometry.bounds.w as u32, geometry.bounds.h as u32, UNKNOWN);
