@@ -282,6 +282,9 @@ impl<'data> FixedMatch<'data> {
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
         let modifiers = self.modifiers(turn, attacker, defender, weapon, choice.to);
+        let offensive_role = StrikeRole::Attack {
+            backstab: board.backstabs(choice.from, choice.to, weapon, defender.side),
+        };
         let candidates = defender
             .unit_type
             .attacks
@@ -295,7 +298,7 @@ impl<'data> FixedMatch<'data> {
             .map(|(index, response)| {
                 let response_modifiers = self.modifiers(turn, defender, attacker, response, choice.from);
                 let attacker_stats = combatant(
-                    attacker, choice.weapon, &modifiers, response.parry, StrikeRole::Attack,
+                    attacker, choice.weapon, &modifiers, response.parry, offensive_role,
                 );
                 let defender_stats = combatant(
                     defender, index, &response_modifiers, weapon.parry, StrikeRole::Retaliate(weapon),
