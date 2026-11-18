@@ -585,6 +585,10 @@ impl ScenarioEvents {
         action.0.apply(state, &mut self.items, &mut self.variables, primary);
     }
 
+    pub(crate) fn has_handler(&self, name: &str) -> bool {
+        self.handlers.iter().any(|handler| handler.names.iter().any(|candidate| candidate == name))
+    }
+
     pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
         self.dispatch(name, None, None, state);
     }
