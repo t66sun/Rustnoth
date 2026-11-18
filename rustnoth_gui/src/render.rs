@@ -17,6 +17,7 @@ use crate::menu::Menu;
 pub mod objectives;
 mod dialogue;
 pub use dialogue::draw_dialogue;
+mod transitions;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
@@ -69,6 +70,7 @@ pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
+    transitions: transitions::Transitions,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -118,6 +120,7 @@ impl BoardArt {
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
+            transitions: transitions::Transitions::default(),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -150,6 +153,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.transitions.load(observation, assets);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
@@ -446,12 +450,16 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let layers = &art.terrain[&tile.terrain];
-        if layers.is_empty() {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        if let Some(base) = layers.first() {
+            draw_centered(base, center, size);
         } else {
-            for texture in layers {
-                draw_centered(texture, center, size);
-            }
+            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        }
+        if flag_frame.is_some() {
+            art.transitions.draw(tile.position, center, size);
+        }
+        for overlay in layers.iter().skip(1) {
+            draw_centered(overlay, center, size);
         }
         if let Some(owner) = tile.village_owner {
             if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
