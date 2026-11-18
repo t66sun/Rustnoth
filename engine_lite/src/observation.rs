@@ -31,6 +31,8 @@ pub struct ObservedTile {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ObservedUnit {
+    /// Current on-screen orientation of this visible unit.
+    pub facing: Option<crate::hex::Direction>,
     pub position: Hex,
     pub side: usize,
     pub type_id: String,
@@ -89,6 +91,7 @@ pub fn project(
                 && can_see_other_unit(position))
         {
             units.push(ObservedUnit {
+                facing: unit.facing,
                 position,
                 side: unit.side,
                 type_id: unit.unit_type.id.clone(),
@@ -142,6 +145,7 @@ mod tests {
             r#"
             [side]
                 type=Fighter
+                facing=nw
                 id=own_unit
                 experience=11
             [/side]
@@ -212,6 +216,7 @@ mod tests {
             view.units,
             [
                 ObservedUnit {
+                    facing: Some(crate::hex::Direction::NorthWest),
                     position: OWN,
                     side: 1,
                     type_id: "Fighter".to_owned(),
@@ -228,6 +233,7 @@ mod tests {
                     attacks_left: Some(2),
                 },
                 ObservedUnit {
+                    facing: None,
                     position: SEEN,
                     side: 2,
                     type_id: "Fighter".to_owned(),

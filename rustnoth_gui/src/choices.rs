@@ -159,6 +159,7 @@ Xv,Xv,Xv,Xv,Xv"
             height: 2,
             tiles: Vec::new(),
             units: vec![ObservedUnit {
+                facing: None,
                 can_recruit: false, emits_zoc: true,
                 max_hitpoints: 33, full_action_points: Some(true),
                 position: own,
