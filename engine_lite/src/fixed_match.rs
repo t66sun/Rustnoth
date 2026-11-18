@@ -208,13 +208,18 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::PlaceUnit(unit) => {
                     let side = unit.side;
-                    let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
-                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind.variation(&unit.variation))) {
+                    let recalled = unit.id.as_ref().and_then(|id|
+                        self.scenario.board.recall_roster(side).iter().find(|u| u.id.as_ref() == Some(id))
+                    );
+                    let kind = recalled.map(|veteran| veteran.unit_type)
+                        .or_else(|| self.scenario.board.unit_type(&unit.type_id).map(|kind| kind.variation(&unit.variation)));
+                    if kind.is_some_and(|kind| !supports_unit(kind)) {
                         return Err(MatchError::UnsupportedScenario);
                     }
-                    self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
-                    self.capture_village(side, position)?;
-                    self.update_side_sight(side, false);
+                    if let Some(position) = self.scenario.board.place_event_unit(*unit).map_err(MatchError::OpeningUnit)? {
+                        self.capture_village(side, position)?;
+                        self.update_side_sight(side, false);
+                    }
                     continue;
                 }
                 BoardChange::Terrain { locations, code } => {
@@ -678,7 +683,7 @@ impl fmt::Display for MatchError {
             Self::UnsupportedScenario => f.write_str(
                 "fixed match requires at least two sides in order and supported weapons",
             ),
-            Self::OpeningUnit(error) => write!(f, "could not place an opening event unit: {error}"),
+            Self::OpeningUnit(error) => write!(f, "could not place a scenario event unit: {error}"),
             Self::ActionUnavailable => f.write_str("action is unavailable to the current side"),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),
