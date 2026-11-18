@@ -1,4 +1,4 @@
-//! Build a full-visibility skirmish from a raw multiplayer map and its chosen factions.
+//! Build a skirmish from a raw multiplayer map and its chosen factions.
 
 use std::error::Error;
 
@@ -7,6 +7,30 @@ use crate::{
     starting_units::read_starting_units,
     wml::{self, Node, Value},
 };
+
+/// Map visibility chosen for all sides in a skirmish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Visibility {
+    #[default]
+    Open,
+    Fog,
+    Shroud,
+    FogAndShroud,
+}
+
+impl std::str::FromStr for Visibility {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "open" => Ok(Self::Open),
+            "fog" => Ok(Self::Fog),
+            "shroud" => Ok(Self::Shroud),
+            "both" => Ok(Self::FogAndShroud),
+            _ => Err("visibility must be open, fog, shroud, or both"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Faction {
@@ -51,6 +75,17 @@ pub fn scenario(
     turns: i32,
     sides: &[(&Faction, Option<&str>)],
 ) -> Result<Node, Box<dyn Error>> {
+    scenario_with_visibility(name, map_data, turns, sides, Visibility::Open)
+}
+
+/// Build the same skirmish with the chosen fog and shroud settings on every side.
+pub fn scenario_with_visibility(
+    name: &str,
+    map_data: &str,
+    turns: i32,
+    sides: &[(&Faction, Option<&str>)],
+    visibility: Visibility,
+) -> Result<Node, Box<dyn Error>> {
     if sides.len() < 2 || turns < 1 {
         return Err("a skirmish requires at least two factions and a positive turn limit".into());
     }
@@ -67,6 +102,12 @@ pub fn scenario(
     ] {
         scenario.children.push(("time".into(), attributes(&[("id", id), ("lawful_bonus", bonus)])));
     }
+    let (fog, shroud) = match visibility {
+        Visibility::Open => ("no", "no"),
+        Visibility::Fog => ("yes", "no"),
+        Visibility::Shroud => ("no", "yes"),
+        Visibility::FogAndShroud => ("yes", "yes"),
+    };
     for (index, &(faction, selected_leader)) in sides.iter().enumerate() {
         let number = (index + 1).to_string();
         let leader = match selected_leader {
@@ -78,7 +119,7 @@ pub fn scenario(
         let side = attributes(&[
             ("side", &number), ("team_name", &number), ("faction", &faction.id),
             ("type", leader), ("recruit", &recruits), ("controller", "human"),
-            ("random_traits", "no"), ("fog", "no"), ("shroud", "no"),
+            ("random_traits", "no"), ("fog", fog), ("shroud", shroud),
         ]);
         scenario.children.push(("side".into(), side));
     }
@@ -140,6 +181,27 @@ mod tests {
         let schedule = read_time_schedule(scenario);
         let bonuses: Vec<_> = (1..=7).map(|turn| schedule.at_turn(turn).lawful_bonus).collect();
         assert_eq!(bonuses, [0, 25, 25, 0, -25, -25, 0]);
+    }
+
+    #[test]
+    fn every_side_uses_the_selected_skirmish_visibility() {
+        let faction = faction();
+        let sides = [(&faction, None); 3];
+        for (name, fog, shroud) in [
+            ("open", false, false), ("fog", true, false),
+            ("shroud", false, true), ("both", true, true),
+        ] {
+            let config = scenario_with_visibility("River", MAP, 25, &sides, name.parse().unwrap()).unwrap();
+            let scenario = &config.children[0].1;
+            for (_, side) in scenario.children.iter().filter(|(tag, _)| tag == "side") {
+                assert_eq!(side.attribute("fog"), Some(if fog { "yes" } else { "no" }));
+                assert_eq!(side.attribute("shroud"), Some(if shroud { "yes" } else { "no" }));
+            }
+            let roster = read_sides(scenario);
+            assert_eq!(roster.len(), 3);
+            assert!(roster.iter().all(|side| (side.fog, side.shroud) == (fog, shroud)), "{name}");
+        }
+        assert!("mist".parse::<Visibility>().is_err());
     }
 
     #[test]
