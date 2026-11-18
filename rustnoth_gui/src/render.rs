@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -28,12 +28,42 @@ const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
 const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
 
+#[derive(Debug, PartialEq, Eq)]
+enum Cover {
+    Fog,
+    Shroud,
+}
+
+fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
+    let mut cover = Vec::new();
+    for tile in &view.tiles {
+        if !tile.visible {
+            cover.push((tile.position, Cover::Fog));
+        }
+    }
+    if view.tiles.len() < view.width as usize * view.height as usize {
+        let explored: HashSet<Hex> = view.tiles.iter().map(|tile| tile.position).collect();
+        for y in 0..view.height {
+            for x in 0..view.width {
+                let position = Hex { x, y };
+                if !explored.contains(&position) {
+                    cover.push((position, Cover::Shroud));
+                }
+            }
+        }
+    }
+    cover
+}
+
 pub struct BoardArt {
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
+    fog: Vec<Texture2D>,
+    shroud: Option<Texture2D>,
+    cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
     font: Option<Font>,
 }
@@ -44,6 +74,7 @@ impl BoardArt {
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let palette_path = wesnoth_root.join("data/core/team-colors.cfg");
+        let terrain_dir = wesnoth_root.join("data/core/images/terrain");
         let team_colors = fs::read(&palette_path)
             .and_then(|bytes| TeamColors::parse(&bytes))
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
@@ -54,12 +85,16 @@ impl BoardArt {
             units: BTreeMap::new(),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
+            fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
+            shroud: load_texture(&terrain_dir.join("void/void.png"), None),
+            cover: Vec::new(),
             team_colors,
             font,
         }
     }
 
     pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog) {
+        self.cover = map_cover(observation);
         for tile in &observation.tiles {
             self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
                 assets
@@ -212,6 +247,18 @@ pub fn draw(
             label(&art.font, condition, inset, baseline + 195.0, 13, TEXT);
         }
     }
+    if movement.menu.is_none()
+        && let Some(view) = observation
+    {
+        let top = baseline + 216.0;
+        let available = (height - 104.0 - top).min(168.0);
+        let viewport = Viewport { x: inset, y: top, width: panel_width - 36.0, height: available };
+        if available >= 72.0
+            && let Some(mini) = BoardLayout::fit(view.width, view.height, viewport)
+        {
+            draw_minimap(view, &mini, art);
+        }
+    }
     if let Some(message) = movement.message {
         label(&art.font, message, inset, height - 76.0, 16, ERROR);
     }
@@ -230,7 +277,7 @@ pub fn draw(
     }
 }
 
-fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, min_marker: f32) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
@@ -247,11 +294,52 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_circle(
                 center.x + size * 0.27,
                 center.y - size * 0.26,
-                (size * 0.055).max(2.0),
+                (size * 0.055).max(min_marker),
                 side_color(art.team_colors.as_ref(), owner),
             );
         }
     }
+}
+
+fn draw_minimap(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
+    draw_terrain(view, layout, art, 0.0);
+    let size = layout.tile_size();
+    for unit in &view.units {
+        let [x, y] = layout.tile_origin(unit.position);
+        draw_circle(x + size * 0.5, y + size * 0.5, size * 0.33, side_color(art.team_colors.as_ref(), unit.side));
+    }
+    draw_cover(layout, art);
+}
+
+fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
+    let size = layout.tile_size();
+    for &(hex, ref cover) in &art.cover {
+        let [x, y] = layout.tile_origin(hex);
+        let center = vec2(x + size * 0.5, y + size * 0.5);
+        let texture = match cover {
+            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x as usize + hex.y as usize) % art.fog.len()]),
+            Cover::Fog => None,
+            Cover::Shroud => art.shroud.as_ref(),
+        };
+        if let Some(texture) = texture {
+            draw_centered(texture, center, size);
+        } else {
+            let color = match cover {
+                Cover::Fog => Color::from_rgba(70, 91, 111, 165),
+                Cover::Shroud => BLACK,
+            };
+            let points = [(0.25, 0.0), (0.75, 0.0), (1.0, 0.5), (0.75, 1.0), (0.25, 1.0), (0.0, 0.5)];
+            let vertices = points.map(|(dx, dy)| vec2(x + dx * size, y + dy * size));
+            for i in 0..vertices.len() {
+                draw_triangle(center, vertices[i], vertices[(i + 1) % vertices.len()], color);
+            }
+        }
+    }
+}
+
+fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
+    let size = layout.tile_size();
+    draw_terrain(view, layout, art, 2.0);
     let mut choices = BTreeMap::new();
     for action in movement.actions {
         match action {
@@ -318,6 +406,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             });
         }
     }
+    draw_cover(layout, art);
 }
 
 fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {
@@ -351,6 +440,27 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_cover_follows_the_viewing_side_and_stops_at_the_board_edge() {
+        use engine_lite::observation::ObservedTile;
+
+        let tile = |x, visible| ObservedTile {
+            position: Hex { x, y: 0 },
+            terrain: "Gg".into(),
+            visible,
+            village_owner: None,
+        };
+        let mut view = Observation {
+            side: 1, allied_sides: vec![1], gold: None, width: 3, height: 1,
+            tiles: vec![tile(0, true), tile(2, false)], units: Vec::new(),
+        };
+        assert_eq!(map_cover(&view), [(Hex { x: 2, y: 0 }, Cover::Fog), (Hex { x: 1, y: 0 }, Cover::Shroud)]);
+        view.tiles = vec![tile(0, false), tile(1, true), tile(2, true)];
+        assert_eq!(map_cover(&view), [(Hex { x: 0, y: 0 }, Cover::Fog)]);
+        view.tiles[0].visible = true;
+        assert!(map_cover(&view).is_empty());
+    }
 
     #[test]
     fn board_markers_use_the_native_palette_and_fall_back_for_unlisted_sides() {
