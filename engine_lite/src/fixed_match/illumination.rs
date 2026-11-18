@@ -3,7 +3,7 @@ use crate::hex::Hex;
 
 impl FixedMatch<'_> {
     pub(super) fn lawful_bonus_at(&self, round: i32, position: Hex) -> i32 {
-        let base = self.scenario.schedule.at_turn(round).lawful_bonus;
+        let base = self.scenario.schedule.at_hex(round, position).lawful_bonus;
         if base >= 25 {
             return base;
         }
@@ -18,6 +18,53 @@ impl FixedMatch<'_> {
 mod tests {
     use super::*;
     use crate::{board::AttackChoice, fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn an_attacker_in_a_daytime_area_uses_daylight_against_a_defender_outside_it() {
+        let bundle = Bundle::parse(br#"
+            [units]
+                [unit_type]
+                    id=Fighter
+                    alignment=lawful
+                    hitpoints=40
+                    [attack]
+                        range=melee
+                        damage=8
+                        number=1
+                        accuracy=100
+                    [/attack]
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                [time]
+                    lawful_bonus=-25
+                [/time]
+                [time_area]
+                    x=1
+                    y=1
+                    [time]
+                        lawful_bonus=25
+                    [/time]
+                [/time_area]
+                [side]
+                    side=1
+                    type=Fighter
+                [/side]
+                [side]
+                    side=2
+                    type=Fighter
+                [/side]
+            [/scenario]"#).unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let from = Hex { x: 0, y: 0 };
+        let to = Hex { x: 1, y: 0 };
+        game.step(Action::Attack(AttackChoice { from, to, weapon: 0 })).unwrap();
+        assert_eq!(game.scenario.board.unit_at(to).unwrap().hitpoints, 30);
+        assert_eq!(game.scenario.board.unit_at(from).unwrap().hitpoints, 34);
+    }
 
     #[test]
     fn illumination_applies_once_at_each_striker_and_to_nightstalk() {
