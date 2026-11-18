@@ -37,6 +37,36 @@ pub fn parse(input: &str) -> Result<Vec<Action>, ParseError> {
     Ok(actions)
 }
 
+/// Extracts the original referee's consecutively numbered commands as a replay script.
+pub fn explored_script(native_log: &str, max_commands: usize) -> Result<String, ParseError> {
+    let mut script = String::new();
+    let mut count = 0;
+    for (index, line) in native_log.lines().enumerate() {
+        let Some((category, message)) = line.split_once(": ") else { continue };
+        if category != "info wml" && !category.ends_with(" info wml") {
+            continue;
+        }
+        let (tag, fields) = message.split_at(message.find(char::is_whitespace).unwrap_or(message.len()));
+        if tag != "RUSTNOTH_AUDIT_COMMAND" {
+            continue;
+        }
+        let error = |reason| ParseError { line: index + 1, reason };
+        let (step, command) = fields.strip_prefix(' ').and_then(|rest| rest.split_once('\t'))
+            .ok_or_else(|| error("malformed exploration command marker"))?;
+        if decimal::<usize>(step) != Some(count + 1) {
+            return Err(error("exploration command steps must be consecutive starting at 1"));
+        }
+        if count == max_commands {
+            return Err(error("exploration command limit exceeded"));
+        }
+        parse_action(command).map_err(error)?;
+        script.push_str(command);
+        script.push('\n');
+        count += 1;
+    }
+    Ok(script)
+}
+
 fn parse_action(line: &str) -> Result<Action, &'static str> {
     let fields: Vec<_> = line.split('\t').collect();
     match fields.as_slice() {
@@ -87,6 +117,41 @@ fn decimal<T: FromStr>(field: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_only_commands_logged_by_the_native_wml_driver() {
+        let log = concat!(
+            "info wml: log mentions RUSTNOTH_AUDIT_COMMAND 9\tend_turn\n",
+            "debug wml: RUSTNOTH_AUDIT_COMMAND 9\tend_turn\n",
+            "info wml: RUSTNOTH_AUDIT_COMMAND_SUMMARY ignored\n",
+            "20261118 12:13:14 info wml: RUSTNOTH_AUDIT_COMMAND 1\tmove\t1\t2\t2\t2\r\n",
+            "info wml: RUSTNOTH_AUDIT_COMMAND 2\tattack\t2\t2\t2\t3\t1\n",
+            "info wml: RUSTNOTH_AUDIT_COMMAND 3\trecruit\t3\t2\tHeavy Infantryman\n",
+            "info wml: RUSTNOTH_AUDIT_COMMAND 4\tend_turn",
+        );
+        assert_eq!(explored_script(log, 4).unwrap(), concat!(
+            "move\t1\t2\t2\t2\nattack\t2\t2\t2\t3\t1\n",
+            "recruit\t3\t2\tHeavy Infantryman\nend_turn\n",
+        ));
+        assert_eq!(explored_script("PASS TEST (0): rustnoth_trace", 0).unwrap(), "");
+    }
+
+    #[test]
+    fn rejects_corrupt_or_out_of_budget_exploration_commands_at_the_log_line() {
+        for (suffix, limit, reason) in [
+            ("", 2, "malformed exploration command marker"),
+            ("\t2\tend_turn", 2, "malformed exploration command marker"),
+            (" 2 end_turn", 2, "malformed exploration command marker"),
+            (" 1\tend_turn", 2, "exploration command steps must be consecutive starting at 1"),
+            (" 3\tend_turn", 3, "exploration command steps must be consecutive starting at 1"),
+            (" 2\tmove\t1\t1\t0\t2", 2, "coordinates must be positive 32-bit integers"),
+            (" 2\tend_turn", 1, "exploration command limit exceeded"),
+        ] {
+            let log = format!("info wml: RUSTNOTH_AUDIT_COMMAND 1\tend_turn\nnoise\ninfo wml: RUSTNOTH_AUDIT_COMMAND{suffix}");
+            assert_eq!(explored_script(&log, limit), Err(ParseError { line: 3, reason }));
+        }
+        assert!(explored_script("info wml: RUSTNOTH_AUDIT_COMMAND 2\tend_turn", 3).is_err());
+    }
 
     #[test]
     fn reads_actions_in_order_with_wml_coordinates() {
