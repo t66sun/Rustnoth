@@ -40,6 +40,7 @@ pub(crate) type WmlRectangle = (RangeInclusive<i32>, RangeInclusive<i32>);
 
 #[derive(Clone, Debug)]
 struct TimeArea {
+    id: String,
     locations: Vec<WmlRectangle>,
     cycle: TimeCycle,
 }
@@ -93,6 +94,7 @@ impl TimeSchedule {
 
     pub(crate) fn add_area(
         &mut self,
+        id: String,
         locations: Vec<WmlRectangle>,
         entries: Vec<TimeOfDay>,
         turn_at: i32,
@@ -100,6 +102,7 @@ impl TimeSchedule {
     ) {
         if !entries.is_empty() && !locations.is_empty() {
             self.areas.push(TimeArea {
+                id,
                 locations,
                 cycle: TimeCycle {
                     entries,
@@ -107,6 +110,10 @@ impl TimeSchedule {
                 },
             });
         }
+    }
+
+    pub(crate) fn remove_areas(&mut self, ids: &[String]) {
+        self.areas.retain(|area| !ids.contains(&area.id));
     }
 
     /// Returns the last matching area's time or the global time at this turn.

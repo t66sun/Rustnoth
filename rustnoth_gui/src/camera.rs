@@ -17,7 +17,16 @@ pub struct BoardCamera {
 }
 
 impl BoardCamera {
-    pub fn fit(&mut self, viewport: Viewport, width: i32, height: i32, reset: bool) {
+    pub fn update(&mut self, viewport: Viewport, view: &engine_lite::observation::Observation, reset: bool) {
+        let opening = self.layout.is_none();
+        self.fit(viewport, view.width, view.height, reset);
+        if opening && !reset && let Some(layout) = self.layout.as_mut() {
+            let leader = view.units.iter().find(|unit| unit.side == view.side && unit.can_recruit);
+            *layout = layout.native_scale(leader.map(|unit| unit.position));
+        }
+    }
+
+    fn fit(&mut self, viewport: Viewport, width: i32, height: i32, reset: bool) {
         let fit = (viewport, width, height);
         if !reset && self.last_fit == Some(fit) {
             return;
@@ -75,10 +84,7 @@ impl BoardCamera {
     }
 
     fn contains(&self, [x, y]: [f32; 2]) -> bool {
-        self.last_fit.is_some_and(|(viewport, _, _)| {
-            (viewport.x..viewport.x + viewport.width).contains(&x)
-                && (viewport.y..viewport.y + viewport.height).contains(&y)
-        })
+        self.last_fit.is_some_and(|(viewport, _, _)| viewport.contains([x, y]))
     }
 }
 

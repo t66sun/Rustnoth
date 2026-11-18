@@ -1,3 +1,6 @@
+mod frame;
+use frame::{BattlefieldFrame, FrameArt};
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -14,6 +17,10 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+pub mod objectives;
+mod dialogue;
+pub use dialogue::draw_dialogue;
+mod transitions;
 mod unit_status;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
@@ -28,7 +35,6 @@ const REACHABLE: Color = Color::from_rgba(240, 214, 106, 190);
 const ATTACKABLE: Color = Color::from_rgba(245, 127, 102, 225);
 const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const ERROR: Color = Color::from_rgba(255, 169, 142, 255);
-const HEADER_HEIGHT: f32 = 68.0;
 const ART_HEX_SIZE: f32 = 72.0;
 const FLAG_FRAMES: usize = 4;
 
@@ -64,9 +70,11 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
 }
 
 pub struct BoardArt {
+    frame: FrameArt,
     paths: HashMap<PathBuf, Option<Texture2D>>,
     portraits: HashMap<String, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
+    transitions: transitions::Transitions,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -83,7 +91,7 @@ pub struct BoardArt {
     shroud: Option<Texture2D>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
-    font: Option<Font>,
+    pub(super) font: Option<Font>,
 }
 
 impl BoardArt {
@@ -114,9 +122,11 @@ impl BoardArt {
                 .ok()
         };
         Self {
+            frame: FrameArt::load(wesnoth_root),
             paths: HashMap::new(),
             portraits: HashMap::new(),
             terrain: BTreeMap::new(),
+            transitions: transitions::Transitions::default(),
             units: BTreeMap::new(),
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -150,6 +160,7 @@ impl BoardArt {
             }
         }
         self.cover = map_cover(observation);
+        self.transitions.load(observation, assets);
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
@@ -200,7 +211,7 @@ fn get_texture(cache: &mut HashMap<PathBuf, Option<Texture2D>>, path: PathBuf) -
         .clone()
 }
 
-fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
     load_recolored(path, palette)
 }
 
@@ -221,6 +232,7 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
 
 pub struct MovementView<'a> {
     pub global_time: Option<&'a TimeOfDay>,
+    pub has_objectives: bool,
     pub selected: Option<Hex>,
     pub actions: &'a [Action],
     pub message: Option<&'a str>,
@@ -228,43 +240,21 @@ pub struct MovementView<'a> {
     pub menu: Option<&'a Menu>,
 }
 
-fn sidebar_width(width: f32) -> f32 {
-    (width * 0.23).clamp(148.0, 250.0)
-}
-
 pub fn board_viewport() -> Viewport {
-    Viewport {
-        x: 0.0,
-        y: HEADER_HEIGHT,
-        width: screen_width() - sidebar_width(screen_width()),
-        height: screen_height() - HEADER_HEIGHT,
-    }
+    BattlefieldFrame::new(screen_width(), screen_height()).map
 }
 
 pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Rect> {
-    let left = (width - sidebar_width(width)).max(0.0) + 12.0;
-    let bounds = Rect::new(left, height - 62.0, width - left - 12.0, 46.0);
-    (can_end_turn && bounds.w >= 112.0 && bounds.y >= HEADER_HEIGHT).then_some(bounds)
+    let bounds = BattlefieldFrame::new(width, height).end_turn;
+    (can_end_turn && bounds.w > 0.0 && bounds.h > 0.0).then_some(bounds)
 }
 
-pub fn draw_end_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt) {
-    let (background, outline) = if highlighted {
-        (BUTTON_HIGHLIGHTED, TEXT)
-    } else {
-        (BUTTON, BORDER)
-    };
-    draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, background);
-    draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, outline);
-    let baseline = bounds.y + 28.0;
-    label(&art.font, "End turn", bounds.x + 10.0, baseline, 16, TEXT);
-    let hint_width = measure_text("Space", art.font.as_ref(), 12, 1.0).width;
-    label(&art.font, "Space", bounds.x + bounds.w - hint_width - 10.0, baseline, 12, MUTED);
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str) {
+    frame::turn_button(art, bounds, highlighted, text);
 }
 
 pub fn menu_area() -> Rect {
-    let width = screen_width();
-    let sidebar = sidebar_width(width);
-    Rect::new(width - sidebar + 18.0, 333.0, sidebar - 36.0, (screen_height() - 409.0).max(0.0))
+    BattlefieldFrame::new(screen_width(), screen_height()).menu()
 }
 
 pub fn draw(
@@ -276,101 +266,13 @@ pub fn draw(
     movement: MovementView<'_>,
 ) {
     clear_background(BACKGROUND);
-    let width = screen_width();
-    let height = screen_height();
-    let panel_width = sidebar_width(width);
-    let panel_x = (width - panel_width).max(0.0);
+    let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let (Some(view), Some(layout)) = (observation, layout) {
         draw_board(view, layout, art, &movement);
     }
-    draw_rectangle(0.0, 0.0, width, HEADER_HEIGHT, PANEL);
-    draw_rectangle(panel_x, HEADER_HEIGHT, panel_width, (height - HEADER_HEIGHT).max(0.0), PANEL);
-    draw_line(0.0, HEADER_HEIGHT, width, HEADER_HEIGHT, 1.0, BORDER);
-    draw_line(panel_x, HEADER_HEIGHT, panel_x, height, 1.0, BORDER);
-    let title_space = if let Some(period) = movement.global_time {
-        draw_global_clock(art, period, panel_x, width);
-        panel_x
-    } else {
-        width
-    };
-    header_label(&art.font, title, 24.0, 44.0, 29, TEXT, title_space - 36.0);
-    let inset = panel_x + 18.0;
-    let baseline = HEADER_HEIGHT + 40.0;
-    match state {
-        MatchState::Playing(turn) => {
-            label(&art.font, &format!("Round {}", turn.round), inset, baseline, 25, TEXT);
-            let computer = observation.is_some_and(|view| view.side != turn.side);
-            let controller = if computer { " (computer)" } else { "" };
-            label(&art.font, &format!("Side {}{controller}", turn.side), inset, baseline + 38.0, 19, TEXT);
-            if let Some(gold) = observation.and_then(|view| view.gold) {
-                let label_text = if computer { "Your gold" } else { "Gold" };
-                label(&art.font, &format!("{label_text} {gold}"), inset, baseline + 69.0, 18, MUTED);
-            }
-        }
-        MatchState::Won(side) => {
-            label(&art.font, &format!("Side {side} won"), inset, baseline, 22, TEXT);
-        }
-        MatchState::AlliedVictory(sides) => {
-            let winners = sides.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
-            label(&art.font, &format!("Sides {winners} won"), inset, baseline, 22, TEXT);
-        }
-        MatchState::CampaignVictory => label(&art.font, "Campaign victory", inset, baseline, 22, TEXT),
-        MatchState::CampaignDefeat => label(&art.font, "Campaign defeat", inset, baseline, 22, TEXT),
-        MatchState::Draw => label(&art.font, "Draw", inset, baseline, 22, TEXT),
-    }
-    if let Some(unit) = observation
-        .and_then(|view| view.units.iter().find(|unit| Some(unit.position) == movement.selected))
-    {
-        draw_line(inset, baseline + 93.0, width - 18.0, baseline + 93.0, 1.0, BORDER);
-        let name = movement.assets.unit_name(&unit.type_id).unwrap_or(&unit.type_id);
-        label(&art.font, name, inset, baseline + 116.0, 20, TEXT);
-        let stats = [
-            Some(format!("HP {}", unit.hitpoints)),
-            Some(format!("XP {} / {}", unit.experience, unit.max_experience)),
-            unit.moves_left.map(|moves| format!("Moves {moves}")),
-        ];
-        let mut stats_width = 0.0_f32;
-        for (row, stat) in stats.iter().flatten().enumerate() {
-            label(&art.font, stat, inset, baseline + 138.0 + 20.0 * row as f32, 17, MUTED);
-            stats_width = stats_width.max(measure_text(stat, art.font.as_ref(), 17, 1.0).width);
-        }
-        let space = vec2(panel_width - 44.0 - stats_width, (height - 104.0 - baseline - 120.0).min(60.0));
-        if space.min_element() >= 32.0 {
-            let portrait = art.portraits.entry(unit.type_id.clone()).or_insert_with(|| {
-                let path = movement.assets.unit_portrait(&unit.type_id)?;
-                get_texture(&mut art.paths, path)
-            });
-            let texture = portrait.as_ref()
-                .or_else(|| art.units.get(&unit.type_id)?.get(&unit.side)?.as_ref());
-            if let Some(texture) = texture {
-                let scale = (space.x / texture.width()).min(space.y / texture.height());
-                let size = vec2(texture.width(), texture.height()) * scale;
-                draw_texture_ex(texture, width - 18.0 - size.x, baseline + 120.0, WHITE,
-                    DrawTextureParams { dest_size: Some(size), ..Default::default() });
-            }
-        }
-        let condition = [(unit.poisoned, "Poisoned"), (unit.slowed, "Slowed"), (unit.petrified, "Petrified")]
-            .into_iter().filter_map(|(active, name)| active.then_some(name)).collect::<Vec<_>>().join(", ");
-        if !condition.is_empty() {
-            label(&art.font, &condition, inset, baseline + 195.0, 13, TEXT);
-        }
-    }
-    if movement.menu.is_none()
-        && let Some(view) = observation
-    {
-        let top = baseline + 216.0;
-        let available = (height - 104.0 - top).min(168.0);
-        let viewport = Viewport { x: inset, y: top, width: panel_width - 36.0, height: available };
-        if available >= 72.0
-            && let Some(mini) = BoardLayout::fit(view.width, view.height, viewport)
-        {
-            draw_minimap(view, &mini, art);
-        }
-    }
-    if let Some(message) = movement.message {
-        label(&art.font, message, inset, height - 76.0, 16, ERROR);
-    } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
-        label(&art.font, "Dismiss veteran [D]", inset, height - 76.0, 14, TEXT);
+    frame::draw(&frame, title, state, observation, layout, art, &movement);
+    if movement.has_objectives && let Some(bounds) = objectives::button(screen_width(), screen_height()) {
+        objectives::draw_button(art, bounds, "Objectives");
     }
     if let Some(menu) = movement.menu {
         let area = menu_area();
@@ -409,46 +311,22 @@ pub fn draw(
     }
 }
 
-fn draw_global_clock(art: &BoardArt, period: &TimeOfDay, left: f32, right: f32) {
-    let mut x = left + 12.0;
-    let (name, image) = art.periods.get(period.id.as_str())
-        .map_or((period.id.as_str(), None), |(name, image)| (*name, image.as_ref()));
-    if right - left >= 190.0 && let Some(image) = image {
-        let width = (right - left - 116.0).min(image.width());
-        let height = width * image.height() / image.width();
-        draw_texture_ex(image, x, (HEADER_HEIGHT - height) * 0.5, WHITE, DrawTextureParams {
-            dest_size: Some(vec2(width, height)), ..DrawTextureParams::default()
-        });
-        x += width + 8.0;
-    }
-    let available = right - x - 10.0;
-    header_label(&art.font, name, x, 30.0, 17, TEXT, available);
-    let bonus = format!("Lawful {:+}%", period.lawful_bonus);
-    header_label(&art.font, &bonus, x, 51.0, 15, MUTED, available);
-}
-
-fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, color: Color, width: f32) {
-    if width > 0.0 && !text.is_empty() {
-        let measured = measure_text(text, font.as_ref(), size, 1.0).width;
-        draw_text_ex(text, x, y, TextParams {
-            font: font.as_ref(), font_size: size, font_scale: (width / measured).min(1.0),
-            color, ..TextParams::default()
-        });
-    }
-}
-
 fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>) {
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         let layers = &art.terrain[&tile.terrain];
-        if layers.is_empty() {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        if let Some(base) = layers.first() {
+            draw_centered(base, center, size);
         } else {
-            for texture in layers {
-                draw_centered(texture, center, size);
-            }
+            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+        }
+        if flag_frame.is_some() {
+            art.transitions.draw(tile.position, center, size);
+        }
+        for overlay in layers.iter().skip(1) {
+            draw_centered(overlay, center, size);
         }
         if let Some(owner) = tile.village_owner {
             if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
@@ -705,9 +583,10 @@ mod tests {
     fn end_turn_button_stays_inside_the_sidebar_and_disappears_when_unavailable() {
         for (width, height) in [(1200.0, 820.0), (480.0, 320.0)] {
             let button = end_turn_button(width, height, true).unwrap();
-            assert!(button.x >= width - sidebar_width(width));
+            let frame = BattlefieldFrame::new(width, height);
+            assert!(button.x >= frame.sidebar.x);
             assert!(button.x + button.w < width);
-            assert!(button.y > HEADER_HEIGHT && button.y + button.h < height);
+            assert!(button.y > frame.map.y && button.y + button.h < height);
             assert!(button.contains(vec2(button.x + button.w / 2.0, button.y + button.h / 2.0)));
             assert!(!button.contains(vec2(0.0, button.y + button.h / 2.0)));
             assert!(end_turn_button(width, height, false).is_none());
