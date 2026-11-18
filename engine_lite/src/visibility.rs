@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use crate::hex::Hex;
 use crate::map::ScenarioMap;
-use crate::movement::{reachable_destinations, MovementTile, Occupancy};
+use crate::movement::{reachable_with_teleports, teleport_exits, MovementTile, Occupancy};
 use crate::scenario_sides::{ShareVision, SideConfig};
 use crate::scenario_time::location_ranges;
 
@@ -15,10 +15,20 @@ pub fn sight_from(
     budget: u32,
     cost: impl Fn(&str) -> Option<NonZeroU32>,
 ) -> BTreeSet<Hex> {
+    sight_with_teleports(map, origin, budget, &[], cost)
+}
+
+pub(crate) fn sight_with_teleports(
+    map: &ScenarioMap,
+    origin: Hex,
+    budget: u32,
+    villages: &[Hex],
+    cost: impl Fn(&str) -> Option<NonZeroU32>,
+) -> BTreeSet<Hex> {
     if !map.is_playable(origin) {
         return BTreeSet::new();
     }
-    let reached = reachable_destinations(origin, budget, |hex| {
+    let reached = reachable_with_teleports(origin, budget, villages, |hex| {
         if !map.is_playable(hex) {
             return None;
         }
@@ -32,6 +42,9 @@ pub fn sight_from(
     let mut sight = BTreeSet::from([origin]);
     for hex in std::iter::once(origin).chain(reached.into_keys()) {
         sight.extend(hex.neighbors().filter(|&next| map.is_playable(next)));
+        // Native vision_path includes every tunnel exit in the visible edge,
+        // even when entering that village would exceed the sight budget.
+        sight.extend(teleport_exits(villages, hex));
     }
     sight
 }
