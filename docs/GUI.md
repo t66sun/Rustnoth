@@ -1,5 +1,7 @@
 # 桌面版
 
+双击 `rustnoth_gui` 即可进入原版标题画面。程序会在 Steam 游戏库中寻找 Wesnoth 1.18.8。也可以使用 `rustnoth_gui --wesnoth-root <安装目录>` 或设置 `WESNOTH_ROOT` 指定安装位置。首次进入 Multiplayer 或 Campaigns 时，程序用原版可执行文件预处理规则并保存在当前用户的 Rustnoth 缓存中。安装了《南疆卫队》时，Campaigns 可打开该战役。
+
 桌面版使用 Rust 裁判运行本地对局，支持自由混战和盟军共同获胜。各阵营依次使用同一窗口，棋盘和行动范围由当前阵营的裁判视图决定。启用战争迷雾后，曾探索但当前不可见的地形会变暗；启用黑幕后，未探索的格子会被遮住。地形、精灵、队色和字体从本地 Wesnoth 源码目录读取。
 
 从仓库根目录运行。准备包含 `[scenario]` 的场景包，以及[原版核心规则的预处理文件](PARITY.md)。
@@ -10,6 +12,16 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+### 从原版标题画面开始
+
+```sh
+cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5489
+```
+
+标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
+
+从 **Preferences → Display** 勾选或取消 **Full screen** 可立即切换显示模式。用 Tab 切换焦点，空格或 Enter 确认，Esc 关闭。Rustnoth 会在下次启动时恢复该选择。
+
 ### 在窗口中选择战役场景
 
 给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：
@@ -18,7 +30,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
 ```
 
-列表按战役文件中的顺序显示场景名称和 ID。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。点 Filter 或按 Ctrl+F 可按名称搜索。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
 
 ### 用原版地图建立遭遇战
 

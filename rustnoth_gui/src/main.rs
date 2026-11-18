@@ -17,15 +17,20 @@ use camera::BoardCamera;
 
 mod camera;
 mod campaign_browser;
+mod desktop;
 mod dialog;
+mod display_preferences;
 mod menu;
 mod render;
 mod setup;
 mod story;
+mod title_screen;
 
-const USAGE: &str = "rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
+rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --campaign <campaign.cfg> <maps-dir> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
+rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
 const PAN_PIXELS_PER_SECOND: f32 = 480.0;
@@ -38,14 +43,19 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let launch = match Options::parse(&args).and_then(Launch::load) {
+    let launch = match Launch::from_args(&args) {
         Ok(data) => data,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
+    let fullscreen = display_preferences::load().unwrap_or_else(|err| {
+        eprintln!("Could not read the Rustnoth display preference: {err}");
+        false
+    });
     let configuration = Conf {
+        fullscreen,
         window_title: format!("Rustnoth - {}", launch.title()),
         window_width: 1200,
         window_height: 820,
@@ -54,6 +64,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
+            Launch::Title(title) => title.run(fullscreen).await,
             Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
@@ -76,6 +87,7 @@ struct Options {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Source {
+    Title(Option<(PathBuf, PathBuf)>),
     Campaign { file: PathBuf, maps: PathBuf },
     Bundle(PathBuf),
     Skirmish,
@@ -88,6 +100,10 @@ impl Options {
             _ => (args, PathBuf::from("../wesnoth_src")),
         };
         let (source, core, seed) = match args {
+            [flag, file, maps, core, seed] if flag == "--title" => {
+                (Source::Title(Some((file.into(), maps.into()))), core, seed)
+            }
+            [flag, core, seed] if flag == "--title" => (Source::Title(None), core, seed),
             [flag, file, maps, core, seed] if flag == "--campaign" => {
                 (Source::Campaign { file: file.into(), maps: maps.into() }, core, seed)
             }
@@ -104,15 +120,31 @@ impl Options {
 }
 
 enum Launch {
+    Title(title_screen::TitleScreen),
     Campaign(campaign_browser::Browser),
     Board(BoardData),
     Skirmish(setup::Setup),
 }
 
 impl Launch {
+    fn from_args(args: &[OsString]) -> Result<Self, Box<dyn Error>> {
+        let explicit = match args {
+            [] => None,
+            [flag, path] if flag == "--wesnoth-root" => Some(Path::new(path)),
+            _ => return Options::parse(args).and_then(Self::load),
+        };
+        let root = desktop::locate(explicit)?;
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u32;
+        Ok(Self::Title(title_screen::TitleScreen { root, seed, games: title_screen::Games::Installed }))
+    }
+
     fn load(options: Options) -> Result<Self, Box<dyn Error>> {
         let core = read_file(&options.core)?;
         match options.source {
+            Source::Title(campaign) => Ok(Self::Title(title_screen::TitleScreen {
+                games: title_screen::Games::Prepared(desktop::GameData { campaign, core }),
+                root: options.wesnoth_root, seed: options.seed,
+            })),
             Source::Campaign { file, maps } => Ok(Self::Campaign(campaign_browser::Browser::load(
                 &file, maps, core, options.wesnoth_root, options.seed,
             )?)),
@@ -127,6 +159,7 @@ impl Launch {
 
     fn title(&self) -> &str {
         match self {
+            Self::Title(_) => "The Battle for Wesnoth",
             Self::Campaign(_) => "Campaign scenarios",
             Self::Board(data) => &data.title,
             Self::Skirmish(_) => "Skirmish",
@@ -183,7 +216,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
-    let mut art = render::BoardArt::new(&data.wesnoth_root);
+    let mut art = render::BoardArt::new(&data.wesnoth_root)?;
     story::show(&data.story, &data.assets, art.font.as_ref()).await;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
@@ -208,7 +241,7 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
         if !dialogue_open && let Some(objectives) = session.objectives() {
             let opened = render::objectives::hotkey()
                 || (is_mouse_button_pressed(MouseButton::Left)
-                    && render::objectives::button(screen_width()).is_some_and(|r| r.contains(pointer)));
+                    && render::objectives::button(screen_width(), screen_height()).is_some_and(|r| r.contains(pointer)));
             if opened {
                 render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
                 next_frame().await;
@@ -219,6 +252,11 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
             if !reset && !dialogue_open {
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && let Some(point) = render::minimap_point(observation, pointer)
+                {
+                    camera.center_world(point);
+                }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],
@@ -338,11 +376,11 @@ async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mu
             && let Some(bounds) = button
         {
             let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
-            render::draw_turn_button(bounds, highlighted, &art, "End turn", "Space");
+            render::draw_turn_button(bounds, highlighted, &art, "End Turn");
         } else if campaign && session.next_scenario().is_some()
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
-            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue", "Enter");
+            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         if let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
@@ -409,6 +447,7 @@ mod tests {
             tiles: Vec::new(),
             units: vec![ObservedUnit {
                 can_recruit: false, emits_zoc: true,
+                max_hitpoints: 33, full_action_points: Some(true),
                 position: start, side: 1, type_id: "Bowman".into(),
                 experience: 0, max_experience: 35,
                 hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),
