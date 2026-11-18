@@ -45,7 +45,7 @@ impl KillAction {
     }
 
     pub(crate) fn matches_recall(&self, unit: &UnitState<'_>) -> bool {
-        self.on_recall && self.victims.matches_fields(unit.side, unit.id.as_deref(), &unit.unit_type.id)
+        self.on_recall && self.victims.matches_fields(None, unit.side, unit.id.as_deref(), &unit.unit_type.id)
     }
 
     pub(crate) fn matches_killer(&self, position: Hex, unit: &UnitState<'_>) -> bool {
