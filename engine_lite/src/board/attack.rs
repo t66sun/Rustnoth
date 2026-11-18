@@ -118,6 +118,7 @@ impl Battlefield<'_> {
 
     pub(crate) fn remove_casualty(&mut self, position: Hex) {
         self.units.remove(&position);
+        self.resting.remove(&position);
     }
 
     /// Commit the exchange, retaining the dying unit for the scenario's die event.
