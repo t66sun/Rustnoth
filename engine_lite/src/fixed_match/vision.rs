@@ -1,17 +1,28 @@
-use super::{FixedMatch, Rules};
+use super::FixedMatch;
 use crate::{
     board::{MoveError, UnitState},
     hex::Hex,
-    map::ScenarioMap,
-    visibility::{HexVisibility, VisibilityMask, sight_from},
+    visibility::{HexVisibility, VisibilityMask, sight_with_teleports},
 };
 use std::collections::BTreeSet;
 
-pub(super) fn unit_sight(map: &ScenarioMap, rules: &Rules<'_>, origin: Hex, unit: &UnitState<'_>) -> BTreeSet<Hex> {
-    sight_from(map, origin, unit.vision_range(), |terrain| Some(rules.sight_cost(unit, terrain)))
-}
-
 impl FixedMatch<'_> {
+    pub(super) fn unit_sight(&self, from: Hex, origin: Hex, viewer: &UnitState<'_>) -> BTreeSet<Hex> {
+        let board = &self.scenario.board;
+        // On a pass through an ally, native vision_path uses the tunnel ability of
+        // the unit at the sight origin, with the moving viewer's range and costs.
+        let (teleporter, occupied_village) = match board.unit_at(origin) {
+            Some(unit) => (unit, origin),
+            None => (viewer, from),
+        };
+        // The stock WFL unit_at(loc) predicate sees real occupants, including
+        // in shroud, while evaluating the village network for the referee.
+        let villages = self.teleport_villages(occupied_village, teleporter, |_| true, |_| true);
+        sight_with_teleports(board.map(), origin, viewer.vision_range(), &villages, |terrain| {
+            Some(self.rules.sight_cost(viewer, terrain))
+        })
+    }
+
     pub(super) fn unit_visible_on_known_hex(&self, side: usize, position: Hex) -> bool {
         let sides = &self.scenario.sides;
         let lawful = self.lawful_bonus_at(self.current_round, position);
@@ -53,8 +64,8 @@ impl FixedMatch<'_> {
             return;
         }
         let board = &self.scenario.board;
-        let sight = board.units().filter(|(_, unit)| unit.side == side)
-            .flat_map(|(hex, unit)| unit_sight(board.map(), &self.rules, hex, unit));
+        let sight: BTreeSet<_> = board.units().filter(|(_, unit)| unit.side == side)
+            .flat_map(|(hex, unit)| self.unit_sight(hex, hex, unit)).collect();
         if reset_fog {
             self.vision[side - 1].replace_sight(sight);
         } else {
@@ -67,7 +78,8 @@ impl FixedMatch<'_> {
         if let Some(unit) = board.unit_at(position) {
             let side = &self.scenario.sides[unit.side - 1];
             if side.fog || side.shroud {
-                let seen = route.into_iter().flat_map(|hex| unit_sight(board.map(), &self.rules, hex, unit));
+                let seen: BTreeSet<_> = route.into_iter()
+                    .flat_map(|hex| self.unit_sight(position, hex, unit)).collect();
                 self.vision[unit.side - 1].add_sight(seen);
             }
         }
