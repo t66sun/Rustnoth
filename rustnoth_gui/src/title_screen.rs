@@ -6,7 +6,7 @@ use macroquad::prelude::*;
 
 mod preferences;
 mod help;
-mod locale;
+pub(crate) mod locale;
 mod languages;
 mod credits;
 mod community;
@@ -399,7 +399,7 @@ impl Art {
     }
 }
 
-fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
+pub(crate) fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
     let mut lines = Vec::new();
     let space = measure_text(" ", font, 16, 1.0).width;
     for paragraph in text.lines() {

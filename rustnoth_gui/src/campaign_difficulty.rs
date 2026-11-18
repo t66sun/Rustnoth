@@ -10,15 +10,15 @@ struct Choice<'a> {
     image: Option<&'a str>,
 }
 
-fn options(cfg: &Node) -> (Vec<Choice<'_>>, usize) {
+fn options<'a>(cfg: &'a Node, locale: &mut super::Locale, root: &std::path::Path) -> (Vec<Choice<'a>>, usize) {
     let mut choices = Vec::new();
     let mut cursor = 0;
     for (_, item) in cfg.children.iter().filter(|(tag, _)| tag == "difficulty") {
         let Some(define) = item.attribute("define") else {
             continue;
         };
-        let label = plain(item.attribute("label").unwrap_or(define));
-        let desc = plain(item.attribute("description").unwrap_or_default());
+        let label = plain(&locale.attribute(root, item, "label", define));
+        let desc = plain(&locale.attribute(root, item, "description", ""));
         let description = if desc.is_empty()
             || matches!(item.attribute("auto_markup"), Some("no" | "false"))
             || matches!(item.attribute("old_markup"), Some("yes" | "true"))
@@ -41,7 +41,7 @@ fn options(cfg: &Node) -> (Vec<Choice<'_>>, usize) {
 }
 
 pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
-    let (choices, mut cursor) = options(cfg);
+    let (choices, mut cursor) = options(cfg, &mut art.locale, &art.roots[0]);
     if choices.len() <= 1 {
         return Some(choices.first().map_or("NORMAL", |c| c.define).to_owned());
     }
@@ -76,9 +76,9 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
         let width = (w - 32.0).min(580.0);
         let bounds = Rect::new((w - width) * 0.5, (h - height) * 0.5, width, height);
         art.window(bounds);
-        art.label("Difficulty", bounds.x + 13.0, bounds.y + 31.0, 25, GOLD);
+        art.label(art.locale.ui("Difficulty"), bounds.x + 13.0, bounds.y + 31.0, 25, GOLD);
         art.label(
-            "Select difficulty:",
+            art.locale.ui("Select difficulty:"),
             bounds.x + 13.0,
             bounds.y + 58.0,
             17,
@@ -139,7 +139,7 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
         }
         let cancel = Rect::new(bounds.right() - 118.0, bounds.bottom() - 46.0, 103.0, 33.0);
         let play = Rect::new(cancel.x - 111.0, cancel.y, 103.0, 33.0);
-        art.button(play, "Play", pointer);
+        art.button(play, "game^Play", pointer);
         art.button(cancel, "Cancel", pointer);
         set_default_camera();
         if is_key_pressed(KeyCode::Escape) || click && cancel.contains(pointer) {
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn native_labels_order_and_default_survive_selection_without_rewriting_the_macro() {
         let cfg=engine_lite::wml::parse("[difficulty]\ndefine=BEGINNER\nlabel=Scout\ndescription=Easy\nimage=units/scout.png\n[/difficulty]\n[difficulty]\ndefine=HARD\ndefault=yes\nlabel=Captain\ndescription=Veteran\nold_markup=yes\n[/difficulty]").unwrap();
-        let (list, index) = options(&cfg);
+        let (list, index) = options(&cfg, &mut super::super::Locale::default(), std::path::Path::new(""));
         assert_eq!(
             (
                 list[0].label.as_str(),

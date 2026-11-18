@@ -74,7 +74,7 @@ impl Browser {
 
     pub(super) async fn run(self) -> Result<(), Box<dyn Error>> {
         let scenarios: Vec<_> = campaign::scenarios(&self.campaign).collect();
-        let mut selector = selector::Selector::new(&self.root, &self.campaign, &scenarios);
+        let mut selector = selector::Selector::new(&self.root, &self.campaign, &scenarios)?;
         selector.campaigns_only = !self.installed.is_empty();
 
         let mut error: Option<String> = None;
