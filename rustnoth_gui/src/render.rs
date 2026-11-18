@@ -16,6 +16,7 @@ use crate::menu::Menu;
 
 mod transitions;
 mod ground;
+mod rules;
 
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
@@ -70,6 +71,7 @@ pub struct BoardArt {
     terrain: BTreeMap<String, Vec<Texture2D>>,
     transitions: transitions::Transitions,
     ground: ground::Ground,
+    rules: rules::Rules,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
@@ -119,6 +121,7 @@ impl BoardArt {
             terrain: BTreeMap::new(),
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
+            rules: rules::Rules::default(),
             units: BTreeMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
             flag_colors: palette(TeamColors::parse_flags),
@@ -150,6 +153,7 @@ impl BoardArt {
         }
         self.cover = map_cover(observation);
         self.transitions.load(observation, assets);
+        self.rules.load(assets, observation);
         for tile in &observation.tiles {
             self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
@@ -423,11 +427,13 @@ fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, colo
     }
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<usize>, tod: &str) {
+    let now = (get_time() * 1000.0) as u64;
     let size = layout.tile_size();
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
+        if flag_frame.is_none() || !art.rules.has_base(tile.position) {
         let layers = &art.terrain[&tile.terrain];
         let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
         if let Some(base) = ground.or_else(|| layers.first()) {
@@ -441,6 +447,8 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         for overlay in layers.iter().skip(1) {
             draw_centered(overlay, center, size);
         }
+        }
+        if flag_frame.is_some() { art.rules.draw(tile.position, center, size, false, tod, now); }
         if let Some(owner) = tile.village_owner {
             if let Some(flag) = flag_frame.and_then(|index| art.flags.get(&owner)?[index].as_ref()) {
                 draw_centered(flag, center, size);
@@ -458,7 +466,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
 }
 
 fn draw_minimap(view: &Observation, layout: &BoardLayout, art: &BoardArt) {
-    draw_terrain(view, layout, art, None);
+    draw_terrain(view, layout, art, None, "");
     let size = layout.tile_size();
     for unit in &view.units {
         let [x, y] = layout.tile_origin(unit.position);
@@ -496,7 +504,8 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let frame = village_flag_frame((get_time() * 1000.0) as u64);
-    draw_terrain(view, layout, art, Some(frame));
+    let period = movement.global_time.map_or("", |t| t.id.as_str());
+    draw_terrain(view, layout, art, Some(frame), period);
     for (position, texture) in &art.map_items {
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
@@ -567,6 +576,11 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 ..DrawTextureParams::default()
             });
         }
+    }
+    let now = (get_time() * 1000.0) as u64;
+    for tile in &view.tiles {
+        let [x, y] = layout.tile_origin(tile.position);
+        art.rules.draw(tile.position, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now);
     }
     draw_cover(layout, art);
 }

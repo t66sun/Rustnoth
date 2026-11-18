@@ -11,6 +11,7 @@ use engine_lite::wml::{self, Node};
 #[derive(Debug, Default)]
 pub struct AssetCatalog {
     image_dirs: Vec<PathBuf>,
+    terrain_rules: Vec<Node>,
     fallback: PathBuf,
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
@@ -36,6 +37,7 @@ impl AssetCatalog {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
                         if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
                             && !path.contains("..") && safe_relative_path(Path::new(path))
@@ -55,6 +57,10 @@ impl AssetCatalog {
         catalog.read_definitions(&document);
         Ok(catalog)
     }
+
+    pub fn terrain_rules(&self) -> &[Node] { &self.terrain_rules }
+
+    pub fn image_roots(&self) -> &[PathBuf] { &self.image_dirs }
 
     /// Returns the original sprite path of a unit type.
     pub fn unit_image(&self, id: &str) -> Option<PathBuf> {
