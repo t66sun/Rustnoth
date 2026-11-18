@@ -1,4 +1,4 @@
-use std::{fmt::Write, io};
+use std::{fmt::{Display, Write}, io};
 
 use crate::{
     fixed_match::Action,
@@ -90,8 +90,19 @@ pub fn generate_for_sides(
     Ok(NativeScript { events, lua })
 }
 
-fn event(name: String, group: usize) -> Node {
-    let code = format!("wesnoth.require('~add-ons/RustnothAudit/script.lua').run({group})");
+pub(crate) fn generate_exploration(limit: usize, seed: u32) -> NativeScript {
+    let mut refresh = event("turn refresh".to_owned(), false);
+    refresh.attributes.insert("first_time_only".to_owned(), value("no".to_owned()));
+    let time_over = event("time over".to_owned(), true);
+    let driver = include_str!("native_explore_driver.lua");
+    NativeScript {
+        events: vec![refresh, time_over],
+        lua: format!("local seed = {seed}\nlocal limit = {limit}\n{driver}"),
+    }
+}
+
+fn event(name: String, argument: impl Display) -> Node {
+    let code = format!("wesnoth.require('~add-ons/RustnothAudit/script.lua').run({argument})");
     Node {
         attributes: [("name".to_owned(), value(name))].into(),
         children: vec![(

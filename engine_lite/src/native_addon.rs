@@ -20,7 +20,36 @@ pub fn install(
     seed: u32,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<(), Box<dyn Error>> {
-    let (document, script) = prepare(bundle, actions, seed, read_map_file)?;
+    install_driver(run_dir, bundle, Driver::Script(actions), seed, read_map_file)
+}
+
+/// Run the supplied native chooser until it reaches an action limit or the match ends.
+/// The chooser module returns a function of the seed, next step and actions taken this turn.
+pub fn install_exploration(
+    run_dir: &Path,
+    source: &[u8],
+    limit: usize,
+    seed: u32,
+    chooser_lua: &str,
+    read_map_file: impl FnOnce(&str) -> io::Result<String>,
+) -> Result<(), Box<dyn Error>> {
+    install_driver(run_dir, source, Driver::Explore { limit, chooser_lua }, seed, read_map_file)
+}
+
+#[derive(Clone, Copy)]
+enum Driver<'a> {
+    Script(&'a [Action]),
+    Explore { limit: usize, chooser_lua: &'a str },
+}
+
+fn install_driver(
+    run_dir: &Path,
+    bundle: &[u8],
+    driver: Driver<'_>,
+    seed: u32,
+    read_map_file: impl FnOnce(&str) -> io::Result<String>,
+) -> Result<(), Box<dyn Error>> {
+    let (document, script) = prepare(bundle, driver, seed, read_map_file)?;
     let mut config = Vec::new();
     wml_emit::write_config(&mut config, &document)?;
 
@@ -28,6 +57,9 @@ pub fn install(
     fs::create_dir_all(&addon)?;
     fs::write(addon.join("actions.lua"), native_actions::LUA_SOURCE)?;
     fs::write(addon.join("capture.lua"), native_capture::LUA_SOURCE)?;
+    if let Driver::Explore { chooser_lua, .. } = driver {
+        fs::write(addon.join("choice.lua"), chooser_lua)?;
+    }
     fs::write(addon.join("script.lua"), script)?;
     fs::write(addon.join("_main.cfg"), config)?;
     Ok(())
@@ -35,7 +67,7 @@ pub fn install(
 
 fn prepare(
     bundle: &[u8],
-    actions: &[Action],
+    driver: Driver<'_>,
     seed: u32,
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
 ) -> Result<(Node, String), Box<dyn Error>> {
@@ -69,7 +101,10 @@ fn prepare(
 
     let first_round = integer(scenario, "turn_at").unwrap_or(1);
     let last_round = integer(scenario, "turns").filter(|&turns| turns != -1);
-    let script = native_script::generate_for_sides(actions, first_round, last_round, &sides)?;
+    let script = match driver {
+        Driver::Script(actions) => native_script::generate_for_sides(actions, first_round, last_round, &sides)?,
+        Driver::Explore { limit, .. } => native_script::generate_exploration(limit, seed),
+    };
     let map = scenario_map::read_data(scenario, read_map_file)?.into_owned();
 
     *tag = "test".to_owned();
@@ -117,6 +152,47 @@ mod tests {
     const MAP: &str = "Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv";
 
     #[test]
+    fn installs_the_bounded_chooser_with_repeating_refresh_and_terminal_draw_hooks() {
+        let bundle = br#"
+            [scenario]
+                map_file=test.map
+                [side]
+                [/side]
+                [side]
+                [/side]
+            [/scenario]
+        "#;
+        let chooser = "return function() return {'end_turn'} end";
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("rustnoth-explore-{}-{nonce}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        install_exploration(&root, bundle, 4, 123, chooser, |name| {
+            assert_eq!(name, "test.map");
+            Ok(MAP.to_owned())
+        }).unwrap();
+        let addon = root.join("userdata/data/add-ons/RustnothAudit");
+        let config = wml::parse(fs::read(addon.join("_main.cfg")).unwrap()).unwrap();
+        let installed_choice = fs::read_to_string(addon.join("choice.lua")).unwrap();
+        let driver = fs::read_to_string(addon.join("script.lua")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(installed_choice, chooser);
+        assert!(driver.starts_with("local seed = 123\nlocal limit = 4\n"));
+        assert!(driver.contains("local command = choose(seed, step, turn_action_count)"));
+        let scenario = &config.children[0].1;
+        assert_eq!(scenario.attribute("map_data"), Some(MAP));
+        let events: Vec<_> = scenario.children.iter().filter(|(tag, _)| tag == "event").collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].1.attribute("name"), Some("turn refresh"));
+        assert_eq!(events[0].1.attribute("first_time_only"), Some("no"));
+        assert_eq!(events[1].1.attribute("name"), Some("time over"));
+        for (event, time_over) in events.iter().zip([false, true]) {
+            let code = event.1.children[0].1.attribute("code").unwrap();
+            assert!(code.ends_with(&format!(".run({time_over})")));
+        }
+    }
+
+    #[test]
     fn packages_the_third_side_before_the_final_round_ends() {
         let bundle = br#"
             [scenario]
@@ -137,7 +213,7 @@ mod tests {
         "#;
         let (document, script) = prepare(
             bundle,
-            &[Action::EndTurn, Action::EndTurn, Action::EndTurn],
+            Driver::Script(&[Action::EndTurn, Action::EndTurn, Action::EndTurn]),
             0,
             |filename| {
                 assert_eq!(filename, "three.map");
@@ -205,7 +281,7 @@ mod tests {
         );
         let (document, script) = prepare(
             bundle.as_bytes(),
-            &[Action::EndTurn, Action::EndTurn],
+            Driver::Script(&[Action::EndTurn, Action::EndTurn]),
             0x12ab_0005,
             |_| panic!("inline map should not read a file"),
         )
@@ -256,7 +332,7 @@ mod tests {
                 [/side]
             [/scenario]
         "#;
-        let (document, _) = prepare(bundle, &[], 0, |filename| {
+        let (document, _) = prepare(bundle, Driver::Script(&[]), 0, |filename| {
             assert_eq!(filename, "shared.map");
             Ok(MAP.to_owned())
         })
@@ -274,7 +350,7 @@ mod tests {
     #[test]
     fn rejects_ambiguous_bundle_blocks_before_reading_maps() {
         let bundle = b"[units]\n[/units]\n[units]\n[/units]\n[scenario]\n[/scenario]";
-        let error = prepare(bundle, &[], 0, |_| unreachable!()).unwrap_err();
+        let error = prepare(bundle, Driver::Script(&[]), 0, |_| unreachable!()).unwrap_err();
         assert_eq!(error.to_string(), "duplicate [units] blocks");
     }
 
@@ -293,7 +369,7 @@ mod tests {
                 [/side]
             [/scenario]
         "#;
-        let error = prepare(bundle, &[], 0, |_| unreachable!()).unwrap_err();
+        let error = prepare(bundle, Driver::Script(&[]), 0, |_| unreachable!()).unwrap_err();
         assert_eq!(error.to_string(), "native audit expected side 2 at roster position 2");
     }
 }
