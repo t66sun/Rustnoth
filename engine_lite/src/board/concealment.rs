@@ -1,20 +1,11 @@
 use super::Battlefield;
-use crate::{hex::Hex, turn::Turn};
+use crate::hex::Hex;
 
 impl Battlefield<'_> {
     /// Mark a spotted unit as uncovered. Returns true if its status changed.
     pub fn uncover_unit(&mut self, position: Hex) -> bool {
         self.units.get_mut(&position)
             .is_some_and(|unit| !std::mem::replace(&mut unit.uncovered, true))
-    }
-
-    pub(crate) fn refresh_concealment(&mut self, turn: Turn) {
-        // Scenario-authored status survives the first round's side turns.
-        if turn.round > 1 {
-            for unit in self.units.values_mut().filter(|unit| unit.side == turn.side) {
-                unit.uncovered = false;
-            }
-        }
     }
 
     /// Whether a unit on a hex already in the viewer's sight can be observed.
@@ -42,7 +33,7 @@ impl Battlefield<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{map::ScenarioMap, unit_type::read_unit_types, wml};
+    use crate::{map::ScenarioMap, turn::Turn, unit_type::read_unit_types, wml};
 
     const HIDING: Hex = Hex { x: 1, y: 0 };
     const NEIGHBOR: Hex = Hex { x: 2, y: 0 };
