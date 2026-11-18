@@ -42,6 +42,10 @@ impl FixedMatch<'_> {
     }
 
     pub(super) fn refog(&mut self, side: usize) {
+        self.update_side_sight(side, true);
+    }
+
+    pub(super) fn update_side_sight(&mut self, side: usize, reset_fog: bool) {
         let settings = &self.scenario.sides[side - 1];
         if !settings.fog && !settings.shroud {
             return;
@@ -49,7 +53,11 @@ impl FixedMatch<'_> {
         let board = &self.scenario.board;
         let sight = board.units().filter(|(_, unit)| unit.side == side)
             .flat_map(|(hex, unit)| unit_sight(board.map(), &self.rules, hex, unit));
-        self.vision[side - 1].replace_sight(sight);
+        if reset_fog {
+            self.vision[side - 1].replace_sight(sight);
+        } else {
+            self.vision[side - 1].add_sight(sight);
+        }
     }
 
     pub(super) fn reveal_travelled_hexes(&mut self, position: Hex, route: impl IntoIterator<Item = Hex>) {
@@ -68,6 +76,54 @@ impl FixedMatch<'_> {
 mod tests {
     use super::*;
     use crate::{fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn authored_exploration_persists_and_saved_sight_resets_on_the_viewers_turn() {
+        let bundle = Bundle::parse(br#"
+[units]
+    [unit_type]
+        id=Scout
+        hitpoints=10
+        movement=4
+        vision=0
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+    [side]
+        side=1
+        type=Scout
+        fog=yes
+        shroud=yes
+        shroud_data="|0|0|0|0|01"
+        fog_data="|0|0|0|0|01"
+    [/side]
+    [side]
+        side=2
+        type=Scout
+        fog=yes
+        shroud=yes
+        shroud_data="|0|0|01"
+        fog_data="|0|0|01|01"
+    [/side]
+[/scenario]
+"#).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let tile = |game: &FixedMatch<'_>, side, wml_x| {
+            game.observation_for(side).unwrap().tiles.into_iter()
+                .find(|tile| tile.position == Hex::from_wml(wml_x, 1).unwrap())
+                .map(|tile| tile.visible)
+        };
+        assert_eq!(tile(&game, 1, 4), Some(false));
+        assert_eq!(tile(&game, 2, 2), Some(true));
+        assert_eq!(tile(&game, 2, 3), None);
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(tile(&game, 2, 2), Some(false));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(tile(&game, 1, 4), Some(false));
+    }
 
     #[test]
     fn hidden_units_and_terrain_stay_out_of_decisions_while_exploration_survives_refog() {

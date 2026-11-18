@@ -70,6 +70,17 @@ impl VisibilityMask {
         }
     }
 
+    pub(crate) fn from_side(map: &ScenarioMap, side: &SideConfig) -> Self {
+        let mut mask = Self::new(map.width(), map.height(), side.fog, side.shroud);
+        if side.fog {
+            mask.sight = read_cleared_tiles(&side.fog_data, map);
+        }
+        if side.shroud {
+            mask.explored = read_cleared_tiles(&side.shroud_data, map);
+        }
+        mask
+    }
+
     /// Updates current sight and preserves the terrain uncovered by earlier sight.
     pub fn replace_sight(&mut self, sight: impl IntoIterator<Item = Hex>) {
         self.sight.clear();
@@ -132,6 +143,20 @@ impl VisibilityMask {
     }
 }
 
+fn read_cleared_tiles(data: &str, map: &ScenarioMap) -> BTreeSet<Hex> {
+    let mut cleared = BTreeSet::new();
+    // Each pipe starts a WML column. Column zero and row zero are border cells.
+    for (x, column) in data.split('|').skip(2).take(map.width() as usize).enumerate() {
+        let bits = column.bytes().filter(|&b| matches!(b, b'0' | b'1'));
+        for (y, bit) in bits.skip(1).take(map.height() as usize).enumerate() {
+            if bit == b'1' {
+                cleared.insert(Hex { x: x as i32, y: y as i32 });
+            }
+        }
+    }
+    cleared
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +165,23 @@ mod tests {
     const LEFT: Hex = Hex { x: 0, y: 0 };
     const RIGHT: Hex = Hex { x: 1, y: 0 };
     const BORDER: Hex = Hex { x: 2, y: 0 };
+
+    #[test]
+    fn shroud_data_uses_wml_columns_and_independent_exploration_without_fog() {
+        let map = ScenarioMap::parse("Xv,Xv,Xv,Xv\nXv,Gg,Gg,Xv\nXv,Gg,Gg,Xv\nXv,Xv,Xv,Xv").unwrap();
+        let sides = read_sides(&wml::parse(r#"
+[side]
+    shroud=yes
+    shroud_data="junk1|111|1 0 1 1|0
+10|111"
+    fog_data="|111|111|111"
+[/side]
+"#).unwrap());
+        let mask = VisibilityMask::from_side(&map, &sides[0]);
+        assert_eq!(mask.explored, BTreeSet::from([Hex { x: 0, y: 1 }, Hex { x: 1, y: 0 }]));
+        assert_eq!(mask.at(Hex { x: 0, y: 1 }), Some(HexVisibility::Visible));
+        assert_eq!(mask.at(Hex { x: 0, y: 0 }), Some(HexVisibility::Shrouded));
+    }
 
     #[test]
     fn sight_reveals_the_front_of_a_costly_or_impassable_tile() {
