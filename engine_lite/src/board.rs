@@ -393,7 +393,8 @@ impl<'rules> Battlefield<'rules> {
             let terrain_healing =
                 self.map.terrain_at(hex).map_or(0, |code| terrain.features(code).healing);
             let rest_healing = if self.resting.contains(&hex) { REST_HEALING } else { 0 };
-            let healing = i64::from(terrain_healing) + rest_healing;
+            let healing = i64::from(terrain_healing.max(unit.unit_type.regeneration))
+                + i64::from(terrain_healing.min(0)) + rest_healing;
             let hitpoints = i64::from(unit.hitpoints);
             let max_heal = (i64::from(unit.max_hitpoints()) - hitpoints).max(0);
             let min_heal = (1 - hitpoints).min(0);
@@ -551,6 +552,28 @@ mod tests {
             (recruit.hitpoints, recruit.moves_left, recruit.attacks_left),
             (36, 5, 2)
         );
+    }
+
+    #[test]
+    fn regeneration_uses_the_strongest_healing_source_before_rest() {
+        let config = wml::parse("id=Troll\nhitpoints=40\n[abilities]\n[regenerate]\n\
+            id=regenerates\nvalue=8\naffect_self=yes\npoison=cured\n[/regenerate]\n[/abilities]").unwrap();
+        let types = BTreeMap::from([("Troll".to_owned(), UnitType::from_wml(config))]);
+        let starts = [EAST, WEST].map(|position| StartingUnit {
+            position, side: 1, id: None, type_id: "Troll".into(), can_recruit: false,
+        });
+        let mut board = Battlefield::new(map(), starts.into(), &types).unwrap();
+        let terrain = |value| TerrainAliases::from_wml(&wml::parse(format!(
+            "[terrain_type]\nid=keep\nstring=Kh\nheals={value}\n[/terrain_type]"
+        )).unwrap());
+        for (terrain_hp, expected) in [(0, 18), (8, 18), (12, 22), (-3, 15)] {
+            board.resting.clear();
+            board.resting.insert(WEST);
+            for unit in board.units.values_mut() { unit.hitpoints = 10; }
+            board.heal_at_turn_start(1, &terrain(terrain_hp));
+            assert_eq!(board.unit_at(EAST).unwrap().hitpoints, expected);
+            assert_eq!(board.unit_at(WEST).unwrap().hitpoints, expected + 2);
+        }
     }
 
     #[test]
