@@ -39,6 +39,7 @@ mod plague;
 mod kill;
 mod retaliation;
 pub mod attack_preview;
+pub mod combat_display;
 pub mod move_preview;
 pub mod unit_report;
 
@@ -419,7 +420,7 @@ impl<'data> FixedMatch<'data> {
     }
 
     pub fn step(&mut self, action: Action) -> Result<MatchState, MatchError> {
-        self.step_with_choices(action, None, None, None)
+        self.step_with_choices(action, None, None, None, None)
     }
 
     /// Supported next types of an active-side unit, in WML declaration order.
@@ -441,17 +442,18 @@ impl<'data> FixedMatch<'data> {
     pub fn attack_with_advancements(
         &mut self, attack: AttackChoice, attacker: Option<&str>, defender: Option<&str>,
     ) -> Result<MatchState, MatchError> {
-        self.step_with_choices(Action::Attack(attack), attacker, defender, None)
+        self.step_with_choices(Action::Attack(attack), attacker, defender, None, None)
     }
 
     /// Execute this side's movement once, recording the reached route for presentation.
     pub fn move_with_trace(&mut self, from: Hex, to: Hex, trace: &mut Vec<Hex>) -> Result<MatchState, MatchError> {
         trace.clear();
-        self.step_with_choices(Action::Move { from, to }, None, None, Some(trace))
+        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(trace))
     }
 
     fn step_with_choices(
         &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
+        display: Option<(usize, &mut Option<combat_display::VisibleCombat>)>,
         movement_trace: Option<&mut Vec<Hex>>,
     ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
@@ -481,7 +483,7 @@ impl<'data> FixedMatch<'data> {
                     }
                 }
                 let defender_side = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?.side;
-                if self.apply_scenario_attack(turn, attack)? {
+                if self.apply_scenario_attack(turn, attack, display)? {
                     let board = &mut self.scenario.board;
                     board.advance_after_combat(choice.from, attacker, supports_unit);
                     board.advance_after_combat(choice.to, defender, supports_unit);
@@ -573,26 +575,42 @@ impl<'data> FixedMatch<'data> {
         Ok(true)
     }
 
-    fn settle_income(&mut self, turn: Turn) {
-        if turn.round <= 1 {
-            return;
-        }
-
+    fn side_costs(&self, side: usize) -> (usize, i32) {
         let villages = self
             .village_owners
             .values()
-            .filter(|&&side| side == turn.side)
+            .filter(|&&owner| owner == side)
             .count();
         let upkeep = self
             .scenario
             .board
             .units()
-            .filter(|(_, unit)| unit.side == turn.side)
+            .filter(|(_, unit)| unit.side == side)
             .map(|(_, unit)| unit.upkeep())
             .sum();
+        (villages, upkeep)
+    }
+
+    pub fn economy_for(&self, view: &crate::observation::Observation) -> Option<crate::income::EconomyReport> {
+        let side = self.scenario.sides.get(view.side.checked_sub(1)?)?;
+        let (villages, upkeep) = self.side_costs(view.side);
+        let known_villages = view.tiles.iter().filter(|tile| self.rules.terrain.features(&tile.terrain).village).count();
+        Some(crate::income::EconomyReport {
+            villages, known_villages, upkeep,
+            expenses: crate::income::expenses(side, villages, upkeep),
+            income: net_income(side, DEFAULT_BASE_INCOME, villages, upkeep),
+            last_round: self.scenario.last_round,
+        })
+    }
+
+    fn settle_income(&mut self, turn: Turn) {
+        if turn.round <= 1 {
+            return;
+        }
+
+        let (villages, upkeep) = self.side_costs(turn.side);
         let index = turn.side - 1;
-        let side = &self.scenario.sides[index];
-        self.gold[index] += net_income(side, DEFAULT_BASE_INCOME, villages, upkeep);
+        self.gold[index] += net_income(&self.scenario.sides[index], DEFAULT_BASE_INCOME, villages, upkeep);
     }
 
     fn prepare_attack(&self, turn: Turn, choice: AttackChoice) -> Result<Attack, AttackError> {

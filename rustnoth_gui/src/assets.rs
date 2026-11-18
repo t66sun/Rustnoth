@@ -32,6 +32,7 @@ struct UnitAssets {
     ellipse: String,
     bars: UnitBars,
     standing: Vec<Node>,
+    combat: Vec<(String, Node)>,
     moving: Vec<Node>,
 }
 
@@ -69,6 +70,15 @@ impl UnitBars {
 impl AssetCatalog {
     /// Reads core definitions before custom scenario definitions.
     pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_config(wesnoth_root, core, bundle, true)
+    }
+
+    /// Load presentation metadata for the map and leader previews in multiplayer setup.
+    pub fn for_setup(root: &Path, core: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_config(root, core, &[], false)
+    }
+
+    fn from_config(wesnoth_root: &Path, core: &[u8], bundle: &[u8], terrain_graphics: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut prefixes = BTreeSet::from([String::new(), "data/core".into()]);
         let mut catalog = Self::default();
         let mut units = Node::default();
@@ -79,6 +89,7 @@ impl AssetCatalog {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
                     "terrain_type" => document.children.push((tag, node)),
+                    "terrain_graphics" if !terrain_graphics => {},
                     "terrain_graphics" if is_core => core_graphics.push(node),
                     "terrain_graphics" => catalog.terrain_rules.push(node),
                     "binary_path" => {
@@ -92,7 +103,7 @@ impl AssetCatalog {
                 }
             }
         }
-        if core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
+        if terrain_graphics && core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
             core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
         }
         catalog.terrain_rules.extend(core_graphics);
@@ -103,6 +114,10 @@ impl AssetCatalog {
         catalog.fallback = wesnoth_root.join("data/core/images");
         catalog.read_definitions(&document);
         Ok(catalog)
+    }
+
+    pub fn combat_animations(&self, id: &str) -> &[(String, Node)] {
+        self.units.get(id).map_or(&[], |unit| &unit.combat)
     }
 
     pub fn movement_animations(&self, id: &str) -> &[Node] {
@@ -246,6 +261,8 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
+                            combat: unit.children.iter().filter(|(tag, _)| matches!(tag.as_str(), "attack_anim" | "defend"))
+                                .cloned().collect(),
                             moving: unit.children.iter().filter(|(tag, _)| tag == "movement_anim")
                                 .map(|(_, definition)| definition.clone()).collect(),
                             standing: unit.children.iter().filter(|(tag, _)| tag == "standing_anim")

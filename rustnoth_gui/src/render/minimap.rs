@@ -55,7 +55,7 @@ struct Symbol {
     village: bool,
 }
 
-pub(super) struct Art {
+pub(crate) struct Art {
     mask: Option<RgbaImage>,
     symbols: HashMap<String, Symbol>,
     texture: Option<Texture2D>,
@@ -63,13 +63,13 @@ pub(super) struct Art {
 }
 
 impl Art {
-    pub(super) fn new(root: &Path) -> Self {
+    pub(crate) fn new(root: &Path) -> Self {
         let mask = image::open(root.join("data/core/images/terrain/alphamask.png"))
             .ok().map(|image| image.to_rgba8());
         Self { mask, symbols: HashMap::new(), texture: None, selected: None }
     }
 
-    pub(super) fn load(&mut self, view: &Observation, assets: &AssetCatalog) {
+    pub(crate) fn load(&mut self, view: &Observation, assets: &AssetCatalog) {
         self.texture = None;
         for tile in &view.tiles {
             self.symbols.entry(tile.terrain.clone()).or_insert_with(|| {
@@ -95,15 +95,20 @@ impl Art {
 
     pub(super) fn draw(&mut self, view: &Observation, area: Viewport, viewport: Viewport,
                        layout: Option<&BoardLayout>, colors: Option<&TeamColors>, movement: &MovementView<'_>) {
+        self.draw_map(view, area, viewport, layout, colors, movement.selected, movement.actions);
+    }
+
+    pub(crate) fn draw_map(&mut self, view: &Observation, area: Viewport, viewport: Viewport,
+                       layout: Option<&BoardLayout>, colors: Option<&TeamColors>, selected: Option<Hex>, actions: &[engine_lite::fixed_match::Action]) {
         let Some(geometry) = Geometry::new(view.width, view.height, area) else { return };
         draw_rectangle(area.x, area.y, area.width, area.height, Color::from_rgba(31, 31, 23, 255));
         let bounds = geometry.bounds;
-        if self.selected != movement.selected || !self.texture.as_ref().is_some_and(|t| t.width() == bounds.w && t.height() == bounds.h) {
-            self.selected = movement.selected;
+        if self.selected != selected || !self.texture.as_ref().is_some_and(|t| t.width() == bounds.w && t.height() == bounds.h) {
+            self.selected = selected;
             let mut reachable = HashSet::new();
-            if let Some(selected) = movement.selected {
+            if let Some(selected) = selected {
                 reachable.insert(selected);
-                for action in movement.actions {
+                for action in actions {
                     if let engine_lite::fixed_match::Action::Move { from, to } = action && *from == selected {
                         reachable.insert(*to);
                     }
@@ -133,6 +138,28 @@ fn paint(image: &mut RgbaImage, rect: Rect, mut sample: impl FnMut(u32, u32) -> 
             image.get_pixel_mut(x, y).blend(&sample(sx.min(SAMPLE - 1), sy.min(SAMPLE - 1)));
         }
     }
+}
+
+/// Build the create-game minimap from the public scenario map, before a match exists.
+pub(crate) fn skirmish_preview(root: &Path, assets: &AssetCatalog, map: &engine_lite::map::ScenarioMap, size: f32) -> Option<Texture2D> {
+    use engine_lite::observation::ObservedTile;
+    let mut tiles = Vec::new();
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let position = Hex { x, y };
+            let terrain = map.terrain_at(position)?.to_owned();
+            tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
+        }
+    }
+    let view = Observation { width: map.width(), height: map.height(), side: 1, gold: None,
+        allied_sides: vec![], tiles, units: vec![] };
+    let geometry = Geometry::new(view.width, view.height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
+    let mut art = Art::new(root);
+    art.load(&view, assets);
+    let pixels = raster(&view, &geometry, &art.symbols, None, &HashSet::new());
+    let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
+    texture.set_filter(FilterMode::Nearest);
+    Some(texture)
 }
 
 fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Symbol>,

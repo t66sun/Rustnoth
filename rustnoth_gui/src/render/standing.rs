@@ -19,10 +19,10 @@ pub(super) fn west(direction: Direction) -> bool {
     matches!(direction, Direction::SouthWest | Direction::NorthWest)
 }
 
-struct Frame {
-    path: String,
-    end_ms: u64,
-    auto_hflip: bool,
+pub(super) struct Frame {
+    pub(super) path: String,
+    pub(super) end_ms: u64,
+    pub(super) auto_hflip: bool,
 }
 
 struct Cycle {
@@ -157,6 +157,10 @@ fn hflip(node: &Node, default: bool) -> bool {
 }
 
 fn append_frame(frames: &mut Vec<Frame>, frame: &Node, parent_flip: bool) -> Option<()> {
+    append_sprite_frame(frames, frame, parent_flip, false)
+}
+
+pub(super) fn append_sprite_frame(frames: &mut Vec<Frame>, frame: &Node, parent_flip: bool, allow_blit: bool) -> Option<()> {
     let images = pattern::expand(frame.attribute("image")?);
     if images.is_empty() {
         return None;
@@ -180,7 +184,8 @@ fn append_frame(frames: &mut Vec<Frame>, frame: &Node, parent_flip: bool) -> Opt
             Some((path, ms)) => (path, Some(ms.parse::<u64>().ok()?)),
             None => (image.as_str(), None),
         };
-        if !path.ends_with(".png") || path.contains(['~', '$']) {
+        let base = path.split('~').next()?;
+        if !base.ends_with(".png") || path.contains('$') || path.contains('~') && !allow_blit {
             return None;
         }
         specified_ms = specified_ms.checked_add(time.unwrap_or(0))?;
