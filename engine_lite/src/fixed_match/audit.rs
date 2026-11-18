@@ -12,6 +12,8 @@ pub struct Snapshot {
     pub state: MatchState,
     /// Gold in ascending side order, starting with side 1.
     pub gold: Vec<i64>,
+    /// Reserves in side and recall-list order.
+    pub reserves: Vec<Vec<ReserveUnit>>,
     /// Units in hex order.
     pub units: Vec<SnapshotUnit>,
     /// Owned village hexes and their owners in hex order.
@@ -44,6 +46,15 @@ impl SnapshotView {
             rows: rows.into_iter().map(|row| row.into_iter().collect()).collect(),
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ReserveUnit {
+    pub type_id: String,
+    pub hitpoints: i32,
+    pub experience: i32,
+    pub cost: i32,
+    pub traits: Vec<String>,
 }
 
 /// Comparable values for a unit on the referee board.
@@ -85,6 +96,15 @@ impl FixedMatch<'_> {
         Snapshot {
             state: self.state(),
             gold: self.gold.clone(),
+            reserves: self.scenario.sides.iter().map(|side| {
+                self.scenario.board.recall_roster(side.side).iter().map(|unit| ReserveUnit {
+                    type_id: unit.unit_type.id.clone(),
+                    hitpoints: unit.hitpoints,
+                    experience: unit.experience,
+                    cost: unit.recall_cost(side.recall_cost),
+                    traits: unit.traits().map(|t| t.attribute("id").unwrap_or_default().to_owned()).collect(),
+                }).collect()
+            }).collect(),
             units: self
                 .scenario
                 .board
@@ -170,6 +190,7 @@ mod tests {
         let snapshot = Snapshot {
             state: MatchState::Draw,
             gold: vec![0, 9],
+            reserves: Vec::new(),
             units,
             villages: vec![(Hex { x: 0, y: 0 }, 1)],
             views: vec![SnapshotView::from_observation(observation)],

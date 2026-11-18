@@ -26,6 +26,16 @@ pub fn write_snapshot(mut out: impl Write, step: usize, snapshot: &Snapshot) -> 
     for (index, amount) in snapshot.gold.iter().enumerate() {
         writeln!(out, "gold\t{}\t{amount}", index + 1)?;
     }
+    for (side, roster) in snapshot.reserves.iter().enumerate() {
+        for (slot, unit) in roster.iter().enumerate() {
+            write!(out, "reserve\t{}\t{}\t{}\t{}\t{}\t{}", side + 1, slot + 1,
+                escape_id(&unit.type_id), unit.hitpoints, unit.experience, unit.cost)?;
+            for id in &unit.traits {
+                write!(out, "\t{}", escape_id(id))?;
+            }
+            writeln!(out)?;
+        }
+    }
     for unit in &snapshot.units {
         let (x, y) = wml_position(unit.position)?;
         let type_id = escape_id(&unit.type_id);
@@ -98,18 +108,22 @@ fn wml_position(hex: Hex) -> io::Result<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{fixed_match::audit::SnapshotUnit, turn::Turn};
+    use crate::{fixed_match::audit::{ReserveUnit, SnapshotUnit}, turn::Turn};
 
     #[test]
     fn writes_a_playing_frame_with_wml_coordinates_and_escaped_type_ids() {
         let snapshot = Snapshot {
             state: MatchState::Playing(Turn { round: 7, side: 2 }),
             gold: vec![-4, 17],
+            reserves: vec![vec![ReserveUnit {
+                type_id: "Steel Guard".into(), hitpoints: 17, experience: 5, cost: 13,
+                traits: vec!["loyal".into()],
+            }]],
             units: vec![
                 SnapshotUnit {
                     position: Hex { x: 0, y: 2 },
                     side: 2,
-                    type_id: "夜 Blade\\t\t\r\n".to_owned(),
+                    type_id: "å¤œ Blade\\t\t\r\n".to_owned(),
                     hitpoints: 13,
                     moves_left: 4,
                     attacks_left: 2,
@@ -118,7 +132,7 @@ mod tests {
                     slowed: true,
                     poisoned: true,
                     petrified: true,
-                    traits: vec!["quick".to_owned(), "夜\tfighter".to_owned()],
+                    traits: vec!["quick".to_owned(), "å¤œ\tfighter".to_owned()],
                 },
                 SnapshotUnit {
                     position: Hex { x: 1, y: 0 },
@@ -146,7 +160,8 @@ mod tests {
                 "step\t3\tplaying\t7\t2\n",
                 "gold\t1\t-4\n",
                 "gold\t2\t17\n",
-                "unit\t1\t3\t2\t夜 Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\tquick\t夜\\tfighter\n",
+                "reserve\t1\t1\tSteel Guard\t17\t5\t13\tloyal\n",
+                "unit\t1\t3\t2\tå¤œ Blade\\\\t\\t\\r\\n\t13\t4\t2\t1\t9\tquick\tå¤œ\\tfighter\n",
                 "status\t1\t3\tslowed\tpoisoned\tpetrified\n",
                 "unit\t2\t1\t1\tSpearman\t8\t0\t0\t0\t0\n",
                 "status\t2\t1\tpoisoned\n",
@@ -165,6 +180,7 @@ mod tests {
             let snapshot = Snapshot {
                 state,
                 gold: vec![0, 9],
+                reserves: Vec::new(),
                 units: Vec::new(),
                 villages: Vec::new(),
                 views: Vec::new(),
@@ -183,6 +199,7 @@ mod tests {
             let snapshot = Snapshot {
                 state: MatchState::Draw,
                 gold: vec![0, 0],
+                reserves: Vec::new(),
                 units: Vec::new(),
                 villages: vec![(position, 1)],
                 views: Vec::new(),
