@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     board::{
-        Attack, AttackChoice, AttackError, MoveError, StrikeModifiers, UnitState,
+        Attack, AttackChoice, AttackError, BoardError, MoveError, StrikeModifiers, UnitState,
         StrikeRole, combatant, within_range,
     },
     hex::Hex,
@@ -16,7 +16,7 @@ use crate::{
     observation::{Observation, project},
     resistance::DamageTable,
     rng::ReplayRng,
-    scenario_events::{EventState, ScenarioEvents},
+    scenario_events::{BoardChange, EventState, ScenarioEvents},
     scenario_start::ScenarioStart,
     terrain_aliases::TerrainAliases,
     turn::Turn,
@@ -164,27 +164,41 @@ impl<'data> FixedMatch<'data> {
             events.fire("preload", state);
             events.fire("prestart", state);
             events.fire("start", state);
-        });
+        })?;
         game.check_victory();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
                 game.state = MatchState::Draw;
             } else {
-                game.with_events(|events, state| events.begin_turn(turn, events.new_round_at_start, state));
+                game.with_events(|events, state| events.begin_turn(turn, events.new_round_at_start, state))?;
                 game.settle_income(turn);
                 game.scenario.board.refresh_units(turn);
                 game.scenario.board.begin_resting(turn.side);
-                game.with_events(|events, state| events.refresh(turn, state));
+                game.with_events(|events, state| events.refresh(turn, state))?;
                 game.refog(turn.side);
             }
         }
         Ok(game)
     }
 
-    fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) {
-        let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, captures: Vec::new() };
+    fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
+        let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
-        for capture in state.captures {
+        for change in state.board_changes {
+            let capture = match change {
+                BoardChange::CaptureVillage(capture) => capture,
+                BoardChange::PlaceUnit(unit) => {
+                    let side = unit.side;
+                    let position = unit.position.ok_or(MatchError::UnsupportedScenario)?;
+                    if self.scenario.board.unit_type(&unit.type_id).is_some_and(|kind| !supports_unit(kind)) {
+                        return Err(MatchError::UnsupportedScenario);
+                    }
+                    self.scenario.board.add_authored_unit(*unit).map_err(MatchError::OpeningUnit)?;
+                    self.capture_village(side, position);
+                    self.update_side_sight(side, false);
+                    continue;
+                }
+            };
             let owner = usize::try_from(capture.side).ok().filter(|s| (1..=self.side_order.len()).contains(s));
             if owner.is_some_and(|side| !self.side_survives(side)) {
                 continue;
@@ -199,6 +213,7 @@ impl<'data> FixedMatch<'data> {
                 }
             });
         }
+        Ok(())
     }
 
     pub fn state(&self) -> MatchState {
@@ -374,21 +389,21 @@ impl<'data> FixedMatch<'data> {
                     .board
                     .advance_turn(turn, &self.side_order, self.scenario.last_round);
                 let end_round = next.is_none_or(|next| next.round != turn.round);
-                self.with_events(|events, state| events.end_turn(turn, end_round, state));
+                self.with_events(|events, state| events.end_turn(turn, end_round, state))?;
                 self.refog(turn.side);
                 self.state = if let Some(next) = next {
                     self.current_round = next.round;
-                    self.with_events(|events, state| events.begin_turn(next, end_round, state));
+                    self.with_events(|events, state| events.begin_turn(next, end_round, state))?;
                     self.settle_income(next);
                     let sides = &self.scenario.sides;
                     self.scenario.board.heal_at_turn_start(next.side, self.rules.terrain, |a, b| {
                         sides[a - 1].is_enemy(&sides[b - 1])
                     });
-                    self.with_events(|events, state| events.refresh(next, state));
+                    self.with_events(|events, state| events.refresh(next, state))?;
                     self.refog(next.side);
                     MatchState::Playing(next)
                 } else {
-                    self.with_events(|events, state| events.fire("time_over", state));
+                    self.with_events(|events, state| events.fire("time_over", state))?;
                     MatchState::Draw
                 };
             }
@@ -571,6 +586,7 @@ fn supports_unit(unit_type: &UnitType) -> bool {
 #[derive(Debug, Eq, PartialEq)]
 pub enum MatchError {
     UnsupportedScenario,
+    OpeningUnit(BoardError),
     ActionUnavailable,
     Finished,
     Move(MoveError),
@@ -599,6 +615,7 @@ impl fmt::Display for MatchError {
             Self::UnsupportedScenario => f.write_str(
                 "fixed match requires at least two sides in order and supported weapons",
             ),
+            Self::OpeningUnit(error) => write!(f, "could not place an opening event unit: {error}"),
             Self::ActionUnavailable => f.write_str("action is unavailable to the current side"),
             Self::Finished => f.write_str("match is over"),
             Self::Move(error) => error.fmt(f),

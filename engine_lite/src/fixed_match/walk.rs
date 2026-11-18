@@ -1,8 +1,8 @@
-use super::FixedMatch;
-use crate::{board::MoveError, hex::Hex, visibility::HexVisibility};
+use super::{FixedMatch, MatchError};
+use crate::{hex::Hex, visibility::HexVisibility};
 
 impl FixedMatch<'_> {
-    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MoveError> {
+    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex) -> Result<(), MatchError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
         let mut discovered = Vec::new();
@@ -71,7 +71,7 @@ impl FixedMatch<'_> {
             let arrival = crate::scenario_events::ArrivingUnit {
                 position, side, id: id.as_deref(), type_id: &unit.unit_type.id,
             };
-            self.with_events(|events, state| events.moveto(arrival, state));
+            self.with_events(|events, state| events.moveto(arrival, state))?;
         }
         Ok(())
     }

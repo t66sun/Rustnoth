@@ -211,7 +211,16 @@ impl<'rules> Battlefield<'rules> {
             unit_types,
             experience_modifier,
         };
-        for AuthoredStartingUnit {
+        for unit in starting_units {
+            board.add_authored_unit(unit)?;
+        }
+        Ok(board)
+    }
+
+    pub(crate) fn add_authored_unit(&mut self, starting_unit: AuthoredStartingUnit) -> Result<(), BoardError> {
+        let unit_types = self.unit_types;
+        let experience_modifier = self.experience_modifier;
+        let AuthoredStartingUnit {
             position,
             side,
             id,
@@ -235,58 +244,56 @@ impl<'rules> Battlefield<'rules> {
             undead_variation,
             slowed,
             uncovered,
-        } in starting_units
-        {
-            let tile = match position {
-                Some(hex) => Some(board.vacant_unit_slot(hex)?),
-                None => None,
-            };
-            let unit_type = unit_types.get(&type_id).ok_or_else(|| match position {
-                Some(position) => BoardError::UnknownUnitType { position, type_id },
-                None => BoardError::UnknownRecallType { side, type_id },
-            })?;
-            let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
-            let mut definitions: Vec<Cow<'_, Node>> = authored_traits.into_iter().map(Cow::Owned).collect();
-            for mandatory in unit_type.traits.mandatory() {
-                if !definitions.iter().any(|t| t.attribute("id") == mandatory.attribute("id")) {
-                    definitions.push(Cow::Borrowed(mandatory));
-                }
-            }
-            let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
-            let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
-            let mut unit = UnitState {
-                side,
-                id,
-                unit_type,
-                hitpoints: 0,
-                default_amlas,
-                poisoned,
-                petrified,
-                unpetrifiable,
-                unhealable,
-                unplagueable,
-                undead_variation,
-                experience,
-                slowed,
-                uncovered,
-                base_max_experience,
-                moves_left: moves_left.unwrap_or(movement).max(0),
-                attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
-                can_recruit,
-                extra_recruits,
-                upkeep_override: upkeep,
-                recall_cost: recall_cost.unwrap_or(unit_type.recall_cost),
-                recall_filter: recall_filter::RecallFilter::read(recall_filter, unit_types),
-                traits,
-            };
-            unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
-            if let Some(tile) = tile {
-                tile.insert(unit);
-            } else {
-                board.recall.entry(side).or_default().push(unit);
+        } = starting_unit;
+        let tile = match position {
+            Some(hex) => Some(self.vacant_unit_slot(hex)?),
+            None => None,
+        };
+        let unit_type = unit_types.get(&type_id).ok_or_else(|| match position {
+            Some(position) => BoardError::UnknownUnitType { position, type_id },
+            None => BoardError::UnknownRecallType { side, type_id },
+        })?;
+        let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
+        let mut definitions: Vec<Cow<'_, Node>> = authored_traits.into_iter().map(Cow::Owned).collect();
+        for mandatory in unit_type.traits.mandatory() {
+            if !definitions.iter().any(|t| t.attribute("id") == mandatory.attribute("id")) {
+                definitions.push(Cow::Borrowed(mandatory));
             }
         }
-        Ok(board)
+        let traits = UnitTraits::from_definitions(unit_type, definitions, base_max_experience);
+        let movement = traits.as_ref().map_or(unit_type.movement, |t| t.stats.max_movement);
+        let mut unit = UnitState {
+            side,
+            id,
+            unit_type,
+            hitpoints: 0,
+            default_amlas,
+            poisoned,
+            petrified,
+            unpetrifiable,
+            unhealable,
+            unplagueable,
+            undead_variation,
+            experience,
+            slowed,
+            uncovered,
+            base_max_experience,
+            moves_left: moves_left.unwrap_or(movement).max(0),
+            attacks_left: attacks_left.unwrap_or(unit_type.max_attacks).max(0),
+            can_recruit,
+            extra_recruits,
+            upkeep_override: upkeep,
+            recall_cost: recall_cost.unwrap_or(unit_type.recall_cost),
+            recall_filter: recall_filter::RecallFilter::read(recall_filter, unit_types),
+            traits,
+        };
+        unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
+        if let Some(tile) = tile {
+            tile.insert(unit);
+        } else {
+            self.recall.entry(side).or_default().push(unit);
+        }
+        Ok(())
     }
 
     pub fn map(&self) -> &ScenarioMap {

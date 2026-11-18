@@ -12,6 +12,7 @@ pub struct StartingUnit {
     pub can_recruit: bool,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct AuthoredStartingUnit {
     pub(crate) side: usize,
     pub(crate) id: Option<String>,
@@ -100,43 +101,69 @@ pub(crate) fn read_authored_starting_units(
                     leader_hex = Some(hex);
                 }
             }
-            let status = children_named(unit, "status").next();
-            let has_status = |name: &str| {
-                status.and_then(|node| node.attributes.get(name))
-                    .is_some_and(|value| value.translations.is_empty() && wml_true(&value.text))
-            };
-            result.push(AuthoredStartingUnit {
-                side,
-                id: id.map(str::to_owned),
-                type_id: type_id.to_owned(),
-                position,
-                can_recruit,
-                extra_recruits: crate::scenario_sides::names(unit.attribute("extra_recruit").unwrap_or_default()).collect(),
-                // team_builder strips side attributes, including recall_cost, from leaders.
-                recall_cost: if leader { None } else { integer(unit, "recall_cost") },
-                recall_filter: children_named(unit, "filter_recall").next().cloned(),
-                upkeep: Upkeep::from_wml(unit),
-                traits: children_named(unit, "modifications")
-                    .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
-                default_amlas: children_named(unit, "modifications")
-                    .flat_map(|mods| children_named(mods, "advancement"))
-                    .filter(|advance| crate::unit_type::is_default_amla(advance)).take(100).count() as u8,
-                hitpoints: integer(unit, "hitpoints"),
-                experience: integer(unit, "experience").unwrap_or_default(),
-                moves_left: integer(unit, "moves"),
-                attacks_left: integer(unit, "attacks_left"),
-                poisoned: has_status("poisoned"),
-                petrified: has_status("petrified"),
-                unpetrifiable: has_status("unpetrifiable"),
-                unhealable: has_status("unhealable"),
-                unplagueable: has_status("unplagueable"),
-                undead_variation: unit.attribute("undead_variation").map(str::to_owned),
-                slowed: has_status("slowed"),
-                uncovered: has_status("uncovered"),
-            });
+            result.push(authored_unit(unit, side, type_id, position, leader, can_recruit));
         }
     }
     Ok(result)
+}
+
+/// A literal on-map [unit] command. Variable-driven placements need a WML interpreter.
+pub(crate) fn read_event_unit(unit: &Node, side_count: usize) -> Option<AuthoredStartingUnit> {
+    let type_id = nonempty(unit, "type")?;
+    let id = nonempty(unit, "id")?;
+    let side: usize = unit.attribute("side")?.trim().parse().ok()?;
+    if !(1..=side_count).contains(&side) || type_id.contains('$') || id.contains('$')
+        || unit.attribute("placement").is_some_and(|p| !p.is_empty() && p != "map")
+        || unit.attribute("to_variable").is_some()
+        || unit.attribute("passable").is_some_and(wml_true)
+        || unit.attribute("location_id").is_some()
+    {
+        return None;
+    }
+    let x = unit.attribute("x")?.trim().parse().ok()?;
+    let y = unit.attribute("y")?.trim().parse().ok()?;
+    let position = Hex::from_wml(x, y)?;
+    let can_recruit = unit.attribute("canrecruit").is_some_and(wml_true);
+    Some(authored_unit(unit, side, type_id, Some(position), false, can_recruit))
+}
+
+fn authored_unit(
+    unit: &Node, side: usize, type_id: &str, position: Option<Hex>, leader: bool, can_recruit: bool,
+) -> AuthoredStartingUnit {
+    let status = children_named(unit, "status").next();
+    let has_status = |name: &str| {
+        status.and_then(|node| node.attributes.get(name))
+            .is_some_and(|value| value.translations.is_empty() && wml_true(&value.text))
+    };
+    AuthoredStartingUnit {
+        side,
+        id: nonempty(unit, "id").map(str::to_owned),
+        type_id: type_id.to_owned(),
+        position,
+        can_recruit,
+        extra_recruits: crate::scenario_sides::names(unit.attribute("extra_recruit").unwrap_or_default()).collect(),
+        // team_builder strips side attributes, including recall_cost, from leaders.
+        recall_cost: if leader { None } else { integer(unit, "recall_cost") },
+        recall_filter: children_named(unit, "filter_recall").next().cloned(),
+        upkeep: Upkeep::from_wml(unit),
+        traits: children_named(unit, "modifications")
+            .flat_map(|mods| children_named(mods, "trait")).cloned().collect(),
+        default_amlas: children_named(unit, "modifications")
+            .flat_map(|mods| children_named(mods, "advancement"))
+            .filter(|advance| crate::unit_type::is_default_amla(advance)).take(100).count() as u8,
+        hitpoints: integer(unit, "hitpoints"),
+        experience: integer(unit, "experience").unwrap_or_default(),
+        moves_left: integer(unit, "moves"),
+        attacks_left: integer(unit, "attacks_left"),
+        poisoned: has_status("poisoned"),
+        petrified: has_status("petrified"),
+        unpetrifiable: has_status("unpetrifiable"),
+        unhealable: has_status("unhealable"),
+        unplagueable: has_status("unplagueable"),
+        undead_variation: unit.attribute("undead_variation").map(str::to_owned),
+        slowed: has_status("slowed"),
+        uncovered: has_status("uncovered"),
+    }
 }
 
 fn children_named<'a>(node: &'a Node, name: &'a str) -> impl Iterator<Item = &'a Node> {
