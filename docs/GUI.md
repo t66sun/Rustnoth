@@ -10,6 +10,20 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- bundle.cfg core.cf
 
 示例使用随机种子 `5489`。素材默认从 `../wesnoth_src` 读取，可以在命令末尾加上 `--wesnoth-root <目录>`。场景的 `map_file` 路径相对于场景包。
 
+### 用原版地图建立遭遇战
+
+从仓库根目录运行下例，用原版 Hamlets 地图创建 30 回合的遭遇战。将生成的文件用作桌面、无界面或逐步对拍命令的场景包，并提供同一版本的预处理核心配置。
+
+```sh
+mp=../wesnoth_src/data/multiplayer
+mkdir -p data
+cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish -- \
+  "$mp/maps/2p_Hamlets.map" 30 "$mp/factions/loyalists-default.cfg" --leader "White Mage" \
+  "$mp/factions/rebels-default.cfg" > data/skirmish.cfg
+```
+
+按地图起点编号依次传入至少两个阵营文件，可使用七个默认时代阵营或重复选择同一阵营。每方默认使用文件中列出的第一个领袖，可在该文件后加上 `--leader` 指定其他已列出的领袖。场景内嵌地形，采用独立敌对阵营、全图可见和从黎明开始的六段昼夜循环。此玩法使用地图地形和出生点，原版场景的专属事件需另行提供。
+
 | 操作 | 控制 |
 | --- | --- |
 | 移动 | 左键选中己方单位，再点标出的可达格 |
