@@ -19,9 +19,11 @@ mod camera;
 mod campaign_browser;
 mod desktop;
 mod dialog;
+mod display_preferences;
 mod menu;
 mod render;
 mod setup;
+mod story;
 mod title_screen;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
@@ -48,7 +50,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let fullscreen = display_preferences::load().unwrap_or_else(|err| {
+        eprintln!("Could not read the Rustnoth display preference: {err}");
+        false
+    });
     let configuration = Conf {
+        fullscreen,
         window_title: format!("Rustnoth - {}", launch.title()),
         window_width: 1200,
         window_height: 820,
@@ -57,7 +64,7 @@ fn main() -> ExitCode {
     };
     Window::from_config(configuration, async move {
         let result = match launch {
-            Launch::Title(title) => title.run().await,
+            Launch::Title(title) => title.run(fullscreen).await,
             Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
@@ -162,6 +169,7 @@ impl Launch {
 
 struct BoardData {
     scenario: Bundle,
+    story: Vec<story::Part>,
     assets: AssetCatalog,
     title: String,
     directory: PathBuf,
@@ -177,15 +185,14 @@ impl BoardData {
         }
         let scenario = Bundle::parse_with_core(source, core)?;
         let assets = AssetCatalog::parse(&wesnoth_root, core, source)?;
-        let title = wml::parse(source)?
-            .children
-            .into_iter()
-            .find(|(tag, _)| tag == "scenario")
-            .and_then(|(_, config)| config.attribute("name").map(str::to_owned))
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Scenario".to_owned());
+        let document = wml::parse(source)?;
+        let (_, config) = document.children.iter().find(|(tag, _)| tag == "scenario")
+            .ok_or("bundle has no scenario")?;
+        let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
+        let story = story::read(config, &title);
         Ok(Self {
             scenario,
+            story,
             assets,
             title,
             directory,
@@ -200,33 +207,56 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
-    let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
+    play_board(data, players, None).await.map(|_| ())
+}
+
+async fn play_board(data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
+    let campaign = carryover.is_some();
+    let game = data.scenario.start_campaign(data.seed, |name| fs::read_to_string(data.directory.join(name)), carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
-    let mut art = render::BoardArt::new(&data.wesnoth_root);
+    let mut art = render::BoardArt::new(&data.wesnoth_root)?;
+    story::show(&data.story, &data.assets, art.font.as_ref()).await;
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
+    let mut dialogue_page = 0;
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        let dialogue_open = session.dialogue().is_some();
+        if !dialogue_open && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
-                return Ok(());
+                return Ok(None);
             }
         }
-        if is_mouse_button_pressed(MouseButton::Right) {
+        if !dialogue_open && is_mouse_button_pressed(MouseButton::Right) {
             selection.clear();
             menu = None;
             message = None;
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
+        if !dialogue_open && let Some(objectives) = session.objectives() {
+            let opened = render::objectives::hotkey()
+                || (is_mouse_button_pressed(MouseButton::Left)
+                    && render::objectives::button(screen_width(), screen_height()).is_some_and(|r| r.contains(pointer)));
+            if opened {
+                render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
+                next_frame().await;
+                continue;
+            }
+        }
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
-            camera.fit(render::board_viewport(), observation.width, observation.height, reset);
-            if !reset {
+            camera.update(render::board_viewport(), observation, reset);
+            if !reset && !dialogue_open {
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && let Some(point) = render::minimap_point(observation, pointer)
+                {
+                    camera.center_world(point);
+                }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag(
                     [mouse_x, mouse_y],
@@ -243,8 +273,8 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
         }
-        let clicked = !computer_acted && is_mouse_button_pressed(MouseButton::Left);
-        if !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
+        let clicked = !dialogue_open && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
+        if !dialogue_open && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
             menu = menu::Menu::disband(&session, |id| data.assets.unit_name(id).unwrap_or(id).to_owned());
             if menu.is_some() {
                 selection.clear();
@@ -252,8 +282,15 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let button = render::end_turn_button(screen_width(), screen_height(), can_end);
-        let menu_action = menu.as_mut().and_then(|menu| {
+        let next = if campaign && !dialogue_open { session.next_scenario() } else { None };
+        let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
+        if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
+            || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
+        {
+            if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
+            return Ok(Some(id.to_owned()));
+        }
+        let menu_action = menu.as_mut().filter(|_| !dialogue_open).and_then(|menu| {
             let area = render::menu_area();
             if is_key_pressed(KeyCode::P)
                 || (clicked && menu.advancement_button(area).is_some_and(|bounds| bounds.contains(pointer)))
@@ -272,7 +309,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             }?;
             menu.activate(action)
         });
-        let requested = if !computer_acted && can_end
+        let requested = if !dialogue_open && !computer_acted && can_end
             && (is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
@@ -327,6 +364,7 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             &mut art,
             render::MovementView {
                 global_time: session.global_time_of_day(),
+                has_objectives: session.objectives().is_some(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
@@ -338,7 +376,20 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
             && let Some(bounds) = button
         {
             let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
-            render::draw_end_turn_button(bounds, highlighted, &art);
+            render::draw_turn_button(bounds, highlighted, &art, "End Turn");
+        } else if campaign && session.next_scenario().is_some()
+            && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
+        {
+            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
+        }
+        if let Some(line) = session.dialogue() {
+            let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
+            if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+                || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
+            {
+                if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
+                else { dialogue_page += 1; }
+            }
         }
         next_frame().await;
     }
@@ -395,6 +446,8 @@ mod tests {
             height: 2,
             tiles: Vec::new(),
             units: vec![ObservedUnit {
+                can_recruit: false, emits_zoc: true,
+                max_hitpoints: 33, full_action_points: Some(true),
                 position: start, side: 1, type_id: "Bowman".into(),
                 experience: 0, max_experience: 35,
                 hitpoints: 33, moves_left: Some(5), attacks_left: Some(1),

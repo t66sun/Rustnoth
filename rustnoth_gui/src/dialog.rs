@@ -58,9 +58,9 @@ impl Dialog {
         Self { font, background }
     }
 
-    pub fn begin(&self) -> Frame {
+    pub fn begin(&self, form_height: f32) -> Frame {
         // Keep every field reachable in short windows while preserving the layout aspect ratio.
-        let scale = (screen_width() / 440.0).min(screen_height() / 634.0).clamp(0.01, 1.0);
+        let scale = (screen_width() / 440.0).min(screen_height() / (form_height + 28.0)).clamp(0.01, 1.0);
         let w = screen_width() / scale;
         let h = screen_height() / scale;
         let (mx, my) = mouse_position();
@@ -76,7 +76,7 @@ impl Dialog {
                 DrawTextureParams { dest_size: Some(size), ..Default::default() });
         }
         let width = (w - 36.0).min(720.0);
-        let height = (h - 28.0).min(636.0);
+        let height = (h - 28.0).min(form_height);
         let x = (w - width) * 0.5;
         let y = (h - height) * 0.5;
         draw_rectangle(x, y, width, height, PANEL);

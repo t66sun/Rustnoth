@@ -20,6 +20,8 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 
 标题画面使用本机 Wesnoth 1.18.8 的地图、徽标、按钮和每日提示。选择 **Multiplayer** 可建立本地热座或人机遭遇战。如需使用 **Campaigns**，在核心规则前提供已预处理的战役配置和地图目录，例如 `--title campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489`。方向键上下切换按钮，Enter 确认，左右键翻阅提示。在战役列表或遭遇战设置页按 Esc 可返回标题。
 
+从 **Preferences → Display** 勾选或取消 **Full screen** 可立即切换显示模式。用 Tab 切换焦点，空格或 Enter 确认，Esc 关闭。Rustnoth 会在下次启动时恢复该选择。
+
 ### 在窗口中选择战役场景
 
 给出已预处理的战役配置、该战役的 `maps` 目录、核心规则和种子。例如：
@@ -28,7 +30,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
 ```
 
-列表按战役文件中的顺序显示场景名称和 ID。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。点 Filter 或按 Ctrl+F 可按名称搜索。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
 
 ### 用原版地图建立遭遇战
 
@@ -38,7 +40,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaig
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --skirmish core.cfg 5489
 ```
 
-点击地图、阵营编号、阵营或领袖以打开列表。每个地图起点可独立选择阵营和领袖。Visibility 可选择全图可见、战争迷雾、黑幕或两者并用。上下键和 Tab 可切换表单项目，Enter 打开列表或开始游戏。列表支持方向键、Page Up、Page Down、滚轮和鼠标选择。Esc 返回表单。Rounds 默认 30，可选 1 至 99 回合或 Unlimited。素材目录可通过 `--wesnoth-root` 指定。
+点击地图、阵营编号、阵营或领袖以打开列表。每个地图起点可独立选择阵营、领袖和 Team。默认每方自成一队，选择相同队伍的各方结盟并共享胜利。Visibility 可选择全图可见、战争迷雾、黑幕或两者并用。上下键和 Tab 可切换表单项目，Enter 打开列表或开始游戏。列表支持方向键、Page Up、Page Down、滚轮和鼠标选择。Esc 返回表单。Rounds 默认 30，可选 1 至 99 回合或 Unlimited。素材目录可通过 `--wesnoth-root` 指定。
 
 **Play hot seat** 让多位玩家轮流操作。**Play vs computer** 由玩家操作第 1 方，电脑操作其余各方。电脑可以招募、接敌和探索，棋盘始终显示第 1 方的视野。
 
@@ -56,6 +58,7 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 
 | 操作 | 控制 |
 | --- | --- |
+| 战役过场 | 阅读场景静态故事和行军地图，点击 **Next** 或按空格、Enter、右方向键翻页，点击 **Back** 或按左方向键回看，点击 **Skip** 或按 Esc 直接进入棋盘 |
 | 移动 | 左键选中己方单位，再点标出的可达格 |
 | 攻击 | 左键选中己方单位，再点敌方目标，从侧栏选择武器 |
 | 选择晋级方向 | 己方攻击者有多个晋级方向时，点击武器列表上方的 **Advance to** 或按 P 循环选择。本次战斗中达到升级经验时生效，**Default** 使用单位定义中的默认方向 |
@@ -63,6 +66,7 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 召回 | 点可召回的城堡格，在侧栏按兵种、老兵 ID、生命、经验和金币花费挑选召回对象 |
 | 遣散 | 按 D 打开本方预备兵名单，点击条目或用 Tab、Enter 选择。核对兵种和 ID 后再次点击或按 Enter 确认，按 Esc 或右键取消。遣散不消耗金币 |
 | 选择菜单项 | 左键点击，或按 Tab 切换、Enter 确认 |
+| 查看战役目标 | 点击 **Objectives** 或按 Ctrl+J 查看本方当前胜负目标，方向键、翻页键和滚轮可滚动，Esc 或 Enter 返回棋盘 |
 | 取消选择 | 右键 |
 | 结束回合 | 点击 **End turn**，或按空格 |
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |

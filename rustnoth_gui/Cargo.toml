@@ -2,6 +2,7 @@
 name = "rustnoth_gui"
 version = "0.1.0"
 edition = "2024"
+default-run = "rustnoth_gui"
 publish = false
 
 [dependencies]

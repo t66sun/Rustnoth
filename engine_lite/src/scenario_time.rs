@@ -23,7 +23,7 @@ pub(crate) fn read_map_schedule(scenario: &Node, map: &ScenarioMap) -> TimeSched
             area.attribute("x").unwrap_or_default(), area.attribute("y").unwrap_or_default(), map,
         );
         let current_time = integer(area, "current_time").unwrap_or(0);
-        schedule.add_area(locations, time_entries(area), turn_at, current_time);
+        schedule.add_area(area.attribute("id").unwrap_or_default().to_owned(), locations, time_entries(area), turn_at, current_time);
     }
     schedule
 }
@@ -35,6 +35,7 @@ pub(crate) fn time_entries(node: &Node) -> Vec<TimeOfDay> {
         .map(|(_, time)| TimeOfDay {
             id: time.attribute("id").unwrap_or_default().to_owned(),
             lawful_bonus: integer(time, "lawful_bonus").unwrap_or(0),
+            color: ["red", "green", "blue"].map(|channel| integer(time, channel).unwrap_or(0)),
         })
         .collect()
 }
