@@ -165,6 +165,63 @@ Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn arcane_weapons_use_the_better_resistance_on_attack_and_retaliation() {
+        for (arcane, expected_hp) in [(150, 15), (50, 22)] {
+            let source = format!(r#"
+                [units]
+                    [movetype]
+                        name=foot
+                        [resistance]
+                            blade=80
+                            arcane=100
+                        [/resistance]
+                    [/movetype]
+                    [unit_type]
+                        id=Bearer
+                        hitpoints=30
+                        movement_type=foot
+                        [resistance]
+                            arcane={arcane}
+                        [/resistance]
+                        [attack]
+                            type=blade
+                            range=melee
+                            damage=10
+                            number=1
+                            accuracy=100
+                            [specials]
+                                [damage_type]
+                                    id=arcane_damage
+                                    alternative_type=arcane
+                                [/damage_type]
+                            [/specials]
+                        [/attack]
+                    [/unit_type]
+                [/units]
+                [scenario]
+                    map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+                    [side]
+                        side=1
+                        type=Bearer
+                    [/side]
+                    [side]
+                        side=2
+                        type=Bearer
+                    [/side]
+                [/scenario]
+            "#);
+            let bundle = Bundle::parse(source.as_bytes()).unwrap();
+            let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+            let choice = AttackChoice { from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 0 }, weapon: 0 };
+            game.step(Action::Attack(choice)).unwrap();
+            let units = game.audit_snapshot().units;
+            assert_eq!((units[0].hitpoints, units[1].hitpoints), (expected_hp, expected_hp));
+        }
+    }
+
+    #[test]
     fn combat_uses_unit_resistances_over_inherited_values() {
         let bundle = Bundle::parse(
             br#"
