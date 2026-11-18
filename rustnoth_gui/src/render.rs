@@ -267,6 +267,17 @@ pub fn draw(
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
         let pointer: Vec2 = mouse_position().into();
+        if let Some(bounds) = menu.advancement_button(area) {
+            let pointed = bounds.contains(pointer);
+            let fill = if pointed { BUTTON_HIGHLIGHTED } else { BUTTON };
+            draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, fill);
+            draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, if pointed { TEXT } else { BORDER });
+            label(&art.font, "Advance to  [P]", bounds.x + 10.0, bounds.y + 16.0, 13, MUTED);
+            let name = menu.preferred_advancement()
+                .map(|id| movement.assets.unit_name(id).unwrap_or(id))
+                .unwrap_or("Default");
+            label(&art.font, name, bounds.x + 10.0, bounds.y + 35.0, 17, TEXT);
+        }
         for row in menu.rows(area) {
             let bounds = row.bounds;
             let highlighted = row.focused || bounds.contains(pointer);
