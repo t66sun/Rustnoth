@@ -90,6 +90,13 @@ fn new_map() -> EditableMap {
     EditableMap::parse(vec![row; 33 + 2].join("\n") + "\n").expect("valid blank grass map")
 }
 
+const SIDEBAR_WIDTH: f32 = 181.0;
+
+fn map_viewport(width: f32, height: f32) -> Viewport {
+    // The classic editor's main_map starts below the two toolbars. Tool hints overlay the map.
+    Viewport { x: 0.0, y: 68.0, width: width - SIDEBAR_WIDTH, height: height - 68.0 }
+}
+
 fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observation, fit: bool) {
     let opening = camera.layout().is_none();
     camera.update(area, view, fit);
@@ -335,13 +342,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             .min(screen_height() / 440.0)
             .clamp(0.01, 1.0);
         let (w, h) = (screen_width() / scale, screen_height() / scale);
-        let sidebar = 181.0;
-        let area = Viewport {
-            x: 0.0,
-            y: 67.0,
-            width: w - sidebar,
-            height: h - 93.0,
-        };
+        let sidebar = SIDEBAR_WIDTH;
+        let area = map_viewport(w, h);
         let (mx, my) = mouse_position();
         let point = vec2(mx / scale, my / scale);
         let p = [point.x, point.y];
@@ -593,16 +595,17 @@ mod tests {
         assert_eq!(map.terrain_at(Hex { x: -1, y: -1 }), Some("Gg"));
         assert_eq!(map.terrain_at(Hex { x: 44, y: 33 }), Some("Gg"));
         let view = render::map_observation(map);
-        let area = Viewport { x: 0.0, y: 67.0, width: 1019.0, height: 753.0 };
+        let area = map_viewport(1200.0, 820.0);
+        assert_eq!((area.x, area.y, area.width, area.height), (0.0, 68.0, 1019.0, 752.0));
         let mut camera = BoardCamera::default();
         update_editor_camera(&mut camera, area, &view, false);
         let origin = Hex { x: 0, y: 0 };
         let layout = camera.layout().unwrap();
         assert_eq!(layout.tile_size(), 72.0);
-        assert_eq!(layout.tile_origin(origin), [27.0, 103.0]);
+        assert_eq!(layout.tile_origin(origin), [27.0, 104.0]);
         camera.pan([-54.0, -72.0]);
         update_editor_camera(&mut camera, area, &view, false);
-        assert_eq!(camera.layout().unwrap().tile_origin(origin), [-27.0, 31.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(origin), [-27.0, 32.0]);
         update_editor_camera(&mut camera, area, &view, true);
         assert!(camera.layout().unwrap().tile_size() < 72.0);
     }
