@@ -16,6 +16,10 @@ impl Region {
         self.0.contains(&hex)
     }
 
+    pub fn hexes(&self) -> impl Iterator<Item = Hex> + '_ {
+        self.0.iter().copied()
+    }
+
     pub fn follow(&mut self, map: &ScenarioMap, hover: Option<Hex>) {
         if hover.is_some_and(|hex| self.contains(hex)) {
             return;
@@ -49,18 +53,19 @@ impl Region {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(super) enum Tool { Paint, Fill }
+pub(super) enum Tool { Paint, Fill, Select }
 
 impl Tool {
     pub fn panel(self, bounds: Rect, point: Vec2, art: &mut Art, assets: &AssetCatalog,
                  tip: &mut Option<&'static str>) -> Self {
         art.image(assets, "themes/editor/classic/tools.png", bounds);
         let mut selected = self;
-        for (row, (tool, icon, label)) in [
-            (Self::Paint, "paint", "Paint Tool (P)"),
-            (Self::Fill, "fill", "Fill Tool (F)"),
-        ].into_iter().enumerate() {
-            let button = Rect::new(bounds.x + 14.0, bounds.y + 5.0 + row as f32 * 32.0, 30.0, 30.0);
+        for (tool, icon, label, col, row) in [
+            (Self::Paint, "paint", "Paint Tool (P)", 0., 0.),
+            (Self::Select, "select", "Selection Tool (S)", 1., 0.),
+            (Self::Fill, "fill", "Fill Tool (F)", 0., 1.),
+        ] {
+            let button = Rect::new(bounds.x + 14.0 + col * 32., bounds.y + 5.0 + row * 32., 30.0, 30.0);
             let hot = button.contains(point);
             let suffix = match (hot, self == tool) {
                 (true, true) => "-active-pressed",
