@@ -51,7 +51,9 @@ fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Til
 }
 
 pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
-    apply(catalog, view, |_| None)
+    apply(catalog, view, |at| {
+        (at.x >= -1 && at.y >= -1).then_some("_off^_usr")
+    })
 }
 
 fn apply<'a>(
@@ -67,7 +69,7 @@ fn apply<'a>(
         if x < 0 || y < 0 || x >= view.width || y >= view.height {
             let at = Hex { x, y };
             groups
-                .entry(border(at).unwrap_or("_off^_usr"))
+                .entry(border(at).unwrap_or(""))
                 .or_default()
                 .push(at);
         }
@@ -85,6 +87,8 @@ fn apply<'a>(
         Some((base, overlay)) => (base, false, overlay),
         None => (code, true, ""),
     });
+    let matches_empty: Vec<_> = catalog.filters.iter()
+        .map(|filter| pattern::matches(filter, "")).collect();
     let types: HashMap<_, _> = groups
         .iter()
         .enumerate()
@@ -120,6 +124,14 @@ fn apply<'a>(
             (hex, tile)
         })
         .collect();
+    // Only anchors through (width,height) enter the terrain index. Multi-hex
+    // rules can still read and set flags one row and column beyond that index.
+    for y in -2..=view.height + 1 {
+        tiles.insert(Hex { x: view.width + 1, y }, Tile::default());
+    }
+    for x in -2..=view.width {
+        tiles.insert(Hex { x, y: view.height + 1 }, Tile::default());
+    }
     for rule in &catalog.rules {
         let Some(anchor) = rule.cells.iter().min_by_key(|c| counts[c.filter]) else {
             continue;
@@ -151,11 +163,11 @@ fn apply<'a>(
                 }
                 let matches = rule.cells.iter().all(|cell| {
                     let at = translate(origin, cell.offset);
-                    let Some(&terrain) = types.get(&at) else {
+                    let Some(tile) = tiles.get(&at) else {
                         return false;
                     };
-                    let flags = &tiles[&at].flags;
-                    allowed[cell.filter][terrain]
+                    let flags = &tile.flags;
+                    types.get(&at).map_or(matches_empty[cell.filter], |&id| allowed[cell.filter][id])
                         && cell.require.iter().all(|f| flags.contains(f))
                         && cell.forbid.iter().all(|f| !flags.contains(f))
                 });
@@ -215,6 +227,22 @@ set_no_flag=claimed
         assert!(tiles[&Hex { x: 0, y: 1 }].flags.contains("origin"));
         assert!(tiles[&Hex { x: 0, y: 2 }].flags.contains("claimed"));
         assert!(!tiles[&Hex { x: 0, y: 0 }].flags.contains("claimed"));
+    }
+
+    #[test]
+    fn forest_can_use_an_empty_fringe_cell_but_cannot_match_an_unseen_playable_hex() {
+        let rule = engine_lite::wml::parse(b"[tile]\nx,y=0,0\ntype=Gg^Fp\nset_flag=forest\n[/tile]\n[tile]\nx,y=0,1\ntype=*\nno_flag=_border\n[/tile]").unwrap();
+        let catalog = super::super::compile::compile(&[rule], &[]);
+        let map = engine_lite::map::ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg^Fp,Gg").unwrap();
+        let view = super::super::map_observation(&map);
+        let border = Hex { x: 0, y: map.height() };
+        assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].flags.contains("forest"));
+
+        let mut obscured = view;
+        obscured.height = 2;
+        obscured.tiles[0].terrain = "Gg^Fp".into();
+        let origin = obscured.tiles[0].position;
+        assert!(!build_with_flags(&catalog, &obscured)[&origin].flags.contains("forest"));
     }
 
     #[test]
