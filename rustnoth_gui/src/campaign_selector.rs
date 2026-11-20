@@ -18,6 +18,7 @@ const EDGE: Color = Color::from_rgba(114, 79, 46, 255);
 
 struct Entry<'a> {
     name: String,
+    search_text: String,
     date: sort::Date,
     description: String,
     icon: Option<&'a str>,
@@ -40,10 +41,14 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
     let campaigns = root.children.iter().filter(|(tag, _)| tag == "campaign").filter_map(|(_, node)| {
         let id = node.attribute("first_scenario")?;
         let scenario = scenarios.iter().position(|(key, _)| *key == id)?;
+        let name = locale.attribute(install, node, "name", id);
+        let description = locale.attribute(install, node, "description", "");
+        let abbreviation = locale.attribute(install, node, "abbrev", "");
+        let search_text = campaign_search_text(node, &name, &description, &abbreviation);
         Some(Entry {
-            name: locale.attribute(install, node, "name", id),
+            name, search_text,
             date: sort::Date::read(node.attribute("start_year")),
-            description: plain(&locale.attribute(install, node, "description", "")),
+            description: plain(&description),
             icon: node.attribute("icon"), image: node.attribute("image"),
             background: node.attribute("background"), scenario, descriptor: Some(node),
         })
@@ -51,8 +56,9 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
     let levels = root.children.iter().filter(|(tag, node)| tag == "scenario" && node.attribute("id").is_some())
         .zip(scenarios).enumerate().map(|(scenario, ((_, node), &(id, _)))| {
             // Scenario bundles need not include a [campaign] descriptor or a description.
+            let name = locale.attribute(install, node, "name", id);
             Entry {
-                name: locale.attribute(install, node, "name", id),
+                search_text: name.to_lowercase(), name,
                 date: sort::Date::Undated,
                 description: plain(&locale.attribute(install, node, "description", id)),
                 icon: None, image: None, background: None, scenario, descriptor: None,
@@ -61,9 +67,20 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
     (campaigns, levels)
 }
 
+fn campaign_search_text(node: &Node, name: &str, description: &str, abbreviation: &str) -> String {
+    [name, node.attribute("name").unwrap_or(""), description,
+        node.attribute("description").unwrap_or(""), abbreviation,
+        node.attribute("abbrev").unwrap_or("")].join("\n").to_lowercase()
+}
+
 fn filtered(entries: &[Entry<'_>], order: impl Iterator<Item = usize>, filter: &str) -> Vec<usize> {
-    let needle = filter.trim().to_lowercase();
-    order.filter(|&i| entries[i].name.to_lowercase().contains(&needle)).collect()
+    let query = filter.to_lowercase();
+    let words: Vec<_> = query.split_whitespace().collect();
+    order.filter(|&i| words.iter().all(|word| entries[i].search_text.contains(*word))).collect()
+}
+
+fn selected_row(rows: &[usize], selected: Option<usize>) -> usize {
+    selected.and_then(|id| rows.iter().position(|&row| row == id)).unwrap_or(0)
 }
 
 pub(super) struct Selector<'a> {
@@ -88,10 +105,13 @@ impl<'a> Selector<'a> {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut language = Locale::load(root, selected)?;
         let (campaigns, levels) = entries(campaign, scenarios, &mut language, root);
+        // The opening title shortcut can still be in macroquad's text queue.
+        while get_char_pressed().is_some() {}
+        let editing = !campaigns.is_empty();
         Ok(Self {
             ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
-            query: String::new(), editing: false, description_offset: 0, last_click: None,
+            query: String::new(), editing, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
             difficulty_menu: difficulty::Menu::default(),
         })
@@ -134,23 +154,35 @@ impl<'a> Selector<'a> {
             self.last_click = None;
         }
         if click { self.editing = search.contains(pointer); }
-        if key(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)) {
+        let focus_shortcut = key(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl));
+        if focus_shortcut {
             self.editing = true;
         }
-        if self.editing && !modal {
-            let len = self.query.len();
-            while let Some(c) = get_char_pressed() { if !c.is_control() { self.query.push(c); } }
-            if is_key_pressed(KeyCode::Backspace) { self.query.pop(); }
-            if self.query.len() != len {
-                self.cursor = 0; self.first = 0; self.description_offset = 0; self.last_click = None;
+        let entries = if self.show_levels { &self.levels } else { &self.campaigns };
+        let matching = |query: &str| if self.show_levels {
+            let needle = query.trim().to_lowercase();
+            (0..entries.len()).filter(|&i| entries[i].search_text.contains(&needle)).collect()
+        } else {
+            filtered(entries, self.campaign_rows.iter().copied(), query)
+        };
+        let mut rows = matching(&self.query);
+        let selected = rows.get(self.cursor).copied();
+        let mut changed = false;
+        while let Some(c) = get_char_pressed() {
+            if self.editing && !modal && !focus_shortcut && !c.is_control() {
+                self.query.push(c);
+                changed = true;
             }
         }
-        let entries = if self.show_levels { &self.levels } else { &self.campaigns };
-        let mut rows = if self.show_levels {
-            filtered(entries, 0..entries.len(), &self.query)
-        } else {
-            filtered(entries, self.campaign_rows.iter().copied(), &self.query)
-        };
+        if self.editing && key(KeyCode::Backspace) {
+            changed |= self.query.pop().is_some();
+        }
+        if changed {
+            rows = matching(&self.query);
+            self.cursor = selected_row(&rows, selected);
+            if rows.get(self.cursor).copied() != selected { self.description_offset = 0; }
+            self.last_click = None;
+        }
         let headers = sort::headers(list);
         if !self.show_levels && click
             && let Some((field, _)) = headers.iter().find(|(_, rect)| rect.contains(pointer))
@@ -159,7 +191,7 @@ impl<'a> Selector<'a> {
             self.ordering = self.ordering.toggle(*field);
             self.campaign_rows = self.ordering.rows(entries, &self.art.locale.effective);
             rows = filtered(entries, self.campaign_rows.iter().copied(), &self.query);
-            self.cursor = selected.and_then(|idx| rows.iter().position(|&r| r == idx)).unwrap_or(0);
+            self.cursor = selected_row(&rows, selected);
             self.last_click = None;
         }
         let row_h = if self.show_levels { 44.0 } else { 82.0 };
@@ -429,6 +461,25 @@ fn relative(path: &Path) -> bool {
 mod tests {
     use super::*;
     use engine_lite::{campaign, wml};
+    #[test]
+    fn campaign_filter_matches_every_word_across_translations_and_keeps_the_selected_entry() {
+        let node = wml::parse("name=The South Guard\ndescription=Deoran rides south\nabbrev=TSG").unwrap();
+        let other = wml::parse("name=Liberty\ndescription=Outlaws ride south\nabbrev=Lib").unwrap();
+        let make_entry = |node: &Node, name: &str, description: &str, abbrev: &str| Entry {
+            search_text: campaign_search_text(node, name, description, abbrev),
+            name: name.into(), description: description.into(), date: sort::Date::Undated,
+            icon: None, image: None, background: None, scenario: 0,
+        };
+        let entries = [make_entry(&other, "自由", "亡命者", "自由篇"),
+            make_entry(&node, "南疆哨卫", "迪奥兰出发", "南卫")];
+        assert_eq!(filtered(&entries, 0..2, "  TSG 南疆 DeOrAn    出发  南卫 GUARD"), [1]);
+        assert!(filtered(&entries, 0..2, "Liberty Deoran").is_empty());
+        let rows = filtered(&entries, [1, 0].into_iter(), "SOUTH");
+        assert_eq!(rows, [1, 0]);
+        assert_eq!(selected_row(&rows, Some(0)), 1);
+        assert_eq!(selected_row(&[1], Some(0)), 0);
+        assert_eq!(selected_row(&[], None), 0);
+    }
     #[test]
     fn campaign_selection_resolves_the_authored_opening_and_preserves_scenario_access() {
         let document = wml::parse("[campaign]\nname=The South Guard\nfirst_scenario=opening\nicon=data/icon.png\nimage=data/art.png\ndescription= _ \"<i>Deoran</i> rides south.\"\n[/campaign]\n[campaign]\nfirst_scenario=absent\n[/campaign]\n[scenario]\nid=side_route\nname=Crossroads\n[/scenario]\n[scenario]\nid=opening\nname=First Ride\n[/scenario]").unwrap();
