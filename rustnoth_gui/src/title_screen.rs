@@ -74,6 +74,15 @@ fn shortcut(key: KeyCode, modified: bool, available: &[Command]) -> Option<Comma
     available.contains(&action).then_some(action)
 }
 
+fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize {
+    match current {
+        Some(index) if backward => (index + count - 1) % count,
+        Some(index) => (index + 1) % count,
+        None if backward => count - 1,
+        None => 0,
+    }
+}
+
 impl TitleScreen {
     pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
@@ -85,9 +94,9 @@ impl TitleScreen {
             Games::Installed => desktop::campaign_available(&self.root),
         });
         let mut tip = self.seed as usize % pages.entries.len();
-        let mut focus = 0;
+        let mut focus = None;
         let mut pressed = None;
-        let mut last_pointer = mouse_position();
+        let mut last_pointer = None;
         let mut windowed_size = vec2(1200.0, 820.0);
         let mut error: Option<String> = None;
         loop {
@@ -102,22 +111,21 @@ impl TitleScreen {
             let buttons = art.draw_panels(w, h, actions, error.as_deref().unwrap_or(tip_body),
                 if error.is_none() { attribution } else { "" }, &pages);
             let hovered = buttons.iter().position(|(_, rect)| rect.contains(pointer));
-            if last_pointer != (mx, my) {
-                if let Some(index) = hovered { focus = index; }
-                last_pointer = (mx, my);
+            if last_pointer != Some((mx, my)) {
+                focus = hovered;
+                last_pointer = Some((mx, my));
             }
             let backwards = is_key_pressed(KeyCode::Up) || (is_key_pressed(KeyCode::Tab)
                 && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)));
-            if backwards { focus = (focus + buttons.len() - 1) % buttons.len(); }
-            else if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Down) {
-                focus = (focus + 1) % buttons.len();
+            if backwards || is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Down) {
+                focus = Some(keyboard_focus(focus, buttons.len(), backwards));
             }
             if is_mouse_button_pressed(MouseButton::Left) { pressed = hovered; }
             let click = if is_mouse_button_released(MouseButton::Left) {
                 pressed.take().filter(|index| Some(*index) == hovered)
             } else { None };
             for (index, (command, rect)) in buttons.iter().enumerate() {
-                art.command(*rect, *command, index == focus, pressed == Some(index) && hovered == pressed);
+                art.command(*rect, *command, Some(index) == focus, pressed == Some(index) && hovered == pressed);
             }
             set_default_camera();
 
@@ -126,7 +134,7 @@ impl TitleScreen {
                 else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
                 else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
                 else if is_key_pressed(KeyCode::Enter) {
-                    Some(buttons[focus].0)
+                    Some(buttons[focus.unwrap_or(0)].0)
                 } else {
                     let modified = [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftAlt, KeyCode::RightAlt,
                         KeyCode::LeftSuper, KeyCode::RightSuper, KeyCode::LeftShift, KeyCode::RightShift]
@@ -559,6 +567,14 @@ fn wrap_at(text: &str, font: Option<&Font>, width: f32, size: u16) -> Vec<String
 mod tests {
     use super::*;
     use crate::{Options, Source};
+
+    #[test]
+    fn title_keyboard_navigation_can_enter_the_menu_from_an_unhighlighted_map() {
+        assert_eq!(keyboard_focus(None, 10, false), 0);
+        assert_eq!(keyboard_focus(None, 10, true), 9);
+        assert_eq!(keyboard_focus(Some(9), 10, false), 0);
+        assert_eq!(keyboard_focus(Some(0), 10, true), 9);
+    }
 
     #[test]
     fn original_title_hotkeys_open_only_available_entries_without_modifiers() {
