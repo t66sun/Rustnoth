@@ -34,7 +34,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
 ```
 
-有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。点 Filter 或按 Ctrl+F 可按名称搜索。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。打开战役窗口后可直接输入搜索词，或按 Ctrl+F 返回搜索框。空格分隔的词可分别匹配战役原文或译文中的名称、说明和缩写。当前战役仍符合条件时会保持选中。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
 
 ### 用原版地图建立遭遇战
 
