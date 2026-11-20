@@ -24,6 +24,7 @@ struct Entry<'a> {
     image: Option<&'a str>,
     background: Option<&'a str>,
     scenario: usize,
+    descriptor: Option<&'a Node>,
 }
 
 fn plain(source: &str) -> String {
@@ -44,7 +45,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
             date: sort::Date::read(node.attribute("start_year")),
             description: plain(&locale.attribute(install, node, "description", "")),
             icon: node.attribute("icon"), image: node.attribute("image"),
-            background: node.attribute("background"), scenario,
+            background: node.attribute("background"), scenario, descriptor: Some(node),
         })
     }).collect();
     let levels = root.children.iter().filter(|(tag, node)| tag == "scenario" && node.attribute("id").is_some())
@@ -54,7 +55,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
                 name: locale.attribute(install, node, "name", id),
                 date: sort::Date::Undated,
                 description: plain(&locale.attribute(install, node, "description", id)),
-                icon: None, image: None, background: None, scenario,
+                icon: None, image: None, background: None, scenario, descriptor: None,
             }
         }).collect();
     (campaigns, levels)
@@ -79,6 +80,7 @@ pub(super) struct Selector<'a> {
     description_offset: usize,
     last_click: Option<(usize, f64)>,
     art: Art,
+    difficulty_menu: difficulty::Menu<'a>,
 }
 
 impl<'a> Selector<'a> {
@@ -91,10 +93,14 @@ impl<'a> Selector<'a> {
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
             query: String::new(), editing: false, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
+            difficulty_menu: difficulty::Menu::default(),
         })
     }
 
     pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
+        if let Some(define) = self.difficulty_menu.define_for(campaign) {
+            return Some(define.to_owned());
+        }
         difficulty::choose(&mut self.art, campaign).await
     }
 
@@ -114,9 +120,11 @@ impl<'a> Selector<'a> {
         let toggle = Rect::new(panel.x, bottom, 120.0, 38.0);
         let (mx, my) = mouse_position();
         let pointer = vec2(mx/scale, my/scale);
-        let click = is_mouse_button_pressed(MouseButton::Left);
-        if is_key_pressed(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
-        if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || is_key_pressed(KeyCode::Tab)) {
+        let modal = self.difficulty_menu.is_open();
+        let key = |code| !modal && is_key_pressed(code);
+        let click = !modal && is_mouse_button_pressed(MouseButton::Left);
+        if key(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
+        if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || key(KeyCode::Tab)) {
             self.show_levels = !self.show_levels;
             self.editing = false;
             self.query.clear();
@@ -126,10 +134,10 @@ impl<'a> Selector<'a> {
             self.last_click = None;
         }
         if click { self.editing = search.contains(pointer); }
-        if is_key_pressed(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)) {
+        if key(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)) {
             self.editing = true;
         }
-        if self.editing {
+        if self.editing && !modal {
             let len = self.query.len();
             while let Some(c) = get_char_pressed() { if !c.is_control() { self.query.push(c); } }
             if is_key_pressed(KeyCode::Backspace) { self.query.pop(); }
@@ -159,13 +167,13 @@ impl<'a> Selector<'a> {
         let visible = ((list.bottom()-top)/row_h).floor().max(1.0) as usize;
         let last = rows.len().saturating_sub(1);
         let previous = self.cursor;
-        let step = if is_key_pressed(KeyCode::PageDown) { visible as isize }
-            else if is_key_pressed(KeyCode::PageUp) { -(visible as isize) }
-            else if is_key_pressed(KeyCode::Down) {1} else if is_key_pressed(KeyCode::Up) {-1} else {0};
+        let step = if key(KeyCode::PageDown) { visible as isize }
+            else if key(KeyCode::PageUp) { -(visible as isize) }
+            else if key(KeyCode::Down) {1} else if key(KeyCode::Up) {-1} else {0};
         self.cursor = self.cursor.saturating_add_signed(step).min(last);
-        if is_key_pressed(KeyCode::Home) { self.cursor = 0; }
-        if is_key_pressed(KeyCode::End) { self.cursor = last; }
-        let wheel = mouse_wheel().1;
+        if key(KeyCode::Home) { self.cursor = 0; }
+        if key(KeyCode::End) { self.cursor = last; }
+        let wheel = if modal { 0.0 } else { mouse_wheel().1 };
         if list.contains(pointer) && wheel != 0.0 {
             self.first = self.first.saturating_add_signed(if wheel > 0.0 {-3} else {3}).min(rows.len().saturating_sub(visible));
             self.cursor = self.cursor.clamp(self.first, (self.first+visible-1).min(last));
@@ -175,11 +183,11 @@ impl<'a> Selector<'a> {
         let body = Rect::new(list.x, top, list.w - 15.0, list.bottom() - top);
         let bar = Rect::new(body.right(), body.y, 15.0, body.h);
         let row_click = click && body.contains(pointer);
-        if is_mouse_button_down(MouseButton::Left) && bar.contains(pointer) && rows.len() > visible {
+        if !modal && is_mouse_button_down(MouseButton::Left) && bar.contains(pointer) && rows.len() > visible {
             self.first = (((pointer.y - bar.y) / bar.h) * (rows.len() - visible) as f32).round() as usize;
             self.cursor = self.cursor.clamp(self.first, (self.first + visible - 1).min(last));
         }
-        let mut confirmed = is_key_pressed(KeyCode::Enter) || (!self.editing && is_key_pressed(KeyCode::Space))
+        let mut confirmed = key(KeyCode::Enter) || (!self.editing && key(KeyCode::Space))
             || click && play.contains(pointer);
         if row_click {
             let row = ((pointer.y-top)/row_h) as usize;
@@ -288,6 +296,12 @@ impl<'a> Selector<'a> {
         }
         self.art.button(play, "game^Play", pointer);
         self.art.button(cancel, "Cancel", pointer);
+        if self.campaigns_only {
+            self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
+            let box_width = (window.w * 0.233).round();
+            let control = Rect::new(window.right()-18.0-box_width, window.bottom()-98.0, box_width, 30.0);
+            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing);
+        }
         action
     }
 }
