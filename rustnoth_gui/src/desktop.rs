@@ -84,7 +84,7 @@ fn executable(root: &Path) -> io::Result<PathBuf> {
         "Game data preparation requires the Wesnoth 1.18.8 executable in the installation directory or PATH."))
 }
 
-fn cache_directory() -> io::Result<PathBuf> {
+pub(super) fn cache_directory() -> io::Result<PathBuf> {
     let base = if cfg!(windows) { env::var_os("LOCALAPPDATA").map(PathBuf::from) }
         else { env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(||
             env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache"))) };

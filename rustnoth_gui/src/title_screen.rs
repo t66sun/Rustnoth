@@ -11,6 +11,7 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+mod version;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -26,7 +27,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language, About }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -41,6 +42,7 @@ impl Command {
             Self::Community => "Community",
             Self::Quit => "Quit",
             Self::Language => "Language",
+            Self::About => "Display the game version and build information",
             Self::Help => "Help",
             Self::Previous => "Previous",
             Self::Next => "Next",
@@ -98,7 +100,6 @@ impl TitleScreen {
             for (index, (command, rect)) in buttons.iter().enumerate() {
                 art.command(*rect, *command, index == focus, pressed == Some(index) && hovered == pressed);
             }
-            dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
             set_default_camera();
 
             let command = if is_key_pressed(KeyCode::Escape) { Some(Command::Quit) }
@@ -110,6 +111,9 @@ impl TitleScreen {
                 } else { click.map(|index| buttons[index].0) };
             match command {
                 Some(Command::Quit) => return Ok(()),
+                Some(Command::About) => {
+                    error = version::show(&self.root, &art).await.err().map(|e| e.to_string());
+                }
                 Some(Command::Previous) => { error = None; tip = (tip + entries.len() - 1) % entries.len(); }
                 Some(Command::Next) => { error = None; tip = (tip + 1) % entries.len(); }
                 Some(Command::Community) => {
@@ -165,7 +169,6 @@ impl TitleScreen {
                         for (command, bounds) in art.draw_panels(w, h, actions, body, source) {
                             art.command(bounds, command, command == Command::Preferences, false);
                         }
-                        dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
                     }).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
@@ -229,6 +232,7 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 struct Art {
+    about: version::Footer,
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     background: Texture2D,
@@ -302,6 +306,10 @@ impl Art {
     }
 
     fn command(&self, rect:Rect, cmd:Command, focused:bool, pressed:bool) {
+        if cmd == Command::About {
+            self.about.draw(self, rect, focused, pressed);
+            return;
+        }
         let text=self.locale.ui(cmd.label());
         if cmd==Command::Language {
             self.button_frame(rect, focused, pressed);
@@ -316,6 +324,7 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            about: version::Footer::load(root)?,
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
@@ -379,6 +388,7 @@ impl Art {
         buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
         buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
         buttons.push((Command::Next, next));
+        buttons.push((Command::About, version::footer_bounds(h)));
         let language_w = (measure_text(self.locale.ui("Language"), font, 14, 1.0).width + 40.0).max(80.0);
         buttons.push((Command::Language,Rect::new(w-10.0-language_w,h-35.0,language_w,25.0)));
         buttons
