@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod fill;
 mod palette;
 
 use crate::{
@@ -10,24 +11,32 @@ use crate::{
 use engine_lite::{hex::Hex, map::editor::EditableMap, observation::Observation, wml};
 use macroquad::prelude::*;
 use palette::{Art, Palette};
+use fill::{Region, Tool};
 use rustnoth_gui::{
     assets::AssetCatalog,
     layout::{BoardLayout, Viewport},
 };
-use std::{collections::BTreeMap, error::Error, fs, path::Path};
+use std::{collections::{BTreeMap, HashSet}, error::Error, fs, path::Path};
 
 type Changes = BTreeMap<Hex, String>;
+
+enum Edit {
+    Terrain(Changes),
+    Selection(HashSet<Hex>),
+}
 
 #[derive(Default)]
 struct History {
     stroke: Changes,
-    undo: Vec<Changes>,
-    redo: Vec<Changes>,
+    selected: HashSet<Hex>,
+    selection_stroke: HashSet<Hex>,
+    undo: Vec<Edit>,
+    redo: Vec<Edit>,
 }
 
 impl History {
     fn paint(&mut self, doc: &mut EditableMap, at: Hex, code: &str) {
-        if let Some(old) = doc.paint(at, code) {
+        if let Some(old) = doc.paint_stored(at, code) {
             self.stroke.entry(at).or_insert(old);
         }
     }
@@ -36,28 +45,66 @@ impl History {
         if self.stroke.is_empty() {
             return false;
         }
-        self.undo.push(std::mem::take(&mut self.stroke));
+        self.undo.push(Edit::Terrain(std::mem::take(&mut self.stroke)));
         self.redo.clear();
         true
     }
 
+    fn select(&mut self, at: Hex, add: bool) {
+        let changed = if add { self.selected.insert(at) } else { self.selected.remove(&at) };
+        if changed && !self.selection_stroke.insert(at) {
+            self.selection_stroke.remove(&at);
+        }
+    }
+
+    fn finish_selection(&mut self) {
+        if !self.selection_stroke.is_empty() {
+            self.undo.push(Edit::Selection(std::mem::take(&mut self.selection_stroke)));
+            self.redo.clear();
+        }
+    }
+
+    fn fill_selected(&mut self, doc: &mut EditableMap, brush: &palette::Brush) -> bool {
+        for &at in &self.selected {
+            if let Some(old) = doc.map().terrain_at(at) {
+                let code = brush.paint(old, false);
+                if let Some(old) = doc.paint_stored(at, &code) {
+                    self.stroke.entry(at).or_insert(old);
+                }
+            }
+        }
+        self.finish()
+    }
+
+    // Return whether the terrain renderer needs rebuilding.
     fn apply(&mut self, doc: &mut EditableMap, undo: bool) -> bool {
         let (from, to) = if undo {
             (&mut self.undo, &mut self.redo)
         } else {
             (&mut self.redo, &mut self.undo)
         };
-        let Some(changes) = from.pop() else {
+        let Some(edit) = from.pop() else {
             return false;
         };
-        let mut inverse = Changes::new();
-        for (hex, code) in changes {
-            if let Some(old) = doc.paint(hex, &code) {
-                inverse.insert(hex, old);
+        match edit {
+            Edit::Selection(delta) => {
+                for &hex in &delta {
+                    if !self.selected.remove(&hex) { self.selected.insert(hex); }
+                }
+                to.push(Edit::Selection(delta));
+                false
+            }
+            Edit::Terrain(changes) => {
+                let mut inverse = Changes::new();
+                for (hex, code) in changes {
+                    if let Some(old) = doc.paint_stored(hex, &code) {
+                        inverse.insert(hex, old);
+                    }
+                }
+                to.push(Edit::Terrain(inverse));
+                true
             }
         }
-        to.push(inverse);
-        true
     }
 }
 
@@ -69,6 +116,7 @@ enum Command {
     Exit,
     Undo,
     Redo,
+    FillSelection,
 }
 
 impl Command {
@@ -80,6 +128,7 @@ impl Command {
             Self::Exit => "Quit to Title Screen",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::FillSelection => "Fill Selection",
         }
     }
 }
@@ -94,7 +143,8 @@ fn draw_terrain(
     view: &Observation,
     layout: &BoardLayout,
     area: Viewport,
-    stroke: &Changes,
+    history: &History,
+    region: &Region,
     doc: &EditableMap,
     palette: &Palette,
     art: &mut Art,
@@ -121,12 +171,18 @@ fn draw_terrain(
                         "",
                         ms,
                     );
+                    if front && history.selected.contains(&hex) {
+                        art.image(assets, "editor/selection-overlay.png", Rect::new(left, top, size, size));
+                    }
+                    if front && region.contains(hex) {
+                        art.image(assets, "editor/brush.png", Rect::new(left, top, size, size));
+                    }
                 }
             }
         }
     }
     // Show brush feedback while the pointer is held. Rebuild connected terrain once per stroke.
-    for &at in stroke.keys() {
+    for &at in history.stroke.keys() {
         let [x, y] = layout.tile_origin(at);
         if let Some(code) = doc.map().terrain_at(at) {
             let (base, overlay) = code.split_once('^').unwrap_or((code, ""));
@@ -260,7 +316,7 @@ impl Chrome {
             let commands: &[Command] = if file {
                 &[Command::New, Command::Open, Command::Save, Command::Exit]
             } else {
-                &[Command::Undo, Command::Redo]
+                &[Command::Undo, Command::Redo, Command::FillSelection]
             };
             for (i, &cmd) in commands.iter().enumerate() {
                 let r = Rect::new(
@@ -313,9 +369,14 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
     let mut drawing = None;
+    let mut selecting = false;
+    let mut last_selection = None;
+    let mut tool = Tool::Paint;
+    let mut region = Region::default();
     next_frame().await;
     loop {
         if rebuild {
+            region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
             mini.load(&view, &assets);
@@ -347,15 +408,56 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             is_mouse_button_pressed(MouseButton::Middle),
             is_mouse_button_down(MouseButton::Middle),
         );
-        let at = camera.hex_at(p);
         let modal = chrome.menu.is_some();
-        if !modal && let Some(hex) = at {
+        if !modal && !ctrl {
+            if is_key_pressed(KeyCode::P) {
+                tool = Tool::Paint;
+            } else if is_key_pressed(KeyCode::F) && !shift {
+                tool = Tool::Fill;
+            } else if is_key_pressed(KeyCode::S) {
+                tool = Tool::Select;
+            }
+        }
+        if tool != Tool::Paint && drawing.take().is_some() {
+            rebuild |= history.finish();
+        }
+        if selecting && (tool != Tool::Select || !is_mouse_button_down(MouseButton::Left)) {
+            history.finish_selection();
+            selecting = false;
+            last_selection = None;
+        }
+        let at = if tool != Tool::Paint && area.contains(p) {
+            camera.layout().and_then(|layout| layout.editor_hex_at(p))
+        } else {
+            camera.hex_at(p)
+        };
+        region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
+        if tool == Tool::Select && !modal {
+            if let Some(hex) = at {
+                selecting |= is_mouse_button_pressed(MouseButton::Left);
+                let same_brush = last_selection.is_some_and(|(prior, remove, wand)| {
+                    remove == ctrl && wand == shift && (prior == hex || shift && region.contains(prior))
+                });
+                if selecting && !same_brush {
+                    if shift {
+                        for at in region.hexes() { history.select(at, !ctrl); }
+                    } else {
+                        history.select(hex, !ctrl);
+                    }
+                    last_selection = Some((hex, ctrl, shift));
+                }
+            }
+        } else if !modal && let Some(hex) = at {
             for (btn, foreground) in [(MouseButton::Left, true), (MouseButton::Right, false)] {
                 if is_mouse_button_pressed(btn) {
                     if ctrl {
                         if let Some(code) = doc.map().terrain_at(hex) {
                             palette.sample(code, foreground);
                         }
+                    } else if tool == Tool::Fill {
+                        let i = if foreground { palette.fg } else { palette.bg };
+                        rebuild |= region.paint(&mut doc, &mut history, hex, &palette.brushes[i], shift);
+                        break;
                     } else {
                         drawing = Some(btn);
                     }
@@ -389,7 +491,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 &view,
                 layout,
                 area,
-                &history.stroke,
+                &history,
+                &region,
                 &doc,
                 &palette,
                 &mut art,
@@ -397,11 +500,13 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             );
             if let Some(hex) = at {
                 let [x, y] = layout.tile_origin(hex);
-                art.image(
-                    &assets,
-                    "misc/hover-hex.png",
-                    Rect::new(x, y, layout.tile_size(), layout.tile_size()),
-                );
+                let rect = Rect::new(x, y, layout.tile_size(), layout.tile_size());
+                art.image(&assets, "misc/hover-hex.png", rect);
+                if tool == Tool::Select && !modal {
+                    if !shift { art.image(&assets, "editor/brush.png", rect); }
+                    let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
+                    art.tinted(&assets, icon, rect, Color::from_rgba(255, 255, 255, 196));
+                }
             }
         }
         let title = format!(
@@ -435,12 +540,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             let world = (point - origin) / zoom;
             camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
-        let panel = Rect::new(
-            w - sidebar,
-            mini_rect.bottom() + 6.0,
-            sidebar,
-            h - mini_rect.bottom() - 6.0,
-        );
+        let tools = Rect::new(w - sidebar, mini_rect.bottom() + 6.0, sidebar, 70.0);
+        tool = tool.panel(tools, point, &mut art, &assets, &mut chrome.tip);
+        let panel = Rect::new(w - sidebar, tools.bottom(), sidebar, h - tools.bottom());
         art.image(&assets, "themes/editor/classic/palette.png", panel);
         art.image(
             &assets,
@@ -459,6 +561,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             tip.to_owned()
         } else if !status.is_empty() {
             status.clone()
+        } else if tool == Tool::Select {
+            "Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()
         } else if let Some(hex) = at {
             format!(
                 "{},{}     {}     Ctrl-click to sample · Shift to paint one layer",
@@ -493,6 +597,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if ctrl && is_key_pressed(KeyCode::Y) {
             command = Some(Command::Redo);
         }
+        if !modal && shift && !ctrl && is_key_pressed(KeyCode::F) {
+            command = Some(Command::FillSelection);
+        }
         if is_key_pressed(KeyCode::Escape) {
             if chrome.menu.take().is_none() {
                 command = Some(Command::Exit);
@@ -500,6 +607,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         }
         if let Some(cmd) = command {
             drawing = None;
+            selecting = false;
+            last_selection = None;
+            history.finish_selection();
             rebuild |= history.finish();
             match cmd {
                 Command::Exit => {
@@ -526,6 +636,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                         Err(e) => status = e.to_string(),
                         _ => {}
                     }
+                }
+                Command::FillSelection => {
+                    rebuild |= history.fill_selected(&mut doc, &palette.brushes[palette.bg]);
                 }
                 Command::New | Command::Open => {
                     let incoming: Result<Option<(EditableMap, String)>, Box<dyn Error>> =
@@ -574,6 +687,39 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_edits_and_background_fill_share_undo_order() {
+        let mut doc = new_map();
+        let mut history = History::default();
+        let a = Hex { x: 0, y: 0 };
+        let b = Hex { x: -1, y: 0 };
+        history.select(a, true);
+        history.select(a, true);
+        history.select(b, true);
+        history.finish_selection();
+        assert!(!doc.dirty());
+        history.select(a, false);
+        history.finish_selection();
+        let cfg = wml::parse("[terrain_type]\nstring=Ww\neditor_group=water\nsymbol_image=water\n[/terrain_type]").unwrap();
+        let palette = Palette::new(&cfg).unwrap();
+        assert!(history.fill_selected(&mut doc, &palette.brushes[palette.bg]));
+        assert_eq!(doc.map().terrain_at(b), Some("Ww"));
+        assert_eq!(doc.map().terrain_at(a), Some("Gg"));
+        assert_eq!(history.selected, HashSet::from([b]));
+        assert!(history.apply(&mut doc, true));
+        assert!(!doc.dirty());
+        history.apply(&mut doc, true);
+        assert_eq!(history.selected, HashSet::from([a, b]));
+        history.apply(&mut doc, true);
+        assert!(history.selected.is_empty());
+        history.apply(&mut doc, false);
+        history.apply(&mut doc, false);
+        assert!(history.apply(&mut doc, false));
+        assert_eq!(history.selected, HashSet::from([b]));
+        assert_eq!(doc.map().terrain_at(b), Some("Ww"));
+    }
+
     #[test]
     fn a_brush_stroke_undoes_and_redoes_as_one_edit() {
         let mut doc = new_map();

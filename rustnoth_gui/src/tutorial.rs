@@ -16,12 +16,9 @@ pub(super) fn insert_entry(catalog: &mut Node, source: &str) -> Result<(), Box<d
     // The stock campaign descriptor precedes the define which includes its scenarios and Lua.
     let metadata = source.split_once("#ifdef TUTORIAL").ok_or("missing tutorial campaign definition")?.0;
     let root = wml::parse(metadata)?;
-    let (_, mut entry) = root.children.into_iter().find(|(tag, cfg)| tag == "campaign"
+    let (_, entry) = root.children.into_iter().find(|(tag, cfg)| tag == "campaign"
         && cfg.attribute("id") == Some("Tutorial") && cfg.attribute("first_scenario") == Some(FIRST_SCENARIO))
         .ok_or("missing Battle Training campaign entry")?;
-    let desc = entry.attributes.entry("description".into()).or_default();
-    desc.text.push_str("\n\n");
-    desc.text.push_str(SCOPE);
     let mut level = Node::default();
     put(&mut level, "id", FIRST_SCENARIO);
     put(&mut level, "name", SCOPE);
