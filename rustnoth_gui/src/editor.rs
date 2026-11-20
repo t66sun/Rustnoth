@@ -296,7 +296,7 @@ impl Chrome {
 pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let assets = AssetCatalog::parse(root, core, b"")?;
-    let mut palette = Palette::new(&wml::parse(core)?)?;
+    let mut palette = Palette::load(&wml::parse(core)?, root)?;
     let mut art = Art::new();
     let mut doc = new_map();
     let mut view = render::map_observation(doc.map());
@@ -348,7 +348,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             is_mouse_button_down(MouseButton::Middle),
         );
         let at = camera.hex_at(p);
-        let modal = chrome.menu.is_some();
+        let palette_menu = palette.group_menu_open();
+        let modal = chrome.menu.is_some() || palette_menu;
         if !modal && let Some(hex) = at {
             for (btn, foreground) in [(MouseButton::Left, true), (MouseButton::Right, false)] {
                 if is_mouse_button_pressed(btn) {
@@ -435,48 +436,34 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             let world = (point - origin) / zoom;
             camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
-        let panel = Rect::new(
-            w - sidebar,
-            mini_rect.bottom() + 6.0,
-            sidebar,
-            h - mini_rect.bottom() - 6.0,
-        );
-        art.image(&assets, "themes/editor/classic/palette.png", panel);
-        art.image(
-            &assets,
-            "themes/editor/classic/palette_top.png",
-            Rect::new(panel.x, panel.y, panel.w, 90.0),
-        );
-        palette.panel(panel, point, &assets, &mut art, form.font.as_ref());
-        draw_rectangle(
-            0.0,
-            h - 26.0,
-            w - sidebar,
-            26.0,
-            Color::from_rgba(30, 31, 34, 255),
-        );
-        let caption = if let Some(tip) = chrome.tip {
-            tip.to_owned()
+        let compact = w < 1024.0 || h < 768.0;
+        let palette_y = if compact { 312.0 } else { 467.0 };
+        let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
+        palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
+        let font = form.font.as_ref();
+        let lines = if let Some(tip) = chrome.tip {
+            vec![tip.to_owned()]
         } else if !status.is_empty() {
-            status.clone()
-        } else if let Some(hex) = at {
-            format!(
-                "{},{}     {}     Ctrl-click to sample · Shift to paint one layer",
-                hex.x + 1,
-                hex.y + 1,
-                doc.map().terrain_at(hex).unwrap_or("")
-            )
+            vec![status.clone()]
         } else {
-            "Left and right click paint the two selected terrains".into()
+            palette.help().into()
         };
-        dialog::text(
-            form.font.as_ref(),
-            &dialog::fit(form.font.as_ref(), caption, w - sidebar - 18.0, 15),
-            9.0,
-            h - 8.0,
-            15,
-            WHITE,
-        );
+        let mut font_size = 18;
+        let width = loop {
+            let max_width = lines.iter().map(|line| measure_text(line, font, font_size, 1.0).width)
+                .fold(0.0, f32::max);
+            if max_width <= w * 0.5 || font_size <= 8 {
+                break max_width;
+            }
+            font_size -= 1;
+        };
+        let line_height = font_size as f32 + 6.0;
+        let x = (w - width) * 0.5;
+        let y = h - line_height * lines.len() as f32 - 10.0;
+        draw_rectangle(x - 5.0, y, width + 10.0, h - y, Color::from_rgba(0, 0, 0, 0xbb));
+        for (row, line) in lines.iter().enumerate() {
+            dialog::text(font, line, x, y + 5.0 + font_size as f32 + row as f32 * line_height, font_size, WHITE);
+        }
         set_default_camera();
         if ctrl && is_key_pressed(KeyCode::N) {
             command = Some(Command::New);
@@ -493,7 +480,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if ctrl && is_key_pressed(KeyCode::Y) {
             command = Some(Command::Redo);
         }
-        if is_key_pressed(KeyCode::Escape) {
+        if is_key_pressed(KeyCode::Escape) && !palette_menu {
             if chrome.menu.take().is_none() {
                 command = Some(Command::Exit);
             }
