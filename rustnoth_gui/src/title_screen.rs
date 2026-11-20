@@ -11,6 +11,8 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+mod addons;
+mod profile;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -26,7 +28,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Addons, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -34,6 +36,7 @@ impl Command {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
             Self::Load => "Load",
+            Self::Addons => "Add-ons",
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
             Self::Achievements => "Achievements",
@@ -49,8 +52,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -142,6 +145,10 @@ impl TitleScreen {
                         Ok(None) => {}
                         Err(e) => error = Some(e.to_string()),
                     }
+                }
+                Some(Command::Addons) => {
+                    next_frame().await;
+                    error = addons::show(&self.root, &art).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Load) => {
                     next_frame().await;
@@ -464,8 +471,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
     }
 
     #[test]
