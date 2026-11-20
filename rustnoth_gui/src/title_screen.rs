@@ -60,6 +60,20 @@ fn menu(campaign: bool) -> &'static [Command] {
     else { &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
+fn shortcut(key: KeyCode, modified: bool, available: &[Command]) -> Option<Command> {
+    if modified { return None; }
+    let action = match key {
+        KeyCode::C => Command::Campaigns,
+        KeyCode::M => Command::Multiplayer,
+        KeyCode::A => Command::Addons,
+        KeyCode::E => Command::Editor,
+        KeyCode::Space => Command::Credits,
+        KeyCode::L => return Some(Command::Language),
+        _ => return None,
+    };
+    available.contains(&action).then_some(action)
+}
+
 impl TitleScreen {
     pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
@@ -111,9 +125,15 @@ impl TitleScreen {
                 else if is_key_pressed(KeyCode::F1) { Some(Command::Help) }
                 else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
                 else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
-                else if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                else if is_key_pressed(KeyCode::Enter) {
                     Some(buttons[focus].0)
-                } else { click.map(|index| buttons[index].0) };
+                } else {
+                    let modified = [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftAlt, KeyCode::RightAlt,
+                        KeyCode::LeftSuper, KeyCode::RightSuper, KeyCode::LeftShift, KeyCode::RightShift]
+                        .into_iter().any(is_key_down);
+                    get_last_key_pressed().and_then(|key| shortcut(key, modified, actions))
+                        .or_else(|| click.map(|index| buttons[index].0))
+                };
             match command {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::About) => {
@@ -539,6 +559,17 @@ fn wrap_at(text: &str, font: Option<&Font>, width: f32, size: u16) -> Vec<String
 mod tests {
     use super::*;
     use crate::{Options, Source};
+
+    #[test]
+    fn original_title_hotkeys_open_only_available_entries_without_modifiers() {
+        for (key, action) in [(KeyCode::C, Command::Campaigns), (KeyCode::M, Command::Multiplayer),
+            (KeyCode::A, Command::Addons), (KeyCode::E, Command::Editor),
+            (KeyCode::Space, Command::Credits), (KeyCode::L, Command::Language)] {
+            assert_eq!(shortcut(key, false, menu(true)), Some(action));
+            assert_eq!(shortcut(key, true, menu(true)), None);
+        }
+        assert_eq!(shortcut(KeyCode::C, false, menu(false)), None);
+    }
 
     #[test]
     fn title_routes_only_to_games_with_their_required_inputs() {
