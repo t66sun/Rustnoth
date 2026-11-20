@@ -85,8 +85,18 @@ impl Command {
 }
 
 fn new_map() -> EditableMap {
-    let row = vec!["Gg"; 26].join(", ");
-    EditableMap::parse(vec![row; 19].join("\n") + "\n").expect("fixed 24 by 17 blank map")
+    // Wesnoth's default context is 44 by 33 playable hexes with one stored border.
+    let row = ["Gg"; 44 + 2].join(", ");
+    EditableMap::parse(vec![row; 33 + 2].join("\n") + "\n").expect("valid blank grass map")
+}
+
+fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observation, fit: bool) {
+    let opening = camera.layout().is_none();
+    camera.update(area, view, fit);
+    if opening && !fit {
+        // The editor opens at zero scroll, exposing its top and left half-hex borders.
+        camera.center_world([0.0, 0.0]);
+    }
 }
 
 fn draw_terrain(
@@ -340,7 +350,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             || is_key_down(KeyCode::LeftSuper)
             || is_key_down(KeyCode::RightSuper);
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-        camera.update(area, &view, is_key_pressed(KeyCode::Home));
+        update_editor_camera(&mut camera, area, &view, is_key_pressed(KeyCode::Home));
         camera.scroll(p, mouse_wheel().1);
         camera.drag(
             p,
@@ -574,6 +584,28 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_editor_opens_at_the_northwest_border_of_its_native_grass_map() {
+        let doc = new_map();
+        let map = doc.map();
+        assert_eq!((map.width(), map.height()), (44, 33));
+        assert_eq!(map.terrain_at(Hex { x: -1, y: -1 }), Some("Gg"));
+        assert_eq!(map.terrain_at(Hex { x: 44, y: 33 }), Some("Gg"));
+        let view = render::map_observation(map);
+        let area = Viewport { x: 0.0, y: 67.0, width: 1019.0, height: 753.0 };
+        let mut camera = BoardCamera::default();
+        update_editor_camera(&mut camera, area, &view, false);
+        let origin = Hex { x: 0, y: 0 };
+        let layout = camera.layout().unwrap();
+        assert_eq!(layout.tile_size(), 72.0);
+        assert_eq!(layout.tile_origin(origin), [27.0, 103.0]);
+        camera.pan([-54.0, -72.0]);
+        update_editor_camera(&mut camera, area, &view, false);
+        assert_eq!(camera.layout().unwrap().tile_origin(origin), [-27.0, 31.0]);
+        update_editor_camera(&mut camera, area, &view, true);
+        assert!(camera.layout().unwrap().tile_size() < 72.0);
+    }
     #[test]
     fn a_brush_stroke_undoes_and_redoes_as_one_edit() {
         let mut doc = new_map();
