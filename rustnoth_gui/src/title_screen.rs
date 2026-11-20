@@ -11,6 +11,9 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+mod addons;
+mod profile;
+mod panel_blur;
 mod panel_grid;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
@@ -27,7 +30,7 @@ pub(super) struct TitleScreen {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command { Campaigns, Multiplayer, Load, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
+enum Command { Campaigns, Multiplayer, Load, Addons, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language }
 
 impl Command {
     fn label(self) -> &'static str {
@@ -35,6 +38,7 @@ impl Command {
             Self::Campaigns => "Campaigns",
             Self::Multiplayer => "Multiplayer",
             Self::Load => "Load",
+            Self::Addons => "Add-ons",
             Self::Editor => "Map Editor",
             Self::Preferences => "Preferences",
             Self::Achievements => "Achievements",
@@ -50,8 +54,8 @@ impl Command {
 }
 
 fn menu(campaign: bool) -> &'static [Command] {
-    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
-    else { &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
+    if campaign { &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
+    else { &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
 impl TitleScreen {
@@ -143,6 +147,10 @@ impl TitleScreen {
                         Ok(None) => {}
                         Err(e) => error = Some(e.to_string()),
                     }
+                }
+                Some(Command::Addons) => {
+                    next_frame().await;
+                    error = addons::show(&self.root, &art).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Load) => {
                     next_frame().await;
@@ -254,6 +262,7 @@ impl TipPages {
 }
 
 struct Art {
+    blurred_panels: std::cell::RefCell<Option<panel_blur::Panels>>,
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     background: Texture2D,
@@ -276,7 +285,18 @@ fn centered(view: Vec2, size: Vec2) -> Rect {
 }
 
 fn fit_map(view: Vec2, size: Vec2) -> Rect {
-    centered(view, (size * (view.x / size.x).min(view.y / size.y)).round())
+    // title_screen.cfg divides in WFL's three-decimal fixed point, then rounds
+    // each scaled image dimension. Its centering expression divides integers.
+    let view = view.round().as_ivec2();
+    let size = size.as_ivec2();
+    let ratios = (view * 1000 + size / 2) / size;
+    let scaled = (size * ratios.min_element() + IVec2::splat(500)) / 1000;
+    let origin = ((view - scaled) / 2).max(IVec2::ZERO);
+    Rect::new(origin.x as f32, origin.y as f32, scaled.x as f32, scaled.y as f32)
+}
+
+fn logo_bounds(view_width: f32, size: Vec2) -> Rect {
+    Rect::new(((view_width - size.x) / 2.0).floor(), 30.0, size.x, size.y)
 }
 
 fn panel(rect: Rect) {
@@ -318,6 +338,7 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 
 impl Art {
     fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+        *self.blurred_panels.get_mut() = None;
         self.map = map;
         self.logo = logo;
         if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
@@ -341,6 +362,7 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            blurred_panels: Default::default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
@@ -358,11 +380,8 @@ impl Art {
         let view = vec2(w, h);
         image(Rect::new(0.0, 0.0, w, h), &self.background);
         image(fit_map(view, self.map.size()), &self.map);
-        let scale = (w / self.logo.width()).min((h * 0.42) / self.logo.height()).min(1.0);
         for texture in [&self.logo_shadow, &self.logo] {
-            let mut rect = centered(view, (texture.size() * scale).round());
-            rect.y = 30.0;
-            image(rect, texture);
+            image(logo_bounds(w, texture.size()), texture);
         }
     }
 
@@ -395,6 +414,7 @@ impl Art {
         let panel_grid::Panels { tip, menu } = panel_grid::place(
             vec2(w, h), vec2(tip_w, tip_h), vec2(menu_w, menu_h), footer_height,
         );
+        panel_blur::draw(&self.blurred_panels, [tip, menu], vec2(w, h));
         panel(tip);
         panel(menu);
         let text_color = Color::from_rgba(215, 215, 215, 255);
@@ -499,8 +519,8 @@ mod tests {
         assert_eq!(options(&["--title", "campaign", "maps", "core", "42"]).source,
             Source::Title(Some(("campaign".into(), "maps".into()))));
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
-        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
-        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+        assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
     }
 
     #[test]
@@ -508,6 +528,14 @@ mod tests {
         let map = vec2(1000.0, 700.0);
         assert_eq!(fit_map(vec2(1600.0, 700.0), map), Rect::new(300.0, 0.0, 1000.0, 700.0));
         assert_eq!(fit_map(vec2(500.0, 700.0), map), Rect::new(0.0, 175.0, 500.0, 350.0));
+    }
+
+    #[test]
+    fn title_art_uses_the_native_fixed_point_scale_and_integer_grid_positions() {
+        let map = vec2(1280.0, 960.0);
+        assert_eq!(fit_map(vec2(1200.0, 820.0), map), Rect::new(53.0, 0.0, 1093.0, 820.0));
+        assert_eq!(fit_map(vec2(1280.0, 725.0), map), Rect::new(157.0, 0.0, 966.0, 725.0));
+        assert_eq!(logo_bounds(801.0, vec2(600.0, 200.0)), Rect::new(100.0, 30.0, 600.0, 200.0));
     }
 
     #[test]
