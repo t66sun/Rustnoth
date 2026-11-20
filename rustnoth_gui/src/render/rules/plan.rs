@@ -109,11 +109,6 @@ fn apply<'a>(
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
-            // The stock default theme installs an invisible base image for OFF_MAP_USER
-            // before any WML rule. Authored holes can be inside the map rectangle.
-            if groups[types[&hex]].0 == "_off^_usr" {
-                tile.flags.insert("base".into());
-            }
             tile.flags
                 .insert(if inside { "_board" } else { "_border" }.into());
             (hex, tile)
@@ -185,8 +180,10 @@ mod tests {
     use engine_lite::observation::ObservedTile;
 
     #[test]
-    fn authored_offmap_inside_the_rectangle_keeps_the_theme_backdrop_visible() {
-        let catalog = super::super::compile::compile(&[], &[]);
+    fn authored_offmap_inside_the_rectangle_uses_the_themes_textured_hex() {
+        let catalog = super::super::compile::compile_files(&[], HashMap::from([
+            ("off-map/alpha.png".to_owned(), "off-map/alpha.png".into())
+        ]));
         let at = Hex { x: 1, y: 0 };
         let view = Observation {
             side: 1,
@@ -205,7 +202,11 @@ mod tests {
         };
         let tiles = build(&catalog, &view);
         assert!(tiles[&at].flags.contains("base") && tiles[&at].flags.contains("_board"));
-        assert!(tiles[&at].layers.is_empty());
+        let layers = &tiles[&at].layers;
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].layer, -1000);
+        let frame = catalog.images[layers[0].image].variants[0].choices[0][0].0;
+        assert_eq!(catalog.names[frame], "off-map/alpha.png");
         assert!(!tiles.contains_key(&Hex { x: 0, y: 0 }));
     }
 }
