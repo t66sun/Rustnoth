@@ -81,9 +81,16 @@ impl Bitmaps {
                     );
                 }
                 "MASK" => {
-                    let other = self.read(catalog, arg(0))?;
-                    if data.dimensions() == other.dimensions() {
+                    let (x, y) = if args.len() == 3 { (num(1), num(2)) } else { (0, 0) };
+                    // Invalid MASK arguments discard this modifier, leaving the source in the chain.
+                    if x < 0 || y < 0 { continue; }
+                    let Some(other) = self.read(catalog, arg(0)) else { continue };
+                    if x == 0 && y == 0 && data.dimensions() == other.dimensions() {
                         mask(&mut data, &other);
+                    } else {
+                        let mut positioned = RgbaImage::new(data.width(), data.height());
+                        imageops::replace(&mut positioned, other.as_ref(), i64::from(x), i64::from(y));
+                        mask(&mut data, &positioned);
                     }
                 }
                 "O" => apply_opacity(&mut data, arg(0)),
@@ -211,5 +218,33 @@ mod tests {
         let frame = bitmaps.pixels(&catalog, 0, None).unwrap();
         assert_eq!(frame.get_pixel(0, 0)[3], 0);
         assert_eq!(frame.get_pixel(35, 35).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn positioned_masks_clip_the_stencil_and_clear_alpha_outside_its_bounds() {
+        let file = std::env::temp_dir().join(format!("rustnoth-mask-{}.png", std::process::id()));
+        let source = RgbaImage::from_pixel(3, 2, Rgba([23, 61, 17, 120]));
+        source.save(&file).unwrap();
+        let mut catalog = crate::render::rules::compile::compile(&[], &[]);
+        catalog.files.insert("base.png".into(), file.clone());
+        let mut bitmaps = Bitmaps::default();
+        let stencil = RgbaImage::from_fn(2, 2, |x, y| {
+            Rgba([3, 2, 1, if x == y { 70 } else { 250 }])
+        });
+        bitmaps.sources.insert("stencil.png".into(), Rc::new(stencil));
+        for (arguments, expected) in [
+            ("stencil.png", [70, 120, 0, 120, 70, 0]),
+            ("stencil.png,1,1", [0, 0, 0, 0, 70, 120]),
+            ("stencil.png,2,0", [0, 0, 70, 0, 0, 120]),
+            ("stencil.png,3,0", [0; 6]),
+            ("stencil.png,-1,0", [120; 6]),
+            ("missing.png", [120; 6]),
+        ] {
+            let result = bitmaps.read(&catalog, &format!("base.png~MASK({arguments})")).unwrap();
+            for (p, alpha) in result.pixels().zip(expected) {
+                assert_eq!(p.0, [23, 61, 17, alpha], "{arguments}");
+            }
+        }
+        std::fs::remove_file(file).unwrap();
     }
 }
