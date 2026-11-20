@@ -295,8 +295,8 @@ mod tests {
         fs::create_dir_all(root.join("images/misc/l10n/zh_CN")).unwrap();
         let locales = root.join("data/languages");
         fs::create_dir_all(&locales).unwrap();
-        fs::write(locales.join("chinese.cfg"), "[locale]\nlocale=zh_CN\nname=简体中文 (Jiăntĭ Zhōngwén)\n[/locale]").unwrap();
-        fs::write(locales.join("english.cfg"), "[locale]\nlocale=en_US\nname=English (US)\n[/locale]").unwrap();
+        fs::write(locales.join("zh_CN.cfg"), "[locale]\nlocale=zh_CN\nname=\"简体中文 (Jiăntĭ Zhōngwén)\"\n[/locale]").unwrap();
+        fs::write(locales.join("en_US.cfg"), "[locale]\nlocale=en_US\nname=\"English (US)\"\n[/locale]").unwrap();
         let languages = list(&root).unwrap();
         fs::write(root.join("images/misc/l10n/zh_CN/logo.png"), []).unwrap();
         assert_eq!(saved(&root).unwrap(), "");
