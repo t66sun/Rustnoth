@@ -90,6 +90,18 @@ impl BoardLayout {
         layout.panned([center[0] - left - 36.0, center[1] - top - 36.0])
     }
 
+    /// Reapply Wesnoth's scroll bounds at the current zoom when the map area changes size.
+    pub fn resized(&self, viewport: Viewport) -> Option<Self> {
+        let mut layout = Self::fit_with_border(self.width, self.height, viewport, self.border)?;
+        layout.tile_size = self.tile_size;
+        layout.fitted_tile_size = layout.fitted_tile_size.min(self.tile_size);
+        layout.origin = [
+            viewport.x + (self.origin[0] - self.viewport.x),
+            viewport.y + (self.origin[1] - self.viewport.y),
+        ];
+        Some(layout.panned([0.0, 0.0]))
+    }
+
     /// Scales around a screen point, between the fitted size and 144 pixels per tile.
     pub fn zoomed_at(&self, [x, y]: [f32; 2], factor: f32) -> Self {
         if factor <= 0.0 || ![x, y, factor].into_iter().all(f32::is_finite) {
