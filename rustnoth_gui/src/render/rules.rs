@@ -188,7 +188,7 @@ set_no_flag=base
             .map(|(_, n)| n)
             .collect::<Vec<_>>();
         let catalog = compile::compile(&nodes, &[]);
-        assert_eq!(catalog.rules.len(), 7);
+        assert_eq!(catalog.rules.len(), 8); // default theme plus the seven WML rules
         let road = Hex { x: 2, y: 2 };
         let mut view = Observation {
             side: 1,
