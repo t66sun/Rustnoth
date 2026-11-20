@@ -303,6 +303,35 @@ impl Chrome {
     }
 }
 
+// MINIMAP_THEME and its compact 1024x600 / 800x600 variant.
+fn minimap_panel(w: f32, h: f32) -> (Rect, Viewport, &'static str) {
+    let wide = w >= 1024.0 && h >= 768.0;
+    let frame = Rect::new(w - 181.0, 6.0, 181.0, if wide { 255.0 } else { 170.0 });
+    let (left, top, height, image) = if wide {
+        (13.0, 5.0, 212.0, "themes/classic/minimap.png")
+    } else {
+        (43.0, 4.0, 158.0, "themes/classic/minimap-800.png")
+    };
+    (frame, Viewport { x: frame.x + left, y: frame.y + top, width: frame.w - left - 8.0, height }, image)
+}
+
+fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
+    // getMinimap starts at (0, 0), including the last column and row of
+    // border terrain whose symbol images overlap the edge of the canvas.
+    let (w, h) = (view.width, view.height);
+    let edge = (0..h).map(|y| Hex { x: w, y })
+        .chain((0..=w).map(|x| Hex { x, y: h }));
+    for position in edge {
+        if let Some(terrain) = doc.map().terrain_at(position) {
+            view.tiles.push(engine_lite::observation::ObservedTile {
+                position, terrain: terrain.into(), visible: true,
+                village_owner: None, time_color: [0; 3],
+            });
+        }
+    }
+    view.tiles.sort_unstable_by_key(|tile| (tile.position.y, tile.position.x));
+}
+
 pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let assets = AssetCatalog::parse(root, core, b"")?;
@@ -328,6 +357,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if rebuild {
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
+            add_minimap_border(&mut view, &doc);
             mini.load(&view, &assets);
             rebuild = false;
         }
@@ -429,12 +459,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             form.font.as_ref(),
             &title,
         );
-        let mini_area = Viewport {
-            x: w - sidebar + 8.0,
-            y: 31.0,
-            width: sidebar - 16.0,
-            height: (h * 0.20).min(148.0),
-        };
+        let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
+        art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
         let mini_rect = Rect::new(mini_area.x, mini_area.y, mini_area.width, mini_area.height);
         if mini_rect.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
@@ -447,9 +473,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         }
         let panel = Rect::new(
             w - sidebar,
-            mini_rect.bottom() + 6.0,
+            mini_frame.bottom() + 6.0,
             sidebar,
-            h - mini_rect.bottom() - 6.0,
+            h - mini_frame.bottom() - 6.0,
         );
         art.image(&assets, "themes/editor/classic/palette.png", panel);
         art.image(
@@ -584,6 +610,15 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_minimap_uses_the_installed_theme_at_both_resolutions() {
+        let (panel, canvas, _) = minimap_panel(1200.0, 820.0);
+        assert_eq!(panel, Rect::new(1019.0, 6.0, 181.0, 255.0));
+        assert_eq!(canvas, Viewport { x: 1032.0, y: 11.0, width: 160.0, height: 212.0 });
+        let (_, compact, _) = minimap_panel(800.0, 600.0);
+        assert_eq!(compact, Viewport { x: 662.0, y: 10.0, width: 130.0, height: 158.0 });
+    }
 
     #[test]
     fn default_editor_opens_at_the_northwest_border_of_its_native_grass_map() {
