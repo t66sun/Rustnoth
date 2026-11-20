@@ -5,7 +5,7 @@ use super::{
 };
 use crate::render::ground::noise;
 use engine_lite::observation::Observation;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 pub(super) struct Layer {
@@ -59,7 +59,7 @@ fn apply<'a>(
     view: &'a Observation,
     border: impl Fn(Hex) -> Option<&'a str>,
 ) -> HashMap<Hex, Tile> {
-    let mut groups: BTreeMap<&str, Vec<Hex>> = BTreeMap::new();
+    let mut groups: HashMap<&str, Vec<Hex>> = HashMap::new();
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
     }
@@ -72,13 +72,19 @@ fn apply<'a>(
                 .push(at);
         }
     }
-    let groups: Vec<_> = groups
+    let mut groups: Vec<_> = groups
         .into_iter()
         .map(|(code, mut points)| {
             points.sort_unstable();
             (code, points)
         })
         .collect();
+    // The native terrain_by_type map compares base and overlay separately. Its
+    // missing-overlay sentinel (0xffffffff) sorts after every authored overlay.
+    groups.sort_unstable_by_key(|&(code, _)| match code.split_once('^') {
+        Some((base, overlay)) => (base, false, overlay),
+        None => (code, true, ""),
+    });
     let types: HashMap<_, _> = groups
         .iter()
         .enumerate()
@@ -177,7 +183,39 @@ fn apply<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_lite::observation::ObservedTile;
+    use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn overlapping_terrain_rules_claim_overlay_anchors_before_bare_anchors() {
+        let rule = wml::parse(
+            br#"
+[terrain_graphics]
+[tile]
+x,y=0,0
+type=Gg
+set_no_flag=claimed
+set_flag=origin
+[/tile]
+[tile]
+x,y=0,1
+type=Gg
+set_no_flag=claimed
+[/tile]
+[/terrain_graphics]
+"#,
+        )
+        .unwrap();
+        let catalog = super::super::compile::compile(&[rule.children[0].1.clone()], &[]);
+        let map = engine_lite::map::ScenarioMap::parse(
+            "Xv,Xv,Xv\nXv,Gg,Xv\nXv,Gg^Fds,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
+        )
+        .unwrap();
+        let view = super::super::map_observation(&map);
+        let tiles = build_with_flags(&catalog, &view);
+        assert!(tiles[&Hex { x: 0, y: 1 }].flags.contains("origin"));
+        assert!(tiles[&Hex { x: 0, y: 2 }].flags.contains("claimed"));
+        assert!(!tiles[&Hex { x: 0, y: 0 }].flags.contains("claimed"));
+    }
 
     #[test]
     fn authored_offmap_inside_the_rectangle_uses_the_themes_textured_hex() {
