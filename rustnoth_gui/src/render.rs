@@ -290,7 +290,7 @@ fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamC
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
-    let mut image = Image::from_file_with_format(&bytes, None)
+    let mut image = crate::artwork::image(&bytes)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
     for (colors, side) in palettes {
