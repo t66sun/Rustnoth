@@ -1,6 +1,8 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
 #[path = "campaign_difficulty.rs"]
 mod difficulty;
+#[path = "campaign_sort.rs"]
+mod sort;
 #[path = "campaign_layout.rs"]
 mod layout;
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
@@ -16,6 +18,7 @@ const EDGE: Color = Color::from_rgba(114, 79, 46, 255);
 
 struct Entry<'a> {
     name: String,
+    date: sort::Date,
     description: String,
     icon: Option<&'a str>,
     image: Option<&'a str>,
@@ -38,6 +41,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
         let scenario = scenarios.iter().position(|(key, _)| *key == id)?;
         Some(Entry {
             name: locale.attribute(install, node, "name", id),
+            date: sort::Date::read(node.attribute("start_year")),
             description: plain(&locale.attribute(install, node, "description", "")),
             icon: node.attribute("icon"), image: node.attribute("image"),
             background: node.attribute("background"), scenario,
@@ -48,6 +52,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
             // Scenario bundles need not include a [campaign] descriptor or a description.
             Entry {
                 name: locale.attribute(install, node, "name", id),
+                date: sort::Date::Undated,
                 description: plain(&locale.attribute(install, node, "description", id)),
                 icon: None, image: None, background: None, scenario,
             }
@@ -55,14 +60,15 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
     (campaigns, levels)
 }
 
-fn filtered(entries: &[Entry<'_>], filter: &str) -> Vec<usize> {
+fn filtered(entries: &[Entry<'_>], order: impl Iterator<Item = usize>, filter: &str) -> Vec<usize> {
     let needle = filter.trim().to_lowercase();
-    entries.iter().enumerate().filter(|(_, entry)| entry.name.to_lowercase().contains(&needle))
-        .map(|(i, _)| i).collect()
+    order.filter(|&i| entries[i].name.to_lowercase().contains(&needle)).collect()
 }
 
 pub(super) struct Selector<'a> {
     campaigns: Vec<Entry<'a>>,
+    ordering: sort::Order,
+    campaign_rows: Vec<usize>,
     levels: Vec<Entry<'a>>,
     pub(super) campaigns_only: bool,
     show_levels: bool,
@@ -81,6 +87,7 @@ impl<'a> Selector<'a> {
         let mut language = Locale::load(root, selected)?;
         let (campaigns, levels) = entries(campaign, scenarios, &mut language, root);
         Ok(Self {
+            ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
             query: String::new(), editing: false, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
@@ -131,7 +138,22 @@ impl<'a> Selector<'a> {
             }
         }
         let entries = if self.show_levels { &self.levels } else { &self.campaigns };
-        let rows = filtered(entries, &self.query);
+        let mut rows = if self.show_levels {
+            filtered(entries, 0..entries.len(), &self.query)
+        } else {
+            filtered(entries, self.campaign_rows.iter().copied(), &self.query)
+        };
+        let headers = sort::headers(list);
+        if !self.show_levels && click
+            && let Some((field, _)) = headers.iter().find(|(_, rect)| rect.contains(pointer))
+        {
+            let selected = rows.get(self.cursor).copied();
+            self.ordering = self.ordering.toggle(*field);
+            self.campaign_rows = self.ordering.rows(entries, &self.art.locale.effective);
+            rows = filtered(entries, self.campaign_rows.iter().copied(), &self.query);
+            self.cursor = selected.and_then(|idx| rows.iter().position(|&r| r == idx)).unwrap_or(0);
+            self.last_click = None;
+        }
         let row_h = if self.show_levels { 44.0 } else { 82.0 };
         let top = list.y+30.0;
         let visible = ((list.bottom()-top)/row_h).floor().max(1.0) as usize;
@@ -195,7 +217,13 @@ impl<'a> Selector<'a> {
         fill(panel, Color::from_rgba(0, 0, 0, 138));
         frame(panel);
         fill(Rect::new(list.x, list.y, list.w, 30.0), Color::from_rgba(0, 0, 0, 89));
-        self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
+        if self.show_levels {
+            self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
+        } else {
+            for (field, rect) in headers {
+                sort::header(&mut self.art, field, rect, self.ordering, pointer);
+            }
+        }
         clip(Some(body), scale);
         for (row, &index) in rows.iter().skip(self.first).take(visible+1).enumerate() {
             let rect = Rect::new(body.x, top+row as f32*row_h, body.w, row_h);
@@ -320,7 +348,7 @@ impl Art {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
         let path = Path::new(id.split('~').next()?);
         let texture = relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
-            .and_then(|bytes| Image::from_file_with_format(&bytes,None).ok())
+            .and_then(|bytes| crate::artwork::image(&bytes).ok())
             .map(|image| {
                 let texture = Texture2D::from_image(&image);
                 texture.set_filter(FilterMode::Nearest);
@@ -396,7 +424,7 @@ mod tests {
         assert_eq!((campaigns[0].name.as_str(), campaigns[0].scenario), ("The South Guard", 1));
         assert_eq!((campaigns[0].icon, campaigns[0].image), (Some("data/icon.png"), Some("data/art.png")));
         assert_eq!(campaigns[0].description, "Deoran rides south.");
-        assert_eq!(levels[filtered(&levels,"CROSS")[0]].scenario, 0);
-        assert_eq!(filtered(&levels,"missing"), Vec::<usize>::new());
+        assert_eq!(levels[filtered(&levels,0..levels.len(),"CROSS")[0]].scenario, 0);
+        assert_eq!(filtered(&levels,0..levels.len(),"missing"), Vec::<usize>::new());
     }
 }

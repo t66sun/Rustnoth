@@ -1,6 +1,6 @@
 //! Title-screen browser for the installed Wesnoth 1.18.8 achievement groups.
 mod catalog;
-mod icons;
+pub(super) mod icons;
 
 use super::{Art, centered, dialog, image, load_texture, preferences::tiled, wrap};
 use catalog::{Group, Row};

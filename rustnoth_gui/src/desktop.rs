@@ -50,6 +50,16 @@ fn has_art(root: &Path) -> bool {
     root.join("data/core/_main.cfg").is_file() && root.join("images/misc/logo.png").is_file()
 }
 
+pub(super) fn steam_game_roots() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for steam in steam_roots() {
+        let libraries = fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")).unwrap_or_default();
+        candidates.push(steam.join("steamapps/common/wesnoth"));
+        candidates.extend(steam_libraries(&libraries).map(|dir| dir.join("steamapps/common/wesnoth")));
+    }
+    candidates
+}
+
 pub(super) fn locate(explicit: Option<&Path>) -> io::Result<PathBuf> {
     if let Some(root) = explicit.map(PathBuf::from).or_else(|| env::var_os("WESNOTH_ROOT").map(PathBuf::from)) {
         if has_art(&root) { return std::path::absolute(root); }
@@ -59,11 +69,7 @@ pub(super) fn locate(explicit: Option<&Path>) -> io::Result<PathBuf> {
     if let Ok(exe) = env::current_exe() && let Some(parent) = exe.parent() {
         candidates.push(parent.to_owned());
     }
-    for steam in steam_roots() {
-        let libraries = fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")).unwrap_or_default();
-        candidates.push(steam.join("steamapps/common/wesnoth"));
-        candidates.extend(steam_libraries(&libraries).map(|dir| dir.join("steamapps/common/wesnoth")));
-    }
+    candidates.extend(steam_game_roots());
     if cfg!(unix) {
         candidates.extend(["/usr/share/games/wesnoth/1.18", "/usr/local/share/wesnoth",
             "/Applications/The Battle for Wesnoth.app/Contents/Resources"].map(PathBuf::from));
@@ -84,7 +90,7 @@ fn executable(root: &Path) -> io::Result<PathBuf> {
         "Game data preparation requires the Wesnoth 1.18.8 executable in the installation directory or PATH."))
 }
 
-fn cache_directory() -> io::Result<PathBuf> {
+pub(super) fn cache_directory() -> io::Result<PathBuf> {
     let base = if cfg!(windows) { env::var_os("LOCALAPPDATA").map(PathBuf::from) }
         else { env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(||
             env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache"))) };
