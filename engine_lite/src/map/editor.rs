@@ -39,8 +39,15 @@ impl EditableMap {
     }
 
     pub fn paint(&mut self, at: Hex, terrain: &str) -> Option<String> {
-        if !self.map.is_playable(at)
-            || !valid_terrain_code(terrain)
+        if !self.map.is_playable(at) {
+            return None;
+        }
+        self.paint_stored(at, terrain)
+    }
+
+    /// Editor region operations include the authored one-hex border.
+    pub fn paint_stored(&mut self, at: Hex, terrain: &str) -> Option<String> {
+        if !valid_terrain_code(terrain)
             || terrain.contains(|c: char| c.is_whitespace() || c == ',')
         {
             return None;
@@ -56,7 +63,7 @@ impl EditableMap {
         } else {
             self.edits.insert(index, terrain.into());
         }
-        self.map.replace_terrain(at, terrain);
+        self.map.terrain[index] = terrain.into();
         Some(previous)
     }
 
