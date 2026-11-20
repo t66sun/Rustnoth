@@ -72,10 +72,12 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 选择菜单项 | 左键点击，或按 Tab 切换、Enter 确认 |
 | 查看战役目标 | 点击 **Menu → Scenario Objectives** 或按 Ctrl+J 查看本方当前胜负目标，方向键、翻页键和滚轮可滚动，Esc 或 Enter 返回棋盘 |
 | 取消选择 | 右键 |
-| 结束回合 | 点击 **End turn**，或按空格 |
+| 结束回合 | 点击 **End Turn** 或按 Ctrl+空格（macOS 为 Alt+空格）。在确认窗口选择 **Yes** 结束回合，选择 **No** 或按 Esc 返回棋盘 |
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |
 | 平移棋盘 | 缩放后使用中键拖拽或方向键 |
 | 关闭菜单或退出 | Esc |
+
+在用户的 Rustnoth 配置目录（Windows 为 `%APPDATA%\Rustnoth`）中可新建文本文件 `confirm_end_turn`。默认值 `no_moves` 只在本方有单位且本回合尚未操作时询问。填入 `green` 表示有尚未移动且仍可行动的单位时询问，`yellow` 表示有单位仍可行动时询问，`no` 表示直接结束回合。场景可通过本方的 `no_turn_confirmation=yes` 跳过确认。
 
 Export a complete installed map at the native 72-pixel zoom without opening a window: `rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]`. The PNG contains the terrain and its authored border, without units or interface panels.
 
