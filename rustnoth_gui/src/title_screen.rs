@@ -231,6 +231,7 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 struct Art {
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
+    languages: Vec<locale::Language>,
     background: Texture2D,
     map: Texture2D,
     logo_shadow: Texture2D,
@@ -284,6 +285,13 @@ fn load_font(root:&Path,name:&str)->Option<Font> {
     fs::read(root.join("fonts").join(name)).ok().and_then(|bytes|load_ttf_font_from_bytes(&bytes).ok())
 }
 
+fn language_button_bounds(w: f32, h: f32, text_width: f32) -> Rect {
+    let big = w >= 1200.0 && h >= 900.0;
+    let width = (text_width.ceil() + if big { 46.0 } else { 43.0 }).max(80.0);
+    let height = if big { 32.0 } else { 30.0 };
+    Rect::new(w - 10.0 - width, h - 10.0 - height, width, height)
+}
+
 fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
     let name = locale::font_name(id);
     let font = load_font(root,name).or_else(||load_font(root,"DroidSansFallbackFull.ttf"));
@@ -306,8 +314,14 @@ impl Art {
         if cmd==Command::Language {
             self.button_frame(rect, focused, pressed);
             let icon=&self.language_icons[if pressed {2} else {usize::from(focused)}];
-            image(Rect::new(rect.x+5.0,rect.y+(rect.h-20.0)/2.0,20.0,20.0),icon);
-            dialog::text(self.font.as_ref(),text,rect.x+30.0,rect.y+rect.h/2.0+5.0,14,Color::from_rgba(186,172,125,255));
+            let size = icon.size().min(rect.size());
+            image(Rect::new(rect.x+5.0, rect.y+((rect.h-size.y)*0.5).floor(), size.x, size.y), icon);
+            let name = self.locale.language_name(&self.languages);
+            let font = self.font.as_ref();
+            let metrics = measure_text(name, font, 13, 1.0);
+            let x = (rect.right() - 10.0 - metrics.width).round();
+            let y = rect.y + ((rect.h - metrics.height - 2.0)*0.5).floor() + metrics.offset_y;
+            dialog::text(font, name, x, y, 13, Color::from_rgba(186,172,125,255));
         } else { self.button(rect,text,focused,pressed); }
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
@@ -316,6 +330,8 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            // Partial artwork installations can still show the effective locale identifier.
+            languages: locale::list(root).unwrap_or_default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
@@ -379,8 +395,9 @@ impl Art {
         buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
         buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
         buttons.push((Command::Next, next));
-        let language_w = (measure_text(self.locale.ui("Language"), font, 14, 1.0).width + 40.0).max(80.0);
-        buttons.push((Command::Language,Rect::new(w-10.0-language_w,h-35.0,language_w,25.0)));
+        let name = self.locale.language_name(&self.languages);
+        let text_width = measure_text(name, font, 13, 1.0).width;
+        buttons.push((Command::Language, language_button_bounds(w, h, text_width)));
         buttons
     }
 
@@ -472,5 +489,11 @@ mod tests {
         let tip = "[tip]\ntext=_ \"Use <b>Recruit</b>.\"\nsource=_ \"<i>Konrad</i>\"\n[/tip]\n";
         assert_eq!(tips(&format!("{tip}#ifdef __UNUSED__\n{tip}#endif"), &locale::Locale::default()).unwrap(),
             [("Use Recruit.".to_owned(), "Konrad".to_owned())]);
+    }
+
+    #[test]
+    fn language_footer_has_the_original_logical_bounds_for_the_active_name() {
+        assert_eq!(language_button_bounds(1200.0, 820.0, 66.0), Rect::new(1081.0, 780.0, 109.0, 30.0));
+        assert_eq!(language_button_bounds(1280.0, 900.0, 150.0), Rect::new(1074.0, 858.0, 196.0, 32.0));
     }
 }
