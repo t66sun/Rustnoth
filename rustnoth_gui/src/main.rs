@@ -33,6 +33,7 @@ mod unit_list;
 mod scenario_report;
 mod title_screen;
 mod tutorial;
+mod artwork;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
 rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
