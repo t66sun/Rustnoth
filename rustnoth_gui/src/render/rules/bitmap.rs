@@ -31,7 +31,7 @@ fn operations(expression: &str) -> Vec<&str> {
 
 fn cut(image: &RgbaImage, left: i32, top: i32, width: u32, height: u32) -> RgbaImage {
     let mut result = RgbaImage::new(width, height);
-    imageops::overlay(&mut result, image, -i64::from(left), -i64::from(top));
+    imageops::replace(&mut result, image, -i64::from(left), -i64::from(top));
     result
 }
 
@@ -164,6 +164,18 @@ impl Bitmaps {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    #[test]
+    fn terrain_cuts_copy_rgba_bytes_and_pad_outside_the_source() {
+        let mut source = RgbaImage::new(2, 1);
+        source.put_pixel(0, 0, Rgba([123, 63, 31, 137]));
+        source.put_pixel(1, 0, Rgba([4, 5, 6, 0]));
+        let result = cut(&source, -1, 0, 3, 2);
+        assert_eq!(result.get_pixel(0, 0).0, [0; 4]);
+        assert_eq!(result.get_pixel(1, 0), source.get_pixel(0, 0));
+        assert_eq!(result.get_pixel(2, 0), source.get_pixel(1, 0));
+        assert_eq!(result.get_pixel(1, 1).0, [0; 4]);
+    }
 
     #[test]
     fn opacity_quantizes_the_factor_before_multiplying_each_alpha() {
