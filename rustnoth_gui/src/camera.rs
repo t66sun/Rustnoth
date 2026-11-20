@@ -30,9 +30,16 @@ impl BoardCamera {
         if !reset && self.last_fit == Some(fit) {
             return;
         }
+        let same_map = self.last_fit.is_some_and(|(_, w, h)| (w, h) == (width, height));
+        let layout = match self.layout.as_ref() {
+            Some(current) if same_map && !reset => current.resized(viewport),
+            _ => BoardLayout::battlefield(width, height, viewport),
+        };
+        // A minimized window has no drawable map area. Keep its previous scroll position.
+        let Some(layout) = layout else { return };
         self.last_fit = Some(fit);
         self.drag_position = None;
-        self.layout = BoardLayout::battlefield(width, height, viewport);
+        self.layout = Some(layout);
     }
 
     pub fn scroll(&mut self, point: [f32; 2], delta: f32) {
@@ -121,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keeps_anchored_zoom_until_reset_or_resize_and_rejects_hud_input() {
+    fn keeps_anchored_zoom_across_resize_and_rejects_hud_input() {
         let viewport = Viewport { x: 0.0, y: 68.0, width: 200.0, height: 200.0 };
         let mut camera = BoardCamera::default();
         camera.fit(viewport, 6, 6, false);
@@ -149,10 +156,16 @@ mod tests {
         camera.fit(viewport, 6, 6, true);
         assert_eq!(camera.layout().unwrap().tile_origin(anchor_hex), fit.tile_origin(anchor_hex));
         camera.scroll(anchor, 8.0 * WHEEL_STEP);
-        let resized = Viewport { width: 210.0, ..viewport };
+        camera.pan([-70.0, -50.0]);
+        let before = *camera.layout().unwrap();
+        let origin = before.tile_origin(anchor_hex);
+        camera.fit(Viewport { width: 0.0, ..viewport }, 6, 6, false);
+        let resized = Viewport { width: 210.0, y: 77.0, ..viewport };
         camera.fit(resized, 6, 6, false);
+        assert_eq!(camera.layout().unwrap().tile_size(), before.tile_size());
+        assert_eq!(camera.layout().unwrap().tile_origin(anchor_hex), [origin[0], origin[1] + 9.0]);
+        camera.fit(resized, 6, 6, true);
         assert_eq!(camera.layout().unwrap().tile_size(), fit.tile_size());
-        assert!(camera.layout().unwrap().tile_origin(anchor_hex)[0] > fit.tile_origin(anchor_hex)[0]);
     }
 
     #[test]
