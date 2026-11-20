@@ -286,7 +286,7 @@ impl Art {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
         let path = Path::new(id.split('~').next()?);
         let texture = relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
-            .and_then(|bytes| Image::from_file_with_format(&bytes,None).ok())
+            .and_then(|bytes| crate::artwork::image(&bytes).ok())
             .map(|image| Texture2D::from_image(&image));
         self.textures.insert(id.into(), texture.clone());
         texture

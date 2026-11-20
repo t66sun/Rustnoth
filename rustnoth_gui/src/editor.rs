@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod fill;
 mod palette;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
 use engine_lite::{hex::Hex, map::editor::EditableMap, observation::Observation, wml};
 use macroquad::prelude::*;
 use palette::{Art, Palette};
+use fill::{Region, Tool};
 use rustnoth_gui::{
     assets::AssetCatalog,
     layout::{BoardLayout, Viewport},
@@ -27,7 +29,7 @@ struct History {
 
 impl History {
     fn paint(&mut self, doc: &mut EditableMap, at: Hex, code: &str) {
-        if let Some(old) = doc.paint(at, code) {
+        if let Some(old) = doc.paint_stored(at, code) {
             self.stroke.entry(at).or_insert(old);
         }
     }
@@ -52,7 +54,7 @@ impl History {
         };
         let mut inverse = Changes::new();
         for (hex, code) in changes {
-            if let Some(old) = doc.paint(hex, &code) {
+            if let Some(old) = doc.paint_stored(hex, &code) {
                 inverse.insert(hex, old);
             }
         }
@@ -95,6 +97,7 @@ fn draw_terrain(
     layout: &BoardLayout,
     area: Viewport,
     stroke: &Changes,
+    region: &Region,
     doc: &EditableMap,
     palette: &Palette,
     art: &mut Art,
@@ -121,6 +124,9 @@ fn draw_terrain(
                         "",
                         ms,
                     );
+                    if front && region.contains(hex) {
+                        art.image(assets, "editor/brush.png", Rect::new(left, top, size, size));
+                    }
                 }
             }
         }
@@ -313,9 +319,12 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
     let mut drawing = None;
+    let mut tool = Tool::Paint;
+    let mut region = Region::default();
     next_frame().await;
     loop {
         if rebuild {
+            region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
             mini.load(&view, &assets);
@@ -347,8 +356,23 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             is_mouse_button_pressed(MouseButton::Middle),
             is_mouse_button_down(MouseButton::Middle),
         );
-        let at = camera.hex_at(p);
         let modal = chrome.menu.is_some();
+        if !modal && !ctrl {
+            if is_key_pressed(KeyCode::P) {
+                tool = Tool::Paint;
+            } else if is_key_pressed(KeyCode::F) {
+                tool = Tool::Fill;
+            }
+        }
+        if tool == Tool::Fill && drawing.take().is_some() {
+            rebuild |= history.finish();
+        }
+        let at = if tool == Tool::Fill && area.contains(p) {
+            camera.layout().and_then(|layout| layout.editor_hex_at(p))
+        } else {
+            camera.hex_at(p)
+        };
+        region.follow(doc.map(), at.filter(|_| tool == Tool::Fill && !modal));
         if !modal && let Some(hex) = at {
             for (btn, foreground) in [(MouseButton::Left, true), (MouseButton::Right, false)] {
                 if is_mouse_button_pressed(btn) {
@@ -356,6 +380,10 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                         if let Some(code) = doc.map().terrain_at(hex) {
                             palette.sample(code, foreground);
                         }
+                    } else if tool == Tool::Fill {
+                        let i = if foreground { palette.fg } else { palette.bg };
+                        rebuild |= region.paint(&mut doc, &mut history, hex, &palette.brushes[i], shift);
+                        break;
                     } else {
                         drawing = Some(btn);
                     }
@@ -390,6 +418,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 layout,
                 area,
                 &history.stroke,
+                &region,
                 &doc,
                 &palette,
                 &mut art,
@@ -435,12 +464,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             let world = (point - origin) / zoom;
             camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
-        let panel = Rect::new(
-            w - sidebar,
-            mini_rect.bottom() + 6.0,
-            sidebar,
-            h - mini_rect.bottom() - 6.0,
-        );
+        let tools = Rect::new(w - sidebar, mini_rect.bottom() + 6.0, sidebar, 70.0);
+        tool = tool.panel(tools, point, &mut art, &assets, &mut chrome.tip);
+        let panel = Rect::new(w - sidebar, tools.bottom(), sidebar, h - tools.bottom());
         art.image(&assets, "themes/editor/classic/palette.png", panel);
         art.image(
             &assets,
