@@ -11,6 +11,7 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+mod panel_grid;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -58,12 +59,12 @@ impl TitleScreen {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
         let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
-        let mut entries = tips(&tip_source, &art.locale)?;
+        let mut pages = TipPages::new(tips(&tip_source, &art.locale)?);
         let actions = menu(match &self.games {
             Games::Prepared(data) => data.campaign.is_some(),
             Games::Installed => desktop::campaign_available(&self.root),
         });
-        let mut tip = self.seed as usize % entries.len();
+        let mut tip = self.seed as usize % pages.entries.len();
         let mut focus = 0;
         let mut pressed = None;
         let mut last_pointer = mouse_position();
@@ -77,9 +78,9 @@ impl TitleScreen {
             let pointer = vec2(mx / scale, my / scale);
             set_camera(&dialog::setup_camera(w, h));
             art.draw_background(w, h);
-            let (tip_body, attribution) = &entries[tip];
+            let (tip_body, attribution) = &pages.entries[tip];
             let buttons = art.draw_panels(w, h, actions, error.as_deref().unwrap_or(tip_body),
-                if error.is_none() { attribution } else { "" });
+                if error.is_none() { attribution } else { "" }, &pages);
             let hovered = buttons.iter().position(|(_, rect)| rect.contains(pointer));
             if last_pointer != (mx, my) {
                 if let Some(index) = hovered { focus = index; }
@@ -110,8 +111,8 @@ impl TitleScreen {
                 } else { click.map(|index| buttons[index].0) };
             match command {
                 Some(Command::Quit) => return Ok(()),
-                Some(Command::Previous) => { error = None; tip = (tip + entries.len() - 1) % entries.len(); }
-                Some(Command::Next) => { error = None; tip = (tip + 1) % entries.len(); }
+                Some(Command::Previous) => { error = None; tip = (tip + pages.entries.len() - 1) % pages.entries.len(); }
+                Some(Command::Next) => { error = None; tip = (tip + 1) % pages.entries.len(); }
                 Some(Command::Community) => {
                     next_frame().await;
                     community::show(&art).await;
@@ -120,8 +121,8 @@ impl TitleScreen {
                     next_frame().await;
                     let result = languages::show(&self.root, &art, |w,h| {
                         art.draw_background(w,h);
-                        let (body, source) = &entries[tip];
-                        for (command, rect) in art.draw_panels(w,h,actions,body,source) {
+                        let (body, source) = &pages.entries[tip];
+                        for (command, rect) in art.draw_panels(w,h,actions,body,source,&pages) {
                             art.command(rect,command,command==Command::Language,false);
                         }
                     }).await;
@@ -134,7 +135,7 @@ impl TitleScreen {
                                 let logo = load_texture(&self.root, &locale.logo(&self.root))?;
                                 locale::save(&crate::display_preferences::config_directory()?, &id)?;
                                 art.set_locale(&self.root,locale,logo,map);
-                                entries = translated;
+                                pages = TipPages::new(translated);
                                 Ok(())
                             })();
                             error = change.err().map(|e|e.to_string());
@@ -151,8 +152,8 @@ impl TitleScreen {
                     next_frame().await;
                     error = achievements::show(&self.root, &art, |w, h| {
                         art.draw_background(w, h);
-                        let (body, source) = &entries[tip];
-                        for (cmd, rect) in art.draw_panels(w, h, actions, body, source) {
+                        let (body, source) = &pages.entries[tip];
+                        for (cmd, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
                             art.command(rect, cmd, cmd == Command::Achievements, false);
                         }
                     }).await.err().map(|cause| cause.to_string());
@@ -161,8 +162,8 @@ impl TitleScreen {
                     next_frame().await;
                     let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
                         art.draw_background(w, h);
-                        let (body, source) = &entries[tip];
-                        for (command, bounds) in art.draw_panels(w, h, actions, body, source) {
+                        let (body, source) = &pages.entries[tip];
+                        for (command, bounds) in art.draw_panels(w, h, actions, body, source, &pages) {
                             art.command(bounds, command, command == Command::Preferences, false);
                         }
                         dialog::text(art.font.as_ref(), "Rustnoth  ·  Wesnoth 1.18.8", 10.0, h - 11.0, 14, WHITE);
@@ -226,6 +227,30 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
         .collect();
     if entries.is_empty() { return Err("no title screen tips in data/tips.cfg".into()); }
     Ok(entries)
+}
+
+struct TipPages {
+    entries: Vec<(String, String)>,
+    measured: std::cell::Cell<Option<(u32, f32)>>,
+}
+
+impl TipPages {
+    fn new(entries: Vec<(String, String)>) -> Self {
+        Self { entries, measured: Default::default() }
+    }
+
+    fn height(&self, width: f32, font: Option<&Font>, italic: Option<&Font>) -> f32 {
+        let key = width.to_bits();
+        if let Some((cached, height)) = self.measured.get() && key == cached {
+            return height;
+        }
+        let height = self.entries.iter().map(|(body, source)| {
+            panel_grid::label_height(wrap_at(body, font, width, 17).len())
+                + panel_grid::label_height(wrap_at(source, italic, width, 17).len())
+        }).fold(0.0, f32::max);
+        self.measured.set(Some((key, height)));
+        height
+    }
 }
 
 struct Art {
@@ -341,46 +366,60 @@ impl Art {
         }
     }
 
-    fn draw_panels(&self, w: f32, h: f32, actions: &[Command], body: &str, source: &str) -> Vec<(Command, Rect)> {
+    fn draw_panels(&self, w: f32, h: f32, actions: &[Command], body: &str, source: &str, pages: &TipPages) -> Vec<(Command, Rect)> {
         let padding = if w >= 850.0 && h >= 650.0 { 25.0 } else { 10.0 };
-        let (bw, bh) = if w >= 1200.0 && h >= 900.0 { (136.0, 32.0) } else { (116.0, 30.0) };
+        let big = w >= 1200.0 && h >= 900.0;
+        let (wide, bh, plain, plain_h, extra) = if big {
+            (136.0, 32.0, 128.0, 30.0, 16.0)
+        } else {
+            (116.0, 30.0, 112.0, 26.0, 13.0)
+        };
+        let font = self.font.as_ref();
+        let italic = self.italic.as_ref().or(font);
+        let label_width = |cmd: Command| {
+            measure_text(self.locale.ui(cmd.label()), font, 16, 1.0).width.ceil() + extra
+        };
+        let bw = actions.iter().copied().map(label_width).fold(wide, f32::max);
         let inset = padding + 5.0;
         let menu_w = bw + inset * 2.0;
         let menu_h = actions.len() as f32 * (bh + 10.0) + 2.0 * padding;
-        let tip_text_w = (w - 54.0 - menu_w - 2.0 * inset).min(650.0);
-        let font = self.font.as_ref();
-        let italic = self.italic.as_ref().or(font);
-        let body_lines = wrap(body, font, tip_text_w);
-        let source_lines = wrap(source, italic, tip_text_w);
-        let tip_h = 2.0 * inset + (body_lines.len() + source_lines.len()) as f32 * 20.0 + 46.0;
+        let tip_text_w = (w - 34.0 - menu_w - 2.0 * inset).clamp(1.0, 650.0).floor();
+        let body_lines = wrap_at(body, font, tip_text_w, 17);
+        let source_lines = wrap_at(source, italic, tip_text_w, 17);
+        let source_height = panel_grid::label_height(source_lines.len());
+        let page_height = pages.height(tip_text_w, font, italic)
+            .max(panel_grid::label_height(body_lines.len()) + source_height);
+        let tip_h = 2.0 * padding + page_height + plain_h + 30.0;
         let tip_w = tip_text_w + inset * 2.0;
-        let spacer = ((w - tip_w - menu_w - 34.0) / 5.0).max(0.0);
-        let row_h = menu_h.max(tip_h);
-        let bottom = row_h + ((h - 35.0 - 20.0 - row_h).max(0.0) * 5.0 / 6.0).round() + 20.0;
-        let tip = Rect::new((17.0 + spacer).round(), bottom - tip_h, tip_w, tip_h);
-        let menu = Rect::new((w - 17.0 - spacer - menu_w).round(), bottom - menu_h, menu_w, menu_h);
+        let footer_height = if big { 42.0 } else { 40.0 };
+        let panel_grid::Panels { tip, menu } = panel_grid::place(
+            vec2(w, h), vec2(tip_w, tip_h), vec2(menu_w, menu_h), footer_height,
+        );
         panel(tip);
         panel(menu);
         let text_color = Color::from_rgba(215, 215, 215, 255);
-        let mut y = tip.y + inset + 15.0;
+        let mut y = tip.y + inset + 17.0;
         for line in body_lines {
-            dialog::text(font, &line, tip.x + inset, y, 16, text_color);
-            y += 20.0;
+            dialog::text(font, &line, tip.x + inset, y, 17, text_color);
+            y += 22.0;
         }
-        y += 5.0;
+        let controls_y = tip.bottom() - inset - plain_h;
+        y = controls_y - 10.0 - source_height + 17.0;
         for line in source_lines {
-            let x = tip.right() - inset - measure_text(&line, italic, 16, 1.0).width;
-            dialog::text(italic, &line, x, y, 16, text_color);
-            y += 20.0;
+            let x = tip.right() - inset - measure_text(&line, italic, 17, 1.0).width;
+            dialog::text(italic, &line, x, y, 17, text_color);
+            y += 22.0;
         }
         let mut buttons: Vec<_> = actions.iter().enumerate().map(|(i, action)| (*action,
             Rect::new(menu.x + inset, menu.y + inset + i as f32 * (bh + 10.0), bw, bh))).collect();
-        let next = Rect::new(tip.right() - inset - 62.0, bottom - inset - 26.0, 62.0, 26.0);
-        buttons.push((Command::Help, Rect::new(tip.x + inset, next.y, 62.0, next.h)));
-        buttons.push((Command::Previous, Rect::new(next.x - 86.0, next.y, 76.0, next.h)));
+        let [help_w, prev_w, next_w] = [Command::Help, Command::Previous, Command::Next]
+            .map(|cmd| label_width(cmd).max(plain));
+        let next = Rect::new(tip.right() - inset - next_w, controls_y, next_w, plain_h);
+        buttons.push((Command::Help, Rect::new(tip.x + inset, controls_y, help_w, plain_h)));
+        buttons.push((Command::Previous, Rect::new(next.x - 10.0 - prev_w, controls_y, prev_w, plain_h)));
         buttons.push((Command::Next, next));
         let language_w = (measure_text(self.locale.ui("Language"), font, 14, 1.0).width + 40.0).max(80.0);
-        buttons.push((Command::Language,Rect::new(w-10.0-language_w,h-35.0,language_w,25.0)));
+        buttons.push((Command::Language,Rect::new(w-10.0-language_w,h-footer_height,language_w,footer_height-10.0)));
         buttons
     }
 
@@ -414,13 +453,17 @@ impl Art {
 }
 
 pub(crate) fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
+    wrap_at(text, font, width, 16)
+}
+
+fn wrap_at(text: &str, font: Option<&Font>, width: f32, size: u16) -> Vec<String> {
     let mut lines = Vec::new();
-    let space = measure_text(" ", font, 16, 1.0).width;
+    let space = measure_text(" ", font, size, 1.0).width;
     for paragraph in text.lines() {
         let mut line = String::new();
         let mut used = 0.0;
         for word in paragraph.split_whitespace() {
-            let advance = measure_text(word, font, 16, 1.0).width;
+            let advance = measure_text(word, font, size, 1.0).width;
             if !line.is_empty() && used + space + advance > width {
                 lines.push(std::mem::take(&mut line));
                 used = 0.0;
@@ -430,7 +473,7 @@ pub(crate) fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
             else {
                 for glyph in word.chars() {
                     let mut utf8 = [0u8;4];
-                    let next = measure_text(glyph.encode_utf8(&mut utf8),font,16,1.0).width;
+                    let next = measure_text(glyph.encode_utf8(&mut utf8),font,size,1.0).width;
                     if used+next>width && !line.is_empty() {
                         lines.push(std::mem::take(&mut line));
                         used=0.0;
