@@ -468,7 +468,7 @@ mod tests {
         let make_entry = |node: &Node, name: &str, description: &str, abbrev: &str| Entry {
             search_text: campaign_search_text(node, name, description, abbrev),
             name: name.into(), description: description.into(), date: sort::Date::Undated,
-            icon: None, image: None, background: None, scenario: 0,
+            icon: None, image: None, background: None, scenario: 0, descriptor: None,
         };
         let entries = [make_entry(&other, "自由", "亡命者", "自由篇"),
             make_entry(&node, "南疆哨卫", "迪奥兰出发", "南卫")];
