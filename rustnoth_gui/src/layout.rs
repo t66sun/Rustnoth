@@ -148,11 +148,22 @@ impl BoardLayout {
     }
 
     /// Maps a screen point to a playable hex, including the sloped sprite edges.
-    pub fn hex_at(&self, [x, y]: [f32; 2]) -> Option<Hex> {
+    pub fn hex_at(&self, point: [f32; 2]) -> Option<Hex> {
+        self.hit_test(point, 0)
+    }
+
+    /// Editor region tools can target the stored one-hex map border.
+    pub fn editor_hex_at(&self, point: [f32; 2]) -> Option<Hex> {
+        self.hit_test(point, 1)
+    }
+
+    fn hit_test(&self, [x, y]: [f32; 2], border: i32) -> Option<Hex> {
         let x = (x - self.origin[0]) / self.tile_size;
         let y = (y - self.origin[1]) / self.tile_size;
-        let [board_width, board_height] = board_extent(self.width, self.height);
-        if !(0.0..board_width).contains(&x) || !(0.0..board_height).contains(&y) {
+        let margin = border as f32;
+        if !(-margin..self.width as f32 + 1.0 + margin).contains(&x)
+            || !(-margin..self.height as f32 + 0.5 + margin).contains(&y)
+        {
             return None;
         }
 
@@ -160,8 +171,8 @@ impl BoardLayout {
         // from the left sloped edge to its mirror on the right.
         let pair_width = 2.0 * COLUMN_SPACING;
         let pair = (x / pair_width).floor() as i64;
-        let x_in_pair = x % pair_width;
-        let y_in_row = y.fract();
+        let x_in_pair = x.rem_euclid(pair_width);
+        let y_in_row = y.rem_euclid(1.0);
         let left_edge = (y_in_row - ODD_COLUMN_SHIFT).abs() / 2.0;
         let column_offset = if x_in_pair < left_edge {
             -1
@@ -174,8 +185,9 @@ impl BoardLayout {
         let upper_odd_hex = column_offset != 0 && y_in_row < ODD_COLUMN_SHIFT;
         let row = y.floor() as i64 - upper_odd_hex as i64;
 
-        if !(0..i64::from(self.width)).contains(&column)
-            || !(0..i64::from(self.height)).contains(&row)
+        let margin = i64::from(border);
+        if !(-margin..i64::from(self.width) + margin).contains(&column)
+            || !(-margin..i64::from(self.height) + margin).contains(&row)
         {
             return None;
         }
@@ -215,6 +227,17 @@ mod tests {
         assert_eq!(layout.tile_origin(Hex { x: 0, y: 0 }), [65.0, 30.0]);
         assert_eq!(layout.tile_origin(Hex { x: 1, y: 0 }), [119.0, 66.0]);
         assert_eq!(layout.tile_origin(Hex { x: 2, y: 0 }), [173.0, 30.0]);
+    }
+
+    #[test]
+    fn editor_hit_testing_includes_the_authored_border() {
+        let layout = layout();
+        for hex in [Hex { x: -1, y: -1 }, Hex { x: 3, y: 2 }, Hex { x: 1, y: -1 }] {
+            let [left, top] = layout.tile_origin(hex);
+            let point = [left + 36.0, top + 36.0];
+            assert_eq!(layout.editor_hex_at(point), Some(hex));
+            assert_eq!(layout.hex_at(point), None);
+        }
     }
 
     #[test]
