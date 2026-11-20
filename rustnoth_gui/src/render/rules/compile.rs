@@ -79,6 +79,10 @@ pub(super) fn compile(nodes: &[Node], dirs: &[PathBuf]) -> Catalog {
             }
         }
     }
+    compile_files(nodes, files)
+}
+
+pub(super) fn compile_files(nodes: &[Node], files: HashMap<String, PathBuf>) -> Catalog {
     let mut builder = Builder {
         data: Catalog {
             rules: Vec::new(),
@@ -91,6 +95,22 @@ pub(super) fn compile(nodes: &[Node], dirs: &[PathBuf]) -> Catalog {
         name_ids: HashMap::new(),
         image_ids: HashMap::new(),
     };
+    // terrain_builder::add_off_map_rule installs the theme's base before the global rules.
+    let mut theme = engine_lite::wml::parse(b"\
+[tile]
+    x,y=0,0
+    type=_off^_usr
+    set_no_flag=base
+    [image]
+        layer=-1000
+        name=off-map/alpha.png
+    [/image]
+[/tile]")
+    .expect("valid default map border rule");
+    if !builder.data.files.contains_key("off-map/alpha.png") {
+        theme.children[0].1.children.clear();
+    }
+    builder.rule(&theme);
     for node in nodes {
         builder.rule(node);
     }
