@@ -308,7 +308,7 @@ fn panel(rect: Rect) {
 
 fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     let data = read_file(&root.join(name))?;
-    let image = Image::from_file_with_format(&data, None).map_err(|cause| format!("{name}: {cause}"))?;
+    let image = crate::artwork::image(&data).map_err(|cause| format!("{name}: {cause}"))?;
     let texture = Texture2D::from_image(&image);
     texture.set_filter(FilterMode::Linear);
     Ok(texture)
@@ -317,8 +317,8 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
 fn localized_map(root: &Path, locale: &locale::Locale) -> Result<Texture2D, Box<dyn Error>> {
     let (base, overlay) = locale.title_map(root);
     let Some(overlay) = overlay else { return load_texture(root, &base) };
-    let mut pixels = ::image::load_from_memory(&read_file(&root.join(base))?)?.into_rgba8();
-    let names = ::image::load_from_memory(&read_file(&root.join(overlay))?)?.into_rgba8();
+    let mut pixels = crate::artwork::rgba(&read_file(&root.join(base))?)?;
+    let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
     ::image::imageops::overlay(&mut pixels, &names, 0, 0);
     let texture = Texture2D::from_rgba8(pixels.width().try_into()?, pixels.height().try_into()?, pixels.as_raw());
     texture.set_filter(FilterMode::Linear);
