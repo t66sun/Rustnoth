@@ -102,7 +102,7 @@ mod tests {
         let campaigns = [("Zebra", "3 YW"), ("beta", "4 BW"), ("Alpha", "45 BW"),
             ("Gamma", ""), ("Echo", "8 AF"), ("delta", "60 BF")].map(|(name, year)| Entry {
                 name: name.into(), date: Date::read(Some(year)), scenario: 0,
-                description: String::new(), icon: None, image: None, background: None,
+                description: String::new(), icon: None, image: None, background: None, descriptor: None,
             });
         let name = Order::Rank.toggle(Field::Name);
         assert_eq!(name.rows(&campaigns, "en_US"), [2,1,5,4,3,0]);
