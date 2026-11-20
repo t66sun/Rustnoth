@@ -13,6 +13,7 @@ mod community;
 mod achievements;
 mod addons;
 mod profile;
+mod panel_blur;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
 
@@ -236,6 +237,7 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 struct Art {
+    blurred_panels: std::cell::RefCell<Option<panel_blur::Panels>>,
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     background: Texture2D,
@@ -311,6 +313,7 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 
 impl Art {
     fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+        *self.blurred_panels.get_mut() = None;
         self.map = map;
         self.logo = logo;
         if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
@@ -334,6 +337,7 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            blurred_panels: Default::default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
             background: texture("data/core/images/maps/background.webp")?,
@@ -374,6 +378,7 @@ impl Art {
         let bottom = row_h + ((h - 35.0 - 20.0 - row_h).max(0.0) * 5.0 / 6.0).round() + 20.0;
         let tip = Rect::new((17.0 + spacer).round(), bottom - tip_h, tip_w, tip_h);
         let menu = Rect::new((w - 17.0 - spacer - menu_w).round(), bottom - menu_h, menu_w, menu_h);
+        panel_blur::draw(&self.blurred_panels, [tip, menu], vec2(w, h));
         panel(tip);
         panel(menu);
         let text_color = Color::from_rgba(215, 215, 215, 255);
