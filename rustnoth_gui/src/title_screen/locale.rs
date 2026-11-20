@@ -174,6 +174,16 @@ pub(crate) fn font_name(id: &str) -> &'static str {
 }
 
 impl Locale {
+    pub(super) fn language_name<'a>(&'a self, languages: &'a [Language]) -> &'a str {
+        languages.iter().find(|language| language.id == self.effective && !language.id.is_empty())
+            .map(|language| language.name.as_str())
+            .unwrap_or_else(|| if self.effective.eq_ignore_ascii_case("C") {
+                "English (US)"
+            } else {
+                self.effective.as_str()
+            })
+    }
+
     pub fn attribute(&mut self, root: &Path, node: &wml::Node, key: &str, fallback: &str) -> String {
         let Some(value) = node.attributes.get(key).filter(|v| !v.text.is_empty()) else {
             return fallback.to_owned();
@@ -283,11 +293,20 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(root.join("images/misc/l10n/zh_CN")).unwrap();
+        let locales = root.join("data/languages");
+        fs::create_dir_all(&locales).unwrap();
+        fs::write(locales.join("zh_CN.cfg"), "[locale]\nlocale=zh_CN\nname=\"简体中文 (Jiăntĭ Zhōngwén)\"\n[/locale]").unwrap();
+        fs::write(locales.join("en_US.cfg"), "[locale]\nlocale=en_US\nname=\"English (US)\"\n[/locale]").unwrap();
+        let languages = list(&root).unwrap();
         fs::write(root.join("images/misc/l10n/zh_CN/logo.png"), []).unwrap();
         assert_eq!(saved(&root).unwrap(), "");
         save(&root, "zh_CN").unwrap();
         let active = Locale::load(&root, saved(&root).unwrap()).unwrap();
         assert_eq!(active.effective, "zh_CN");
+        assert_eq!(active.language_name(&languages), "简体中文 (Jiăntĭ Zhōngwén)");
+        assert_eq!(Locale::load(&root, "en_US".into()).unwrap().language_name(&languages), "English (US)");
+        assert_eq!(Locale::load(&root, "C".into()).unwrap().language_name(&languages), "English (US)");
+        assert_eq!(Locale::load(&root, "x_TEST".into()).unwrap().language_name(&languages), "x_TEST");
         assert_eq!(active.logo(&root), "images/misc/l10n/zh_CN/logo.png");
         let maps = "data/core/images/maps";
         let original = format!("{maps}/titlescreen.webp");

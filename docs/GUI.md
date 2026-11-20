@@ -79,7 +79,11 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 
 Export a complete installed map at the native 72-pixel zoom without opening a window: `rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]`. The PNG contains the terrain and its authored border, without units or interface panels.
 
-从安装版启动时，Campaigns 按原版顺序列出已安装的单人战役。选中战役后会显示原版难度、默认选项和对应单位图标，确认后才按所选难度准备配置，并进入其首关。教学战役覆盖第一关的移动与首次攻击。战役列表中的条目仅表示已安装，具体场景脚本的支持程度取决于 Rust 裁判。
+在标题页、对话框、编辑器或对局中按 F12，可将当前完整画面以 PNG 保存到 Rustnoth 用户配置目录的 `screenshots` 子目录。窗口会显示保存位置。
+
+无损原版截图与 Rust 截图必须具有相同分辨率、语言及界面状态。用 Pillow 执行 `python rustnoth_gui/tests/compare_native_frames.py --pair title native-title.png rust-title.png`，可重复传入 `--pair` 比较多个场景。每张图按完整画面中 RGB 三个通道完全相同的像素计数，每一对都严格大于 97% 时命令成功。`--diff-dir verification/diffs` 可保存放大的差异亮度图。
+
+从安装版启动时，Campaigns 按原版顺序列出已安装的单人战役。选中战役后，底栏会显示该战役指定的默认难度。点开难度菜单或按 F4，可查看对应单位图标并选择其他难度。按 Play 后游戏会按选定难度准备配置并进入首关。教学战役覆盖第一关的移动与首次攻击。战役列表中的条目仅表示已安装，具体场景脚本的支持程度取决于 Rust 裁判。
 
 ### 地图编辑器
 

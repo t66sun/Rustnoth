@@ -28,10 +28,10 @@ fn split(expression: &str, separator: char) -> Vec<&str> {
     parts
 }
 
-fn pixels(root: &Path, expression: &str, colors: &[u8]) -> Option<RgbaImage> {
+pub(in crate::title_screen) fn pixels(expression: &str, colors: &[u8], resolve: &impl Fn(&Path) -> Option<std::path::PathBuf>) -> Option<RgbaImage> {
     let mut terms = split(expression, '~').into_iter();
     let base = Path::new(terms.next()?.trim_matches('"'));
-    let path = if base.starts_with("data") { root.join(base) } else { root.join("data/core/images").join(base) };
+    let path = resolve(base)?;
     let mut output = image::open(path).ok()?.into_rgba8();
     for term in terms {
         let (command, args) = term.split_once('(')?;
@@ -41,7 +41,7 @@ fn pixels(root: &Path, expression: &str, colors: &[u8]) -> Option<RgbaImage> {
                 output = imageops::resize(&output, w.parse().ok()?, h.parse().ok()?, imageops::FilterType::Triangle);
             }
             ("BLIT", [layer, rest @ ..]) => {
-                let top = pixels(root, layer.trim_matches('"'), colors)?;
+                let top = pixels(layer.trim_matches('"'), colors, resolve)?;
                 let coord = |i: usize| rest.get(i).copied().unwrap_or("0").parse::<i64>().ok();
                 imageops::overlay(&mut output, &top, coord(0)?, coord(1)?);
             }
@@ -63,7 +63,7 @@ impl<'a> Icons<'a> {
 
     pub fn get(&mut self, expression: &str, completed: bool) -> Option<&Texture2D> {
         self.textures.entry((expression.to_owned(), completed)).or_insert_with(|| {
-            let mut data = pixels(self.root, expression, &self.colors)?;
+            let mut data = pixels(expression, &self.colors, &|base| Some(if base.starts_with("data") { self.root.join(base) } else { self.root.join("data/core/images").join(base) }))?;
             if !completed {
                 for pixel in data.pixels_mut() {
                     let [r, g, b, _] = pixel.0;
