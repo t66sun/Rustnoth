@@ -5,7 +5,7 @@ use super::{
 };
 use crate::render::ground::noise;
 use engine_lite::observation::Observation;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 pub(super) struct Layer {
@@ -51,7 +51,9 @@ fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Til
 }
 
 pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
-    apply(catalog, view, |_| None)
+    apply(catalog, view, |at| {
+        (at.x >= -1 && at.y >= -1).then_some("_off^_usr")
+    })
 }
 
 fn apply<'a>(
@@ -59,7 +61,7 @@ fn apply<'a>(
     view: &'a Observation,
     border: impl Fn(Hex) -> Option<&'a str>,
 ) -> HashMap<Hex, Tile> {
-    let mut groups: BTreeMap<&str, Vec<Hex>> = BTreeMap::new();
+    let mut groups: HashMap<&str, Vec<Hex>> = HashMap::new();
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
     }
@@ -67,18 +69,26 @@ fn apply<'a>(
         if x < 0 || y < 0 || x >= view.width || y >= view.height {
             let at = Hex { x, y };
             groups
-                .entry(border(at).unwrap_or("_off^_usr"))
+                .entry(border(at).unwrap_or(""))
                 .or_default()
                 .push(at);
         }
     }
-    let groups: Vec<_> = groups
+    let mut groups: Vec<_> = groups
         .into_iter()
         .map(|(code, mut points)| {
             points.sort_unstable();
             (code, points)
         })
         .collect();
+    // The native terrain_by_type map compares base and overlay separately. Its
+    // missing-overlay sentinel (0xffffffff) sorts after every authored overlay.
+    groups.sort_unstable_by_key(|&(code, _)| match code.split_once('^') {
+        Some((base, overlay)) => (base, false, overlay),
+        None => (code, true, ""),
+    });
+    let matches_empty: Vec<_> = catalog.filters.iter()
+        .map(|filter| pattern::matches(filter, "")).collect();
     let types: HashMap<_, _> = groups
         .iter()
         .enumerate()
@@ -109,16 +119,19 @@ fn apply<'a>(
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
-            // The stock default theme installs an invisible base image for OFF_MAP_USER
-            // before any WML rule. Authored holes can be inside the map rectangle.
-            if groups[types[&hex]].0 == "_off^_usr" {
-                tile.flags.insert("base".into());
-            }
             tile.flags
                 .insert(if inside { "_board" } else { "_border" }.into());
             (hex, tile)
         })
         .collect();
+    // Only anchors through (width,height) enter the terrain index. Multi-hex
+    // rules can still read and set flags one row and column beyond that index.
+    for y in -2..=view.height + 1 {
+        tiles.insert(Hex { x: view.width + 1, y }, Tile::default());
+    }
+    for x in -2..=view.width {
+        tiles.insert(Hex { x, y: view.height + 1 }, Tile::default());
+    }
     for rule in &catalog.rules {
         let Some(anchor) = rule.cells.iter().min_by_key(|c| counts[c.filter]) else {
             continue;
@@ -150,11 +163,11 @@ fn apply<'a>(
                 }
                 let matches = rule.cells.iter().all(|cell| {
                     let at = translate(origin, cell.offset);
-                    let Some(&terrain) = types.get(&at) else {
+                    let Some(tile) = tiles.get(&at) else {
                         return false;
                     };
-                    let flags = &tiles[&at].flags;
-                    allowed[cell.filter][terrain]
+                    let flags = &tile.flags;
+                    types.get(&at).map_or(matches_empty[cell.filter], |&id| allowed[cell.filter][id])
                         && cell.require.iter().all(|f| flags.contains(f))
                         && cell.forbid.iter().all(|f| !flags.contains(f))
                 });
@@ -182,11 +195,61 @@ fn apply<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_lite::observation::ObservedTile;
+    use engine_lite::{observation::ObservedTile, wml};
 
     #[test]
-    fn authored_offmap_inside_the_rectangle_keeps_the_theme_backdrop_visible() {
-        let catalog = super::super::compile::compile(&[], &[]);
+    fn overlapping_terrain_rules_claim_overlay_anchors_before_bare_anchors() {
+        let rule = wml::parse(
+            br#"
+[terrain_graphics]
+[tile]
+x,y=0,0
+type=Gg
+set_no_flag=claimed
+set_flag=origin
+[/tile]
+[tile]
+x,y=0,1
+type=Gg
+set_no_flag=claimed
+[/tile]
+[/terrain_graphics]
+"#,
+        )
+        .unwrap();
+        let catalog = super::super::compile::compile(&[rule.children[0].1.clone()], &[]);
+        let map = engine_lite::map::ScenarioMap::parse(
+            "Xv,Xv,Xv\nXv,Gg,Xv\nXv,Gg^Fds,Xv\nXv,Gg,Xv\nXv,Xv,Xv",
+        )
+        .unwrap();
+        let view = super::super::map_observation(&map);
+        let tiles = build_with_flags(&catalog, &view);
+        assert!(tiles[&Hex { x: 0, y: 1 }].flags.contains("origin"));
+        assert!(tiles[&Hex { x: 0, y: 2 }].flags.contains("claimed"));
+        assert!(!tiles[&Hex { x: 0, y: 0 }].flags.contains("claimed"));
+    }
+
+    #[test]
+    fn forest_can_use_an_empty_fringe_cell_but_cannot_match_an_unseen_playable_hex() {
+        let rule = engine_lite::wml::parse(b"[tile]\nx,y=0,0\ntype=Gg^Fp\nset_flag=forest\n[/tile]\n[tile]\nx,y=0,1\ntype=*\nno_flag=_border\n[/tile]").unwrap();
+        let catalog = super::super::compile::compile(&[rule], &[]);
+        let map = engine_lite::map::ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg^Fp,Gg").unwrap();
+        let view = super::super::map_observation(&map);
+        let border = Hex { x: 0, y: map.height() };
+        assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].flags.contains("forest"));
+
+        let mut obscured = view;
+        obscured.height = 2;
+        obscured.tiles[0].terrain = "Gg^Fp".into();
+        let origin = obscured.tiles[0].position;
+        assert!(!build_with_flags(&catalog, &obscured)[&origin].flags.contains("forest"));
+    }
+
+    #[test]
+    fn authored_offmap_inside_the_rectangle_uses_the_themes_textured_hex() {
+        let catalog = super::super::compile::compile_files(&[], HashMap::from([
+            ("off-map/alpha.png".to_owned(), "off-map/alpha.png".into())
+        ]));
         let at = Hex { x: 1, y: 0 };
         let view = Observation {
             side: 1,
@@ -205,7 +268,11 @@ mod tests {
         };
         let tiles = build(&catalog, &view);
         assert!(tiles[&at].flags.contains("base") && tiles[&at].flags.contains("_board"));
-        assert!(tiles[&at].layers.is_empty());
+        let layers = &tiles[&at].layers;
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].layer, -1000);
+        let frame = catalog.images[layers[0].image].variants[0].choices[0][0].0;
+        assert_eq!(catalog.names[frame], "off-map/alpha.png");
         assert!(!tiles.contains_key(&Hex { x: 0, y: 0 }));
     }
 }
