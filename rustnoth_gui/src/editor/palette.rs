@@ -87,6 +87,10 @@ impl Art {
         }
     }
     pub fn image(&mut self, assets: &AssetCatalog, key: &str, rect: Rect) {
+        self.tinted(assets, key, rect, WHITE);
+    }
+
+    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
         let image = self.cache.entry(key.into()).or_insert_with(|| {
             assets
                 .resolve_image(Path::new(key))
@@ -98,7 +102,7 @@ impl Art {
                 image,
                 rect.x,
                 rect.y,
-                WHITE,
+                tint,
                 DrawTextureParams {
                     dest_size: Some(rect.size()),
                     ..Default::default()
