@@ -125,7 +125,6 @@ pub struct BoardArt {
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
-    periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
@@ -189,18 +188,6 @@ impl BoardArt {
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let palette_path = wesnoth_root.join("data/core/team-colors.cfg");
         let terrain_dir = wesnoth_root.join("data/core/images/terrain");
-        let clock_dir = wesnoth_root.join("data/core/images/misc/time-schedules/default");
-        let periods = [
-            ("dawn", "Dawn", "dawn"),
-            ("morning", "Morning", "morning"),
-            ("afternoon", "Afternoon", "afternoon"),
-            ("dusk", "Dusk", "dusk"),
-            ("first_watch", "First Watch", "firstwatch"),
-            ("second_watch", "Second Watch", "secondwatch"),
-        ].into_iter().map(|(id, name, file)| {
-            let image = load_texture(&clock_dir.join(format!("schedule-{file}.png")), None);
-            (id, (name, image))
-        }).collect();
         let palette_bytes = fs::read(&palette_path)
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
             .ok();
@@ -234,7 +221,6 @@ impl BoardArt {
             flag_dir: wesnoth_root.join("data/core/images/flags"),
             flag_colors: palette(TeamColors::parse_flags),
             flags: BTreeMap::new(),
-            periods,
             map_items: Vec::new(),
             tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
