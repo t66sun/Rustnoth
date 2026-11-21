@@ -17,10 +17,12 @@ use camera::BoardCamera;
 
 mod camera;
 mod campaign_browser;
+mod list_scroll;
 mod desktop;
 mod editor;
 mod dialog;
 mod display_preferences;
+mod end_turn;
 mod menu;
 mod recruit_dialog;
 mod map_menus;
@@ -28,6 +30,7 @@ mod render;
 mod setup;
 mod story;
 mod saved_game;
+mod replay_viewer;
 mod save_dialog;
 mod unit_list;
 mod scenario_report;
@@ -192,11 +195,13 @@ impl Launch {
 }
 
 struct BoardData {
+    fresh_attack_seeds: bool,
     source: Vec<u8>,
     core: Vec<u8>,
     restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
     scenario: Bundle,
     story: Vec<story::Part>,
+    skip_turn_confirmation: Vec<bool>,
     assets: AssetCatalog,
     title: String,
     directory: PathBuf,
@@ -217,11 +222,15 @@ impl BoardData {
             .ok_or("bundle has no scenario")?;
         let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
         let story = story::read(config, &title);
+        let skip_turn_confirmation = end_turn::side_overrides(config);
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
+            fresh_attack_seeds: document.attribute("rustnoth_interactive_rng") == Some("yes")
+                && document.attribute("random_mode").unwrap_or_default().is_empty(),
             scenario,
             lesson: None,
             story,
+            skip_turn_confirmation,
             assets,
             title,
             directory,
@@ -241,7 +250,11 @@ async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Err
 
 async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
     let campaign = carryover.is_some();
-    let restore = data.restore.take();
+    let mut restore = data.restore.take();
+    let mut replay_route = restore.as_mut().and_then(|slot| slot.replay_roster.take());
+    let mut opening_roster = if campaign && display_preferences::save_replays()? {
+        carryover.as_deref().map(|route| route.replay_roster())
+    } else { None };
     let mut saved_map = None;
     let game = data.scenario.start_campaign(data.seed, |name| {
         let map = match &restore {
@@ -250,14 +263,20 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         };
         saved_map = Some(map.clone());
         Ok(map)
-    }, carryover.as_deref_mut())?;
+    }, replay_route.as_mut().or(carryover.as_deref_mut()))?;
     let mut session = Session::with_players(game, players);
+    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let speed = display_preferences::speed::Speed::load()?;
+    let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     if let Some(checkpoint) = restore {
+        if replay_route.is_some() {
+            replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
+            return Ok(None);
+        }
         for event in checkpoint.events { event.apply(&mut session)?; }
         if let Some(view) = session.observation() {
             if let Some(hex) = checkpoint.selected { selection.select_own(hex,view); }
@@ -274,6 +293,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
     let mut confirmed_recruit = None;
+    let mut confirmed_end_turn = false;
+    let preference_dir = display_preferences::config_directory()?;
+    let turn_confirmation = end_turn::Mode::load(&preference_dir)?;
+    let locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
@@ -340,7 +363,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             next_frame().await;
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(
-                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit())) {
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),None)) {
                     Ok(()) => format!("Saved {name}"),
                     Err(e) => format!("Save failed: {e}"),
                 });
@@ -391,9 +414,12 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
-        let computer_acted = !walking && !top.handled && session.play_computer_action()?;
+        let mut ai_walk = None;
+        let computer_acted = !walking && !top.handled
+            && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
+            if let Some(walk) = ai_walk { art.start_observed_walk(walk, &data.assets); }
         }
         let clicked = !input_blocked && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
         if data.lesson.is_none() && !input_blocked && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {
@@ -406,7 +432,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
-        if let Some(id) = next && (is_key_pressed(KeyCode::Enter)
+        if let Some(id) = next && opening_roster.is_none() && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
@@ -431,13 +457,17 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }?;
             menu.activate(action)
         });
-        let requested = if let Some(action) = confirmed_recruit.take() {
+        let mut end_prompt = None;
+        let requested = if std::mem::take(&mut confirmed_end_turn) {
+            Some(Action::EndTurn)
+        } else if let Some(action) = confirmed_recruit.take() {
             Some(action)
         } else if !input_blocked && !computer_acted && can_end
-            && (is_key_pressed(KeyCode::Space)
+            && (end_turn::modifier_down() && is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
-            Some(Action::EndTurn)
+            end_prompt = turn_confirmation.prompt(&session, &data.skip_turn_confirmation);
+            end_prompt.is_none().then_some(Action::EndTurn)
         } else if menu_action.is_some() {
             menu_action
         } else if clicked
@@ -531,14 +561,19 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         if session.legal_actions().contains(&Action::EndTurn)
             && let Some(bounds) = button
         {
-            let highlighted = bounds.contains(pointer) || is_key_down(KeyCode::Space);
-            render::draw_turn_button(bounds, highlighted, &art, "End Turn");
+            let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);
+            render::draw_turn_button(bounds, highlighted, &art, locale.game("End Turn"));
         } else if campaign && session.next_scenario().is_some()
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        if let Some(prompt) = end_prompt {
+            confirmed_end_turn = end_turn::confirm(&data.wesnoth_root, &locale, prompt).await;
+            next_frame().await;
+            continue;
+        }
         if menu.as_ref().is_some_and(menu::Menu::offers_recruit)
             && let Some(view) = session.observation()
             && let Some(choices) = menu.take()
@@ -557,6 +592,13 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 if last_page { session.dismiss_dialogue(); dialogue_page = 0; }
                 else { dialogue_page += 1; }
             }
+        }
+        if session.dialogue().is_none() && !matches!(session.state(), engine_lite::fixed_match::MatchState::Playing(_))
+            && let Some(roster) = opening_roster.take() && session.save_victory_replay() {
+            let result = saved_game::directory().and_then(|base| saved_game::save(
+                &base, &format!("{} replay",data.title), &data, players, saved_map.as_deref(),
+                session.history(), None, None, Some(&roster)));
+            if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
         if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
             end_report_shown = true;

@@ -125,10 +125,12 @@ pub(super) async fn show(
             .clamp(0.01, 1.0);
         let (w, h) = (screen_width() / scale, screen_height() / scale);
         set_camera(&dialog::setup_camera(w, h));
-        image(
-            Rect::new(0.0, 0.0, w, h),
-            background.as_ref().unwrap_or(&art.map),
-        );
+        let bounds = Rect::new(0.0, 0.0, w, h);
+        if let Some(texture) = &background {
+            image(bounds, texture);
+        } else {
+            art.map.draw(bounds, vec2(w, h));
+        }
         let bounds = Rect::new(30.0, 30.0, w - 60.0, h - 113.0);
         panel(bounds);
         let first = roll.lines.partition_point(|l| l.y < offset);

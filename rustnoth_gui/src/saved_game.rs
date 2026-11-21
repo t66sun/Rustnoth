@@ -17,6 +17,7 @@ use std::{
 };
 
 pub(super) struct Restore {
+    pub replay_roster: Option<engine_lite::fixed_match::carryover::CampaignCarryover>,
     pub map: Option<String>,
     pub events: Vec<Event>,
     pub camera: Option<[f32; 3]>,
@@ -64,6 +65,7 @@ pub(super) fn save(
     events: &[Event],
     camera: Option<[f32; 3]>,
     selected: Option<Hex>,
+    replay_roster: Option<&Node>,
 ) -> io::Result<()> {
     let mut record = Node::default();
     set(&mut record, "format", 1);
@@ -105,6 +107,9 @@ pub(super) fn save(
             fs::write(draft.join("board.map"), map)?;
         }
         wml_emit::write_config(fs::File::create(draft.join("replay.cfg"))?, &record)?;
+        if let Some(roster) = replay_roster {
+            wml_emit::write_config(fs::File::create(draft.join("starting-roster.cfg"))?, roster)?;
+        }
         fs::rename(&draft, base.join(format!("{key}.rnsave")))
     })();
     if result.is_err() {
@@ -168,6 +173,12 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         seed,
     )?;
     data.restore = Some(Restore {
+        replay_roster: match fs::read(dir.join("starting-roster.cfg")) {
+            Ok(bytes) => Some(engine_lite::fixed_match::carryover::CampaignCarryover::from_replay_roster(
+                &wml::parse(bytes)?).ok_or("Invalid starting roster in campaign replay")?),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        },
         map,
         events,
         camera,
@@ -181,6 +192,36 @@ mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn a_campaign_replay_reconstructs_its_incoming_veteran_before_playing_the_actions() {
+        use engine_lite::fixed_match::carryover::CampaignCarryover;
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp = std::env::temp_dir().join(format!("rustnoth-scenario-replay-{stamp}"));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        let source = b"[scenario]\nid=west\nname=West\nturns=9\nmap_file=west.map\n[side]\nid=hero\nsave_id=army\ncontroller=human\ntype=Guard\n[/side]\n[side]\nid=foe\ntype=Guard\n[/side]\n[event]\nname=side 1 turn end\n[endlevel]\nresult=victory\n[/endlevel]\n[/event]\n[/scenario]";
+        let core = b"[units]\n[unit_type]\nid=Guard\nhitpoints=20\nmovement=0\n[/unit_type]\n[/units]";
+        let map = "Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv";
+        let roster = wml::parse("[side]\nsave_id=army\n[unit]\nid=hero\ntype=Guard\nname=Veteran\nexperience=12\nearned_amlas=0\ncanrecruit=yes\n[/unit]\n[/side]").unwrap();
+        let mut route = CampaignCarryover::from_replay_roster(&roster).unwrap();
+        let starting_roster = route.replay_roster();
+        let board = BoardData::from_source(source, core, temp.clone(), temp.clone(), 12).unwrap();
+        let mut live = Session::new(board.scenario.start_campaign(12, |_| Ok(map.into()),Some(&mut route)).unwrap());
+        let units = |s: &Session| s.observation().unwrap().units.iter().map(|u| (u.side,u.position,u.experience)).collect::<Vec<_>>();
+        let opening = units(&live);
+        assert!(opening.iter().any(|&(side,_,xp)| side == 1 && xp == 12));
+        live.apply(Action::EndTurn).unwrap();
+        assert!(live.save_victory_replay());
+        save(&temp, "West replay", &board, Players::HotSeat, Some(map), live.history(),None,None,Some(&starting_roster)).unwrap();
+        let entries = slots(&temp).unwrap();
+        let (mut archive, _) = load(&entries[0], &temp).unwrap();
+        let mut replay = archive.restore.take().unwrap();
+        let mut watch = Session::new(archive.scenario.start_campaign(12, |_| Ok(replay.map.unwrap()),replay.replay_roster.as_mut()).unwrap());
+        assert_eq!(units(&watch), opening);
+        for event in replay.events { event.apply(&mut watch).unwrap(); }
+        assert_eq!(watch.state(), live.state());
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn standalone_save_recreates_the_view_next_turn_and_actions_without_source_files() {
@@ -213,6 +254,7 @@ mod tests {
             before.history(),
             focus,
             selected,
+            None,
         )
         .unwrap();
         let entries = slots(&base).unwrap();
@@ -245,6 +287,7 @@ mod tests {
                 weapon: 2,
             }),
             Some("Knight".into()),
+            None,
         );
         assert_eq!(Event::decode(&preferred.encode()).unwrap(), preferred);
         fs::remove_dir_all(temp).unwrap();

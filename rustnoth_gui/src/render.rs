@@ -1,4 +1,5 @@
 mod frame;
+pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::skirmish_preview;
 mod lighting;
@@ -83,6 +84,20 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
     cover
 }
 
+pub(crate) struct GridArt([Option<Texture2D>; 2]);
+
+impl GridArt {
+    pub(crate) fn load(terrain_dir: &Path) -> Self {
+        Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
+    }
+
+    pub(crate) fn draw(&self, center: Vec2, size: f32) {
+        for grid in self.0.iter().flatten() {
+            draw_centered(grid, center, size);
+        }
+    }
+}
+
 pub struct BoardArt {
     frame: FrameArt,
     minimap: minimap::Art,
@@ -92,7 +107,8 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
-    border_background: Option<Texture2D>,    grid: [Option<Texture2D>; 2],
+    border_background: Option<Texture2D>,
+    grid: GridArt,
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
@@ -131,14 +147,28 @@ impl BoardArt {
     pub fn start_walk(&mut self, route: Vec<Hex>, view: &Observation, assets: &AssetCatalog) {
         if route.len() < 2 { return; }
         let Some(unit) = view.units.iter().find(|u| Some(&u.position) == route.last() && u.side == view.side) else { return; };
-        let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
-        self.moving.entry(unit.type_id.clone()).or_default().entry(unit.side).or_insert_with(|| {
-            standing::Sprites::load(assets.movement_animations(&unit.type_id), |image| {
+        self.load_movement(&unit.type_id, unit.side, assets);
+        self.walk.start(route, (get_time() * 1000.0) as u64, self.animation_rate());
+    }
+
+    fn load_movement(&mut self, type_id: &str, side: usize, assets: &AssetCatalog) {
+        let palette = self.team_colors.as_ref().map(|colors| (colors, side));
+        self.moving.entry(type_id.to_owned()).or_default().entry(side).or_insert_with(|| {
+            standing::Sprites::load(assets.movement_animations(type_id), |image| {
                 let path = assets.resolve_image(Path::new(image))?;
                 load_texture(&path, palette)
             })
         });
-        self.walk.start(route, (get_time() * 1000.0) as u64, self.animation_rate());
+    }
+
+    pub fn start_observed_walk(&mut self, walk: engine_lite::fixed_match::walk::VisibleWalk, assets: &AssetCatalog) {
+        self.load_movement(&walk.unit_type, walk.side, assets);
+        if walk.visible_destination.is_none() {
+            self.units.entry(walk.unit_type.clone()).or_default().entry(walk.side).or_insert_with(|| {
+                load_texture(&assets.unit_image(&walk.unit_type)?, self.team_colors.as_ref().map(|c| (c, walk.side)))
+            });
+        }
+        self.walk.start_observed(walk, (get_time() * 1000.0) as u64, self.animation_rate());
     }
 
     pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed) -> Result<Self, macroquad::Error> {
@@ -176,7 +206,8 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
-            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
+            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
+            grid: GridArt::load(&terrain_dir),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             standing: HashMap::new(),
@@ -412,7 +443,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             art.rules.draw(tile.position, center, size, false, tod, now);
             if art.show_grid {
                 if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                for grid in art.grid.iter().flatten() { draw_centered(grid, center, size); }
+                art.grid.draw(center, size);
             }
         }
         if let Some(owner) = tile.village_owner {
@@ -508,7 +539,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
-    let origin = |at: Hex| walking.filter(|p| p.unit == at).map_or_else(
+    let origin = |at: Hex| walking.filter(|p| p.unit == Some(at)).map_or_else(
         || Vec2::from_array(layout.tile_origin(at)), |p| p.origin(layout));
     for unit in &view.units {
         let center = origin(unit.position) + Vec2::splat(size / 2.0);
@@ -525,7 +556,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             .get(&unit.type_id)
             .and_then(|sides| sides.get(&unit.side))
             .and_then(Option::as_ref);
-        let motion = walking.filter(|p| p.unit == unit.position);
+        let motion = walking.filter(|p| p.unit == Some(unit.position));
         let direction = motion.and_then(|p| p.direction).unwrap_or_else(|| standing::facing(unit));
         let walking_frame = motion.and_then(|p| {
             let terrain = view.tiles.binary_search_by_key(&(p.to.y, p.to.x), |tile| (tile.position.y, tile.position.x))
@@ -546,6 +577,18 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             draw_centered_flipped(texture, at, size, flipped);
         } else {
             draw_circle(center.x, center.y, size * 0.23, marker);
+        }
+    }
+
+    // An observer can watch the visible portion of a walk that ends back in fog.
+    if let (Some(pose), Some((id, side))) = (walking, &art.walk.transient_sprite) {
+        let direction = pose.direction.unwrap_or(engine_lite::hex::Direction::South);
+        let terrain = view.tiles.binary_search_by_key(&(pose.to.y, pose.to.x), |t| (t.position.y, t.position.x))
+            .ok().map(|i| view.tiles[i].terrain.as_str());
+        let sprite = art.moving.get(id).and_then(|s| s.get(side)).and_then(|s| s.frame(direction, terrain, pose.elapsed))
+            .or_else(|| art.units.get(id)?.get(side)?.as_ref().map(|t| (t, standing::west(direction))));
+        if let Some((tex, flipped)) = sprite {
+            draw_centered_flipped(tex, pose.origin(layout) + Vec2::splat(size * 0.5), size, flipped);
         }
     }
 
