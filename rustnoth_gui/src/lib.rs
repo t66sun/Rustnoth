@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod attack_route;
 pub mod choices;
 pub mod layout;
 pub mod selection;
