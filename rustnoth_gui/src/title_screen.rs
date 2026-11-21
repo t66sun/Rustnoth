@@ -229,25 +229,33 @@ impl TitleScreen {
 
     async fn open(&self, command: Command, art: &Art) -> Result<(), Box<dyn Error>> {
         let installed;
-        let data = match &self.games {
-            Games::Prepared(data) => data,
+        let (data, modifications) = match &self.games {
+            Games::Prepared(data) => (data, Default::default()),
             Games::Installed => {
                 let root = self.root.clone();
-                let worker = std::thread::spawn(move || desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits)));
+                let worker = std::thread::spawn(move || -> std::io::Result<_> {
+                    let data = desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits))?;
+                    let mut extra = engine_lite::wml::Node::default();
+                    if matches!(command, Command::Campaigns) && let Some(userdata) = profile::native_data_directory() {
+                        crate::campaign_browser::modifications::load_installed(&mut extra, &root, &userdata)?;
+                    }
+                    Ok((data, extra))
+                });
                 while !worker.is_finished() {
                     art.draw_background(screen_width(), screen_height());
                     dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
                     next_frame().await;
                 }
-                installed = worker.join().map_err(|_| "Game data preparation stopped")??;
-                &installed
+                let (data, extra) = worker.join().map_err(|_| "Game data preparation stopped")??;
+                installed = data;
+                (&installed, extra)
             }
         };
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
                 let browser = if matches!(&self.games, Games::Installed) {
-                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed)?
+                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed, modifications)?
                 } else {
                     Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?
                 };
