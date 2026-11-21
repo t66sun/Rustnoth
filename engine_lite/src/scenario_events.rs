@@ -679,17 +679,19 @@ impl ScenarioEvents {
         self.fire(&format!("side_{side}_turn_{round}_refresh"), state);
     }
 
-    pub(crate) fn end_turn(&mut self, turn: Turn, end_round: bool, state: &mut EventState<'_>) {
+    pub(crate) fn end_side_turn(&mut self, turn: Turn, state: &mut EventState<'_>) {
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
         self.fire("side_turn_end", state);
         self.fire(&format!("side_{side}_turn_end"), state);
         self.fire(&format!("side_turn_{round}_end"), state);
         self.fire(&format!("side_{side}_turn_{round}_end"), state);
-        if end_round {
-            self.fire("turn_end", state);
-            self.fire(&format!("turn_{round}_end"), state);
-        }
+    }
+
+    pub(crate) fn end_round(&mut self, round: i32, state: &mut EventState<'_>) {
+        if self.handlers.is_empty() { return; }
+        self.fire("turn_end", state);
+        self.fire(&format!("turn_{round}_end"), state);
     }
 }
 
@@ -1226,7 +1228,8 @@ village_support=2
             let turn = Turn { round: 1, side };
             events.begin_turn(turn, side == 1, &mut state);
             events.refresh(turn, &mut state);
-            events.end_turn(turn, side == 2, &mut state);
+            events.end_side_turn(turn, &mut state);
+            if side == 2 { events.end_round(turn.round, &mut state); }
         }
         assert_eq!(gold, [-4, 1, 7]);
     }

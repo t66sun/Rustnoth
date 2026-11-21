@@ -277,14 +277,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let opening_roster = carryover.as_deref().map(|route| route.replay_roster());
     let mut save_victory_replay = campaign && display_preferences::save_replays()?;
     let mut saved_map = None;
-    let game = data.scenario.start_campaign(data.seed, |name| {
+    let game = data.scenario.start_with_controllers(data.seed, |name| {
         let map = match &restore {
             Some(checkpoint) => checkpoint.map.clone().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,"Saved scenario is missing its external map"))?,
             None => fs::read_to_string(data.directory.join(name))?,
         };
         saved_map = Some(map.clone());
         Ok(map)
-    }, replay_route.as_mut().or(carryover.as_deref_mut()))?;
+    }, replay_route.as_mut().or(carryover.as_deref_mut()), players == Players::Campaign)?;
     let mut session = Session::with_players(game, players);
     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
