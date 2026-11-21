@@ -275,8 +275,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let speed = display_preferences::speed::Speed::load()?;
     let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
+    let preference_dir = display_preferences::config_directory()?;
+    let locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     if let Some(checkpoint) = restore {
-        if replay_route.is_some() {
+        if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
             return Ok(None);
         }
@@ -287,7 +289,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             if let Some(focus) = checkpoint.camera { camera.restore(focus); }
         }
     } else {
-        story::show(&data.story, &data.assets, art.font.as_ref()).await;
+        story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref(), locale.ui("Skip")).await;
     }
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
@@ -297,11 +299,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut dialogue_page = 0;
     let mut confirmed_recruit = None;
     let mut confirmed_end_turn = false;
-    let preference_dir = display_preferences::config_directory()?;
     let turn_confirmation = end_turn::Mode::load(&preference_dir)?;
     let notify_turn = display_preferences::turn_dialog()?;
     let mut notified = None;
-    let locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
@@ -310,7 +310,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let now = (get_time() * 1000.0) as u64;
         let walking = art.walk.advance(now, is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Space));
         let dialogue_open = !walking && session.dialogue().is_some();
-        if notify_turn && !walking && !dialogue_open
+        if notify_turn && !walking && !dialogue_open && !session.legal_actions().is_empty()
             && let Some(turn) = turn_notice::new_turn(session.state(), players, notified) {
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
