@@ -181,6 +181,10 @@ impl<'data> FixedMatch<'data> {
             events.fire("prestart", state);
             events.fire("start", state);
         })?;
+        // fire_start refreshes the initial local viewer's objectives before side-turn events.
+        if let Some(index) = game.scenario.sides.iter().position(|side| side.controller == crate::scenario_sides::SideController::Human) {
+            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides);
+        }
         game.check_victory();
         if let MatchState::Playing(mut turn) = game.state {
             turn.side = game.turn_sides().next().ok_or(MatchError::EmptyTurnController)?;
@@ -218,6 +222,16 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::Dialogue(message) => {
                     self.queue_dialogue(message);
+                    continue;
+                }
+                BoardChange::ShowObjectives(sides) => {
+                    for index in sides {
+                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides);
+                    }
+                    continue;
+                }
+                BoardChange::SetObjectives { sides, definition, notify } => {
+                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides);
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -346,6 +360,26 @@ impl<'data> FixedMatch<'data> {
     pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
         self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
             .filter(|objectives| !objectives.is_empty())
+    }
+
+    /// A menu request can reveal an entry previously excluded by its condition.
+    pub fn has_authored_objectives(&self, side: usize) -> bool {
+        (1..=self.scenario.sides.len()).contains(&side) && self.scenario.events.has_objectives(side)
+    }
+
+    pub fn evaluate_objectives_for(&self, side: usize) -> Option<crate::scenario_sides::ScenarioObjectives> {
+        if !self.has_authored_objectives(side) { return None; }
+        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len())
+    }
+
+    pub fn objectives_changed(&self, side: usize) -> bool {
+        side.checked_sub(1).and_then(|i| self.scenario.sides.get(i)).is_some_and(|s| s.objectives_changed)
+    }
+
+    pub fn acknowledge_objectives(&mut self, side: usize) {
+        if let Some(viewer) = side.checked_sub(1).and_then(|i| self.scenario.sides.get_mut(i)) {
+            viewer.objectives_changed = false;
+        }
     }
 
     /// Campaign destination after a scripted victory or a surviving human side's victory.

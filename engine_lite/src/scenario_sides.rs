@@ -27,21 +27,6 @@ pub struct ScenarioObjectives {
 }
 
 impl ScenarioObjectives {
-    pub(crate) fn read(cfg: &Node) -> Self {
-        let mut result = Self::default();
-        for (_, objective) in cfg.children.iter().filter(|(tag, _)| tag == "objective") {
-            if objective.children.iter().any(|(tag, _)| tag == "show_if") { continue; }
-            let Some(description) = objective.attribute("description")
-                .filter(|text| !text.trim().is_empty() && !text.contains('$')) else { continue };
-            match objective.attribute("condition") {
-                Some("win") => result.victory.push(description.to_owned()),
-                Some("lose") => result.defeat.push(description.to_owned()),
-                _ => {}
-            }
-        }
-        result
-    }
-
     pub fn is_empty(&self) -> bool {
         self.victory.is_empty() && self.defeat.is_empty()
     }
@@ -76,6 +61,7 @@ pub struct SideConfig {
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
     pub(crate) controller: SideController,
+    pub(crate) objectives_changed: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -132,6 +118,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
         controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
+        objectives_changed: false,
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,

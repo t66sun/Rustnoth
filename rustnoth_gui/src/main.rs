@@ -89,7 +89,7 @@ fn main() -> ExitCode {
         window_resizable: true,
         ..Conf::default()
     };
-    Window::from_config(configuration, async move {
+    Window::from_config(sprite_batches(configuration), async move {
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen).await,
@@ -103,6 +103,15 @@ fn main() -> ExitCode {
         }
     });
     ExitCode::SUCCESS
+}
+
+fn sprite_batches(window: Conf) -> macroquad::conf::Conf {
+    // Changing terrain textures starts a fresh GPU buffer pair. Most pairs hold
+    // one quad. Consecutive glyphs or sprites sharing a texture can still batch.
+    let mut config = macroquad::conf::Conf::from(window);
+    config.draw_call_vertex_capacity = 64 * 4;
+    config.draw_call_index_capacity = 64 * 6;
+    config
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -247,17 +256,26 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     fs::read(path).map_err(|error| format!("could not read {} ({error})", path.display()).into())
 }
 
-async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
+async fn show_board(mut data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
+    if let Some(checkpoint) = data.restore.as_mut()
+        && !checkpoint.watch_replay
+        && let Some(browser) = checkpoint.campaign.take()
+    {
+        let route = checkpoint.replay_roster.take().ok_or("Missing incoming campaign roster")?;
+        return browser.play_route(data, route, players).await;
+    }
     play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
-    let campaign = carryover.is_some();
+async fn play_board(mut data: BoardData, players: Players, journey: Option<(&campaign_browser::Browser, &mut engine_lite::fixed_match::carryover::CampaignCarryover)>) -> Result<Option<String>, Box<dyn Error>> {
+    let (browser, mut carryover) = journey.unzip();
+    let campaign = browser.is_some();
     let mut restore = data.restore.take();
     let mut replay_route = restore.as_mut().and_then(|slot| slot.replay_roster.take());
-    let mut opening_roster = if campaign && display_preferences::save_replays()? {
-        carryover.as_deref().map(|route| route.replay_roster())
-    } else { None };
+    // Starting the scenario consumes its incoming veterans. Keep the opening state
+    // for manual saves even when the player has disabled automatic victory replays.
+    let opening_roster = carryover.as_deref().map(|route| route.replay_roster());
+    let mut save_victory_replay = campaign && display_preferences::save_replays()?;
     let mut saved_map = None;
     let game = data.scenario.start_with_controllers(data.seed, |name| {
         let map = match &restore {
@@ -322,16 +340,22 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             return Ok(None);
         }
         let mut commands = map_menus::available(
-            session.objectives().is_some(),
+            session.has_authored_objectives(),
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
             session.legal_actions(),
         );
         if session.observation().is_some_and(|view| view.units.iter().any(|unit| unit.side == view.side)) {
             commands.insert(0, map_menus::Command::UnitList);
         }
-        if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
-        let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
-        let input_blocked = walking || dialogue_open || top.handled;
+        if data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
+        let auto_objectives = !walking && session.has_objective_notice();
+        let top = if walking || dialogue_open || auto_objectives { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
+        let show_objectives = auto_objectives || session.has_authored_objectives() && !walking && !dialogue_open
+            && (top.command == Some(map_menus::Command::Objectives) || !top.handled && render::objectives::hotkey());
+        let unit_list = top.command == Some(map_menus::Command::UnitList)
+            || !walking && !dialogue_open && !show_objectives && !top.handled && commands.contains(&map_menus::Command::UnitList)
+                && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
+        let input_blocked = walking || dialogue_open || top.handled || show_objectives || unit_list;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -339,17 +363,6 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Ok(()) => art.show_grid = !art.show_grid,
                 Err(error) => message = Some(format!("Could not save grid preference: {error}")),
             }
-        }
-        let unit_list = top.command == Some(map_menus::Command::UnitList)
-            || !input_blocked && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
-        if unit_list && let Some(view) = session.observation() {
-            if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
-                selection.select_own(at, view);
-                camera.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
-                menu = None;
-            }
-            next_frame().await;
-            continue;
         }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
@@ -372,11 +385,12 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
             _ => {}
         }
-        if !campaign && data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
+        if data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
             next_frame().await;
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(
-                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),None)) {
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
+                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
                     Ok(()) => format!("Saved {name}"),
                     Err(e) => format!("Save failed: {e}"),
                 });
@@ -396,15 +410,6 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
-        if !dialogue_open && let Some(objectives) = session.objectives() {
-            let opened = top.command == Some(map_menus::Command::Objectives)
-                || (!input_blocked && render::objectives::hotkey());
-            if opened {
-                render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
-                next_frame().await;
-                continue;
-            }
-        }
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
@@ -428,7 +433,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
         }
         let mut ai_walk = None;
-        let computer_acted = !walking && !top.handled
+        let computer_acted = !input_blocked
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
@@ -445,7 +450,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
-        if let Some(id) = next && opening_roster.is_none() && (is_key_pressed(KeyCode::Enter)
+        if let Some(id) = next && !save_victory_replay && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
@@ -582,6 +587,21 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        if unit_list && let Some(view) = session.observation() {
+            if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
+                selection.select_own(at, view);
+                camera.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
+                menu = None;
+            }
+            next_frame().await;
+            continue;
+        }
+        if show_objectives {
+            let contents = if auto_objectives { session.objectives().cloned() } else { session.evaluate_objectives() };
+            render::objectives::show(&contents.unwrap_or_default(), &data.title, &locale, &mut art, &data.wesnoth_root).await;
+            session.acknowledge_objectives();
+            continue;
+        }
         if let Some(prompt) = end_prompt {
             confirmed_end_turn = end_turn::confirm(&data.wesnoth_root, &locale, prompt).await;
             next_frame().await;
@@ -607,10 +627,11 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
         }
         if session.dialogue().is_none() && !matches!(session.state(), engine_lite::fixed_match::MatchState::Playing(_))
-            && let Some(roster) = opening_roster.take() && session.save_victory_replay() {
+            && std::mem::take(&mut save_victory_replay) && session.save_victory_replay()
+            && let Some(roster) = opening_roster.as_ref() {
             let result = saved_game::directory().and_then(|base| saved_game::save(
                 &base, &format!("{} replay",data.title), &data, players, saved_map.as_deref(),
-                session.history(), None, None, Some(&roster)));
+                session.history(), None, None, Some(saved_game::CampaignSave::Replay(roster))));
             if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
         if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
@@ -643,6 +664,16 @@ fn select_move(
 mod tests {
     use super::*;
     use engine_lite::observation::ObservedUnit;
+
+    #[test]
+    fn textured_batches_fit_the_largest_board_primitive_without_reserving_a_full_mesh() {
+        let config = sprite_batches(Conf::default());
+        // A filled circle emits a 20-triangle fan in macroquad.
+        assert!(config.draw_call_vertex_capacity >= 22 && config.draw_call_index_capacity >= 60);
+        let bytes = config.draw_call_vertex_capacity * size_of::<Vertex>()
+            + config.draw_call_index_capacity * size_of::<u16>();
+        assert!(bytes <= 16 * 1024, "{bytes} bytes for each texture change");
+    }
 
     #[test]
     fn defaults_to_the_sibling_asset_checkout_and_accepts_an_override() {
