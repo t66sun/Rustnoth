@@ -2,7 +2,10 @@
 use super::{Hero, opening::children};
 use engine_lite::wml::Node;
 
+mod island_village;
+
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
+    island_village::prepare(scenario, hero);
     for (tag, event) in &mut scenario.children {
         if tag != "event" || children(event, "hint_message").next().is_none() { continue; }
         let briefing = match event.attribute("name") {
