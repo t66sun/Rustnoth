@@ -256,6 +256,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let speed = display_preferences::speed::Speed::load()?;
+    let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     if let Some(checkpoint) = restore {
         for event in checkpoint.events { event.apply(&mut session)?; }
@@ -391,9 +392,12 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
-        let computer_acted = !walking && !top.handled && session.play_computer_action()?;
+        let mut ai_walk = None;
+        let computer_acted = !walking && !top.handled
+            && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
+            if let Some(walk) = ai_walk { art.start_observed_walk(walk, &data.assets); }
         }
         let clicked = !input_blocked && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
         if data.lesson.is_none() && !input_blocked && !computer_acted && is_key_pressed(KeyCode::D) && menu.is_none() {

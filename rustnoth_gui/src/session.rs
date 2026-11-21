@@ -102,9 +102,18 @@ impl<'rules> Session<'rules> {
 
     /// Apply at most one computer command per desktop frame.
     pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
+        self.play_computer_recording_walk(None)
+    }
+
+    pub fn play_computer_recording_walk(&mut self, display: Option<&mut Option<engine_lite::fixed_match::walk::VisibleWalk>>)
+        -> Result<bool, MatchError> {
         if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
-        match self.commit(action.clone(), None) {
+        let result = match (&action, display, &self.observation) {
+            (Action::Move { from, to }, Some(walk), Some(view)) => self.game.move_for_viewer(*from, *to, view.side, walk),
+            _ => self.commit(action.clone(), None),
+        };
+        match result {
             Ok(_) => {}
             // A castle hex offered through fog can turn out to be occupied.
             Err(MatchError::InvalidRecruit) if matches!(action, Action::Recruit { .. }) => {

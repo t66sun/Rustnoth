@@ -18,6 +18,7 @@ struct Setting { file: &'static str, off: &'static str, on: &'static str }
 
 const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
 const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
+const SKIP_AI: Setting = Setting { file: "skip-ai-moves", off: "off", on: "on" };
 
 impl Setting {
     fn read(&self, dir: &Path) -> io::Result<bool> {
@@ -42,6 +43,8 @@ pub fn load() -> io::Result<bool> { WINDOW.read(&config_directory()?) }
 pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory()?, fullscreen) }
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
+pub fn skip_ai_moves() -> io::Result<bool> { SKIP_AI.read(&config_directory()?) }
+pub fn save_skip_ai_moves(enabled: bool) -> io::Result<()> { SKIP_AI.write(&config_directory()?, enabled) }
 
 #[cfg(test)]
 mod tests {
@@ -59,6 +62,10 @@ mod tests {
         assert!(!GRID.read(&dir).unwrap());
         GRID.write(&dir, true).unwrap();
         assert!(GRID.read(&dir).unwrap());
+        assert!(!SKIP_AI.read(&dir).unwrap());
+        SKIP_AI.write(&dir, true).unwrap();
+        assert!(SKIP_AI.read(&dir).unwrap());
+        fs::remove_file(dir.join("skip-ai-moves")).unwrap();
         assert!(!WINDOW.read(&dir).unwrap());
         fs::remove_file(dir.join("map-grid")).unwrap();
         fs::remove_file(dir.join("window-mode")).unwrap();
