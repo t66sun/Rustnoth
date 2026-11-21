@@ -122,6 +122,13 @@ impl<'rules> Session<'rules> {
         if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
     }
 
+    pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
+        if let Some(view) = &self.observation {
+            self.game.present_message(config);
+            self.dialogue.extend(self.game.take_dialogue(view.side));
+        }
+    }
+
     /// Enabled by the live board after replaying any saved commands.
     pub fn enable_combat_playback(&mut self) {
         self.animate_combat = true;

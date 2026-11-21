@@ -430,6 +430,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let mut ai_walk = None;
         let computer_acted = !walking && !top.handled
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
+        if computer_acted && let Some(lesson) = &mut data.lesson {
+            lesson.after_computer(&mut session);
+        }
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
             if let Some(walk) = ai_walk { art.start_observed_walk(walk, &data.assets); }
