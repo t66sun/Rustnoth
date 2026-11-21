@@ -15,6 +15,7 @@ mod weapons;
 mod practice;
 mod advice;
 mod ending;
+mod second;
 pub(super) use ending::prepare_campaign;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
