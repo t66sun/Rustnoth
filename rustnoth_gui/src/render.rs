@@ -242,11 +242,11 @@ impl BoardArt {
         })
     }
 
-    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, session: &rustnoth_gui::session::Session<'_>) {
         self.frame.clear_unit_report();
         self.lighting.update(observation);
         self.map_items.clear();
-        for (position, image) in items {
+        for (position, image) in session.map_item_images() {
             let unlit = image.strip_suffix("~NO_TOD_SHIFT()");
             let image = unlit.unwrap_or(image);
             let path = Path::new(image);
@@ -258,11 +258,19 @@ impl BoardArt {
                 self.map_items.push((position, texture, unlit.is_none()));
             }
         }
+        let border = session.known_border();
         self.cover = map_cover(observation);
-        self.fog_edges.update(observation, &self.cover);
+        self.cover.extend(engine_lite::map::border_positions(observation.width, observation.height).filter_map(|at| {
+            match border.get(&at) {
+                Some((_, true)) => None,
+                Some((_, false)) => Some((at, Cover::Fog)),
+                None => Some((at, Cover::Shroud)),
+            }
+        }));
+        self.fog_edges.update(observation, &border, &self.cover);
         self.transitions.load(observation, assets);
         self.minimap.load(observation, assets);
-        self.rules.load(assets, observation);
+        self.rules.load(assets, observation, &border);
         for tile in &observation.tiles {
             self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
@@ -483,7 +491,7 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
         let [x, y] = layout.tile_origin(hex);
         let center = vec2(x + size * 0.5, y + size * 0.5);
         let texture = match cover {
-            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x as usize + hex.y as usize) % art.fog.len()]),
+            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x + hex.y).rem_euclid(art.fog.len() as i32) as usize]),
             Cover::Fog => None,
             Cover::Shroud => art.shroud.as_ref(),
         };
@@ -524,7 +532,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let now = (get_time() * 1000.0) as u64;
     let viewport = board_viewport();
     let border_period = movement.global_time.map_or("", |t| t.id.as_str());
-    for hex in border::ring(view.width, view.height) {
+    art.lighting.flat(movement.global_time.map_or([0; 3], |period| period.color));
+    for hex in engine_lite::map::border_positions(view.width, view.height) {
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
