@@ -504,12 +504,13 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             .or_else(|| session.tutorial_end_turn_denial());
         let show_end = can_end || denial.is_some();
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
-        let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some());
-        if let Some(id) = next && !save_victory_replay && (is_key_pressed(KeyCode::Enter)
+        let final_victory = campaign && session.final_victory_ready(end_report_shown);
+        let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some() || final_victory);
+        if !input_blocked && (next.is_some() || final_victory) && !save_victory_replay && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
-            return Ok(Some(id.to_owned()));
+            return Ok(next.map(str::to_owned));
         }
         let menu_action = menu.as_mut().filter(|_| !input_blocked).and_then(|menu| {
             let area = render::menu_area();
@@ -643,8 +644,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             || session.tutorial_end_turn_denial().is_some()
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
             Some(end_label.as_str())
-        } else if campaign && session.next_scenario().is_some() {
-            Some(if data.lesson.is_some() { end_scenario.as_str() } else { "Continue" })
+        } else if campaign && (session.next_scenario().is_some() || final_victory) {
+            Some(if data.lesson.is_some() || final_victory { end_scenario.as_str() } else { "Continue" })
         } else {
             None
         };

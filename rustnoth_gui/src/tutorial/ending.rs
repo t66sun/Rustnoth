@@ -10,9 +10,23 @@ pub(crate) fn prepare_campaign(campaign: &mut Node, hero: Hero) -> Result<Lesson
     let second = scenario(campaign, &next)?;
     set_second_hero(second, hero)?;
     super::second::prepare(second, hero);
+    second_victory_dialogue(second);
     super::briefing::prepare(second, hero);
     super::reinforcements::prepare(second, hero);
     Ok(lesson)
+}
+
+fn second_victory_dialogue(scenario: &mut Node) {
+    // The final tutorial is won by defeating the orc leader. Deliver its farewell
+    // at that referee event, while Galdrad is still available as the speaker.
+    let mut farewell = node(&[("name", "enemies defeated")]);
+    if let Some((_, victory)) = scenario.children.iter_mut()
+        .find(|(tag, cfg)| tag == "event" && cfg.attribute("name") == Some("victory"))
+    {
+        (farewell.children, victory.children) = std::mem::take(&mut victory.children)
+            .into_iter().partition(|(tag, _)| tag == "message");
+        if !farewell.children.is_empty() { scenario.children.push(("event".into(), farewell)); }
+    }
 }
 
 fn scenario<'a>(campaign: &'a mut Node, id: &str) -> Result<&'a mut Node, Box<dyn Error>> {
@@ -77,6 +91,75 @@ mod tests {
         let mut bytes = Vec::new();
         wml_emit::write_config(&mut bytes, &doc).unwrap();
         Bundle::parse_with_core(&bytes, CORE.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn part_two_plays_its_farewell_before_the_final_end_scenario_button() {
+        for victim in ["Thrag", "student"] {
+            let mut level = wml::parse(r#"map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+id=student
+type=Fighter
+controller=human
+[unit]
+id=Galdrad
+name=Galdrad
+type=Fighter
+x,y=2,1
+[/unit]
+[/side]
+[side]
+id=Thrag
+type=Fighter
+controller=ai
+[/side]
+[event]
+name=victory
+[message]
+speaker=Galdrad
+message=You have beaten the orcs!
+[/message]
+[message]
+speaker=narrator
+image=wesnoth-icon.png
+message=See the help browser.
+[/message]
+[progress_achievement]
+content_for=tutorial
+id=completed
+amount=1
+[/progress_achievement]
+[/event]"#).unwrap();
+            second_victory_dialogue(&mut level);
+            level.children.push(("event".into(), wml::parse(format!(
+                "name=side 1 turn end\n[kill]\nid={victim}\nfire_event=yes\n[/kill]"
+            )).unwrap()));
+            let bundle = board(level);
+            let game = bundle.start_campaign(7, |_| unreachable!(), None).unwrap();
+            let mut session = Session::with_players(game, Players::Campaign);
+            assert!(!session.final_victory_ready(true));
+            session.apply(Action::EndTurn).unwrap();
+            assert!(session.next_scenario().is_none());
+            if victim == "student" {
+                assert!(session.dialogue().is_none());
+                assert!(!session.final_victory_ready(true));
+                continue;
+            }
+            let speech = session.dialogue().unwrap();
+            assert_eq!(speech.caption.as_deref(), Some("Galdrad"));
+            assert_eq!(speech.text, "You have beaten the orcs!");
+            assert!(!session.final_victory_ready(true));
+            session.dismiss_dialogue();
+            let help = session.dialogue().unwrap();
+            assert_eq!(help.image.as_deref(), Some("wesnoth-icon.png"));
+            assert_eq!(help.text, "See the help browser.");
+            assert!(!session.final_victory_ready(true));
+            session.dismiss_dialogue();
+            assert!(!session.final_victory_ready(false));
+            assert!(session.final_victory_ready(true));
+        }
     }
 
     #[test]
