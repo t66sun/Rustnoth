@@ -325,7 +325,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let mut top_menu = map_menus::State::default();
     // Combat plays after the action is committed. Keep the controls the viewer
     // last saw until the final strike or a skip returns to the updated board.
-    let end_label = locale.game("End Turn");
+    let end_label = locale.game("End Turn").to_owned();
     let mut visible_turn_label = None;
     let mut visible_prompt = String::new();
     session.enable_combat_playback();
@@ -625,7 +625,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         session.track_hovered_move(hovered);
         visible_turn_label = if session.legal_actions().contains(&Action::EndTurn)
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
-            Some(end_label)
+            Some(end_label.as_str())
         } else if campaign && session.next_scenario().is_some() {
             Some("Continue")
         } else {
