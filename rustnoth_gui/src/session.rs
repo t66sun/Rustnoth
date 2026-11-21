@@ -170,6 +170,7 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
+    pub fn save_victory_replay(&self) -> bool { self.game.save_victory_replay() }
 
     pub fn retained_gold(&self) -> Option<i64> {
         self.game.retained_gold(self.observation.as_ref()?.side)
