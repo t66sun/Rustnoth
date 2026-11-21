@@ -6,7 +6,7 @@ use crate::wml::Node;
 
 pub(super) type Scalars = BTreeMap<String, String>;
 
-fn scalar_name(name: &str) -> bool {
+pub(crate) fn scalar_name(name: &str) -> bool {
     // Coordinates and turn counters belong to the active event context.
     !matches!(name, "" | "x1" | "x2" | "y1" | "y2" | "turn_number" | "side_number")
         && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')

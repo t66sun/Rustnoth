@@ -1,7 +1,10 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod documents;
+mod menubar;
 mod locations;
 mod fill;
+mod help_label;
 mod minimap_buttons;
 mod palette;
 mod toolbar;
@@ -135,6 +138,9 @@ enum Command {
     Redo,
     FillSelection,
     ToggleGrid,
+    Refresh,
+    ToggleHelp,
+    Switch(usize),
 }
 
 impl Command {
@@ -149,6 +155,9 @@ impl Command {
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
             Self::ToggleGrid => "Toggle Grid",
+            Self::Switch(_) => "Switch Map",
+            Self::Refresh => "Refresh Display",
+            Self::ToggleHelp => "Show Tool Information",
         }
     }
 }
@@ -248,37 +257,12 @@ fn draw_terrain(
     }
 }
 
-fn text_button(
-    area: Rect,
-    label: &str,
-    point: Vec2,
-    active: bool,
-    art: &mut Art,
-    assets: &AssetCatalog,
-    font: Option<&Font>,
-) -> bool {
-    let hot = area.contains(point);
-    let suffix = if active || hot { "-active" } else { "" };
-    art.image(
-        assets,
-        &format!("buttons/button_menu/menu_button_copper_H20{suffix}.png"),
-        area,
-    );
-    let w = measure_text(label, font, 15, 1.0).width;
-    dialog::text(
-        font,
-        label,
-        area.center().x - w / 2.0,
-        area.center().y + 5.0,
-        15,
-        WHITE,
-    );
-    hot && is_mouse_button_pressed(MouseButton::Left)
-}
 
 struct Chrome {
     show_grid: bool,
-    menu: Option<bool>,
+    menu: Option<menubar::Menu>,
+    menubar: menubar::Menubar,
+    show_help: bool,
     tip: Option<&'static str>,
     toolbar: toolbar::Toolbar,
 }
@@ -293,88 +277,28 @@ impl Chrome {
         assets: &AssetCatalog,
         art: &mut Art,
         font: Option<&Font>,
-        name: &str,
+        names: &[String],
         doc: &EditableMap,
         history: &History,
     ) -> Option<Command> {
         self.tip = None;
-        let click = is_mouse_button_pressed(MouseButton::Left);
         let sidebar = Rect::new(w - side, 0.0, side, h);
-        art.image(assets, "themes/classic/sidebar.png", sidebar);
-        art.image(
+        art.panel(
             assets,
             "themes/classic/menubar.png",
-            Rect::new(0.0, 0.0, w - side, 27.0),
+            Rect::new(0.0, 0.0, w, 27.0),
         );
-        art.image(
+        art.panel(
             assets,
             "themes/editor/classic/toolbar.png",
             Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
-        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+        art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
-        art.image(
-            assets,
-            "themes/editor/classic/menubar_rightside.png",
-            Rect::new(w - side, 0.0, side, 26.0),
-        );
-        let mut triggered = false;
-        for (index, label) in ["File", "Edit"].iter().enumerate() {
-            let file = index == 0;
-            if text_button(
-                Rect::new(index as f32 * 76.0, 1.0, 75.0, 23.0),
-                label,
-                point,
-                self.menu == Some(file),
-                art,
-                assets,
-                font,
-            ) {
-                self.menu = if self.menu == Some(file) {
-                    None
-                } else {
-                    Some(file)
-                };
-                triggered = true;
-            }
-        }
-        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
+        art.panel(assets, "themes/classic/sidebar.png", sidebar);
+        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, doc, history,
             assets, art, &mut self.tip);
-        let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
-        dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
-        if let Some(file) = self.menu {
-            let commands: &[Command] = if file {
-                &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit]
-            } else {
-                &[Command::Undo, Command::Redo, Command::FillSelection]
-            };
-            for (i, &cmd) in commands.iter().enumerate() {
-                let r = Rect::new(
-                    if file { 0.0 } else { 76.0 },
-                    26.0 + i as f32 * 28.0,
-                    175.0,
-                    28.0,
-                );
-                draw_rectangle(
-                    r.x,
-                    r.y,
-                    r.w,
-                    r.h,
-                    if r.contains(point) {
-                        Color::from_rgba(44, 65, 71, 255)
-                    } else {
-                        Color::from_rgba(31, 32, 35, 255)
-                    },
-                );
-                dialog::text(font, cmd.label(), r.x + 9.0, r.y + 19.0, 16, WHITE);
-                if !triggered && click && r.contains(point) {
-                    result = Some(cmd);
-                }
-            }
-            if click && !triggered {
-                self.menu = None;
-            }
-        }
+        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
         result
     }
 }
@@ -408,31 +332,30 @@ fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
     view.tiles.sort_unstable_by_key(|tile| (tile.position.y, tile.position.x));
 }
 
-pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
+pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
+    let mut help_label = help_label::HelpLabel::new(root, font_family);
     let assets = AssetCatalog::parse(root, core, b"")?;
     let cfg = wml::parse(core)?;
     let mut palette = Palette::load(&cfg, root)?;
     let mut shapes = shapes::Shapes::load(root, &cfg)?;
     let mut art = Art::new();
-    let mut doc = new_map();
-    let mut locations = locations::Locations::new(&doc);
-    let mut view = render::map_observation(doc.map());
+    let mut documents = documents::Documents::default();
+    let mut view = render::map_observation(documents.list[0].map.map());
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
     let mut reports = terrain_report::Reports::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
-    let mut camera = BoardCamera::default();
-    let mut history = History::default();
     let mut chrome = Chrome {
         show_grid: crate::display_preferences::grid()?,
+        show_help: crate::display_preferences::editor_help()?,
         menu: None,
+        menubar: menubar::Menubar::new(root),
         tip: None,
         toolbar: Default::default(),
     };
     let grid = render::GridArt::load(&root.join("data/core/images/terrain"));
-    let mut name = "Untitled".to_string();
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
     let mut drawing = None;
@@ -442,11 +365,14 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut region = Region::default();
     next_frame().await;
     loop {
+        let names = if chrome.menu == Some(menubar::Menu::Window) { documents.titles() } else { Vec::new() };
+        let current = &mut documents.list[documents.current];
+        let documents::Document { map: doc, history, camera, path, locations } = current;
         if rebuild {
             region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
-            add_minimap_border(&mut view, &doc);
+            add_minimap_border(&mut view, doc);
             mini.load(&view, &assets);
             rebuild = false;
         }
@@ -464,7 +390,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             || is_key_down(KeyCode::LeftSuper)
             || is_key_down(KeyCode::RightSuper);
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-        update_editor_camera(&mut camera, area, &view, is_key_pressed(KeyCode::Home));
+        update_editor_camera(camera, area, &view, is_key_pressed(KeyCode::Home));
         camera.scroll(p, mouse_wheel().1);
         camera.drag(
             p,
@@ -503,7 +429,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
         if tool == Tool::Location && !modal {
-            locations.input(at, ctrl, &mut doc, &mut history, &mut camera);
+            locations.input(at, ctrl, doc, history, camera);
         } else if tool == Tool::Select && !modal {
             if let Some(hex) = at {
                 selecting |= is_mouse_button_pressed(MouseButton::Left);
@@ -528,7 +454,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                         }
                     } else if tool == Tool::Fill {
                         let i = if foreground { palette.fg } else { palette.bg };
-                        rebuild |= region.paint(&mut doc, &mut history, hex, &palette.brushes[i], shift);
+                        rebuild |= region.paint(doc, history, hex, &palette.brushes[i], shift);
                         break;
                     } else {
                         drawing = Some(btn);
@@ -543,7 +469,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 } else {
                     palette.bg
                 };
-                shapes::paint(&mut doc, &mut history, &footprint, &palette.brushes[i], shift);
+                shapes::paint(doc, history, &footprint, &palette.brushes[i], shift);
             }
         }
         if let Some(btn) = drawing
@@ -562,9 +488,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 &view,
                 layout,
                 area,
-                &history,
+                history,
                 &region,
-                &doc,
+                doc,
                 &palette,
                 &mut art,
                 &assets,
@@ -588,11 +514,6 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 }
             }
         }
-        let title = format!(
-            "{}{} — Map Editor",
-            name,
-            if doc.dirty() { " *" } else { "" }
-        );
         let mut command = chrome.draw(
             w,
             h,
@@ -601,15 +522,15 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             &assets,
             &mut art,
             form.font.as_ref(),
-            &title,
-            &doc,
-            &history,
+            &names,
+            doc,
+            history,
         );
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
-        reports.draw(w, h, at, &doc, &palette, &assets, form.font.as_ref());
-        if let Err(error) = mini_buttons.draw(mini_frame, point, !modal, &mut camera,
+        reports.draw(w, h, at, doc, &palette, &assets, form.font.as_ref());
+        if let Err(error) = mini_buttons.draw(mini_frame, point, !modal, camera,
             &mut mini, &mut art, &assets, &mut chrome.tip) {
             status = error.to_string();
         }
@@ -638,40 +559,32 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                             if !locations.add(&id) { status = "Invalid location id".into(); }
                         }
                     }
-                    locations::Action::Delete => history.place(&mut doc, locations.selected(), None),
-                    locations::Action::GoTo => locations.go_to(&doc, &mut camera),
+                    locations::Action::Delete => history.place(doc, locations.selected(), None),
+                    locations::Action::GoTo => locations.go_to(doc, camera),
                 }
             }
         } else {
             palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
         }
-        let font = form.font.as_ref();
-        let lines = if let Some(tip) = chrome.tip {
-            vec![tip.to_owned()]
+        let text = if let Some(tip) = chrome.tip {
+            Some(tip.to_owned())
         } else if !status.is_empty() {
-            vec![status.clone()]
+            Some(status.clone())
+        } else if !chrome.show_help {
+            None
         } else if tool == Tool::Location {
-            vec!["Left-click to place or clear a location | Ctrl + click to select | Right-click to clear".into()]
+            Some("Left-click to place or clear a location | Ctrl + click to select | Right-click to clear".into())
         } else if tool == Tool::Select {
-            vec!["Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()]
+            Some("Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into())
         } else {
-            palette.help().into()
+            Some(palette.help().join("\n"))
         };
-        let mut font_size = 18;
-        let width = loop {
-            let max_width = lines.iter().map(|line| measure_text(line, font, font_size, 1.0).width)
-                .fold(0.0, f32::max);
-            if max_width <= w * 0.5 || font_size <= 8 {
-                break max_width;
-            }
-            font_size -= 1;
-        };
-        let line_height = font_size as f32 + 6.0;
-        let x = (w - width) * 0.5;
-        let y = h - line_height * lines.len() as f32 - 10.0;
-        draw_rectangle(x - 5.0, y, width + 10.0, h - y, Color::from_rgba(0, 0, 0, 0xbb));
-        for (row, line) in lines.iter().enumerate() {
-            dialog::text(font, line, x, y + 5.0 + font_size as f32 + row as f32 * line_height, font_size, WHITE);
+        if let Some(text) = text {
+            let top_row = camera.layout().map_or(0, |layout| {
+                let [_, zero_y] = layout.tile_origin(Hex { x: 0, y: 0 });
+                ((area.y - zero_y) / layout.tile_size()).floor() as i32
+            });
+            help_label.draw(&text, form.font.as_ref(), vec2(w, h), area.y, top_row);
         }
         set_default_camera();
         if ctrl && is_key_pressed(KeyCode::N) {
@@ -707,7 +620,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
         }
         if let Some(cmd) = command {
-            if cmd != Command::ToggleGrid {
+            if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp) {
                 drawing = None;
                 selecting = false;
                 last_selection = None;
@@ -715,6 +628,13 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 rebuild |= history.finish();
             }
             match cmd {
+                Command::Refresh => { rebuild = true; }
+                Command::ToggleHelp => {
+                    match crate::display_preferences::save_editor_help(!chrome.show_help) {
+                        Ok(()) => chrome.show_help = !chrome.show_help,
+                        Err(error) => status = error.to_string(),
+                    }
+                }
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,
@@ -722,71 +642,58 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     }
                 }
                 Command::Exit => {
-                    if !doc.dirty() || files::confirm(&form).await {
+                    if !documents.list.iter().any(|d| d.map.dirty()) || files::confirm(&form).await {
                         return Ok(());
                     }
                 }
                 Command::Undo | Command::Redo => {
-                    rebuild |= history.apply(&mut doc, cmd == Command::Undo);
+                    rebuild |= history.apply(doc, cmd == Command::Undo);
                     status.clear();
                 }
                 Command::Save => {
                     let bytes = doc.text();
-                    match files::save(&folder, &form, &name, &bytes).await {
-                        Ok(Some(path)) => {
-                            name = path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            doc = EditableMap::parse(bytes)?;
-                            status = format!("Saved {}", path.display());
+                    let name = path.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str()).unwrap_or("Untitled");
+                    match files::save(&folder, &form, name, &bytes).await {
+                        Ok(Some(saved)) => {
+                            *path = Some(fs::canonicalize(&saved)?);
+                            *doc = EditableMap::parse(bytes)?;
+                            status = format!("Saved {}", saved.display());
                         }
                         Err(e) => status = e.to_string(),
                         _ => {}
                     }
                 }
                 Command::FillSelection => {
-                    rebuild |= history.fill_selected(&mut doc, &palette.brushes[palette.bg]);
+                    rebuild |= history.fill_selected(doc, &palette.brushes[palette.bg]);
                 }
-                Command::New | Command::Close | Command::Open => {
-                    let incoming: Result<Option<(EditableMap, String)>, Box<dyn Error>> =
-                        if cmd != Command::Open {
-                            Ok(Some((new_map(), "Untitled".into())))
-                        } else {
-                            async {
-                                let Some(file) = files::open(root, &folder, &form).await? else {
-                                    return Ok(None);
-                                };
-                                let next = EditableMap::parse(fs::read_to_string(&file)?)?;
-                                if next.map().width() < 1 || next.map().height() < 1 {
-                                    return Err("Map contains no playable hexes".into());
-                                }
-                                Ok(Some((
-                                    next,
-                                    file.file_stem()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .into_owned(),
-                                )))
-                            }
-                            .await
-                        };
-                    match incoming {
-                        Ok(Some((next, label))) => {
-                            if !doc.dirty() || files::confirm(&form).await {
-                                if cmd == Command::Close { tool = Tool::Paint; }
-                                doc = next;
-                                locations = locations::Locations::new(&doc);
-                                name = label;
-                                history = History::default();
-                                camera = BoardCamera::default();
-                                rebuild = true;
-                                status.clear();
-                            }
-                        }
+                Command::Switch(index) => {
+                    if index < documents.list.len() && index != documents.current {
+                        documents.current = index;
+                        rebuild = true;
+                        status.clear();
+                    }
+                }
+                Command::New => {
+                    documents.new_map();
+                    rebuild = true;
+                    status.clear();
+                }
+                Command::Close => {
+                    if !doc.dirty() || files::confirm(&form).await {
+                        documents.close();
+                        tool = Tool::Paint;
+                        rebuild = true;
+                        status.clear();
+                    }
+                }
+                Command::Open => {
+                    match files::open(root, &folder, &form).await {
+                        Ok(Some(file)) => match documents.open(&file) {
+                            Ok(()) => { rebuild = true; status.clear(); }
+                            Err(error) => status = error.to_string(),
+                        },
+                        Ok(None) => {}
                         Err(error) => status = error.to_string(),
-                        _ => {}
                     }
                 }
             }
