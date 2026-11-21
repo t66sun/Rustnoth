@@ -405,6 +405,79 @@ message=Human orders
     }
 
     #[test]
+    fn campaign_controller_changes_reassign_input_and_view_during_play_and_replay() {
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=0
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+controller=human
+type=Guard
+[/side]
+[side]
+controller=null
+type=Guard
+fog=yes
+[/side]
+[event]
+name=side 1 turn 1
+[modify_side]
+side=1
+controller=ai
+hidden=no
+[/modify_side]
+[modify_side]
+side=2
+controller=human
+gold=23
+[/modify_side]
+[/event]
+[event]
+name=side 2 turn 1
+[modify_side]
+side=2
+controller=null
+[/modify_side]
+[/event]
+[event]
+name=side 1 turn 2
+[modify_side]
+side=1
+controller=human
+[/modify_side]
+[modify_side]
+side=2
+controller=null
+[/modify_side]
+[/event]
+[/scenario]"#).unwrap();
+        let start = || Session::with_players(bundle.start(17, |_| unreachable!()).unwrap(), Players::Campaign);
+        let mut live = start();
+        let view = live.observation().unwrap();
+        assert_eq!((view.side, view.gold), (2, Some(23)));
+        assert!(live.legal_actions().is_empty());
+        assert!(live.play_computer_action().unwrap());
+        assert_eq!(live.observation().unwrap().side, 2);
+        // A currently playing side cannot be changed to null.
+        assert!(live.legal_actions().contains(&Action::EndTurn));
+        live.apply(Action::EndTurn).unwrap();
+        assert_eq!(live.observation().unwrap().side, 1);
+        assert_eq!(live.game.side_controllers().collect::<Vec<_>>(), [SideController::Human, SideController::Empty]);
+        let mut replay = start();
+        for event in live.history() { event.apply(&mut replay).unwrap(); }
+        assert_eq!(replay.state(), live.state());
+        assert_eq!(replay.observation(), live.observation());
+        assert_eq!(replay.legal_actions(), live.legal_actions());
+    }
+
+    #[test]
     fn shows_only_the_human_viewers_messages_in_authored_order() {
         let bundle = Bundle::parse(br#"
 [units]
