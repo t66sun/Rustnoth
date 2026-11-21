@@ -146,6 +146,8 @@ pub struct BoardArt {
     tutorial_hint: tutorial_hint::Art,
     #[cfg(windows)]
     tutorial_print: tutorial_print::Art,
+    #[cfg(windows)]
+    dialogue_text: dialogue::native::Art,
 }
 
 impl BoardArt {
@@ -252,6 +254,8 @@ impl BoardArt {
             tutorial_print: tutorial_print::Art::default(),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
+            #[cfg(windows)]
+            dialogue_text: dialogue::native::Art::new(wesnoth_root),
             font,
         })
     }
