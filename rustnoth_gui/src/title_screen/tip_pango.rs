@@ -101,11 +101,13 @@ pub(super) struct Text {
     api: Api,
     layout: Handle,
     map: Handle,
+    font: Handle,
 }
 
 impl Drop for Text {
     fn drop(&mut self) {
         unsafe {
+            (self.api.pango_font_description_free)(self.font);
             (self.api.g_object_unref)(self.layout);
             (self.api.g_object_unref)(self.map);
         }
@@ -143,17 +145,16 @@ impl Text {
             (api.pango_layout_set_line_spacing)(layout, 1.3);
             let font = (api.pango_font_description_new)();
             (api.pango_font_description_set_family)(font, family.as_ptr());
-            (api.pango_font_description_set_size)(font, 17 * 1024);
-            (api.pango_layout_set_font_description)(layout, font);
-            (api.pango_font_description_free)(font);
-            Some(Self { api, layout, map })
+            Some(Self { api, layout, map, font })
         }
     }
 
-    pub(super) fn measure(&self, text: &str, width: u16, right: bool, markup: bool) -> u16 {
+    fn prepare(&self, text: &str, size: u16, width: Option<u16>, right: bool, markup: bool) -> (u16, u16) {
         unsafe {
             let api = &self.api;
-            (api.pango_layout_set_width)(self.layout, i32::from(width) * 1024);
+            (api.pango_font_description_set_size)(self.font, i32::from(size) * 1024);
+            (api.pango_layout_set_font_description)(self.layout, self.font);
+            (api.pango_layout_set_width)(self.layout, width.map_or(-1, |w| i32::from(w) * 1024));
             (api.pango_layout_set_alignment)(self.layout, if right { 2 } else { 0 });
             if markup {
                 (api.pango_layout_set_markup)(self.layout, text.as_ptr().cast(), text.len() as i32);
@@ -161,14 +162,28 @@ impl Text {
                 (api.pango_layout_set_attributes)(self.layout, ptr::null_mut());
                 (api.pango_layout_set_text)(self.layout, text.as_ptr().cast(), text.len() as i32);
             }
-            let mut h = 0;
-            (api.pango_layout_get_pixel_size)(self.layout, ptr::null_mut(), &mut h);
-            h.clamp(1, i32::from(u16::MAX)) as u16
+            let (mut w, mut h) = (0, 0);
+            (api.pango_layout_get_pixel_size)(self.layout, &mut w, &mut h);
+            let dimension = |n: i32| n.clamp(1, i32::from(u16::MAX)) as u16;
+            (dimension(w), dimension(h))
         }
+    }
+
+    pub(super) fn measure(&self, text: &str, width: u16, right: bool, markup: bool) -> u16 {
+        self.prepare(text, 17, Some(width), right, markup).1
     }
 
     pub(super) fn render(&self, text: &str, width: u16, right: bool, markup: bool) -> macroquad::texture::Image {
         let height = self.measure(text, width, right, markup);
+        self.rasterize(width, height, [215; 3])
+    }
+
+    pub(super) fn button(&self, text: &str, size: u16, color: [u8; 3]) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, size, None, false, false);
+        self.rasterize(width, height, color)
+    }
+
+    fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {
         let mut bytes = vec![0; usize::from(width) * usize::from(height) * 4];
         unsafe {
             let api = &self.api;
@@ -176,8 +191,8 @@ impl Text {
             let surface = (api.cairo_image_surface_create_for_data)(bytes.as_mut_ptr(), 0,
                 i32::from(width), i32::from(height), i32::from(width)*4);
             let ctx = (api.cairo_create)(surface);
-            let shade = 215./255.;
-            (api.cairo_set_source_rgba)(ctx, shade, shade, shade, 1.);
+            let [r, g, b] = color.map(|c| f64::from(c) / 255.);
+            (api.cairo_set_source_rgba)(ctx, r, g, b, 1.);
             (api.pango_cairo_show_layout)(ctx, self.layout);
             (api.cairo_destroy)(ctx);
             (api.cairo_surface_flush)(surface);

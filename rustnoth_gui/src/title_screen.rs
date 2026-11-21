@@ -18,6 +18,9 @@ mod panel_grid;
 mod button_canvas;
 mod scaled_art;
 mod tip_pages;
+#[cfg(windows)]
+mod tip_pango;
+mod button_labels;
 use tip_pages::TipPages;
 mod version;
 
@@ -34,7 +37,7 @@ pub(super) struct TitleScreen {
     pub(super) seed: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Command { Campaigns, Multiplayer, Load, Addons, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language, About }
 
 impl Command {
@@ -92,7 +95,7 @@ impl TitleScreen {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
         let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
-        let mut pages = TipPages::new(tips(&tip_source, &art.locale)?, &self.root, &art.locale);
+        let mut pages = TipPages::new(tips(&tip_source, &art.locale)?);
         let actions = menu(match &self.games {
             Games::Prepared(data) => data.campaign.is_some(),
             Games::Installed => desktop::campaign_available(&self.root),
@@ -175,7 +178,7 @@ impl TitleScreen {
                                 let logo = load_texture(&self.root, &locale.logo(&self.root))?;
                                 locale::save(&crate::display_preferences::config_directory()?, &id)?;
                                 art.set_locale(&self.root,locale,logo,map);
-                                pages = TipPages::new(translated, &self.root, &art.locale);
+                                pages = TipPages::new(translated);
                                 Ok(())
                             })();
                             error = change.err().map(|e|e.to_string());
@@ -274,6 +277,10 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 
 
 struct Art {
+    #[cfg(windows)]
+    text_renderer: Option<tip_pango::Text>,
+    #[cfg(windows)]
+    button_labels: button_labels::Cache,
     blurred_panels: std::cell::RefCell<Option<panel_blur::Panels>>,
     about: version::Footer,
     locale: locale::Locale,
@@ -364,6 +371,11 @@ impl Art {
         if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
             (self.font,self.italic)=title_fonts(root,&locale.effective);
         }
+        #[cfg(windows)]
+        {
+            self.text_renderer = tip_pango::Text::load(root, locale.game("Lato"));
+            self.button_labels = Default::default();
+        }
         self.locale=locale;
     }
 
@@ -372,19 +384,13 @@ impl Art {
             self.about.draw(self, rect, focused, pressed);
             return;
         }
-        let text=self.locale.ui(cmd.label());
+        self.button_frame(rect, focused, pressed);
         if cmd==Command::Language {
-            self.button_frame(rect, focused, pressed);
             let icon=&self.language_icons[if pressed {2} else {usize::from(focused)}];
             let size = icon.size().min(rect.size());
             image(Rect::new(rect.x+5.0, rect.y+((rect.h-size.y)*0.5).floor(), size.x, size.y), icon);
-            let name = self.locale.language_name(&self.languages);
-            let font = self.font.as_ref();
-            let metrics = measure_text(name, font, 13, 1.0);
-            let x = (rect.right() - 10.0 - metrics.width).round();
-            let y = rect.y + ((rect.h - metrics.height - 2.0)*0.5).floor() + metrics.offset_y;
-            dialog::text(font, name, x, y, 13, Color::from_rgba(186,172,125,255));
-        } else { self.button(rect,text,focused,pressed); }
+        }
+        self.draw_command_label(rect, cmd);
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
@@ -392,6 +398,10 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            #[cfg(windows)]
+            text_renderer: tip_pango::Text::load(root, locale.game("Lato")),
+            #[cfg(windows)]
+            button_labels: Default::default(),
             blurred_panels: Default::default(),
             about: version::Footer::load(root)?,
             // Partial artwork installations can still show the effective locale identifier.
@@ -429,17 +439,15 @@ impl Art {
         };
         let font = self.font.as_ref();
         let italic = self.italic.as_ref().or(font);
-        let label_width = |cmd: Command| {
-            measure_text(self.locale.ui(cmd.label()), font, 16, 1.0).width.ceil() + extra
-        };
+        let label_width = |cmd: Command| self.command_label_width(cmd) + extra;
         let bw = actions.iter().copied().map(label_width).fold(wide, f32::max);
         let inset = padding + 5.0;
         let menu_w = bw + inset * 2.0;
         let menu_h = actions.len() as f32 * (bh + 10.0) + 2.0 * padding;
         let tip_text_w = (w - 34.0 - menu_w - 2.0 * inset).clamp(1.0, 650.0).floor();
         let width = tip_text_w as u16;
-        let page = pages.page(body, source, width, font, italic);
-        let page_height = pages.height(width, font, italic).max(page.height());
+        let page = pages.page(body, source, width, self);
+        let page_height = pages.height(width, self).max(page.height());
         let tip_h = 2.0 * padding + page_height + plain_h + 30.0;
         let tip_w = tip_text_w + inset * 2.0;
         let footer_height = if big { 42.0 } else { 40.0 };
@@ -460,8 +468,7 @@ impl Art {
         buttons.push((Command::Previous, Rect::new(next.x - 10.0 - prev_w, controls_y, prev_w, plain_h)));
         buttons.push((Command::Next, next));
         buttons.push((Command::About, version::footer_bounds(h)));
-        let name = self.locale.language_name(&self.languages);
-        let text_width = measure_text(name, font, 13, 1.0).width;
+        let text_width = self.command_label_width(Command::Language);
         buttons.push((Command::Language, language_button_bounds(w, h, text_width)));
         buttons
     }
