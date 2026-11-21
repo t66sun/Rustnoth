@@ -41,7 +41,9 @@ impl Players {
 struct PendingLine {
     line: engine_lite::fixed_match::dialogue::DialogueLine,
     record_dismissal: bool,
+    hint_after: Option<String>,
 }
+
 
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
@@ -50,6 +52,8 @@ pub struct Session<'rules> {
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
     dialogue: std::collections::VecDeque<PendingLine>,
+    tutorial_hint: String,
+    tutorial_undo: Option<(usize, Hex, engine_lite::wml::Value)>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -67,7 +71,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None,
+            economy: None, tutorial_hint: String::new(), tutorial_undo: None,
             animate_combat: false, live_attack_seed: None, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -85,6 +89,9 @@ impl<'rules> Session<'rules> {
             Some((view, mut actions)) => {
                 match self.players.controller(&self.game, view.side) {
                     SideController::Human => {
+                        if self.game.tutorial_end_turn_denial().is_some() {
+                            actions.retain(|action| *action != Action::EndTurn);
+                        }
                         self.observation = Some(view);
                         self.legal_actions = actions;
                     }
@@ -110,8 +117,17 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter()
-                .map(|line| PendingLine { line, record_dismissal: true }));
+            self.collect_presentation(viewer, true);
+        }
+    }
+
+    fn collect_presentation(&mut self, viewer: usize, record_dismissal: bool) {
+        use engine_lite::fixed_match::dialogue::Presentation;
+        for item in self.game.take_presentation(viewer) {
+            match item {
+                Presentation::Dialogue(line) => self.dialogue.push_back(PendingLine { line, record_dismissal, hint_after: None }),
+                Presentation::TutorialHint(hint) => self.set_tutorial_hint(&hint),
+            }
         }
     }
 
@@ -128,9 +144,57 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some_and(|line| line.record_dismissal) {
-            self.history.push(crate::save_replay::Event::Dismiss);
+        if let Some(pending) = self.dialogue.pop_front() {
+            if pending.record_dismissal { self.history.push(crate::save_replay::Event::Dismiss); }
+            if let Some(hint) = pending.hint_after { self.tutorial_hint = hint; }
         }
+    }
+
+    /// Battle Training's hint_message Lua action replaces an unlimited floating label.
+    pub fn set_tutorial_hint(&mut self, cfg: &engine_lite::wml::Node) {
+        let text = match cfg.attribute("message") {
+            Some(body) if !matches!(cfg.attribute("remove"), Some("yes" | "true" | "on" | "1")) =>
+                match cfg.attribute("caption").filter(|caption| !caption.is_empty()) {
+                    Some(caption) => format!("<b><big>{caption}</big></b>\n{body}"),
+                    None => body.to_owned(),
+                },
+            _ => String::new(),
+        };
+        if let Some(pending) = self.dialogue.back_mut() { pending.hint_after = Some(text); }
+        else { self.tutorial_hint = text; }
+    }
+
+    pub fn tutorial_hint(&self) -> &str { &self.tutorial_hint }
+
+    pub fn restore_tutorial_hint(&mut self, previous: &Self) {
+        self.tutorial_hint.clone_from(&previous.tutorial_hint);
+    }
+
+    pub fn tutorial_print(&self) -> Option<&engine_lite::wml::Node> { self.game.tutorial_print() }
+
+    pub fn can_undo_tutorial_move(&self) -> bool { self.tutorial_undo.is_some() }
+
+    pub fn undo_tutorial_move(&mut self, restart: impl FnOnce() -> Result<Self, Box<dyn std::error::Error>>)
+        -> Result<Option<Hex>, Box<dyn std::error::Error>> {
+        let Some((prefix, from, text)) = &self.tutorial_undo else { return Ok(None) };
+        let mut restored = restart()?;
+        for command in &self.history[..*prefix] { command.apply(&mut restored)?; }
+        // Consecutive wrong moves can leave a different prompt at this point in the replay.
+        if restored.tutorial_print().and_then(|p| p.attributes.get("text")) != Some(text) {
+            restored.restore_tutorial_print(text);
+        }
+        let from = *from;
+        *self = restored;
+        Ok(Some(from))
+    }
+
+    pub(crate) fn restore_tutorial_print(&mut self, text: &engine_lite::wml::Value) {
+        self.game.restore_tutorial_print(text.clone());
+        self.history.push(crate::save_replay::Event::TutorialUndoPrint(text.clone()));
+    }
+
+    pub fn tutorial_end_turn_denial(&self) -> Option<&engine_lite::wml::Node> {
+        self.game.tutorial_end_turn_denial()
     }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
@@ -138,8 +202,7 @@ impl<'rules> Session<'rules> {
             self.game.present_message(config);
             // These local instructions are produced by the UI. Replaying a move or
             // undoing it only regenerates the referee's own scenario messages.
-            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter()
-                .map(|line| PendingLine { line, record_dismissal: false }));
+            self.collect_presentation(view.side, false);
         }
     }
 
@@ -216,6 +279,8 @@ impl<'rules> Session<'rules> {
             self.computer_action = Some(Action::EndTurn);
         }
         self.history.push(crate::save_replay::Event::Computer(seed));
+        self.tutorial_undo = None;
+        let _ = self.game.take_tutorial_undo_print();
         Ok(true)
     }
 
@@ -333,12 +398,17 @@ impl<'rules> Session<'rules> {
     }
 
     pub(crate) fn apply_with_seed(&mut self, action: Action, attacker: Option<&str>, trace: Option<&mut Vec<Hex>>, seed: Option<u32>) -> Result<MatchState, MatchError> {
-        if self.computer_action.is_some() || self.dialogue().is_some() {
+        if self.computer_action.is_some() || self.dialogue().is_some()
+            || (action == Action::EndTurn && self.tutorial_end_turn_denial().is_some()) {
             return Err(MatchError::ActionUnavailable);
         }
         let state = match (action.clone(), trace) {
             (Action::Move { from, to }, Some(trace)) => self.game.move_with_trace(from, to, trace)?,
             (action, _) => self.commit(action, attacker, seed)?,
+        };
+        self.tutorial_undo = match (&action, self.game.take_tutorial_undo_print()) {
+            (Action::Move { from, .. }, Some(text)) => Some((self.history.len(), *from, text)),
+            _ => None,
         };
         self.history.push(crate::save_replay::Event::Player(action, attacker.map(str::to_owned), seed));
         self.refresh();

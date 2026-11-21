@@ -64,17 +64,21 @@ impl Art {
             return None;
         }
         let hex = layout.hex_at([x, y])?;
+        Some(self.at(view, hex))
+    }
+
+    pub(super) fn at(&self, view: &Observation, hex: Hex) -> Focus<'_> {
         let occupant = view
             .units
             .iter()
             .find(|unit| unit.position == hex)
             .map(|unit| unit.side);
         let color = relation(view.side, &view.allied_sides, occupant);
-        Some(Focus {
+        Focus {
             hex,
             halves: &self.halves[color as usize],
             occupied: occupant.is_some(),
-        })
+        }
     }
 
     pub(super) fn draw_empty_hex(&self, hex: Hex, layout: &BoardLayout) {
