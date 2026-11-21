@@ -4,7 +4,8 @@ mod scrollbar;
 mod view;
 use crate::list_scroll::Scroll;
 use scrollbar::BarArt;
-use view::{GOLD, Information, Label, Layout, WHITE_TEXT};
+pub(super) use view::Label;
+use view::{GOLD, Information, Layout, WHITE_TEXT};
 use macroquad::prelude::*;
 use std::{collections::HashMap, error::Error, path::Path};
 

@@ -6,6 +6,8 @@ use macroquad::prelude::*;
 use rustnoth_gui::assets::AssetCatalog;
 
 use crate::{artwork::{self, scaled::Artwork}, dialog, render};
+mod navigation;
+use navigation::{Action, Navigation};
 
 pub(super) struct Part {
     pub(super) title: String,
@@ -179,16 +181,13 @@ fn draw_art(part: &Part, layers: &HashMap<&str, Option<Artwork>>,
 
 struct Skin {
     panel: [Option<Texture2D>; 3],
-    controls: [[Option<Texture2D>; 3]; 3],
 }
 
 impl Skin {
     fn load(assets: &AssetCatalog) -> Self {
         let fetch = |name: &str| assets.resolve_image(Path::new(name)).and_then(|p| render::load_texture(&p, None));
         let panel = ["background","border-top","border-bottom"].map(|part| fetch(&format!("dialogs/translucent65-{part}.png")));
-        let controls = ["icons/arrows/long_arrow_ornate_left","icons/arrows/long_arrow_ornate_right","buttons/button_normal/button_H22"]
-            .map(|path| ["","-active","-pressed"].map(|state| fetch(&format!("{path}{state}.png"))));
-        Self {panel, controls}
+        Self {panel}
     }
 
     fn panel(&self, bounds: Rect, placement: Placement, title: bool) {
@@ -203,22 +202,18 @@ impl Skin {
         }
     }
 
-    fn control(&self, i: usize, r: Rect, pointer: Vec2, enabled: bool) -> bool {
-        let hover = enabled && r.contains(pointer);
-        let state = if hover && is_mouse_button_down(MouseButton::Left) {2} else {usize::from(hover)};
-        if let Some(tex) = self.controls[i][state].as_ref().or(self.controls[i][0].as_ref()) {
-            let size = if i == 2 { r.size() } else { vec2(tex.width(),tex.height()) };
-            let at = r.center()-size*0.5;
-            draw_texture_ex(tex,at.x,at.y,if enabled {WHITE} else {GRAY},DrawTextureParams{dest_size:Some(size),..Default::default()});
-        }
-        hover && is_mouse_button_pressed(MouseButton::Left)
-    }
 }
 
-pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, font: Option<&Font>) {
+pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, font: Option<&Font>, skip: &str) {
+    if parts.is_empty() { return; }
     let skin = Skin::load(assets);
     #[cfg(windows)]
     let renderer = crate::title_screen::tip_pango::Text::load(root, "Lato");
+    #[cfg(windows)]
+    let label_image = renderer.as_ref().map(|text| text.button(skip, 16, [186, 172, 125]));
+    #[cfg(not(windows))]
+    let label_image = None;
+    let mut navigation = Navigation::new(root, label_image);
     let mut index = 0;
     while let Some(part) = parts.get(index) {
         let mut layers = HashMap::new();
@@ -288,17 +283,11 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
                     dialog::text(font, line, 20., panel.y + 38. + row as f32 * 27., 17, dialog::PALE);
                 }
             }
-            let skip_rect = Rect::new(panel.right() - 116.0, panel.bottom() - 53.0, 96.0, 33.0);
-            let prior = Rect::new(skip_rect.x, skip_rect.y - 67.0, 40.0, 56.0);
-            let advance = Rect::new(skip_rect.right() - 40.0, prior.y, 40.0, 56.0);
-            let back = skin.control(0, prior, mouse, index > 0 || first > 0);
-            let next = skin.control(1, advance, mouse, true);
-            let skip = skin.control(2, skip_rect, mouse, true);
-            let label_width = measure_text("Skip", font, 16, 1.0).width;
-            dialog::text(font,"Skip",skip_rect.center().x-label_width*0.5,skip_rect.center().y+5.0,16,WHITE);
-            let skip = skip || is_key_pressed(KeyCode::Escape);
-            let back = back || is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::PageUp);
-            let next = next || [KeyCode::Right, KeyCode::PageDown, KeyCode::Enter, KeyCode::Space]
+            let action = navigation.draw(panel, screen, mouse, index > 0 || first > 0, font, skip);
+            let skip = action == Some(Action::Skip) || is_key_pressed(KeyCode::Escape);
+            let back = action == Some(Action::Back) || [KeyCode::Left, KeyCode::Backspace, KeyCode::PageUp]
+                .into_iter().any(is_key_pressed);
+            let next = action == Some(Action::Next) || [KeyCode::Right, KeyCode::PageDown, KeyCode::Enter, KeyCode::KpEnter, KeyCode::Space]
                 .into_iter().any(is_key_pressed);
             // GUI2 defers just the transparent panel during the first pass.
             // Its sibling text and navigation layers are present in the readback.
