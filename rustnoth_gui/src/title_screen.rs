@@ -5,6 +5,7 @@ use engine_lite::wml;
 use macroquad::prelude::*;
 
 mod preferences;
+pub(crate) use preferences::tiled;
 mod hotkeys;
 mod help;
 pub(crate) mod locale;
@@ -531,7 +532,7 @@ pub(crate) fn wrap(text: &str, font: Option<&Font>, width: f32) -> Vec<String> {
     wrap_at(text, font, width, 16)
 }
 
-fn wrap_at(text: &str, font: Option<&Font>, width: f32, size: u16) -> Vec<String> {
+pub(crate) fn wrap_at(text: &str, font: Option<&Font>, width: f32, size: u16) -> Vec<String> {
     let mut lines = Vec::new();
     let space = measure_text(" ", font, size, 1.0).width;
     for paragraph in text.lines() {
