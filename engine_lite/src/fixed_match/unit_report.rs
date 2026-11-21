@@ -23,6 +23,28 @@ pub struct WeaponReport {
 }
 
 impl FixedMatch<'_> {
+    /// Which own units still count for a yellow/green end-turn prompt in this view.
+    /// Native unit_can_move counts adjacent affordable terrain even when occupied.
+    pub fn has_unused_unit(&self, view: &crate::observation::Observation, unmoved_only: bool) -> bool {
+        let tiles: std::collections::BTreeMap<_, _> = view.tiles.iter()
+            .map(|tile| (tile.position, tile.terrain.as_str())).collect();
+        view.units.iter().filter(|u| u.side == view.side).any(|observed| {
+            let Some(unit) = self.scenario.board.unit_at(observed.position) else { return false };
+            let moves = unit.movement_left();
+            if (moves == 0 && unit.attacks_left() == 0) || (unmoved_only && moves != unit.max_movement()) {
+                return false;
+            }
+            observed.position.neighbors().any(|hex| {
+                let attack_here = view.units.iter().any(|target| target.position == hex && !target.petrified
+                    && !view.allied_sides.contains(&target.side));
+                attack_here || tiles.get(&hex).is_some_and(|terrain| {
+                    let cost = self.rules.walking_cost(unit.unit_type, terrain).map_or(99, |cost| cost.get());
+                    cost.saturating_mul(if unit.slowed { 2 } else { 1 }) <= moves.max(0) as u32
+                })
+            })
+        })
+    }
+
     /// Display the unit at `position`. Known terrain under the pointer affects
     /// defense, time of day and the adjacent providers used for weapon reports.
     pub fn unit_report(&self, side: usize, position: Hex, pointer: Hex) -> Option<UnitReport> {
