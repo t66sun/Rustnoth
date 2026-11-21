@@ -1,7 +1,10 @@
 //! Wesnoth achievement definitions and the status recorded by the original local profile.
 use super::super::locale::Catalog;
-use engine_lite::wml::{self, Node};
-use std::{collections::HashMap, fs, io, path::{Path, PathBuf}};
+use engine_lite::wml::Node;
+#[cfg(test)]
+use engine_lite::wml;
+use std::{collections::HashMap, io, path::Path};
+pub(super) use super::super::profile::read_profile;
 
 pub(super) struct Group {
     pub id: String,
@@ -82,26 +85,6 @@ pub(super) fn groups(config: &Node, profile: &Node, root: &Path, language: &str)
         result.push(group_view);
     }
     Ok(result)
-}
-
-#[cfg(any(target_os = "macos", windows))]
-fn preferences_file() -> Option<PathBuf> {
-    super::super::profile::native_data_directory().map(|dir| dir.join("preferences"))
-}
-#[cfg(not(any(target_os = "macos", windows)))]
-fn preferences_file() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))?;
-    Some(base.join("wesnoth/preferences"))
-}
-
-pub(super) fn read_profile() -> io::Result<Node> {
-    let Some(path) = preferences_file() else { return Ok(Node::default()); };
-    match fs::read(path) {
-        Ok(bytes) => wml::parse(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Node::default()),
-        Err(e) => Err(e),
-    }
 }
 
 #[cfg(test)]
