@@ -1,4 +1,5 @@
 mod frame;
+mod surface;
 pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::{save::save_preview, skirmish_preview};
@@ -98,6 +99,7 @@ impl GridArt {
 }
 
 pub struct BoardArt {
+    surface: surface::Surface,
     frame: FrameArt,
     minimap: minimap::Art,
     lighting: lighting::Lighting,
@@ -197,6 +199,7 @@ impl BoardArt {
                 .ok()
         };
         Ok(Self {
+            surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
@@ -365,13 +368,15 @@ pub fn menu_area() -> Rect {
     BattlefieldFrame::new(screen_width(), screen_height()).menu()
 }
 
-pub fn draw(
+pub fn draw<T>(
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
     art: &mut BoardArt,
     movement: MovementView<'_>,
-) {
+    overlay: impl FnOnce(&mut BoardArt) -> T,
+) -> T {
+    art.surface.begin();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
@@ -414,6 +419,9 @@ pub fn draw(
             }
         }
     }
+    let result = overlay(art);
+    art.surface.present();
+    result
 }
 
 fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport) {
