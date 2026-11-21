@@ -95,13 +95,13 @@ gender=male
 [then]
 [message]
 speaker=Delfador
-message=Practice now, Konrad.
+message="Practice now, Konrad."
 [/message]
 [/then]
 [else]
 [message]
 speaker=Delfador
-message=Practice now, Li'sar.
+message="Practice now, Li'sar."
 [/message]
 [/else]
 [/if]
