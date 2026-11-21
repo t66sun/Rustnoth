@@ -64,7 +64,7 @@ fn category_icon_origin(row: Rect) -> Vec2 {
     row.point() + vec2(5., 5.)
 }
 
-pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
+pub(crate) fn tiled(rect: Rect, texture: &Texture2D) {
     let mut y = rect.y;
     while y < rect.bottom() {
         let mut x = rect.x;
