@@ -18,6 +18,7 @@ pub(super) enum Command {
     NextUnit,
     Recruit,
     RecruitAt(Hex),
+    Describe(Hex),
     Recall,
     Undo,
 }
@@ -31,6 +32,7 @@ impl Command {
             Self::NextUnit => "Next Unit",
             Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
+            Self::Describe(_) => "Unit Description",
             Self::Undo => "Undo",
         }
     }
@@ -41,6 +43,7 @@ pub(super) struct State {
     recruit_at: Option<(Hex, Vec2)>,
     cursor: usize,
     context: Vec2,
+    context_target: Vec2,
 }
 pub(super) struct Response {
     pub handled: bool,
@@ -107,6 +110,12 @@ pub(super) fn next_unit(view: &Observation, selected: Option<Hex>) -> Option<Hex
     Some(first)
 }
 
+// menu_handler::current_unit prefers the visible unit beneath the pointer.
+pub(super) fn described_unit(hovered: Option<Hex>, selected: Option<Hex>,
+    visible: impl Fn(Hex) -> bool) -> Option<Hex> {
+    [hovered, selected].into_iter().flatten().find(|hex| visible(*hex))
+}
+
 pub(super) fn available(objectives: bool, units: bool, actions: &[Action]) -> Vec<Command> {
     let mut commands = Vec::new();
     if objectives {
@@ -130,7 +139,7 @@ fn items(group: Group, commands: &[Command]) -> Vec<Command> {
         .filter(|c| match group {
             Group::Menu => matches!(c, Command::Objectives | Command::UnitList | Command::Save | Command::Quit),
             Group::Actions => matches!(c, Command::NextUnit | Command::Recruit | Command::Recall | Command::Undo),
-            Group::Context => *c == Command::Undo,
+            Group::Context => matches!(c, Command::Undo | Command::Describe(_) | Command::RecruitAt(_)),
         })
         .collect()
 }
@@ -144,6 +153,10 @@ fn row(button: Rect, i: usize, scale: f32) -> Rect {
 }
 
 impl State {
+    pub fn target_point(&self, pointer: [f32; 2]) -> [f32; 2] {
+        if self.open == Some(Group::Context) { self.context_target.to_array() } else { pointer }
+    }
+
     fn anchor(&self, group: Group, buttons: [Rect; 2]) -> Rect {
         match group {
             Group::Menu => buttons[0],
@@ -182,14 +195,17 @@ impl State {
         }
         let prior = self.open;
         let mut command = None;
-        if prior.is_none() && commands.contains(&Command::Undo) {
-            if is_mouse_button_pressed(MouseButton::Right) && crate::render::board_viewport().contains(pointer.to_array()) {
+        if prior.is_none() {
+            if is_mouse_button_pressed(MouseButton::Right) && crate::render::board_viewport().contains(pointer.to_array())
+                && !items(Group::Context, commands).is_empty() {
                 self.open = Some(Group::Context);
                 self.cursor = 0;
-                self.context = vec2(pointer.x.min(screen_width() - 192.0 * s), pointer.y.min(screen_height() - 27.0 * s));
+                self.context_target = pointer;
+                let height = items(Group::Context, commands).len() as f32 * 27.0 * s;
+                self.context = vec2(pointer.x.min(screen_width() - 192.0 * s), pointer.y.min(screen_height() - height));
                 return Response { handled: true, command: None };
             }
-            if is_key_pressed(KeyCode::U) && ![
+            if commands.contains(&Command::Undo) && is_key_pressed(KeyCode::U) && ![
                 KeyCode::LeftAlt, KeyCode::RightAlt, KeyCode::LeftControl, KeyCode::RightControl,
                 KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftSuper, KeyCode::RightSuper,
             ].into_iter().any(is_key_down) {
@@ -316,6 +332,21 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_context_description_keeps_the_original_target_when_the_pointer_enters_the_menu() {
+        let hex = Hex { x: 2, y: 4 };
+        let point = vec2(592., 309.);
+        let state = State { open: Some(Group::Context), context_target: point, ..Default::default() };
+        assert_eq!(state.target_point([650., 351.]), point.to_array());
+        let commands = [Command::Quit, Command::Recruit, Command::Describe(hex)];
+        assert_eq!(items(Group::Context, &commands), [Command::Describe(hex)]);
+        assert!(!items(Group::Actions, &commands).contains(&Command::Describe(hex)));
+        let selected = Hex { x: 4, y: 2 };
+        assert_eq!(described_unit(Some(hex), Some(selected), |_| true), Some(hex));
+        assert_eq!(described_unit(Some(hex), Some(selected), |at| at == selected), Some(selected));
+        assert_eq!(described_unit(Some(hex), None, |_| false), None);
+    }
 
     #[test]
     fn recruit_context_uses_the_clicked_castle_hex() {

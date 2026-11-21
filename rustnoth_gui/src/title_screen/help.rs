@@ -1,5 +1,7 @@
 //! Native help browser opened by the title screen's Help button or F1.
 mod book;
+mod unit;
+pub(crate) use unit::show_unit;
 
 use super::{Art, centered, dialog, image, load_texture, preferences::tiled};
 use book::{Book, Span, Topic};
@@ -27,11 +29,18 @@ struct Article {
     height: f32,
 }
 
-fn metrics<'a>(art: &'a Art, span: &Span) -> (Option<&'a Font>, u16) {
+struct PageArt<'a> {
+    font: Option<&'a Font>,
+    italic: Option<&'a Font>,
+    logo: &'a Texture2D,
+    logo_shadow: &'a Texture2D,
+}
+
+fn metrics<'a>(art: &PageArt<'a>, span: &Span) -> (Option<&'a Font>, u16) {
     match span {
-        Span::Heading(_) => (art.font.as_ref(), 21),
-        Span::Emphasis(_) => (art.italic.as_ref().or(art.font.as_ref()), 17),
-        _ => (art.font.as_ref(), 17),
+        Span::Heading(_) => (art.font, 21),
+        Span::Emphasis(_) => (art.italic.or(art.font), 17),
+        _ => (art.font, 17),
     }
 }
 
@@ -54,7 +63,7 @@ impl Article {
         topic: &Topic,
         width: f32,
         root: &Path,
-        art: &Art,
+        art: &PageArt<'_>,
         textures: &mut HashMap<String, Option<Texture2D>>,
     ) -> Self {
         let (mut x, mut y) = (0.0, 0.0);
@@ -150,7 +159,7 @@ impl Article {
         area: Rect,
         offset: f32,
         pointer: Vec2,
-        art: &Art,
+        art: &PageArt<'_>,
         textures: &HashMap<String, Option<Texture2D>>,
     ) -> Option<String> {
         let mut link = None;
@@ -188,8 +197,8 @@ impl Article {
                     );
                 };
                 if src == LOGO {
-                    paint(&art.logo_shadow);
-                    paint(&art.logo);
+                    paint(art.logo_shadow);
+                    paint(art.logo);
                 } else if let Some(Some(tex)) = textures.get(src) {
                     paint(tex);
                 }
@@ -238,7 +247,15 @@ impl Article {
 
 pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<dyn Error>> {
     let book = Book::parse(core)?;
-    let mut current = book.initial().unwrap().to_owned();
+    let current = book.initial().unwrap().to_owned();
+    let page = PageArt { font: art.font.as_ref(), italic: art.italic.as_ref(), logo: &art.logo, logo_shadow: &art.logo_shadow };
+    browse(root, book, current, &page, HashMap::new(), |w, h| art.draw_background(w, h),
+        |r, label, hover, pressed| art.button(r, label, hover, pressed)).await
+}
+
+async fn browse(root: &Path, book: Book, mut current: String, art: &PageArt<'_>,
+    mut textures: HashMap<String, Option<Texture2D>>, background: impl Fn(f32, f32),
+    button: impl Fn(Rect, &str, bool, bool)) -> Result<(), Box<dyn Error>> {
     let mut opened = HashSet::new();
     book.reveal(&current, &mut opened);
     let mut history = Vec::new();
@@ -248,9 +265,9 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
         load_texture(root, "images/help/closed_section.png")?,
         load_texture(root, "images/help/open_section.png")?,
     ];
-    let mut textures = HashMap::new();
-    let mut cursor = 0usize;
-    let mut start = 0usize;
+    let mut cursor = book.rows(&opened).iter().position(|row| row.id == current.trim_start_matches("..")).unwrap_or(0);
+    let mut start = 0;
+    let mut reveal_initial = true;
     let mut offset = 0.0f32;
     let mut cached: Option<(String, f32, Article)> = None;
     loop {
@@ -259,7 +276,7 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
             .clamp(0.01, 1.0);
         let (w, h) = (screen_width() / scale, screen_height() / scale);
         set_camera(&dialog::setup_camera(w, h));
-        art.draw_background(w, h);
+        background(w, h);
         let bounds = centered(
             vec2(w, h),
             vec2((w - 10.0).min(1200.0), (h - 10.0).min(700.0)),
@@ -268,7 +285,7 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
         draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 3.0, GOLD);
         let left = bounds.x + 13.0;
         dialog::text(
-            art.font.as_ref(),
+            art.font,
             "Battle For Wesnoth Help",
             left,
             bounds.y + 36.0,
@@ -297,9 +314,9 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
         draw_rectangle_lines(tree.x, tree.y, tree.w, tree.h, 1.0, GOLD);
         let body = Rect::new(content.x, content.y + 35.0, content.w, content.h - 36.0);
         let topic = &book.topics[&current];
-        let heading = dialog::fit(art.font.as_ref(), topic.title.clone(), content.w, 24);
+        let heading = dialog::fit(art.font, topic.title.clone(), content.w, 24);
         dialog::text(
-            art.font.as_ref(),
+            art.font,
             &heading,
             content.x,
             content.y + 24.0,
@@ -321,6 +338,10 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
         let click = is_mouse_button_pressed(MouseButton::Left);
         let rows = book.rows(&opened);
         let visible = (tree.h / ROW).floor().max(1.0) as usize;
+        if reveal_initial {
+            start = (cursor + 1).saturating_sub(visible);
+            reveal_initial = false;
+        }
         cursor = cursor.min(rows.len().saturating_sub(1));
         let wheel = mouse_wheel().1.signum() as isize;
         if tree.contains(point) && wheel != 0 {
@@ -360,12 +381,12 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
             }];
             image(Rect::new(x, rect.y + 4.0, 20.0, 20.0), icon);
             let label = dialog::fit(
-                art.font.as_ref(),
+                art.font,
                 row.title.into(),
                 (rect.right() - x - 32.0).max(1.0),
                 16,
             );
-            dialog::text(art.font.as_ref(), &label, x + 26.0, rect.y + 20.0, 16, INK);
+            dialog::text(art.font, &label, x + 26.0, rect.y + 20.0, 16, INK);
             if click && rect.contains(point) {
                 cursor = i;
                 activate = Some(i);
@@ -413,14 +434,14 @@ pub(super) async fn show(root: &Path, core: &[u8], art: &Art) -> Result<(), Box<
         let close = Rect::new(bounds.right() - 120.0, bounds.bottom() - 40.0, 105.0, 29.0);
         let back = Rect::new(close.x - 93.0, close.y, 81.0, close.h);
         if !history.is_empty() {
-            art.button(
+            button(
                 back,
                 "Back",
                 back.contains(point),
                 back.contains(point) && is_mouse_button_down(MouseButton::Left),
             );
         }
-        art.button(
+        button(
             close,
             "Close",
             close.contains(point),

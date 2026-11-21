@@ -207,7 +207,7 @@ pub fn draw(
     if let Some(message) = movement.message {
         text_in(&art.font, message, hint, 14, ERROR, false);
     } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
-        text_in(&art.font, "Dismiss veteran [D]", hint, 14, TEXT, false);
+        text_in(&art.font, "Dismiss veteran [Shift+D]", hint, 14, TEXT, false);
     }
 }
 
