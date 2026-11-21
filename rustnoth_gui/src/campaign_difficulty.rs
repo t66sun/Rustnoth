@@ -64,6 +64,24 @@ fn popup_bounds(control: Rect, view: Vec2, count: usize, width: f32, row: f32) -
     (Rect::new(control.x.min(view.x - width), top, width, height), shown)
 }
 
+pub(super) fn draw_control(art: &mut Art, control: Rect, state: State, value: &str) {
+    let (background, arrow) = match state {
+        State::Focused => ("button_dropdown-pressed.png", "short_arrow_ornate_left_25-active.png"),
+        State::Pressed => ("button_dropdown.png", "short_arrow_ornate_left_25-pressed.png"),
+        State::Disabled => ("button_dropdown.png~GS()", "short_arrow_ornate_left_25.png~GS()"),
+        State::Enabled => ("button_dropdown.png", "short_arrow_ornate_left_25.png"),
+    };
+    if let Some(texture) = art.get(&format!("buttons/button_dropdown/{background}")) {
+        button_canvas::draw(control, &texture, state);
+    }
+    let cropped = super::fit(art.font.as_ref(), value.to_owned(), control.w-33.0, 15);
+    art.label(&cropped, control.x+8.0, control.y+20.0, 15, if matches!(state, State::Disabled) { Color::from_rgba(128,128,128,255) } else { GOLD });
+    if let Some(arrow) = art.get(&format!("icons/arrows/{arrow}")) {
+        draw_texture_ex(&arrow, control.right()-25.0, control.y+2.0, WHITE,
+        DrawTextureParams { dest_size:Some(vec2(25.0,25.0)), rotation:-std::f32::consts::FRAC_PI_2, ..Default::default() });
+    }
+}
+
 impl<'a> Menu<'a> {
     pub fn select(&mut self, campaign: Option<&'a Node>, locale: &mut super::Locale, root: &std::path::Path) {
         if self.campaign.map(std::ptr::from_ref) == campaign.map(std::ptr::from_ref) {
@@ -105,22 +123,9 @@ impl<'a> Menu<'a> {
         let state = if !enabled { State::Disabled }
             else if self.is_open() || self.button_down && hot { State::Pressed }
             else if hot { State::Focused } else { State::Enabled };
-        let (background, arrow) = match state {
-            State::Focused => ("button_dropdown-pressed.png", "short_arrow_ornate_left_25-active.png"),
-            State::Pressed => ("button_dropdown.png", "short_arrow_ornate_left_25-pressed.png"),
-            State::Disabled => ("button_dropdown.png~GS()", "short_arrow_ornate_left_25.png~GS()"),
-            State::Enabled => ("button_dropdown.png", "short_arrow_ornate_left_25.png"),
-        };
-        if let Some(texture) = art.get(&format!("buttons/button_dropdown/{background}")) {
-            button_canvas::draw(control, &texture, state);
-        }
         let value = self.choices.get(self.selected).map_or_else(|| art.locale.ui("Normal"), |choice| choice.menu_label.as_str());
-        let cropped = super::fit(art.font.as_ref(), value.to_owned(), control.w-33.0, 15);
-        art.label(&cropped, control.x+8.0, control.y+20.0, 15, if enabled { GOLD } else { Color::from_rgba(128,128,128,255) });
-        if let Some(arrow) = art.get(&format!("icons/arrows/{arrow}")) {
-            draw_texture_ex(&arrow, control.right()-25.0, control.y+2.0, WHITE,
-                DrawTextureParams { dest_size:Some(vec2(25.0,25.0)), rotation:-std::f32::consts::FRAC_PI_2, ..Default::default() });
-        }
+        let value = value.to_owned();
+        draw_control(art, control, state, &value);
         let Some(mut cursor) = self.hovered else {
             if enabled && hot { self.scroll_button(mouse_wheel().1); }
             if enabled && (click && hot && self.button_down || keyboard && is_key_pressed(KeyCode::F4)) {
