@@ -184,8 +184,8 @@ impl<'data> FixedMatch<'data> {
             events.fire("start", state);
         })?;
         // fire_start refreshes the initial local viewer's objectives before side-turn events.
-        if let Some(viewer) = game.scenario.sides.iter_mut().find(|side| side.controller == crate::scenario_sides::SideController::Human) {
-            viewer.objectives_changed = true;
+        if let Some(index) = game.scenario.sides.iter().position(|side| side.controller == crate::scenario_sides::SideController::Human) {
+            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides);
         }
         game.check_victory();
         if let MatchState::Playing(turn) = game.state {
@@ -225,7 +225,13 @@ impl<'data> FixedMatch<'data> {
                     continue;
                 }
                 BoardChange::ShowObjectives(sides) => {
-                    for index in sides { self.scenario.sides[index].objectives_changed = true; }
+                    for index in sides {
+                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides);
+                    }
+                    continue;
+                }
+                BoardChange::SetObjectives { sides, definition, notify } => {
+                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides);
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -354,6 +360,16 @@ impl<'data> FixedMatch<'data> {
     pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
         self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
             .filter(|objectives| !objectives.is_empty())
+    }
+
+    /// A menu request can reveal an entry previously excluded by its condition.
+    pub fn has_authored_objectives(&self, side: usize) -> bool {
+        (1..=self.scenario.sides.len()).contains(&side) && self.scenario.events.has_objectives(side)
+    }
+
+    pub fn evaluate_objectives_for(&self, side: usize) -> Option<crate::scenario_sides::ScenarioObjectives> {
+        if !self.has_authored_objectives(side) { return None; }
+        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len())
     }
 
     pub fn objectives_changed(&self, side: usize) -> bool {
