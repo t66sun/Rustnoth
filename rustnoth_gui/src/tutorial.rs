@@ -54,6 +54,7 @@ pub(super) struct Lesson {
     movement_prompt: String,
     undo_prompt: String,
     show_undo_prompt: bool,
+    selection_hint: Option<Node>,
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
     before_healing: Option<i32>,
@@ -62,10 +63,18 @@ pub(super) struct Lesson {
 impl Lesson {
     fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons) -> Self {
         Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, healing, recruiting, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn select_student(&mut self, session: &mut Session<'_>) -> bool {
+        if self.step == Step::Approach && let Some(line) = self.selection_hint.take() {
+            session.present_message(&line);
+            return true;
+        }
+        false
+    }
 
     pub(super) fn draw_labels(&self, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
         if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird)

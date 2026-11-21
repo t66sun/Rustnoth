@@ -517,6 +517,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let mut end_prompt = None;
         let mut attack_dialog = None;
         let mut denial_message = None;
+        let mut selected_student = false;
         let requested = if std::mem::take(&mut confirmed_end_turn) {
             Some(Action::EndTurn)
         } else if let Some(action) = confirmed_action.take() {
@@ -543,6 +544,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             && let Some(position) = camera.hex_at([mouse_x, mouse_y])
         {
             let movement = select_move(&mut selection, position, observation, session.legal_actions());
+            selected_student = data.lesson.is_some() && selection.unit() == Some(position)
+                && observation.units.iter().any(|unit| unit.side == observation.side && unit.can_recruit && unit.position == position);
             menu = if movement.is_some() {
                 None
             } else {
@@ -565,6 +568,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         } else {
             None
         };
+        if selected_student && let Some(lesson) = &mut data.lesson && lesson.select_student(&mut session) {
+            menu = None;
+        }
         if let Some(action) = requested {
             let reselect = match &action {
                 Action::Attack(attack) => Some(attack.from),

@@ -38,13 +38,18 @@ impl Players {
     }
 }
 
+struct PendingLine {
+    line: engine_lite::fixed_match::dialogue::DialogueLine,
+    record_dismissal: bool,
+}
+
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
-    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
+    dialogue: std::collections::VecDeque<PendingLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -102,12 +107,13 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer));
+            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter()
+                .map(|line| PendingLine { line, record_dismissal: true }));
         }
     }
 
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
-        self.dialogue.front()
+        self.dialogue.front().map(|pending| &pending.line)
     }
 
     pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
@@ -119,13 +125,18 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
+        if self.dialogue.pop_front().is_some_and(|line| line.record_dismissal) {
+            self.history.push(crate::save_replay::Event::Dismiss);
+        }
     }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
-            self.dialogue.extend(self.game.take_dialogue(view.side));
+            // These local instructions are produced by the UI. Replaying a move or
+            // undoing it only regenerates the referee's own scenario messages.
+            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter()
+                .map(|line| PendingLine { line, record_dismissal: false }));
         }
     }
 
