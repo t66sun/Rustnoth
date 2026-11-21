@@ -38,13 +38,18 @@ impl Players {
     }
 }
 
+struct PendingLine {
+    line: engine_lite::fixed_match::dialogue::DialogueLine,
+    record_dismissal: bool,
+}
+
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
-    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
+    dialogue: std::collections::VecDeque<PendingLine>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -105,12 +110,13 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer));
+            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter()
+                .map(|line| PendingLine { line, record_dismissal: true }));
         }
     }
 
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
-        self.dialogue.front()
+        self.dialogue.front().map(|pending| &pending.line)
     }
 
     pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
@@ -122,7 +128,19 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
+        if self.dialogue.pop_front().is_some_and(|line| line.record_dismissal) {
+            self.history.push(crate::save_replay::Event::Dismiss);
+        }
+    }
+
+    pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
+        if let Some(view) = &self.observation {
+            self.game.present_message(config);
+            // These local instructions are produced by the UI. Replaying a move or
+            // undoing it only regenerates the referee's own scenario messages.
+            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter()
+                .map(|line| PendingLine { line, record_dismissal: false }));
+        }
     }
 
     /// Enabled by the live board after replaying any saved commands.
@@ -234,6 +252,27 @@ impl<'rules> Session<'rules> {
 
     pub fn objectives(&self) -> Option<&engine_lite::scenario_sides::ScenarioObjectives> {
         self.game.objectives_for(self.observation.as_ref()?.side)
+    }
+
+    pub fn has_objective_notice(&self) -> bool {
+        self.dialogue.is_empty() && !self.legal_actions.is_empty()
+            && self.observation.as_ref().is_some_and(|view| self.game.objectives_changed(view.side))
+    }
+
+    pub fn has_authored_objectives(&self) -> bool {
+        self.observation.as_ref().is_some_and(|view| self.game.has_authored_objectives(view.side))
+    }
+
+    pub fn evaluate_objectives(&self) -> Option<engine_lite::scenario_sides::ScenarioObjectives> {
+        self.game.evaluate_objectives_for(self.observation.as_ref()?.side)
+    }
+
+    pub fn acknowledge_objectives(&mut self) -> bool {
+        if !self.has_objective_notice() { return false; }
+        let side = self.observation.as_ref().expect("pending objectives have a viewer").side;
+        self.game.acknowledge_objectives(side);
+        self.history.push(crate::save_replay::Event::ObjectivesSeen);
+        true
     }
 
     pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
@@ -651,6 +690,92 @@ message=Nightfall
         assert_eq!(computer_choice(&view, &[scout.clone(), recruit.clone(), Action::EndTurn]), recruit);
         assert_eq!(computer_choice(&view, &[scout.clone(), Action::EndTurn]), scout);
         assert_eq!(computer_choice(&view, &[Action::EndTurn]), Action::EndTurn);
+    }
+
+    #[test]
+    fn objectives_wait_for_dialogue_and_their_human_side_and_stay_read_on_reload() {
+        use crate::save_replay::Event;
+        let source = br#"[units]
+[unit_type]
+id=Scout
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Scout
+controller=human
+[/side]
+[side]
+type=Scout
+controller=ai
+[/side]
+[event]
+name=prestart
+[objectives]
+side=0
+silent=yes
+[objective]
+condition=win
+description=Investigate the river fort
+[/objective]
+[/objectives]
+[/event]
+[event]
+name=start
+[message]
+speaker=narrator
+message=The South Guard has fallen.
+[/message]
+[/event]
+[event]
+name=side 2 turn
+[show_objectives]
+side=1
+[/show_objectives]
+[/event]
+[event]
+name=side 1 turn 3
+[show_objectives]
+side=1
+[/show_objectives]
+[objectives]
+side=1
+silent=yes
+[objective]
+condition=win
+description=Guard the citadel
+[/objective]
+[/objectives]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let start = || Session::with_players(bundle.start(17, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        let mut live = start();
+        assert!(live.dialogue().is_some());
+        assert!(!live.acknowledge_objectives());
+        live.dismiss_dialogue();
+        assert!(live.has_objective_notice());
+        assert!(live.acknowledge_objectives());
+        assert!(!live.acknowledge_objectives());
+        live.apply(Action::EndTurn).unwrap();
+        assert!(!live.has_objective_notice());
+        while live.play_computer_action().unwrap() {}
+        assert!(live.has_objective_notice());
+        let mut resumed = start();
+        for event in live.history() { Event::decode(&event.encode()).unwrap().apply(&mut resumed).unwrap(); }
+        assert!(resumed.has_objective_notice());
+        assert!(live.acknowledge_objectives());
+        live.history().last().unwrap().apply(&mut resumed).unwrap();
+        assert!(!resumed.has_objective_notice());
+        assert_eq!(live.history(), resumed.history());
+        live.apply(Action::EndTurn).unwrap();
+        while live.play_computer_action().unwrap() {}
+        assert_eq!(live.objectives().unwrap().victory, ["Guard the citadel"]);
+        assert!(!live.has_objective_notice());
     }
 
     #[test]

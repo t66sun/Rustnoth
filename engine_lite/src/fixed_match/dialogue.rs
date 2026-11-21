@@ -54,6 +54,11 @@ impl Message {
 }
 
 impl FixedMatch<'_> {
+    /// Show a prepared WML message using the ordinary speaker and audience checks.
+    pub fn present_message(&mut self, config: &Node) {
+        if let Some(message) = Message::read(config) { self.queue_dialogue(message); }
+    }
+
     pub(super) fn queue_dialogue(&mut self, message: Message) {
         let mut line = message.line;
         let speaker = if message.speaker == "narrator" {
