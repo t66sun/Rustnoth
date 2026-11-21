@@ -52,6 +52,6 @@ impl Text {
         let page = page.min(breaks.len() - 2);
         let start = breaks[page];
         let height = (breaks[page + 1] - start).clamp(1, limit) as u16;
-        (self.rasterize_label(w, height, [215; 3], start), true, page + 2 == breaks.len(), false)
+        (self.rasterize_label(w, height, [215; 3], start, false), true, page + 2 == breaks.len())
     }
 }
