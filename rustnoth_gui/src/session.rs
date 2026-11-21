@@ -88,6 +88,9 @@ impl<'rules> Session<'rules> {
             Some((view, mut actions)) => {
                 match self.players.controller(&self.game, view.side) {
                     SideController::Human => {
+                        if self.game.tutorial_end_turn_denial().is_some() {
+                            actions.retain(|action| *action != Action::EndTurn);
+                        }
                         self.observation = Some(view);
                         self.legal_actions = actions;
                     }
@@ -164,6 +167,12 @@ impl<'rules> Session<'rules> {
 
     pub fn restore_tutorial_hint(&mut self, previous: &Self) {
         self.tutorial_hint.clone_from(&previous.tutorial_hint);
+    }
+
+    pub fn tutorial_print(&self) -> Option<&engine_lite::wml::Node> { self.game.tutorial_print() }
+
+    pub fn tutorial_end_turn_denial(&self) -> Option<&engine_lite::wml::Node> {
+        self.game.tutorial_end_turn_denial()
     }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
@@ -365,7 +374,8 @@ impl<'rules> Session<'rules> {
     }
 
     pub(crate) fn apply_with_seed(&mut self, action: Action, attacker: Option<&str>, trace: Option<&mut Vec<Hex>>, seed: Option<u32>) -> Result<MatchState, MatchError> {
-        if self.computer_action.is_some() || self.dialogue().is_some() {
+        if self.computer_action.is_some() || self.dialogue().is_some()
+            || (action == Action::EndTurn && self.tutorial_end_turn_denial().is_some()) {
             return Err(MatchError::ActionUnavailable);
         }
         let state = match (action.clone(), trace) {

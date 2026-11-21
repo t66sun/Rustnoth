@@ -11,6 +11,7 @@ pub(crate) fn prepare_campaign(campaign: &mut Node, hero: Hero) -> Result<Lesson
     set_second_hero(second, hero)?;
     super::second::prepare(second, hero);
     super::briefing::prepare(second, hero);
+    super::reinforcements::prepare(second, hero);
     Ok(lesson)
 }
 

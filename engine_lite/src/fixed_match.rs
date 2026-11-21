@@ -124,6 +124,8 @@ pub struct FixedMatch<'data> {
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     presentation: Vec<(Vec<usize>, dialogue::Presentation)>,
+    tutorial_print: Option<crate::wml::Node>,
+    tutorial_end_turn_denial: Option<crate::wml::Node>,
     gold: Vec<i64>,
 }
 
@@ -173,6 +175,8 @@ impl<'data> FixedMatch<'data> {
             rng: ReplayRng::new(seed),
             village_owners,
             presentation: Vec::new(),
+            tutorial_print: None,
+            tutorial_end_turn_denial: None,
             gold,
         };
         for side in 1..=side_count {
@@ -239,6 +243,14 @@ impl<'data> FixedMatch<'data> {
                 BoardChange::SetObjectives { sides, definition, notify } => {
                     let remaining = self.remaining_turns();
                     self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides, remaining);
+                    continue;
+                }
+                BoardChange::TutorialPrint(cfg) => {
+                    self.tutorial_print = cfg.attribute("text").is_some_and(|s| !s.is_empty()).then_some(cfg);
+                    continue;
+                }
+                BoardChange::TutorialEndTurn(reason) => {
+                    self.tutorial_end_turn_denial = reason;
                     continue;
                 }
                 BoardChange::TutorialHint(hint) => {
