@@ -9,9 +9,10 @@ use crate::{BoardData, desktop, dialog, render, show_board};
 
 mod opening;
 mod healing;
+mod recruiting;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
-const SCOPE: &str = "Movement, attacking and village healing";
+const SCOPE: &str = "Movement, attacking, village healing and recruiting";
 
 pub(super) fn insert_entry(catalog: &mut Node, source: &str) -> Result<(), Box<dyn Error>> {
     // The stock campaign descriptor precedes the define which includes its scenarios and Lua.
@@ -42,7 +43,7 @@ impl Hero {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, Complete }
+enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, Complete }
 
 pub(super) struct Lesson {
     step: Step,
@@ -52,26 +53,34 @@ pub(super) struct Lesson {
     undo_prompt: String,
     show_undo_prompt: bool,
     healing: healing::Exercises,
+    recruiting: recruiting::Exercise,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises) -> Self {
+    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, healing, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, healing, recruiting, before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn draw_prompt(&self, selected: bool, font: Option<&Font>) {
+    pub(super) fn draw_prompt(&self, selected: bool, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
+        let font = art.font.as_ref();
+        if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird)
+            && let Some(layout) = layout {
+            art.draw_keep_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep);
+        }
         let prompt: &str = match self.step {
             Step::Approach if self.show_undo_prompt => &self.undo_prompt,
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
             Step::Attack => "Attack the quintain",
-            Step::EndFirst | Step::EndSecond => &self.healing.end_prompt,
+            Step::EndFirst | Step::EndSecond | Step::EndThird => &self.healing.end_prompt,
             Step::ToVillage => &self.healing.village_prompt,
-            Step::WaitSecond | Step::WaitThird | Step::Complete => return,
+            Step::ToKeep => &self.recruiting.keep_prompt,
+            Step::Recruit => &self.recruiting.recruit_prompt,
+            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Complete => return,
         };
         let view = render::board_viewport();
         let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
@@ -87,6 +96,9 @@ impl Lesson {
             (Step::Attack, Action::Attack(attack)) => attack.to == self.mentor,
             (Step::EndFirst | Step::EndSecond, Action::EndTurn) => true,
             (Step::ToVillage, Action::Move { to, .. }) => self.healing.villages.contains(to),
+            (Step::ToKeep, Action::Move { to, .. }) => *to == self.recruiting.keep,
+            (Step::ToKeep | Step::Recruit, Action::Attack(_)) => true,
+            (Step::Recruit, Action::Recruit { .. }) | (Step::EndThird, _) => true,
             _ => false,
         });
     }
@@ -115,6 +127,18 @@ impl Lesson {
                 self.before_healing = healing::student_hp(session);
                 Step::WaitThird
             }
+            Step::ToKeep | Step::Recruit if matches!(session.history().last(),
+                Some(rustnoth_gui::save_replay::Event::Player(Action::Attack(_), ..))) => Step::EndThird,
+            Step::ToKeep => {
+                session.present_message(&self.recruiting.instruction);
+                Step::Recruit
+            }
+            Step::Recruit if self.recruiting.recruited(session) => {
+                session.present_message(&self.recruiting.crowns);
+                Step::EndThird
+            }
+            Step::EndThird if matches!(session.history().last(),
+                Some(rustnoth_gui::save_replay::Event::Player(Action::EndTurn, ..))) => Step::WaitFourth,
             other => other,
         };
         self.after_computer(session);
@@ -132,6 +156,9 @@ impl Lesson {
             }
             MatchState::Playing(turn) if turn.round == 3 && self.step == Step::WaitThird => {
                 healing::say(&self.healing.healed, session, self.before_healing);
+                self.step = Step::ToKeep;
+            }
+            MatchState::Playing(turn) if turn.round == 4 && self.step == Step::WaitFourth => {
                 self.step = Step::Complete;
             }
             MatchState::Playing(_) => {}
