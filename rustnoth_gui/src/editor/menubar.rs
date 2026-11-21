@@ -16,7 +16,7 @@ impl Menu {
     fn entries(self) -> &'static [Command] {
         match self {
             File => &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit],
-            Map => &[Command::Refresh, Command::ToggleGrid, Command::FillSelection],
+            Map => &[Command::Resize, Command::Refresh, Command::ToggleGrid, Command::FillSelection],
             _ => &[],
         }
     }

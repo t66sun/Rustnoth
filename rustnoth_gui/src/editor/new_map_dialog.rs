@@ -14,6 +14,31 @@ fn pointed(mouse: f32, left: f32, width: f32) -> i32 {
 
 pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
         font: Option<&Font>, map: &EditableMap) -> Result<Option<[usize;2]>, Box<dyn Error>> {
+    Ok(dimensions(root, assets, art, font, map, false).await?.map(|choice| choice.size))
+}
+
+pub(super) struct Dimensions {
+    pub size: [usize; 2],
+    pub anchor: usize,
+    pub copy_edges: bool,
+}
+
+fn direction_icon(index: usize, anchor: usize, diff: [i32; 2]) -> &'static str {
+    let x = (index % 3) as i32 - (anchor % 3) as i32;
+    let y = (index / 3) as i32 - (anchor / 3) as i32;
+    let [dw, dh] = diff;
+    if x == 0 && y == 0 { return "center"; }
+    if x.abs() > 1 || y.abs() > 1 { return "none"; }
+    if y == 0 { return match x * dw.signum() { -1 => "left", 1 => "right", _ => "none" }; }
+    if x == 0 { return match y * dh.signum() { -1 => "up", 1 => "down", _ => "none" }; }
+    let reverse = dw < 0 || dh < 0;
+    if !reverse && (dw == 0 || dh == 0) { return "none"; }
+    let (x,y) = if reverse { (-x,-y) } else { (x,y) };
+    match (x,y) { (-1,-1) => "topleft", (1,-1) => "topright", (-1,1) => "bottomleft", _ => "bottomright" }
+}
+
+pub(super) async fn dimensions(root: &Path, assets: &AssetCatalog, art: &mut Art,
+        font: Option<&Font>, map: &EditableMap, resize: bool) -> Result<Option<Dimensions>, Box<dyn Error>> {
     let background = Texture2D::from_image(&get_screen_data());
     let mut textures = Vec::new();
     for suffix in ["", "-active", "-pressed"] {
@@ -22,14 +47,19 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
         tex.set_filter(FilterMode::Nearest);
         textures.push(tex);
     }
-    let mut values = [map.map().width().clamp(1,200), map.map().height().clamp(1,200)];
+    let old = [map.map().width(), map.map().height()];
+    let mut values = old.map(|n| n.clamp(1, 200));
+    let mut anchor = 0;
+    let mut copy_edges = false;
+    let (pw, ph) = if resize { (575., 341.) } else { (370., 191.) };
+    let controls = if resize { 14 } else { 4 };
     let mut focus = 0usize;
     let mut held = None;
     next_frame().await;
     loop {
-        let scale = (screen_width()/390.).min(screen_height()/220.).clamp(0.01,1.);
+        let scale = (screen_width()/(pw+20.)).min(screen_height()/(ph+29.)).clamp(0.01,1.);
         let (w,h) = (screen_width()/scale,screen_height()/scale);
-        let panel = Rect::new(((w-370.)/2.).floor(),((h-191.)/2.).floor(),370.,191.);
+        let panel = Rect::new(((w-pw)/2.).floor(),((h-ph)/2.).floor(),pw,ph);
         let (mx,my) = mouse_position();
         let pointer = vec2(mx/scale,my/scale);
         let down = is_mouse_button_pressed(MouseButton::Left);
@@ -38,18 +68,23 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
         draw_texture_ex(&background,0.,0.,WHITE,DrawTextureParams { dest_size:Some(vec2(w,h)),..Default::default() });
         draw_rectangle(panel.x,panel.y,panel.w,panel.h,Color::from_rgba(114,79,46,255));
         art.image(assets,"dialogs/opaque-background.png",Rect::new(panel.x+2.,panel.y+2.,panel.w-4.,panel.h-4.));
-        dialog::text(font,"New Map",panel.x+15.,panel.y+35.,22,dialog::GOLD);
+        dialog::text(font,if resize { "Resize Map" } else { "New Map" },panel.x+15.,panel.y+35.,22,dialog::GOLD);
         if is_key_pressed(KeyCode::Tab) {
             let back = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-            focus = (focus + if back {3} else {1}) % 4;
+            focus = (focus + if back {controls-1} else {1}) % controls;
         }
         if focus < 2 {
             let delta = i32::from(is_key_pressed(KeyCode::Right)) - i32::from(is_key_pressed(KeyCode::Left));
             values[focus] = (values[focus]+delta).clamp(1,200);
         }
-        for (i,label) in ["Width:", "Height:"].into_iter().enumerate() {
+        let names = if resize { ["New width:", "New height:"] } else { ["Width:", "Height:"] };
+        for (i,label) in names.into_iter().enumerate() {
             let y = panel.y+53.+(i as f32)*38.;
-            let rail = Rect::new(panel.x+83., y, 250., 22.);
+            let rail = Rect::new(panel.x + if resize {115.} else {83.}, y, 250., 22.);
+            if resize {
+                let label = if i == 0 { "Old width:" } else { "Old height:" };
+                dialog::text(font,&format!("{label}   {}", old[i]),panel.x+410.,y+17.,17,WHITE);
+            }
             if down && rail.contains(pointer) { focus=i; held=Some(i); }
             if held == Some(i) { values[i] = pointed(pointer.x,rail.x+6.,rail.w-12.); }
             let x = rail.x+6.+ ((values[i]-1) as f32*(rail.w-12.)/199.).round();
@@ -60,9 +95,35 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
             art.image(assets,&format!("buttons/sliders/slider{state}.png"),Rect::new(x-6.,y,12.,22.));
             dialog::text(font,&values[i].to_string(),rail.right()+2.,y+17.,14,WHITE);
         }
+        if resize {
+            dialog::text(font, "Expand/shrink direction:", panel.x+15.,panel.y+155.,17,WHITE);
+            let diff = [values[0] - old[0], values[1] - old[1]];
+            for i in 0..9 {
+                let area = Rect::new(panel.x+215.+32.*(i%3) as f32,panel.y+135.+32.*(i/3) as f32,32.,32.);
+                if down && area.contains(pointer) { focus=i+2; held=Some(focus); }
+                if (up && held==Some(i+2) && area.contains(pointer)) || (focus==i+2 && is_key_pressed(KeyCode::Space)) {
+                    anchor=i;
+                }
+                let state = if i==anchor { "-pressed" } else if area.contains(pointer) || focus==i+2 { "-active" } else { "" };
+                art.image(assets, &format!("buttons/button_square/button_square_30{state}.png"), area);
+                let icon = direction_icon(i,anchor,diff);
+                art.image(assets,&format!("icons/arrows/arrows_blank_{icon}_30.png"),Rect::new(area.x+1.,area.y+1.,30.,30.));
+            }
+            let box_rect = Rect::new(panel.x+15.,panel.y+252.,19.,19.);
+            let hit = Rect::new(box_rect.x,box_rect.y,185.,box_rect.h);
+            if down && hit.contains(pointer) { focus=11; held=Some(focus); }
+            if (up && held==Some(11) && hit.contains(pointer)) || (focus==11 && is_key_pressed(KeyCode::Space)) {
+                copy_edges=!copy_edges;
+            }
+            let state = match (copy_edges, hit.contains(pointer) || focus==11) {
+                (true,true) => "-active-pressed", (true,false) => "-pressed", (false,true) => "-active", _ => "",
+            };
+            art.image(assets,&format!("buttons/checkbox{state}.png"),box_rect);
+            dialog::text(font,"Copy edge terrain",box_rect.right()+5.,box_rect.y+16.,17,WHITE);
+        }
         let mut response = None;
-        for (i,label) in ["Create","Cancel"].into_iter().enumerate() {
-            let index = 2+i;
+        for (i,label) in [if resize {"Resize"} else {"Create"},"Cancel"].into_iter().enumerate() {
+            let index = controls-2+i;
             let rect = Rect::new(panel.right()-248.+120.*i as f32,panel.bottom()-45.,110.,30.);
             let hot=rect.contains(pointer);
             if down && hot { focus=index; held=Some(index); }
@@ -74,9 +135,9 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
         }
         if up { held=None; }
         if is_key_pressed(KeyCode::Escape) { response=Some(false); }
-        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) { response=Some(focus!=3); }
+        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) { response=Some(focus!=controls-1); }
         set_default_camera();
-        if let Some(create)=response { return Ok(create.then(|| values.map(|v| v as usize))); }
+        if let Some(create)=response { return Ok(create.then(|| Dimensions { size:values.map(|v| v as usize), anchor, copy_edges })); }
         next_frame().await;
     }
 }
@@ -85,6 +146,14 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
 mod tests {
     use super::*;
     use engine_lite::hex::Hex;
+    #[test]
+    fn resize_grid_reverses_shrink_arrows_around_the_selected_anchor() {
+        assert_eq!(direction_icon(4,4,[2,2]),"center");
+        assert_eq!(direction_icon(0,4,[2,2]),"topleft");
+        assert_eq!(direction_icon(0,4,[-2,2]),"bottomright");
+        assert_eq!(direction_icon(7,4,[0,-2]),"up");
+        assert_eq!(direction_icon(2,0,[3,0]),"none");
+    }
     #[test]
     fn new_maps_fill_the_playable_hexes_and_border_with_the_background_terrain() {
         let map = make(2,1,"Ww").unwrap();
