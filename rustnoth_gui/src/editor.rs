@@ -3,6 +3,7 @@ mod files;
 mod documents;
 mod menubar;
 mod fill;
+mod help_label;
 mod minimap_buttons;
 mod palette;
 mod toolbar;
@@ -126,6 +127,7 @@ enum Command {
     FillSelection,
     ToggleGrid,
     Refresh,
+    ToggleHelp,
     Switch(usize),
 }
 
@@ -143,6 +145,7 @@ impl Command {
             Self::ToggleGrid => "Toggle Grid",
             Self::Switch(_) => "Switch Map",
             Self::Refresh => "Refresh Display",
+            Self::ToggleHelp => "Show Tool Information",
         }
     }
 }
@@ -247,6 +250,7 @@ struct Chrome {
     show_grid: bool,
     menu: Option<menubar::Menu>,
     menubar: menubar::Menubar,
+    show_help: bool,
     tip: Option<&'static str>,
     toolbar: toolbar::Toolbar,
 }
@@ -267,25 +271,20 @@ impl Chrome {
     ) -> Option<Command> {
         self.tip = None;
         let sidebar = Rect::new(w - side, 0.0, side, h);
-        art.image(assets, "themes/classic/sidebar.png", sidebar);
-        art.image(
+        art.panel(
             assets,
             "themes/classic/menubar.png",
-            Rect::new(0.0, 0.0, w - side, 27.0),
+            Rect::new(0.0, 0.0, w, 27.0),
         );
-        art.image(
+        art.panel(
             assets,
             "themes/editor/classic/toolbar.png",
             Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
-        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+        art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
-        art.image(
-            assets,
-            "themes/editor/classic/menubar_rightside.png",
-            Rect::new(w - side, 0.0, side, 26.0),
-        );
-        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
+        art.panel(assets, "themes/classic/sidebar.png", sidebar);
+        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, doc, history,
             assets, art, &mut self.tip);
         let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
         result
@@ -321,8 +320,9 @@ fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
     view.tiles.sort_unstable_by_key(|tile| (tile.position.y, tile.position.x));
 }
 
-pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
+pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
+    let mut help_label = help_label::HelpLabel::new(root, font_family);
     let assets = AssetCatalog::parse(root, core, b"")?;
     let cfg = wml::parse(core)?;
     let mut palette = Palette::load(&cfg, root)?;
@@ -337,6 +337,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut rebuild = true;
     let mut chrome = Chrome {
         show_grid: crate::display_preferences::grid()?,
+        show_help: crate::display_preferences::editor_help()?,
         menu: None,
         menubar: menubar::Menubar::new(root),
         tip: None,
@@ -531,31 +532,23 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
-        let font = form.font.as_ref();
-        let lines = if let Some(tip) = chrome.tip {
-            vec![tip.to_owned()]
+        let text = if let Some(tip) = chrome.tip {
+            Some(tip.to_owned())
         } else if !status.is_empty() {
-            vec![status.clone()]
+            Some(status.clone())
+        } else if !chrome.show_help {
+            None
         } else if tool == Tool::Select {
-            vec!["Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()]
+            Some("Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into())
         } else {
-            palette.help().into()
+            Some(palette.help().join("\n"))
         };
-        let mut font_size = 18;
-        let width = loop {
-            let max_width = lines.iter().map(|line| measure_text(line, font, font_size, 1.0).width)
-                .fold(0.0, f32::max);
-            if max_width <= w * 0.5 || font_size <= 8 {
-                break max_width;
-            }
-            font_size -= 1;
-        };
-        let line_height = font_size as f32 + 6.0;
-        let x = (w - width) * 0.5;
-        let y = h - line_height * lines.len() as f32 - 10.0;
-        draw_rectangle(x - 5.0, y, width + 10.0, h - y, Color::from_rgba(0, 0, 0, 0xbb));
-        for (row, line) in lines.iter().enumerate() {
-            dialog::text(font, line, x, y + 5.0 + font_size as f32 + row as f32 * line_height, font_size, WHITE);
+        if let Some(text) = text {
+            let top_row = camera.layout().map_or(0, |layout| {
+                let [_, zero_y] = layout.tile_origin(Hex { x: 0, y: 0 });
+                ((area.y - zero_y) / layout.tile_size()).floor() as i32
+            });
+            help_label.draw(&text, form.font.as_ref(), vec2(w, h), area.y, top_row);
         }
         set_default_camera();
         if ctrl && is_key_pressed(KeyCode::N) {
@@ -591,7 +584,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
         }
         if let Some(cmd) = command {
-            if cmd != Command::ToggleGrid {
+            if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp) {
                 drawing = None;
                 selecting = false;
                 last_selection = None;
@@ -600,6 +593,12 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
             match cmd {
                 Command::Refresh => { rebuild = true; }
+                Command::ToggleHelp => {
+                    match crate::display_preferences::save_editor_help(!chrome.show_help) {
+                        Ok(()) => chrome.show_help = !chrome.show_help,
+                        Err(error) => status = error.to_string(),
+                    }
+                }
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,

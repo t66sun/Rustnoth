@@ -16,7 +16,7 @@ impl Menu {
     fn entries(self) -> &'static [Command] {
         match self {
             File => &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit],
-            Map => &[Command::Refresh, Command::ToggleGrid, Command::FillSelection],
+            Map => &[Command::ToggleHelp, Command::Refresh, Command::ToggleGrid, Command::FillSelection],
             _ => &[],
         }
     }
@@ -111,6 +111,7 @@ mod tests {
         assert_eq!(Window.bounds(), Rect::new(200.,1.,100.,20.));
         assert_eq!(Side.bounds(), Rect::new(500.,1.,100.,20.));
         assert!(Map.entries().contains(&Command::ToggleGrid));
+        assert_eq!(Map.entries()[0], Command::ToggleHelp);
         assert!(File.entries().contains(&Command::Open));
         assert!(Window.enabled() && !Areas.enabled() && !Side.enabled());
     }
