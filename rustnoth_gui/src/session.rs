@@ -44,11 +44,6 @@ struct PendingLine {
     hint_after: Option<String>,
 }
 
-impl From<engine_lite::fixed_match::dialogue::DialogueLine> for PendingLine {
-    fn from(line: engine_lite::fixed_match::dialogue::DialogueLine) -> Self {
-        Self { line, record_dismissal: true, hint_after: None }
-    }
-}
 
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
@@ -118,7 +113,17 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter().map(PendingLine::from));
+            self.collect_presentation(viewer, true);
+        }
+    }
+
+    fn collect_presentation(&mut self, viewer: usize, record_dismissal: bool) {
+        use engine_lite::fixed_match::dialogue::Presentation;
+        for item in self.game.take_presentation(viewer) {
+            match item {
+                Presentation::Dialogue(line) => self.dialogue.push_back(PendingLine { line, record_dismissal, hint_after: None }),
+                Presentation::TutorialHint(hint) => self.set_tutorial_hint(&hint),
+            }
         }
     }
 
@@ -166,8 +171,7 @@ impl<'rules> Session<'rules> {
             self.game.present_message(config);
             // These local instructions are produced by the UI. Replaying a move or
             // undoing it only regenerates the referee's own scenario messages.
-            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter()
-                .map(|line| PendingLine { line, record_dismissal: false, hint_after: None }));
+            self.collect_presentation(view.side, false);
         }
     }
 

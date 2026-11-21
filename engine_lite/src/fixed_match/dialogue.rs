@@ -3,6 +3,12 @@ use super::FixedMatch;
 use crate::{scenario_sides::bool_attribute, visibility::HexVisibility, wml::Node};
 
 #[derive(Clone, Debug)]
+pub enum Presentation {
+    Dialogue(DialogueLine),
+    TutorialHint(Node),
+}
+
+#[derive(Clone, Debug)]
 pub struct DialogueLine {
     pub text: String,
     pub caption: Option<String>,
@@ -83,13 +89,20 @@ impl FixedMatch<'_> {
                     || (self.effective_vision(*side).at(position) == Some(HexVisibility::Visible)
                     && self.unit_visible_on_known_hex(*side, position)))
         }).collect::<Vec<_>>();
-        if !audience.is_empty() { self.dialogue.push((audience, line)); }
+        if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
     }
 
     /// Consume the last command's presentation queue for the local human view.
     pub fn take_dialogue(&mut self, viewer: usize) -> Vec<DialogueLine> {
-        std::mem::take(&mut self.dialogue).into_iter().filter_map(|(audience, line)|
-            audience.contains(&viewer).then_some(line)).collect()
+        self.take_presentation(viewer).into_iter().filter_map(|item| match item {
+            Presentation::Dialogue(line) => Some(line),
+            Presentation::TutorialHint(_) => None,
+        }).collect()
+    }
+
+    pub fn take_presentation(&mut self, viewer: usize) -> Vec<Presentation> {
+        std::mem::take(&mut self.presentation).into_iter().filter_map(|(audience, item)|
+            audience.contains(&viewer).then_some(item)).collect()
     }
 }
 
