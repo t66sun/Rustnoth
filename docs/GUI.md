@@ -34,7 +34,7 @@ cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --title core.cfg 5
 cargo run --manifest-path rustnoth_gui/Cargo.toml --locked -- --campaign campaign.cfg ../wesnoth_src/data/campaigns/The_South_Guard/maps core.cfg 5489
 ```
 
-有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。点 Filter 或按 Ctrl+F 可按名称搜索。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
+有战役描述时，窗口会显示原版图标、说明与插画。选择战役并按 Enter、双击或点 Play 会进入其首关。按 Tab 或点 Scenarios 可切换到场景列表。打开战役窗口后可直接输入搜索词，或按 Ctrl+F 返回搜索框。空格分隔的词可分别匹配战役原文或译文中的名称、说明和缩写。当前战役仍符合条件时会保持选中。场景列表沿用配置文件顺序。点击场景，或用方向键选择后按 Enter，即可开始本地热座对局。胜利后如有后续场景，点击 Continue 或按 Enter 会载入该场景。持久阵营按 `save_id` 继承胜利结算金币，包含按剩余回合和全图村庄计算的早胜奖励。存活单位和原召回名单随持久阵营进入下一关。相同 ID 的单位出现在新场景指定的位置，其他老兵恢复生命后进入召回名单。Esc 从棋盘返回列表。`--wesnoth-root` 可指定原版素材目录。
 
 ### 用原版地图建立遭遇战
 
@@ -72,17 +72,23 @@ cargo run --quiet --manifest-path engine_lite/Cargo.toml --bin rustnoth-skirmish
 | 选择菜单项 | 左键点击，或按 Tab 切换、Enter 确认 |
 | 查看战役目标 | 点击 **Menu → Scenario Objectives** 或按 Ctrl+J 查看本方当前胜负目标，方向键、翻页键和滚轮可滚动，Esc 或 Enter 返回棋盘 |
 | 取消选择 | 右键 |
-| 结束回合 | 点击 **End turn**，或按空格 |
+| 结束回合 | 点击 **End Turn** 或按 Ctrl+空格（macOS 为 Alt+空格）。在确认窗口选择 **Yes** 结束回合，选择 **No** 或按 Esc 返回棋盘 |
 | 缩放棋盘 | 在棋盘上滚动滚轮，按 Home 恢复全图 |
 | 平移棋盘 | 缩放后使用中键拖拽或方向键 |
 | 关闭菜单或退出 | Esc |
 
+在用户的 Rustnoth 配置目录（Windows 为 `%APPDATA%\Rustnoth`）中可新建文本文件 `confirm_end_turn`。默认值 `no_moves` 只在本方有单位且本回合尚未操作时询问。填入 `green` 表示有尚未移动且仍可行动的单位时询问，`yellow` 表示有单位仍可行动时询问，`no` 表示直接结束回合。场景可通过本方的 `no_turn_confirmation=yes` 跳过确认。
+
 Export a complete installed map at the native 72-pixel zoom without opening a window: `rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]`. The PNG contains the terrain and its authored border, without units or interface panels.
 
-从安装版启动时，Campaigns 按原版顺序列出已安装的单人战役。选中战役后会显示原版难度、默认选项和对应单位图标，确认后才按所选难度准备配置，并进入其首关。教学战役覆盖第一关的移动与首次攻击。战役列表中的条目仅表示已安装，具体场景脚本的支持程度取决于 Rust 裁判。
+在标题页、对话框、编辑器或对局中按 F12，可将当前完整画面以 PNG 保存到 Rustnoth 用户配置目录的 `screenshots` 子目录。窗口会显示保存位置。
+
+无损原版截图与 Rust 截图必须具有相同分辨率、语言及界面状态。用 Pillow 执行 `python rustnoth_gui/tests/compare_native_frames.py --pair title native-title.png rust-title.png`，可重复传入 `--pair` 比较多个场景。每张图按完整画面中 RGB 三个通道完全相同的像素计数，每一对都严格大于 97% 时命令成功。`--diff-dir verification/diffs` 可保存放大的差异亮度图。
+
+从安装版启动时，Campaigns 按原版顺序列出已安装的单人战役。选中战役后，底栏会显示该战役指定的默认难度。点开难度菜单或按 F4，可查看对应单位图标并选择其他难度。按 Play 后游戏会按选定难度准备配置并进入首关。教学战役覆盖第一关的移动与首次攻击。战役列表中的条目仅表示已安装，具体场景脚本的支持程度取决于 Rust 裁判。
 
 ### 地图编辑器
 
-主菜单 **Map Editor** 打开一张 24 × 17 的草地地图。用 **File → Open Map…** 从原版多人地图、战役地图和个人副本中选择，也可以输入本地地图路径。右栏箭头切换地形组，滚轮翻动地形列表，左右键分别选择前景和背景画笔。在地图上按对应鼠标键或拖动即可绘制，Ctrl 加鼠标键吸取地形，Shift 绘制单层地形。Ctrl+Z 与 Ctrl+Y 逐笔撤销和重做。中键拖动平移，滚轮缩放，Home 显示全图。
+主菜单 **Map Editor** 打开一张 44 × 33 的草地地图，初始视角落在左上角，六边形按原版 72 像素显示。用 **File → Open Map…** 从原版多人地图、战役地图和个人副本中选择，也可以输入本地地图路径。右栏箭头切换地形组，滚轮翻动地形列表，左右键分别选择前景和背景画笔。在地图上按对应鼠标键或拖动即可绘制，Ctrl 加鼠标键吸取地形，Shift 绘制单层地形。Ctrl+Z 与 Ctrl+Y 逐笔撤销和重做。中键拖动平移，滚轮缩放，Home 显示全图。
 
 **File → Save Map As…**（Ctrl+S）按输入的新文件名保存到个人配置目录 `Rustnoth/editor/maps`。已有同名文件会提示重新命名。保存沿用原图的起点、特殊位置、边界地形以及换行格式。

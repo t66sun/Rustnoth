@@ -1,6 +1,10 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
 #[path = "campaign_difficulty.rs"]
 mod difficulty;
+#[path = "campaign_sort.rs"]
+mod sort;
+#[path = "campaign_layout.rs"]
+mod layout;
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -14,11 +18,14 @@ const EDGE: Color = Color::from_rgba(114, 79, 46, 255);
 
 struct Entry<'a> {
     name: String,
+    search_text: String,
+    date: sort::Date,
     description: String,
     icon: Option<&'a str>,
     image: Option<&'a str>,
     background: Option<&'a str>,
     scenario: usize,
+    descriptor: Option<&'a Node>,
 }
 
 fn plain(source: &str) -> String {
@@ -34,33 +41,52 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
     let campaigns = root.children.iter().filter(|(tag, _)| tag == "campaign").filter_map(|(_, node)| {
         let id = node.attribute("first_scenario")?;
         let scenario = scenarios.iter().position(|(key, _)| *key == id)?;
+        let name = locale.attribute(install, node, "name", id);
+        let description = locale.attribute(install, node, "description", "");
+        let abbreviation = locale.attribute(install, node, "abbrev", "");
+        let search_text = campaign_search_text(node, &name, &description, &abbreviation);
         Some(Entry {
-            name: locale.attribute(install, node, "name", id),
-            description: plain(&locale.attribute(install, node, "description", "")),
+            name, search_text,
+            date: sort::Date::read(node.attribute("start_year")),
+            description: plain(&description),
             icon: node.attribute("icon"), image: node.attribute("image"),
-            background: node.attribute("background"), scenario,
+            background: node.attribute("background"), scenario, descriptor: Some(node),
         })
     }).collect();
     let levels = root.children.iter().filter(|(tag, node)| tag == "scenario" && node.attribute("id").is_some())
         .zip(scenarios).enumerate().map(|(scenario, ((_, node), &(id, _)))| {
             // Scenario bundles need not include a [campaign] descriptor or a description.
+            let name = locale.attribute(install, node, "name", id);
             Entry {
-                name: locale.attribute(install, node, "name", id),
+                search_text: name.to_lowercase(), name,
+                date: sort::Date::Undated,
                 description: plain(&locale.attribute(install, node, "description", id)),
-                icon: None, image: None, background: None, scenario,
+                icon: None, image: None, background: None, scenario, descriptor: None,
             }
         }).collect();
     (campaigns, levels)
 }
 
-fn filtered(entries: &[Entry<'_>], filter: &str) -> Vec<usize> {
-    let needle = filter.trim().to_lowercase();
-    entries.iter().enumerate().filter(|(_, entry)| entry.name.to_lowercase().contains(&needle))
-        .map(|(i, _)| i).collect()
+fn campaign_search_text(node: &Node, name: &str, description: &str, abbreviation: &str) -> String {
+    [name, node.attribute("name").unwrap_or(""), description,
+        node.attribute("description").unwrap_or(""), abbreviation,
+        node.attribute("abbrev").unwrap_or("")].join("\n").to_lowercase()
+}
+
+fn filtered(entries: &[Entry<'_>], order: impl Iterator<Item = usize>, filter: &str) -> Vec<usize> {
+    let query = filter.to_lowercase();
+    let words: Vec<_> = query.split_whitespace().collect();
+    order.filter(|&i| words.iter().all(|word| entries[i].search_text.contains(*word))).collect()
+}
+
+fn selected_row(rows: &[usize], selected: Option<usize>) -> usize {
+    selected.and_then(|id| rows.iter().position(|&row| row == id)).unwrap_or(0)
 }
 
 pub(super) struct Selector<'a> {
     campaigns: Vec<Entry<'a>>,
+    ordering: sort::Order,
+    campaign_rows: Vec<usize>,
     levels: Vec<Entry<'a>>,
     pub(super) campaigns_only: bool,
     show_levels: bool,
@@ -71,6 +97,7 @@ pub(super) struct Selector<'a> {
     description_offset: usize,
     last_click: Option<(usize, f64)>,
     art: Art,
+    difficulty_menu: difficulty::Menu<'a>,
 }
 
 impl<'a> Selector<'a> {
@@ -78,14 +105,22 @@ impl<'a> Selector<'a> {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut language = Locale::load(root, selected)?;
         let (campaigns, levels) = entries(campaign, scenarios, &mut language, root);
+        // The opening title shortcut can still be in macroquad's text queue.
+        while get_char_pressed().is_some() {}
+        let editing = !campaigns.is_empty();
         Ok(Self {
+            ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
-            query: String::new(), editing: false, description_offset: 0, last_click: None,
+            query: String::new(), editing, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
+            difficulty_menu: difficulty::Menu::default(),
         })
     }
 
     pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
+        if let Some(define) = self.difficulty_menu.define_for(campaign) {
+            return Some(define.to_owned());
+        }
         difficulty::choose(&mut self.art, campaign).await
     }
 
@@ -94,25 +129,22 @@ impl<'a> Selector<'a> {
         let w = screen_width() / scale;
         let h = screen_height() / scale;
         set_camera(&setup_camera(w, h));
-        let bounds = Rect::new(0.0, 0.0, w, h);
         clear_background(BLACK);
-        if let Some(map) = self.art.get("maps/titlescreen.webp") { contain(&map, bounds, true); }
-        let width = (w - 24.0).min(1050.0);
-        let height = (h - 20.0).min(750.0);
-        let window = Rect::new((w - width)*0.5, (h - height)*0.5, width, height);
-        let panel = Rect::new(window.x+12.0, window.y+61.0, width-24.0, height-129.0);
-        let list = Rect::new(panel.x+8.0, panel.y+8.0, (panel.w-26.0)*0.47, panel.h-16.0);
-        let details = Rect::new(list.right()+12.0, list.y, panel.right()-list.right()-20.0, list.h);
-        let search = Rect::new(panel.right()-212.0, window.y+14.0, 212.0, 32.0);
-        let bottom = window.bottom()-53.0;
-        let cancel = Rect::new(panel.right()-100.0, bottom, 100.0, 38.0);
-        let play = Rect::new(cancel.x-148.0, bottom-2.0, 138.0, 42.0);
+        let entries = if self.show_levels { &self.levels } else { &self.campaigns };
+        let name_width = entries.iter().map(|entry|
+            measure_text(&entry.name, self.art.font.as_ref(), 17, 1.0).width.ceil() as i32
+        ).max().unwrap_or(0);
+        let layout::Layout { window, panel, list, details, search, play, cancel } =
+            layout::Layout::new(w, h, name_width as f32);
+        let bottom = play.y;
         let toggle = Rect::new(panel.x, bottom, 120.0, 38.0);
         let (mx, my) = mouse_position();
         let pointer = vec2(mx/scale, my/scale);
-        let click = is_mouse_button_pressed(MouseButton::Left);
-        if is_key_pressed(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
-        if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || is_key_pressed(KeyCode::Tab)) {
+        let modal = self.difficulty_menu.is_open();
+        let key = |code| !modal && is_key_pressed(code);
+        let click = !modal && is_mouse_button_pressed(MouseButton::Left);
+        if key(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
+        if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || key(KeyCode::Tab)) {
             self.show_levels = !self.show_levels;
             self.editing = false;
             self.query.clear();
@@ -122,44 +154,77 @@ impl<'a> Selector<'a> {
             self.last_click = None;
         }
         if click { self.editing = search.contains(pointer); }
-        if is_key_pressed(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)) {
+        let focus_shortcut = key(KeyCode::F) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl));
+        if focus_shortcut {
             self.editing = true;
         }
-        if self.editing {
-            let len = self.query.len();
-            while let Some(c) = get_char_pressed() { if !c.is_control() { self.query.push(c); } }
-            if is_key_pressed(KeyCode::Backspace) { self.query.pop(); }
-            if self.query.len() != len {
-                self.cursor = 0; self.first = 0; self.description_offset = 0; self.last_click = None;
+        let entries = if self.show_levels { &self.levels } else { &self.campaigns };
+        let matching = |query: &str| if self.show_levels {
+            let needle = query.trim().to_lowercase();
+            (0..entries.len()).filter(|&i| entries[i].search_text.contains(&needle)).collect()
+        } else {
+            filtered(entries, self.campaign_rows.iter().copied(), query)
+        };
+        let mut rows = matching(&self.query);
+        let selected = rows.get(self.cursor).copied();
+        let mut changed = false;
+        while let Some(c) = get_char_pressed() {
+            if self.editing && !modal && !focus_shortcut && !c.is_control() {
+                self.query.push(c);
+                changed = true;
             }
         }
-        let entries = if self.show_levels { &self.levels } else { &self.campaigns };
-        let rows = filtered(entries, &self.query);
-        let row_h = if self.show_levels { 44.0 } else { 76.0 };
-        let top = list.y+32.0;
+        if self.editing && key(KeyCode::Backspace) {
+            changed |= self.query.pop().is_some();
+        }
+        if changed {
+            rows = matching(&self.query);
+            self.cursor = selected_row(&rows, selected);
+            if rows.get(self.cursor).copied() != selected { self.description_offset = 0; }
+            self.last_click = None;
+        }
+        let headers = sort::headers(list);
+        if !self.show_levels && click
+            && let Some((field, _)) = headers.iter().find(|(_, rect)| rect.contains(pointer))
+        {
+            let selected = rows.get(self.cursor).copied();
+            self.ordering = self.ordering.toggle(*field);
+            self.campaign_rows = self.ordering.rows(entries, &self.art.locale.effective);
+            rows = filtered(entries, self.campaign_rows.iter().copied(), &self.query);
+            self.cursor = selected_row(&rows, selected);
+            self.last_click = None;
+        }
+        let row_h = if self.show_levels { 44.0 } else { 82.0 };
+        let top = list.y+30.0;
         let visible = ((list.bottom()-top)/row_h).floor().max(1.0) as usize;
         let last = rows.len().saturating_sub(1);
         let previous = self.cursor;
-        let step = if is_key_pressed(KeyCode::PageDown) { visible as isize }
-            else if is_key_pressed(KeyCode::PageUp) { -(visible as isize) }
-            else if is_key_pressed(KeyCode::Down) {1} else if is_key_pressed(KeyCode::Up) {-1} else {0};
+        let step = if key(KeyCode::PageDown) { visible as isize }
+            else if key(KeyCode::PageUp) { -(visible as isize) }
+            else if key(KeyCode::Down) {1} else if key(KeyCode::Up) {-1} else {0};
         self.cursor = self.cursor.saturating_add_signed(step).min(last);
-        if is_key_pressed(KeyCode::Home) { self.cursor = 0; }
-        if is_key_pressed(KeyCode::End) { self.cursor = last; }
-        let wheel = mouse_wheel().1;
+        if key(KeyCode::Home) { self.cursor = 0; }
+        if key(KeyCode::End) { self.cursor = last; }
+        let wheel = if modal { 0.0 } else { mouse_wheel().1 };
         if list.contains(pointer) && wheel != 0.0 {
             self.first = self.first.saturating_add_signed(if wheel > 0.0 {-3} else {3}).min(rows.len().saturating_sub(visible));
             self.cursor = self.cursor.clamp(self.first, (self.first+visible-1).min(last));
         }
         self.first = self.first.clamp(self.cursor.saturating_sub(visible-1), self.cursor)
             .min(rows.len().saturating_sub(visible));
-        let row_click = click && list.contains(pointer) && pointer.y >= top;
-        let mut confirmed = is_key_pressed(KeyCode::Enter) || (!self.editing && is_key_pressed(KeyCode::Space))
+        let body = Rect::new(list.x, top, list.w - 15.0, list.bottom() - top);
+        let bar = Rect::new(body.right(), body.y, 15.0, body.h);
+        let row_click = click && body.contains(pointer);
+        if !modal && is_mouse_button_down(MouseButton::Left) && bar.contains(pointer) && rows.len() > visible {
+            self.first = (((pointer.y - bar.y) / bar.h) * (rows.len() - visible) as f32).round() as usize;
+            self.cursor = self.cursor.clamp(self.first, (self.first + visible - 1).min(last));
+        }
+        let mut confirmed = key(KeyCode::Enter) || (!self.editing && key(KeyCode::Space))
             || click && play.contains(pointer);
         if row_click {
             let row = ((pointer.y-top)/row_h) as usize;
             let index = self.first+row;
-            if row < visible && index < rows.len() {
+            if index < rows.len() {
                 self.cursor = index;
                 let now = get_time();
                 confirmed |= self.show_levels || self.last_click.is_some_and(|(other, time)| other == index && now-time < 0.4);
@@ -176,64 +241,82 @@ impl<'a> Selector<'a> {
         };
 
         self.art.window(window);
-        self.art.label(self.art.locale.ui("Play a Campaign"), panel.x, window.y+40.0, 28, GOLD);
+        self.art.label(self.art.locale.ui("Play a Campaign"), panel.x, window.y+37.0, 22, GOLD);
         fill(search, Color::from_rgba(10, 14, 21, 255));
         outline(search, if self.editing { GOLD } else { EDGE });
         let query_label = fit(self.art.font.as_ref(), self.query.clone(), search.w-16.0, 16);
-        self.art.label(if self.query.is_empty() { self.art.locale.ui("Filter") } else { &query_label },
-            search.x+8.0, search.y+22.0, 16, LABEL);
-        fill(panel, BLACK);
+        self.art.label(&query_label, search.x+8.0, search.y+21.0, 16, LABEL);
         let backdrop = entry.and_then(|e| e.background).unwrap_or("story/landscape-battlefield_nohumans.webp");
         if let Some(tex) = self.art.get(backdrop) {
-            let aspect = panel.w / panel.h;
-            let size = vec2(tex.width().min(tex.height()*aspect), tex.height().min(tex.width()/aspect));
-            let source = Rect::new((tex.width()-size.x)*0.5, (tex.height()-size.y)*0.5, size.x, size.y);
-            draw_texture_ex(&tex, panel.x, panel.y, Color::new(1.0,1.0,1.0,0.25),
-                DrawTextureParams { dest_size: Some(vec2(panel.w,panel.h)), source: Some(source), ..Default::default() });
+            let dst = layout::backdrop(panel, tex.size());
+            clip(Some(panel), scale);
+            draw_texture_ex(&tex, dst.x, dst.y, Color::from_rgba(255,255,255,63),
+                DrawTextureParams { dest_size: Some(dst.size()), ..Default::default() });
+            clip(None, scale);
         }
-        outline(panel, EDGE);
-        fill(list, Color::from_rgba(13, 17, 22, 142));
-        fill(Rect::new(list.x, list.y, list.w, 30.0), Color::from_rgba(33, 43, 56, 210));
-        self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
-        for (row, &index) in rows.iter().skip(self.first).take(visible).enumerate() {
-            let rect = Rect::new(list.x, top+row as f32*row_h, list.w, row_h-1.0);
+        fill(panel, Color::from_rgba(0, 0, 0, 138));
+        frame(panel);
+        fill(Rect::new(list.x, list.y, list.w, 30.0), Color::from_rgba(0, 0, 0, 89));
+        if self.show_levels {
+            self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
+        } else {
+            for (field, rect) in headers {
+                sort::header(&mut self.art, field, rect, self.ordering, pointer);
+            }
+        }
+        clip(Some(body), scale);
+        for (row, &index) in rows.iter().skip(self.first).take(visible+1).enumerate() {
+            let rect = Rect::new(body.x, top+row as f32*row_h, body.w, row_h);
             let item = &entries[index];
+            fill(rect, Color::from_rgba(0,0,0,89));
             if self.cursor == self.first+row || rect.contains(pointer) {
-                fill(rect, Color::from_rgba(32,44,57,230));
                 if let Some(texture) = self.art.get("dialogs/selection-background-fancy.png") {
-                    image(&texture, rect);
+                    let alpha = if self.cursor == self.first+row {255} else {191};
+                    draw_texture_ex(&texture, rect.x, rect.y, Color::from_rgba(255,255,255,alpha),
+                        DrawTextureParams { dest_size: Some(rect.size()), ..Default::default() });
                 }
-                if self.cursor == self.first+row { outline(rect, EDGE); }
+                if self.cursor == self.first+row {
+                    fill(Rect::new(rect.x,rect.y,2.,rect.h), EDGE);
+                    fill(Rect::new(rect.x,rect.y+1.,2.,rect.h-2.), GOLD);
+                }
             }
             let mut label_x = rect.x+12.0;
             if !self.show_levels {
-                let cell = Rect::new(rect.x+5.0, rect.y+3.0, 70.0, 70.0);
+                let cell = Rect::new(rect.x+8.0, rect.y+5.0, 72.0, 72.0);
                 if let Some(icon) = item.icon.and_then(|id| self.art.get(id)) { contain(&icon, cell, false); }
                 label_x = cell.right()+5.0;
             }
             let name = fit(self.art.font.as_ref(), item.name.clone(), rect.right()-label_x-4.0, 17);
             self.art.label(&name, label_x, rect.center().y+6.0, 17, LABEL);
         }
+        clip(None, scale);
+        self.art.scrollbar(bar, self.first, row_h, rows.len(), scale);
         if rows.is_empty() { self.art.label(self.art.locale.ui("No matches"), list.x+12.0, top+28.0, 16, LABEL); }
         if let Some(e) = entry {
+            let portrait = e.image.and_then(|id| self.art.get(id));
             let font = self.art.font.as_ref();
-            let name = fit(font, e.name.clone(), details.w-12.0, 21);
-            text(font, &name, details.x+6.0, details.y+26.0, 21, GOLD);
-            let lines = crate::title_screen::wrap(&e.description, font, details.w-12.0);
-            let visible_lines = ((details.h-56.0)/20.0).floor().max(1.0) as usize;
+            let lines = crate::title_screen::wrap(&e.description, font, details.w-10.0);
+            let text_h = lines.len() as f32 * 21.0;
+            let image_size = portrait.as_ref().map(Texture2D::size).unwrap_or(Vec2::ZERO);
+            let width_scale = ((details.w-10.0) / image_size.x.max(1.0)).min(1.0);
+            let image_size = image_size * width_scale;
+            let content_h = 20.0 + text_h + image_size.y;
+            let overflow = (content_h - details.h).max(0.);
             if details.contains(pointer) && wheel != 0.0 {
                 self.description_offset = self.description_offset.saturating_add_signed(if wheel > 0.0 {-3} else {3});
             }
-            self.description_offset = self.description_offset.min(lines.len().saturating_sub(visible_lines));
-            let mut baseline = details.y+53.0;
-            for line in lines.iter().skip(self.description_offset).take(visible_lines) {
-                text(font, line, details.x+6.0, baseline, 16, LABEL);
-                baseline += 20.0;
+            self.description_offset = self.description_offset.min((overflow / 21.0).ceil() as usize);
+            let offset = (self.description_offset as f32 * 21.0).min(overflow);
+            clip(Some(details), scale);
+            let mut baseline = details.y + 5.0 + 17.0 - offset;
+            for line in &lines {
+                text(font, line, details.x+5.0, baseline, 17, LABEL);
+                baseline += 21.0;
             }
-            if let Some(art) = e.image.and_then(|id| self.art.get(id)) {
-                let space = Rect::new(details.x+4.0, baseline, details.w-8.0, (details.bottom()-baseline-4.0).max(0.0));
-                if space.h > 0.0 { contain(&art, space, false); }
+            if let Some(portrait) = portrait {
+                image(&portrait, layout::portrait(details, text_h, image_size, offset));
             }
+            clip(None, scale);
         }
         if !self.campaigns_only && !self.campaigns.is_empty() {
             self.art.button(toggle, if self.show_levels {"Campaigns"} else {"Scenarios"}, pointer);
@@ -245,11 +328,36 @@ impl<'a> Selector<'a> {
         }
         self.art.button(play, "game^Play", pointer);
         self.art.button(cancel, "Cancel", pointer);
+        if self.campaigns_only {
+            self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
+            let box_width = (window.w * 0.233).round();
+            let control = Rect::new(window.right()-18.0-box_width, window.bottom()-98.0, box_width, 30.0);
+            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing);
+        }
         action
     }
 }
 
 fn fill(rect: Rect, color: Color) { draw_rectangle(rect.x, rect.y, rect.w, rect.h, color); }
+fn clip(rect: Option<Rect>, scale: f32) {
+    let p = scale * screen_dpi_scale();
+    let bounds = rect.map(|r| ((r.x*p).round() as i32, (r.y*p).round() as i32,
+        (r.w*p).round() as i32, (r.h*p).round() as i32));
+    unsafe { get_internal_gl().quad_gl.scissor(bounds); }
+}
+
+fn frame(r: Rect) {
+    for (inset, color) in [(0., Color::from_rgba(16,22,35,255)), (1., EDGE), (2., Color::from_rgba(16,22,35,255))] {
+        let x = r.x + inset;
+        let y = r.y + inset;
+        let w = r.w - inset * 2.;
+        let h = r.h - inset * 2.;
+        fill(Rect::new(x, y, w, 1.), color);
+        fill(Rect::new(x, y+h-1., w, 1.), color);
+        fill(Rect::new(x, y, 1., h), color);
+        fill(Rect::new(x+w-1., y, 1., h), color);
+    }
+}
 fn outline(rect: Rect, color: Color) { draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, color); }
 fn image(tex: &Texture2D, rect: Rect) {
     draw_texture_ex(tex, rect.x, rect.y, WHITE, DrawTextureParams {
@@ -286,8 +394,12 @@ impl Art {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
         let path = Path::new(id.split('~').next()?);
         let texture = relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
-            .and_then(|bytes| Image::from_file_with_format(&bytes,None).ok())
-            .map(|image| Texture2D::from_image(&image));
+            .and_then(|bytes| crate::artwork::image(&bytes).ok())
+            .map(|image| {
+                let texture = Texture2D::from_image(&image);
+                texture.set_filter(FilterMode::Nearest);
+                texture
+            });
         self.textures.insert(id.into(), texture.clone());
         texture
     }
@@ -295,7 +407,8 @@ impl Art {
         text(self.font.as_ref(), label, x, y, size, color);
     }
     fn window(&mut self, window: Rect) {
-        fill(window, Color::from_rgba(26, 31, 38, 255));
+        fill(window, Color::from_rgba(16, 22, 35, 255));
+        frame(window);
         if let Some(tile) = self.get("dialogs/opaque-background.png") {
             let mut y = window.y+2.0;
             while y < window.bottom()-2.0 {
@@ -311,7 +424,20 @@ impl Art {
                 y += tile.height();
             }
         }
-        outline(window, EDGE);
+    }
+    fn scrollbar(&mut self, bar: Rect, first: usize, item_height: f32, count: usize, scale: f32) {
+        fill(bar, Color::from_rgba(0, 0, 0, 89));
+        let content_h = (count as f32 * item_height).max(bar.h);
+        let length = (bar.h * bar.h / content_h).floor().max(11.).min(bar.h);
+        let pos = (bar.h * first as f32 * item_height / content_h).floor().min(bar.h-length);
+        let y = bar.y + pos;
+        clip(Some(bar), scale);
+        for (name, top, height) in [("scrolltop", y, 2.), ("scrollmid", y+2., length-2.), ("scrollbottom", y+length, 2.)] {
+            if let Some(tex) = self.get(&format!("buttons/scrollbars/{name}.png")) {
+                image(&tex, Rect::new(bar.x,top,bar.w,height));
+            }
+        }
+        clip(None, 1.);
     }
     fn button(&mut self, rect: Rect, label: &str, pointer: Vec2) {
         let asset = if rect.contains(pointer) {
@@ -336,6 +462,25 @@ mod tests {
     use super::*;
     use engine_lite::{campaign, wml};
     #[test]
+    fn campaign_filter_matches_every_word_across_translations_and_keeps_the_selected_entry() {
+        let node = wml::parse("name=The South Guard\ndescription=Deoran rides south\nabbrev=TSG").unwrap();
+        let other = wml::parse("name=Liberty\ndescription=Outlaws ride south\nabbrev=Lib").unwrap();
+        let make_entry = |node: &Node, name: &str, description: &str, abbrev: &str| Entry {
+            search_text: campaign_search_text(node, name, description, abbrev),
+            name: name.into(), description: description.into(), date: sort::Date::Undated,
+            icon: None, image: None, background: None, scenario: 0, descriptor: None,
+        };
+        let entries = [make_entry(&other, "自由", "亡命者", "自由篇"),
+            make_entry(&node, "南疆哨卫", "迪奥兰出发", "南卫")];
+        assert_eq!(filtered(&entries, 0..2, "  TSG 南疆 DeOrAn    出发  南卫 GUARD"), [1]);
+        assert!(filtered(&entries, 0..2, "Liberty Deoran").is_empty());
+        let rows = filtered(&entries, [1, 0].into_iter(), "SOUTH");
+        assert_eq!(rows, [1, 0]);
+        assert_eq!(selected_row(&rows, Some(0)), 1);
+        assert_eq!(selected_row(&[1], Some(0)), 0);
+        assert_eq!(selected_row(&[], None), 0);
+    }
+    #[test]
     fn campaign_selection_resolves_the_authored_opening_and_preserves_scenario_access() {
         let document = wml::parse("[campaign]\nname=The South Guard\nfirst_scenario=opening\nicon=data/icon.png\nimage=data/art.png\ndescription= _ \"<i>Deoran</i> rides south.\"\n[/campaign]\n[campaign]\nfirst_scenario=absent\n[/campaign]\n[scenario]\nid=side_route\nname=Crossroads\n[/scenario]\n[scenario]\nid=opening\nname=First Ride\n[/scenario]").unwrap();
         let scenarios: Vec<_> = campaign::scenarios(&document).collect();
@@ -344,7 +489,7 @@ mod tests {
         assert_eq!((campaigns[0].name.as_str(), campaigns[0].scenario), ("The South Guard", 1));
         assert_eq!((campaigns[0].icon, campaigns[0].image), (Some("data/icon.png"), Some("data/art.png")));
         assert_eq!(campaigns[0].description, "Deoran rides south.");
-        assert_eq!(levels[filtered(&levels,"CROSS")[0]].scenario, 0);
-        assert_eq!(filtered(&levels,"missing"), Vec::<usize>::new());
+        assert_eq!(levels[filtered(&levels,0..levels.len(),"CROSS")[0]].scenario, 0);
+        assert_eq!(filtered(&levels,0..levels.len(),"missing"), Vec::<usize>::new());
     }
 }

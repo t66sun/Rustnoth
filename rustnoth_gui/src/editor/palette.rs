@@ -160,6 +160,10 @@ impl Art {
         }
     }
     pub fn image(&mut self, assets: &AssetCatalog, key: &str, rect: Rect) {
+        self.tinted(assets, key, rect, WHITE);
+    }
+
+    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
         let image = self.cache.entry(key.into()).or_insert_with(|| {
             assets
                 .resolve_image(Path::new(key))
@@ -171,7 +175,7 @@ impl Art {
                 image,
                 rect.x,
                 rect.y,
-                WHITE,
+                tint,
                 DrawTextureParams {
                     dest_size: Some(rect.size()),
                     ..Default::default()
@@ -188,7 +192,7 @@ impl Palette {
         Self::new(cfg, &installed)
     }
 
-    fn new(cfg: &Node, installed: &Node) -> Result<Self, &'static str> {
+    pub(super) fn new(cfg: &Node, installed: &Node) -> Result<Self, &'static str> {
         let brushes = choices(cfg);
         let groups = groups(cfg, installed, &brushes);
         let first_entry = groups.iter().flat_map(|g| &g.entries).next().copied()
