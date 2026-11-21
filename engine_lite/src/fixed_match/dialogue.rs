@@ -3,6 +3,12 @@ use super::FixedMatch;
 use crate::{scenario_sides::bool_attribute, visibility::HexVisibility, wml::Node};
 
 #[derive(Clone, Debug)]
+pub enum Presentation {
+    Dialogue(DialogueLine),
+    TutorialHint(Node),
+}
+
+#[derive(Clone, Debug)]
 pub struct DialogueLine {
     pub text: String,
     pub caption: Option<String>,
@@ -32,7 +38,7 @@ impl Message {
                 "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice"))
         { return None; }
         let speaker = cfg.attribute("speaker")?;
-        if matches!(speaker, "" | "unit" | "second_unit") { return None; }
+        if speaker.is_empty() { return None; }
         let text = cfg.attribute("message")?.trim();
         if text.is_empty() { return None; }
         let sides = cfg.attribute("side_for").map(|s| s.split(',').map(|n| n.trim().parse())
@@ -56,16 +62,19 @@ impl Message {
 impl FixedMatch<'_> {
     /// Show a prepared WML message using the ordinary speaker and audience checks.
     pub fn present_message(&mut self, config: &Node) {
-        if let Some(message) = Message::read(config) { self.queue_dialogue(message); }
+        if let Some(message) = Message::read(config) { self.queue_dialogue(message, [None; 2]); }
     }
 
-    pub(super) fn queue_dialogue(&mut self, message: Message) {
+    pub(super) fn queue_dialogue(&mut self, message: Message, event_units: [Option<u64>; 2]) {
         let mut line = message.line;
         let speaker = if message.speaker == "narrator" {
             None
         } else {
-            let Some((position, unit)) = self.scenario.board.units()
-                .find(|(_, unit)| unit.id.as_deref() == Some(message.speaker.as_str())) else { return };
+            let Some((position, unit)) = self.scenario.board.units().find(|(_, unit)| match message.speaker.as_str() {
+                "unit" => Some(unit.serial) == event_units[0],
+                "second_unit" => Some(unit.serial) == event_units[1],
+                id => unit.id.as_deref() == Some(id),
+            }) else { return };
             line.caption = line.caption.or_else(|| unit.display_name.clone().filter(|name| !name.is_empty()));
             if line.image.is_none() && line.second_image.as_deref().unwrap_or("").is_empty() {
                 line.image = unit.portrait.clone();
@@ -80,13 +89,20 @@ impl FixedMatch<'_> {
                     || (self.effective_vision(*side).at(position) == Some(HexVisibility::Visible)
                     && self.unit_visible_on_known_hex(*side, position)))
         }).collect::<Vec<_>>();
-        if !audience.is_empty() { self.dialogue.push((audience, line)); }
+        if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
     }
 
     /// Consume the last command's presentation queue for the local human view.
     pub fn take_dialogue(&mut self, viewer: usize) -> Vec<DialogueLine> {
-        std::mem::take(&mut self.dialogue).into_iter().filter_map(|(audience, line)|
-            audience.contains(&viewer).then_some(line)).collect()
+        self.take_presentation(viewer).into_iter().filter_map(|item| match item {
+            Presentation::Dialogue(line) => Some(line),
+            Presentation::TutorialHint(_) => None,
+        }).collect()
+    }
+
+    pub fn take_presentation(&mut self, viewer: usize) -> Vec<Presentation> {
+        std::mem::take(&mut self.presentation).into_iter().filter_map(|(audience, item)|
+            audience.contains(&viewer).then_some(item)).collect()
     }
 }
 

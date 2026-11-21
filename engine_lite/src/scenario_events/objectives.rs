@@ -3,13 +3,17 @@ use super::{HaveUnit, ScenarioEvents, variables::{Comparison, Scalars}};
 use crate::{board::Battlefield, scenario_sides::{ScenarioObjectives, SideConfig}, wml::Node};
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Definition(Vec<Entry>);
+pub(crate) struct Definition {
+    summary: String,
+    entries: Vec<Entry>,
+}
 
 #[derive(Clone, Debug)]
 struct Entry {
     victory: bool,
     description: String,
     condition: Condition,
+    show_turn_counter: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -75,16 +79,23 @@ impl Definition {
                 Some((_, node)) => Condition::read(node)?,
                 None => Condition::default(),
             };
-            Some(Entry { victory, description, condition })
+            let show_turn_counter = crate::scenario_sides::bool_attribute(entry, "show_turn_counter", false);
+            Some(Entry { victory, description, condition, show_turn_counter })
         }).collect();
-        Self(entries)
+        let summary = node.attribute("summary").filter(|text| !text.contains('$')).unwrap_or_default().to_owned();
+        Self { summary, entries }
     }
 
-    fn evaluate(&self, board: &Battlefield<'_>, sides: usize, variables: &Scalars) -> ScenarioObjectives {
-        let mut text = ScenarioObjectives::default();
-        for entry in &self.0 {
+    fn evaluate(&self, board: &Battlefield<'_>, sides: usize, variables: &Scalars, remaining: Option<u64>) -> ScenarioObjectives {
+        let mut text = ScenarioObjectives { summary: self.summary.clone(), ..Default::default() };
+        for entry in &self.entries {
             if entry.condition.matches(board, sides, variables) {
-                let group = if entry.victory { &mut text.victory } else { &mut text.defeat };
+                let (group, counters) = if entry.victory {
+                    (&mut text.victory, &mut text.victory_turns)
+                } else {
+                    (&mut text.defeat, &mut text.defeat_turns)
+                };
+                if entry.show_turn_counter && let Some(turns) = remaining { counters.insert(group.len(), turns); }
                 group.push(entry.description.clone());
             }
         }
@@ -101,13 +112,13 @@ impl ScenarioEvents {
         self.objective_definition(side).is_some()
     }
 
-    pub(crate) fn evaluated_objectives(&self, side: usize, board: &Battlefield<'_>, sides: usize) -> Option<ScenarioObjectives> {
-        self.objective_definition(side).map(|definition| definition.evaluate(board, sides, &self.variables))
+    pub(crate) fn evaluated_objectives(&self, side: usize, board: &Battlefield<'_>, sides: usize, remaining: Option<u64>) -> Option<ScenarioObjectives> {
+        self.objective_definition(side).map(|definition| definition.evaluate(board, sides, &self.variables, remaining))
     }
 
     pub(crate) fn set_objectives(&mut self, definition: Definition, indices: &[usize], notify: bool,
-        board: &Battlefield<'_>, sides: &mut [SideConfig]) {
-        let text = definition.evaluate(board, sides.len(), &self.variables);
+        board: &Battlefield<'_>, sides: &mut [SideConfig], remaining: Option<u64>) {
+        let text = definition.evaluate(board, sides.len(), &self.variables, remaining);
         let global = indices.len() == sides.len();
         for &index in indices {
             sides[index].objectives.clone_from(&text);
@@ -118,8 +129,8 @@ impl ScenarioEvents {
         if global { self.objective_definitions.insert(0, definition); }
     }
 
-    pub(crate) fn refresh_objectives(&self, index: usize, board: &Battlefield<'_>, sides: &mut [SideConfig]) {
-        if let Some(content) = self.evaluated_objectives(index + 1, board, sides.len()) {
+    pub(crate) fn refresh_objectives(&self, index: usize, board: &Battlefield<'_>, sides: &mut [SideConfig], remaining: Option<u64>) {
+        if let Some(content) = self.evaluated_objectives(index + 1, board, sides.len(), remaining) {
             sides[index].objectives = content;
         }
         sides[index].objectives_changed = true;
@@ -129,6 +140,74 @@ impl ScenarioEvents {
 #[cfg(test)]
 mod tests {
     use crate::{fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn objective_turn_counters_follow_the_limit_when_wml_or_the_player_refreshes() {
+        let config = r#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+turns=2
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+controller=human
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=start
+[objectives]
+side=1
+[objective]
+condition=win
+description=Hold the ford
+show_turn_counter=yes
+[/objective]
+[objective]
+condition=lose
+description=Death of the commander
+[/objective]
+[objective]
+condition=lose
+description=Turns run out
+show_turn_counter=yes
+[/objective]
+[/objectives]
+[/event]
+[event]
+name=side 2 turn 2
+[show_objectives]
+side=1
+[/show_objectives]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(config.as_bytes()).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let first = game.objectives_for(1).unwrap().clone();
+        assert_eq!(first.victory_turns, [(0, 2)].into());
+        assert_eq!(first.defeat_turns, [(1, 2)].into());
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.objectives_for(1), Some(&first));
+        let manual = game.evaluate_objectives_for(1).unwrap();
+        assert_eq!(manual.victory_turns, [(0, 1)].into());
+        assert_eq!(manual.defeat_turns, [(1, 1)].into());
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.objectives_for(1), Some(&manual));
+
+        let unlimited = Bundle::parse(config.replace("turns=2", "turns=-1").as_bytes()).unwrap();
+        let game = unlimited.start(1, |_| unreachable!()).unwrap();
+        let text = game.objectives_for(1).unwrap();
+        assert_eq!(text.defeat, ["Death of the commander", "Turns run out"]);
+        assert!(text.victory_turns.is_empty() && text.defeat_turns.is_empty());
+    }
 
     #[test]
     fn south_guard_objectives_are_regenerated_at_the_scripted_refresh() {

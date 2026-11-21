@@ -26,6 +26,7 @@ pub(crate) enum SideAction {
     Gold(i32),
     Modify {
         controller: Option<SideController>,
+        defeat_condition: Option<crate::scenario_sides::DefeatCondition>,
         gold: Option<i32>,
         income: Option<i32>,
         village_gold: Option<i32>,
@@ -55,6 +56,7 @@ pub(crate) enum BoardChange {
     HealUnit(crate::board::HealUnit),
     SetUnitMoves { filter: UnitFilter, moves: i32 },
     Dialogue(crate::fixed_match::dialogue::Message),
+    TutorialHint(Node),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     PersonalRecruits(PersonalRecruits),
@@ -276,12 +278,16 @@ impl EventAction {
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
                 // Campaigns often reveal the side in the native status table as they activate its AI.
-                !matches!(key.as_str(), "side" | "controller" | "hidden" | "gold" | "income" | "village_gold" | "village_support")
+                !matches!(key.as_str(), "side" | "controller" | "hidden" | "defeat_condition" | "gold" | "income" | "village_gold" | "village_support")
                     || !value.translations.is_empty() || value.text.contains('$')
             }) { return None; }
             let number = |key| cfg.attribute(key).map(|value| value.trim().parse::<i32>()).transpose();
             let action = SideAction::Modify {
                 controller: cfg.attribute("controller").and_then(SideController::from_wml),
+                defeat_condition: match cfg.attribute("defeat_condition") {
+                    Some(value) => Some(crate::scenario_sides::DefeatCondition::from_wml(value)?),
+                    None => None,
+                },
                 gold: number("gold").ok()?,
                 income: number("income").ok()?,
                 village_gold: number("village_gold").ok()?,
@@ -369,7 +375,8 @@ impl SideAction {
         for &index in sides {
             match self {
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
-                SideAction::Modify { controller, gold, income, village_gold, village_support } => {
+                SideAction::Modify { controller, defeat_condition, gold, income, village_gold, village_support } => {
+                    if let Some(rule) = defeat_condition { teams[index].defeat_condition = *rule; }
                     let side = &mut teams[index];
                     // team::change_controller_by_wml keeps the currently playing side active.
                     if let Some(controller) = controller
@@ -401,6 +408,9 @@ fn read_actions<'a>(
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
+            "rustnoth_tutorial_hint" if cfg.children.is_empty() && cfg.attributes.iter().all(|(key, value)|
+                    matches!(key.as_str(), "caption" | "message" | "remove") && !value.text.contains('$')) =>
+                EventAction::Board(BoardChange::TutorialHint(cfg.clone())),
             "if" => {
                 if !cfg.attributes.is_empty() { return None; }
                 let mut tests = Vec::new();

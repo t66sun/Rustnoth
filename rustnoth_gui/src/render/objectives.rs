@@ -12,14 +12,30 @@ pub fn hotkey() -> bool {
 fn objective_text(objectives: &ScenarioObjectives, locale: &Locale) -> String {
     if objectives.is_empty() { return locale.game("No objectives available").to_owned(); }
     let mut sections = Vec::new();
-    for (heading, entries, color) in [
-        ("Victory:", &objectives.victory, "#00ff00"),
-        ("Defeat:", &objectives.defeat, "#ff0000"),
+    if !objectives.summary.is_empty() {
+        // objectives.lua enlarges only the first line, preserving markup on later lines.
+        let mut lines = objectives.summary.split('\n');
+        let mut summary = format!("<big>{}</big>", lines.next().unwrap_or_default());
+        for line in lines {
+            summary.push('\n');
+            summary.push_str(line);
+        }
+        sections.push(summary);
+    }
+    for (heading, entries, counters, color) in [
+        ("Victory:", &objectives.victory, &objectives.victory_turns, "#00ff00"),
+        ("Defeat:", &objectives.defeat, &objectives.defeat_turns, "#ff0000"),
     ] {
         if entries.is_empty() { continue; }
         let mut lines = vec![format!("<big>{}</big>", locale.game(heading))];
-        for entry in entries {
-            lines.push(format!("<span foreground='{color}'>• {entry}</span>"));
+        for (index, entry) in entries.iter().enumerate() {
+            let counter = counters.get(&index).map(|&count| {
+                let translated = locale.game_plural("(this turn left)", "($remaining_turns turns left)", count);
+                let value = count.to_string();
+                let text = translated.replace("$remaining_turns|", &value).replace("$remaining_turns", &value);
+                format!("<span foreground='white'><small> {text}</small></span>")
+            }).unwrap_or_default();
+            lines.push(format!("<span foreground='{color}'>• {entry}{counter}</span>"));
         }
         sections.push(lines.join("\n"));
     }
@@ -149,9 +165,33 @@ mod tests {
 
     #[test]
     fn native_transient_wraps_the_scenario_text_inside_a_centered_message() {
-        let objectives = ScenarioObjectives { victory: vec!["Hold the bridge".into()], defeat: vec!["Death of Deoran".into()] };
+        let objectives = ScenarioObjectives { victory: vec!["Hold the bridge".into()], defeat: vec!["Death of Deoran".into()], ..Default::default() };
         let message = objective_text(&objectives, &Locale::default());
         assert_eq!(message, "<big>Victory:</big>\n<span foreground='#00ff00'>• Hold the bridge</span>\n\n<big>Defeat:</big>\n<span foreground='#ff0000'>• Death of Deoran</span>");
         assert_eq!(panel(vec2(1200., 820.), vec2(213., 27.), vec2(270., 130.)), Rect::new(448., 310., 303., 200.));
+    }
+
+    #[test]
+    fn tutorial_summary_keeps_the_list_size_and_precedes_the_victory_heading() {
+        let objectives = ScenarioObjectives {
+            summary: "You will learn the basics of:\n• <small>Movement</small>".into(),
+            victory: vec!["Destroy a fierce enemy".into()],
+            ..Default::default()
+        };
+        assert_eq!(objective_text(&objectives, &Locale::default()),
+            "<big>You will learn the basics of:</big>\n• <small>Movement</small>\n\n<big>Victory:</big>\n<span foreground='#00ff00'>• Destroy a fierce enemy</span>");
+    }
+
+    #[test]
+    fn limited_objectives_append_the_native_white_countdown_to_the_marked_entry() {
+        let mut goals = ScenarioObjectives {
+            defeat: vec!["Death of Konrad".into(), "Turns run out".into()],
+            defeat_turns: [(1, 2)].into(),
+            ..Default::default()
+        };
+        let text = |suffix: &str| format!("<big>Defeat:</big>\n<span foreground='#ff0000'>• Death of Konrad</span>\n<span foreground='#ff0000'>• Turns run out<span foreground='white'><small> {suffix}</small></span></span>");
+        assert_eq!(objective_text(&goals, &Locale::default()), text("(2 turns left)"));
+        goals.defeat_turns.insert(1, 1);
+        assert_eq!(objective_text(&goals, &Locale::default()), text("(this turn left)"));
     }
 }

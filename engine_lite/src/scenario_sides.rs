@@ -19,16 +19,32 @@ pub(crate) enum DefeatCondition {
     Always,
 }
 
+impl DefeatCondition {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        Some(match value {
+            "no_leader_left" => Self::NoLeaderLeft,
+            "no_units_left" => Self::NoUnitsLeft,
+            "never" => Self::Never,
+            "always" => Self::Always,
+            _ => return None,
+        })
+    }
+}
+
 /// Literal scenario objectives shown by the desktop client.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScenarioObjectives {
+    pub summary: String,
     pub victory: Vec<String>,
     pub defeat: Vec<String>,
+    /// Remaining turns captured when the visible entries were last evaluated.
+    pub victory_turns: std::collections::BTreeMap<usize, u64>,
+    pub defeat_turns: std::collections::BTreeMap<usize, u64>,
 }
 
 impl ScenarioObjectives {
     pub fn is_empty(&self) -> bool {
-        self.victory.is_empty() && self.defeat.is_empty()
+        self.summary.is_empty() && self.victory.is_empty() && self.defeat.is_empty()
     }
 }
 
@@ -119,12 +135,8 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         objectives: ScenarioObjectives::default(),
         controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
         objectives_changed: false,
-        defeat_condition: match cfg.attribute("defeat_condition") {
-            Some("no_units_left") => DefeatCondition::NoUnitsLeft,
-            Some("never") => DefeatCondition::Never,
-            Some("always") => DefeatCondition::Always,
-            _ => DefeatCondition::NoLeaderLeft,
-        },
+        defeat_condition: cfg.attribute("defeat_condition").and_then(DefeatCondition::from_wml)
+            .unwrap_or(DefeatCondition::NoLeaderLeft),
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
         fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),

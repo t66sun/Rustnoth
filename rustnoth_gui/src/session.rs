@@ -38,13 +38,21 @@ impl Players {
     }
 }
 
+struct PendingLine {
+    line: engine_lite::fixed_match::dialogue::DialogueLine,
+    record_dismissal: bool,
+    hint_after: Option<String>,
+}
+
+
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
-    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
+    dialogue: std::collections::VecDeque<PendingLine>,
+    tutorial_hint: String,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -62,7 +70,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None,
+            economy: None, tutorial_hint: String::new(),
             animate_combat: false, live_attack_seed: None, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -77,7 +85,7 @@ impl<'rules> Session<'rules> {
         self.computer_action = None;
         self.legal_actions.clear();
         match self.game.decision() {
-            Some((view, actions)) => {
+            Some((view, mut actions)) => {
                 match self.players.controller(&self.game, view.side) {
                     SideController::Human => {
                         self.observation = Some(view);
@@ -85,6 +93,9 @@ impl<'rules> Session<'rules> {
                     }
                     controller => {
                         self.computer_action = Some(if controller == SideController::Ai {
+                            if self.players == Players::Campaign {
+                                self.game.restrict_guardian_moves(&view, &mut actions);
+                            }
                             computer_choice(&view, &actions)
                         } else {
                             Action::EndTurn
@@ -102,12 +113,22 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer));
+            self.collect_presentation(viewer, true);
+        }
+    }
+
+    fn collect_presentation(&mut self, viewer: usize, record_dismissal: bool) {
+        use engine_lite::fixed_match::dialogue::Presentation;
+        for item in self.game.take_presentation(viewer) {
+            match item {
+                Presentation::Dialogue(line) => self.dialogue.push_back(PendingLine { line, record_dismissal, hint_after: None }),
+                Presentation::TutorialHint(hint) => self.set_tutorial_hint(&hint),
+            }
         }
     }
 
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
-        self.dialogue.front()
+        self.dialogue.front().map(|pending| &pending.line)
     }
 
     pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
@@ -119,13 +140,38 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
+        if let Some(pending) = self.dialogue.pop_front() {
+            if pending.record_dismissal { self.history.push(crate::save_replay::Event::Dismiss); }
+            if let Some(hint) = pending.hint_after { self.tutorial_hint = hint; }
+        }
+    }
+
+    /// Battle Training's hint_message Lua action replaces an unlimited floating label.
+    pub fn set_tutorial_hint(&mut self, cfg: &engine_lite::wml::Node) {
+        let text = match cfg.attribute("message") {
+            Some(body) if !matches!(cfg.attribute("remove"), Some("yes" | "true" | "on" | "1")) =>
+                match cfg.attribute("caption").filter(|caption| !caption.is_empty()) {
+                    Some(caption) => format!("<b><big>{caption}</big></b>\n{body}"),
+                    None => body.to_owned(),
+                },
+            _ => String::new(),
+        };
+        if let Some(pending) = self.dialogue.back_mut() { pending.hint_after = Some(text); }
+        else { self.tutorial_hint = text; }
+    }
+
+    pub fn tutorial_hint(&self) -> &str { &self.tutorial_hint }
+
+    pub fn restore_tutorial_hint(&mut self, previous: &Self) {
+        self.tutorial_hint.clone_from(&previous.tutorial_hint);
     }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
-            self.dialogue.extend(self.game.take_dialogue(view.side));
+            // These local instructions are produced by the UI. Replaying a move or
+            // undoing it only regenerates the referee's own scenario messages.
+            self.collect_presentation(view.side, false);
         }
     }
 
@@ -360,6 +406,81 @@ fn computer_choice(view: &Observation, actions: &[Action]) -> Action {
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn campaign_guardians_hold_their_ground_until_they_can_strike() {
+        let level = r#"
+[terrain_type]
+id=flat
+string=Gg
+[/terrain_type]
+[units]
+[movetype]
+name=foot
+[movement_costs]
+flat=1
+[/movement_costs]
+[/movetype]
+[unit_type]
+id=Quintain
+movement_type=foot
+movement=1
+hitpoints=58
+[attack]
+range=melee
+damage=3
+number=5
+[/attack]
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Quintain
+controller=human
+[/side]
+[side]
+controller=ai
+no_leader=yes
+defeat_condition=never
+fog=FOG
+[/side]
+[event]
+name=start
+[unit]
+side=2
+x,y=START,1
+type=Quintain
+ai_special=ROLE
+[/unit]
+[/event]
+[/scenario]"#;
+        let enemy = Hex::from_wml(1, 1).unwrap();
+        for (role, start, fog, expected) in [
+            ("guardian", 6, "no", Action::EndTurn),
+            ("guardian", 6, "yes", Action::EndTurn),
+            ("", 6, "no", Action::Move { from: Hex::from_wml(6, 1).unwrap(), to: Hex::from_wml(5, 1).unwrap() }),
+            ("guardian", 3, "no", Action::Move { from: Hex::from_wml(3, 1).unwrap(), to: Hex::from_wml(2, 1).unwrap() }),
+            ("guardian", 2, "no", Action::Attack(AttackChoice { from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0 })),
+        ] {
+            let cfg = level.replace("START", &start.to_string()).replace("ROLE", role).replace("FOG", fog);
+            let bundle = Bundle::parse(cfg.as_bytes()).unwrap();
+            let mut session = Session::with_players(bundle.start_with_controllers(4, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
+            session.apply(Action::EndTurn).unwrap();
+            if fog == "yes" {
+                assert!(session.game.observation_for(2).unwrap().units.iter().all(|unit| unit.side == 2));
+            }
+            assert_eq!(session.computer_action.as_ref(), Some(&expected));
+            if role == "guardian" && start == 3 {
+                session.play_computer_action().unwrap();
+                assert_eq!(session.computer_action, Some(Action::Attack(AttackChoice {
+                    from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0,
+                })));
+            }
+        }
+    }
 
     #[test]
     fn campaign_ai_takes_its_turn_while_each_local_player_sees_only_their_own_view() {

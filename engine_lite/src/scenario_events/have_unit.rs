@@ -10,6 +10,7 @@ pub(super) struct HaveUnit {
     filter: UnitFilter,
     exclude: Vec<UnitFilter>,
     counts: Vec<RangeInclusive<usize>>,
+    levels: Vec<RangeInclusive<i32>>,
     search_recall: bool,
     recall_only: bool,
 }
@@ -34,6 +35,13 @@ impl HaveUnit {
         let mut unit = cfg.clone();
         unit.attributes.remove("count");
         unit.attributes.remove("search_recall_list");
+        let mut levels = Vec::new();
+        if let Some(level) = unit.attributes.remove("level") {
+            for part in level.text.split(',').map(str::trim) {
+                let (min, max) = part.split_once('-').unwrap_or((part, part));
+                levels.push(min.trim().parse().ok()?..=max.trim().parse().ok()?);
+            }
+        }
         let recall_only = unit.attribute("x") == Some("recall") && unit.attribute("y") == Some("recall");
         if recall_only {
             unit.attributes.remove("x");
@@ -42,12 +50,13 @@ impl HaveUnit {
         let exclude = std::mem::take(&mut unit.children).iter().map(|(tag, child)| {
             if tag == "not" { UnitFilter::read(child) } else { None }
         }).collect::<Option<_>>()?;
-        Some(Self { filter: UnitFilter::read(&unit)?, counts, search_recall, recall_only, exclude })
+        Some(Self { filter: UnitFilter::read(&unit)?, counts, levels, search_recall, recall_only, exclude })
     }
 
     fn matches_unit(&self, position: Option<Hex>, unit: &UnitState<'_>) -> bool {
         let matches = |filter: &UnitFilter| filter.matches_fields(position, unit.side, unit.id.as_deref(), &unit.unit_type.id);
         matches(&self.filter) && !self.exclude.iter().any(matches)
+            && (self.levels.is_empty() || self.levels.iter().any(|range| range.contains(&unit.unit_type.level)))
     }
 
     pub(super) fn matches(&self, board: &Battlefield<'_>, side_count: usize) -> bool {

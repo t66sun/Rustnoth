@@ -1,4 +1,6 @@
 mod frame;
+mod surface;
+mod tutorial_print;
 pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::{save::save_preview, skirmish_preview};
@@ -24,6 +26,7 @@ use crate::menu::Menu;
 pub mod objectives;
 pub mod attack_dialog;
 mod dialogue;
+mod tutorial_hint;
 pub use dialogue::draw_dialogue;
 mod transitions;
 mod unit_status;
@@ -98,6 +101,7 @@ impl GridArt {
 }
 
 pub struct BoardArt {
+    surface: surface::Surface,
     frame: FrameArt,
     minimap: minimap::Art,
     lighting: lighting::Lighting,
@@ -136,6 +140,9 @@ pub struct BoardArt {
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
+    tutorial_hint: tutorial_hint::Art,
+    #[cfg(windows)]
+    tutorial_print: tutorial_print::Art,
 }
 
 impl BoardArt {
@@ -197,6 +204,7 @@ impl BoardArt {
                 .ok()
         };
         Ok(Self {
+            surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
@@ -233,6 +241,9 @@ impl BoardArt {
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
+            tutorial_hint: tutorial_hint::Art::new(wesnoth_root),
+            #[cfg(windows)]
+            tutorial_print: tutorial_print::Art::default(),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
             font,
@@ -365,13 +376,15 @@ pub fn menu_area() -> Rect {
     BattlefieldFrame::new(screen_width(), screen_height()).menu()
 }
 
-pub fn draw(
+pub fn draw<T>(
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
     art: &mut BoardArt,
     movement: MovementView<'_>,
-) {
+    overlay: impl FnOnce(&mut BoardArt) -> T,
+) -> T {
+    art.surface.begin();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
@@ -379,6 +392,7 @@ pub fn draw(
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, state, observation, layout, art, &movement);
+    art.tutorial_hint.draw(movement.session.tutorial_hint(), frame.map, art.dialogue_font.as_ref());
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
@@ -414,6 +428,9 @@ pub fn draw(
             }
         }
     }
+    let result = overlay(art);
+    art.surface.present();
+    result
 }
 
 fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport) {
@@ -492,6 +509,22 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
                 draw_triangle(center, vertices[i], vertices[(i + 1) % vertices.len()], color);
             }
         }
+    }
+}
+
+impl BoardArt {
+    pub(crate) fn draw_map_label(&self, layout: &BoardLayout, hex: Hex, label: &str, highlight: bool, visible_in_fog: bool) {
+        if self.cover.iter().any(|(at, cover)| *at == hex && (*cover == Cover::Shroud || !visible_in_fog)) { return; }
+        let view = board_viewport();
+        let [x, y] = layout.tile_origin(hex);
+        let size = layout.tile_size();
+        if x < view.x || y < view.y || x + size > view.x + view.width || y + size > view.y + view.height { return; }
+        if highlight { self.hover.draw_empty_hex(hex, layout); }
+        let font = self.font.as_ref();
+        let left = x + (size - measure_text(label, font, 14, 1.).width) * 0.5;
+        let baseline = y + size * 0.8;
+        crate::dialog::text(font, label, left + 1., baseline + 1., 14, BLACK);
+        crate::dialog::text(font, label, left, baseline, 14, WHITE);
     }
 }
 
