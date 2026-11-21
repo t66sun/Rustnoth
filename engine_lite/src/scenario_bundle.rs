@@ -36,7 +36,10 @@ impl Bundle {
     fn parse_bundle(bytes: &[u8], core_bytes: Option<&[u8]>) -> Result<Self, Box<dyn Error>> {
         let mut bundle = wml::parse(bytes)?;
         let units = take_block(&mut bundle, "units")?;
-        let scenario = take_block(&mut bundle, "scenario")?;
+        let mut scenario = take_block(&mut bundle, "scenario")?.ok_or("missing [scenario] block")?;
+        if let Some(mode) = bundle.attributes.remove("random_mode") {
+            scenario.attributes.insert("random_mode".into(), mode);
+        }
         let (config, mut units) = if let Some(bytes) = core_bytes {
             let mut core = wml::parse(bytes)?;
             let mut core_units =
@@ -51,7 +54,7 @@ impl Bundle {
         };
         crate::unit_type::resolve_base_units(&mut units)?;
         Ok(Self {
-            scenario: scenario.ok_or("missing [scenario] block")?,
+            scenario,
             terrain: TerrainAliases::from_wml(&config),
             movement: read_movement_types(&units),
             resistance: read_resistance(&units),
@@ -132,6 +135,30 @@ fn read_resistance(units: &Node) -> BTreeMap<String, DamageTable> {
 mod tests {
     use super::*;
     use crate::fixed_match::Action;
+
+    #[test]
+    fn replaying_the_saved_campaign_classification_reproduces_biased_strikes() {
+        use crate::{board::AttackChoice, hex::Hex};
+        let core = b"[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+            [units]\n[movetype]\nname=foot\n[defense]\nflat=50\n[/defense]\n[/movetype]\n\
+            [unit_type]\nid=Guard\nhitpoints=30\nmovement_type=foot\n\
+            [attack]\nname=blade\nrange=melee\ndamage=1\nnumber=4\n[/attack]\n[/unit_type]\n[/units]";
+        let scenario = "[scenario]\nmap_data=\"Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Xv\nXv,Xv,Xv,Xv\"\n\
+            [side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n[/scenario]";
+        let play = |source: &str| {
+            let bundle = Bundle::parse_with_core(source.as_bytes(), core).unwrap();
+            let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+            let action = AttackChoice { from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 0 }, weapon: 0 };
+            let (_, playback) = game.attack_for_display(action, None, 1).unwrap();
+            playback.unwrap().blows.into_iter().map(|blow| blow.hit).collect::<Vec<_>>()
+        };
+        let expected = [false, true, false, true, true, false, true, false];
+        let saved = format!("random_mode=biased\n{scenario}");
+        assert_eq!(play(&saved), expected);
+        assert_eq!(play(&scenario.replace("[scenario]", "[scenario]\nrandom_mode=biased")), expected);
+        assert_ne!(play(scenario), expected);
+        assert_eq!(play(&format!("random_mode=deterministic\n{scenario}")), play(scenario));
+    }
 
     #[test]
     fn campaign_victory_can_wait_for_an_explicit_objective() {
