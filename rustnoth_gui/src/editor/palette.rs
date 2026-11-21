@@ -92,6 +92,16 @@ impl Art {
 
     pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
         let image = self.cache.entry(key.into()).or_insert_with(|| {
+            if let Some(name) = key.strip_suffix("~GS()") {
+                let path = assets.resolve_image(Path::new(name))?;
+                let mut image = crate::artwork::image(&std::fs::read(path).ok()?).ok()?;
+                for px in image.get_image_data_mut().iter_mut().filter(|px| px[3] != 0) {
+                    let gray = ((77 * u16::from(px[0]) + 150 * u16::from(px[1])
+                        + 29 * u16::from(px[2])) / 256) as u8;
+                    px[..3].fill(gray);
+                }
+                return Some(Texture2D::from_image(&image));
+            }
             assets
                 .resolve_image(Path::new(key))
                 .filter(|p| p.is_file())
