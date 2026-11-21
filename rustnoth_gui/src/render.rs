@@ -134,6 +134,8 @@ pub struct BoardArt {
     fog: Vec<Texture2D>,
     shroud: Option<Texture2D>,
     unreachable: Option<Texture2D>,
+    linger: Option<Texture2D>,
+    pub(super) linger_color: Option<[i32; 3]>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
@@ -234,6 +236,8 @@ impl BoardArt {
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
+            linger: load_texture(&terrain_dir.join("darken-linger.png"), None),
+            linger_color: None,
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
@@ -662,6 +666,18 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
+    if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {
+        // LAYER_LINGER_OVERLAY is painted after unit bars, fog and shroud.
+        // Its coverage only depends on the public map dimensions.
+        art.lighting.flat(color);
+        for x in -1..=view.width {
+            for y in -1..=view.height {
+                let center = Vec2::from_array(layout.tile_origin(Hex { x, y })) + Vec2::splat(size / 2.0);
+                draw_centered(texture, center, size, Some(viewport));
+            }
+        }
+        art.lighting.flat([0; 3]);
+    }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {

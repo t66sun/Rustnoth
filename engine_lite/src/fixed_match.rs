@@ -117,6 +117,7 @@ pub struct FixedMatch<'data> {
     rng: ReplayRng,
     state: MatchState,
     show_end_report: bool,
+    linger_mode: bool,
     replay_save: bool,
     current_round: i32,
     kill_stack: Vec<Hex>,
@@ -158,6 +159,7 @@ impl<'data> FixedMatch<'data> {
         }
         let mut game = Self {
             show_end_report: true,
+            linger_mode: true,
             replay_save: true,
             current_round: scenario.start_round,
             kill_stack: Vec::new(),
@@ -250,9 +252,10 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory, report, replay_save, next_scenario, gold } => {
+                BoardChange::EndLevel { victory, report, linger, replay_save, next_scenario, gold } => {
                     if matches!(self.state, MatchState::Playing(_)) {
                         self.show_end_report = report;
+                        self.linger_mode = linger;
                         self.replay_save = replay_save;
                         for (treasury, settings) in self.scenario.treasuries.iter_mut().zip(gold) {
                             treasury.override_with(settings);
@@ -329,6 +332,12 @@ impl<'data> FixedMatch<'data> {
 
     pub fn show_end_report(&self) -> bool {
         self.show_end_report && !matches!(self.state, MatchState::Playing(_))
+    }
+
+    /// Linger uses the last round's global time of day even after turn play has stopped.
+    pub fn linger_time(&self) -> Option<&crate::time_of_day::TimeOfDay> {
+        (self.linger_mode && !matches!(self.state, MatchState::Playing(_)))
+            .then(|| self.scenario.schedule.at_turn(self.current_round))
     }
 
     pub fn state(&self) -> MatchState {

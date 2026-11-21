@@ -228,6 +228,13 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
+
+    pub fn linger_color(&self, end_report_shown: bool) -> Option<[i32; 3]> {
+        if self.dialogue().is_some() || self.show_end_report() && !end_report_shown {
+            return None;
+        }
+        Some(self.game.linger_time()?.color)
+    }
     pub fn save_victory_replay(&self) -> bool { self.game.save_victory_replay() }
 
     pub fn retained_gold(&self) -> Option<i64> {
@@ -374,6 +381,58 @@ fn computer_choice(view: &Observation, actions: &[Action]) -> Action {
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn linger_uses_the_last_round_color_after_messages_and_the_report_close() {
+        for (configuration, after_dialogue, after_report) in [
+            ("", false, true),
+            ("carryover_report=no", true, true),
+            ("carryover_report=no\nlinger_mode=no", false, false),
+        ] {
+            let scenario = format!(r#"
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[time]
+id=dusk
+red=-16
+blue=8
+[/time]
+[side]
+type=Guard
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=side 1 turn end
+[message]
+speaker=narrator
+message=Victory!
+[/message]
+[endlevel]
+{configuration}
+[/endlevel]
+[/event]
+[/scenario]"#);
+            let bundle = Bundle::parse(scenario.as_bytes()).unwrap();
+            let mut session = Session::new(bundle.start(9, |_| unreachable!()).unwrap());
+            assert_eq!(session.linger_color(true), None);
+            session.apply(Action::EndTurn).unwrap();
+            assert_eq!(session.dialogue().unwrap().text, "Victory!");
+            assert_eq!(session.linger_color(true), None);
+            session.dismiss_dialogue();
+            assert_eq!(session.linger_color(false), after_dialogue.then_some([-16, 0, 8]));
+            assert_eq!(session.linger_color(true), after_report.then_some([-16, 0, 8]));
+        }
+    }
 
     #[test]
     fn campaign_guardians_hold_their_ground_until_they_can_strike() {

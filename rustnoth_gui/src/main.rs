@@ -636,6 +636,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             .and_then(|lesson| lesson.prompt(selection.unit().is_some())) {
             visible_prompt.push_str(prompt);
         }
+        art.linger_color = if art.walk.active() { None } else { session.linger_color(end_report_shown) };
         let last_page = render::draw(
             session.state(),
             session.observation(),
