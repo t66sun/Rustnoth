@@ -118,6 +118,7 @@ pub struct BoardArt {
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
     pub(crate) walk: walking::Walk,
+    pub(crate) briefing_highlight: Option<Hex>,
     speed: crate::display_preferences::speed::Speed,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -146,7 +147,7 @@ pub struct BoardArt {
 }
 
 impl BoardArt {
-    fn animation_rate(&self) -> f32 {
+    pub(crate) fn animation_rate(&self) -> f32 {
         self.speed.animation_rate(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
     }
 
@@ -221,6 +222,7 @@ impl BoardArt {
             combat_pose: None,
             moving: HashMap::new(),
             walk: walking::Walk::default(),
+            briefing_highlight: None,
             speed,
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -569,7 +571,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
     if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route, viewport); }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover_art = art.hover.focus(view, layout, viewport, pointer_x, pointer_y);
+    let hover_art = art.briefing_highlight.map(|hex| art.hover.at(view, hex))
+        .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
     let origin = |at: Hex| walking.filter(|p| p.unit == Some(at)).map_or_else(
@@ -627,7 +630,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
 
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
     let (mx, my) = mouse_position();
-    let hover = layout.hex_at([mx, my]);
+    let hover = art.briefing_highlight.or_else(|| layout.hex_at([mx, my]));
     for unit in &view.units {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))

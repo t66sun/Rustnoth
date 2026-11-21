@@ -12,8 +12,12 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
 }
 
 pub(super) fn project(commands: &mut Node, hero: Hero) {
+    let mut scroll = None;
     for (tag, mut cfg) in std::mem::take(&mut commands.children) {
         match tag.as_str() {
+            "scroll_to" | "scroll_to_unit" if cfg.attribute("highlight") == Some("yes") => {
+                scroll = Some(cfg);
+            }
             "if" if children(&cfg, "have_unit").any(|unit| unit.attribute("id") == Some("student")
                 && unit.attribute("gender") == Some("male")) => {
                 let chosen = if hero == Hero::Konrad { "then" } else { "else" };
@@ -29,6 +33,15 @@ pub(super) fn project(commands: &mut Node, hero: Hero) {
                 commands.children.push((tag, cfg));
             }
             "message" => {
+                // TALK_ABOUT's scroll explicitly overrides the speaker for just this line.
+                let focus = scroll.take().or_else(|| {
+                    let id = cfg.attribute("speaker")?;
+                    (id != "narrator" && cfg.attribute("highlight") != Some("no"))
+                        .then(|| super::opening::node(&[("id", id), ("only_if_offscreen", "yes")]))
+                });
+                if let Some(focus) = focus {
+                    cfg.children.push(("rustnoth_tutorial_focus".into(), focus));
+                }
                 if let Some(female) = cfg.attributes.remove("female_message") && hero == Hero::Lisar {
                     cfg.attributes.insert("message".into(), female);
                 }
@@ -174,6 +187,27 @@ amount=5
         let kind = if hero == Hero::Konrad { "Fighter" } else { "Fighteress" };
         wml::parse(format!("{MAP}\n[side]\nid=student\ntype={kind}\nname={}\ncontroller=human\nsave_id=human_player\ngold=120\n{extra}\n[/side]\n\
             [side]\nid=Thrag\ntype=Hero\n[/side]\n{events}", hero.name())).unwrap()
+    }
+
+    #[test]
+    fn briefing_highlights_its_subject_and_returns_to_the_next_speaker() {
+        use engine_lite::{fixed_match::dialogue::DialogueFocus, hex::Hex};
+        let lines = BRIEFING.replace(
+            "[if]\n[have_unit]\nside=1\nx,y=recall,recall",
+            "[scroll_to]\nx,y=1,1\nhighlight=yes\n[/scroll_to]\n\
+             [message]\nspeaker=Galdrad\nscroll=no\nhighlight=no\nmessage=Watch the water\n[/message]\n\
+             [if]\n[have_unit]\nside=1\nx,y=recall,recall",
+        );
+        let mut second = scenario(Hero::Konrad, "[unit]\nid=Galdrad\ntype=Champion\nx,y=2,1\n[/unit]", &lines);
+        prepare(&mut second, Hero::Konrad);
+        let scenario = board(second);
+        let mut session = Session::with_players(scenario.start(7, |_| unreachable!()).unwrap(), Players::Campaign);
+        let at = |x, only_if_offscreen| Some(DialogueFocus { hex: Hex::from_wml(x, 1).unwrap(), only_if_offscreen });
+        for focus in [None, at(1, true), at(2, true), at(3, false), at(1, false), at(2, true), at(2, true)] {
+            assert_eq!(session.dialogue().unwrap().focus, focus);
+            session.dismiss_dialogue();
+        }
+        assert!(session.dialogue().is_none());
     }
 
     #[test]
