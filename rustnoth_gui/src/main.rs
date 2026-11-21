@@ -315,7 +315,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
-    let mut confirmed_recruit = None;
+    let mut confirmed_action = None;
     let mut confirmed_end_turn = false;
     let turn_confirmation = end_turn::Mode::load(&preference_dir)?;
     let notify_turn = display_preferences::turn_dialog()?;
@@ -508,9 +508,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             menu.activate(action)
         });
         let mut end_prompt = None;
+        let mut attack_dialog = None;
         let requested = if std::mem::take(&mut confirmed_end_turn) {
             Some(Action::EndTurn)
-        } else if let Some(action) = confirmed_recruit.take() {
+        } else if let Some(action) = confirmed_action.take() {
             Some(action)
         } else if !input_blocked && !computer_acted && can_end
             && (end_turn::modifier_down() && is_key_pressed(KeyCode::Space)
@@ -538,21 +539,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 && let Action::Attack(choice) = attack_menu.focused_action()
             {
                 let previews = session.attack_previews(choice.from, choice.to);
-                let window = render::attack_dialog::AttackDialog::new(observation, previews, &data.assets, &mut art, &data.wesnoth_root);
-                let action = if let Some(window) = window {
-                    window.choose(attack_menu, &data.assets, || {
-                        render::draw(session.state(), Some(observation), camera.layout(), &mut art,
-                            render::MovementView {
-                                session: &session,
-                                route: None,
-                                global_time: session.global_time_of_day(),
-                                selected: selection.unit(), actions: session.legal_actions(), message: None,
-                                assets: &data.assets, menu: None,
-                            }, |_| ());
-                    }).await
-                } else { None };
-                if action.is_none() { menu = None; }
-                action
+                attack_dialog = render::attack_dialog::AttackDialog::new(observation, previews, &data.assets, &mut art, &data.wesnoth_root);
+                if attack_dialog.is_none() { menu = None; }
+                None
             } else {
                 movement
             }
@@ -602,7 +591,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 actions: session.legal_actions(),
                 message: message.as_deref(),
                 assets: &data.assets,
-                menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
+                menu: menu.as_ref().filter(|menu| attack_dialog.is_none() && !menu.offers_recruit()),
             },
             |art| {
                 if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
@@ -635,6 +624,12 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             session.acknowledge_objectives();
             continue;
         }
+        if let Some(window) = attack_dialog && let Some(choices) = menu.as_mut() {
+            confirmed_action = window.choose(choices, &data.assets, &art).await;
+            if confirmed_action.is_none() { menu = None; }
+            next_frame().await;
+            continue;
+        }
         if let Some(prompt) = end_prompt {
             confirmed_end_turn = end_turn::confirm(&data.wesnoth_root, &locale, prompt).await;
             next_frame().await;
@@ -645,7 +640,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             && let Some(choices) = menu.take()
         {
             match recruit_dialog::show(&data, choices.options(), view.side).await {
-                recruit_dialog::Result::Recruit(action) => confirmed_recruit = Some(action),
+                recruit_dialog::Result::Recruit(action) => confirmed_action = Some(action),
                 recruit_dialog::Result::Recall => menu = choices.into_recall(),
                 recruit_dialog::Result::Cancel => {}
             }
