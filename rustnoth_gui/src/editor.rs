@@ -34,13 +34,16 @@ enum Edit {
     Location(engine_lite::map::editor::LocationEdit),
     Terrain(Changes),
     Selection(HashSet<Hex>),
+    Stroke(Vec<Edit>),
 }
 
 #[derive(Default)]
 struct History {
     stroke: Changes,
+    terrain_steps: Vec<Changes>,
     selected: HashSet<Hex>,
     selection_stroke: HashSet<Hex>,
+    selection_steps: Vec<HashSet<Hex>>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
 }
@@ -58,11 +61,18 @@ impl History {
         }
     }
 
+    fn finish_brush_step(&mut self) {
+        if !self.stroke.is_empty() {
+            self.terrain_steps.push(std::mem::take(&mut self.stroke));
+        }
+    }
+
     fn finish(&mut self) -> bool {
-        if self.stroke.is_empty() {
+        self.finish_brush_step();
+        if self.terrain_steps.is_empty() {
             return false;
         }
-        self.undo.push(Edit::Terrain(std::mem::take(&mut self.stroke)));
+        self.undo.push(Edit::Stroke(self.terrain_steps.drain(..).map(Edit::Terrain).collect()));
         self.redo.clear();
         true
     }
@@ -74,9 +84,16 @@ impl History {
         }
     }
 
-    fn finish_selection(&mut self) {
+    fn finish_selection_step(&mut self) {
         if !self.selection_stroke.is_empty() {
-            self.undo.push(Edit::Selection(std::mem::take(&mut self.selection_stroke)));
+            self.selection_steps.push(std::mem::take(&mut self.selection_stroke));
+        }
+    }
+
+    fn finish_selection(&mut self) {
+        self.finish_selection_step();
+        if !self.selection_steps.is_empty() {
+            self.undo.push(Edit::Stroke(self.selection_steps.drain(..).map(Edit::Selection).collect()));
             self.redo.clear();
         }
     }
@@ -103,17 +120,41 @@ impl History {
         let Some(edit) = from.pop() else {
             return false;
         };
-        match edit {
-            Edit::Location(edit) => {
-                to.push(Edit::Location(doc.restore_locations(edit)));
-                false
+        let (inverse, dirty) = edit.perform(doc, &mut self.selected);
+        to.push(inverse);
+        dirty
+    }
+
+    fn partial_undo(&mut self, doc: &mut EditableMap) -> bool {
+        if let Some(Edit::Stroke(steps)) = self.undo.last_mut()
+            && steps.len() > 1 {
+            let (inverse, dirty) = steps.pop().unwrap().perform(doc, &mut self.selected);
+            self.redo.push(inverse);
+            return dirty;
+        }
+        self.apply(doc, true)
+    }
+}
+
+impl Edit {
+    fn perform(self, doc: &mut EditableMap, selected: &mut HashSet<Hex>) -> (Edit, bool) {
+        match self {
+            Edit::Location(edit) => (Edit::Location(doc.restore_locations(edit)), false),
+            Edit::Stroke(steps) => {
+                let mut inverse = Vec::with_capacity(steps.len());
+                let mut dirty = false;
+                for step in steps.into_iter().rev() {
+                    let (opposite, changed) = step.perform(doc, selected);
+                    inverse.push(opposite);
+                    dirty |= changed;
+                }
+                (Edit::Stroke(inverse), dirty)
             }
             Edit::Selection(delta) => {
                 for &hex in &delta {
-                    if !self.selected.remove(&hex) { self.selected.insert(hex); }
+                    if !selected.remove(&hex) { selected.insert(hex); }
                 }
-                to.push(Edit::Selection(delta));
-                false
+                (Edit::Selection(delta), false)
             }
             Edit::Terrain(changes) => {
                 let mut inverse = Changes::new();
@@ -122,8 +163,7 @@ impl History {
                         inverse.insert(hex, old);
                     }
                 }
-                to.push(Edit::Terrain(inverse));
-                true
+                (Edit::Terrain(inverse), true)
             }
         }
     }
@@ -137,6 +177,7 @@ enum Command {
     SaveAs,
     Close,
     Exit,
+    PartialUndo,
     Undo,
     Redo,
     FillSelection,
@@ -164,6 +205,7 @@ impl Command {
             Self::SaveAs => "Save Map As…",
             Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
+            Self::PartialUndo => "Partial Undo",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
@@ -262,7 +304,7 @@ fn draw_terrain(
         }
     }
     // Show brush feedback while the pointer is held. Rebuild connected terrain once per stroke.
-    for &at in history.stroke.keys() {
+    for &at in history.terrain_steps.iter().flat_map(|step| step.keys()).chain(history.stroke.keys()) {
         let [x, y] = layout.tile_origin(at);
         if let Some(code) = doc.map().terrain_at(at) {
             let (base, overlay) = code.split_once('^').unwrap_or((code, ""));
@@ -484,6 +526,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     } else {
                         for &at in &footprint { history.select(at, !ctrl); }
                     }
+                    history.finish_selection_step();
                     last_selection = Some((hex, ctrl, shift));
                 }
             }
@@ -652,7 +695,11 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             command = Some(if shift { Command::SaveAs } else { Command::Save });
         }
         if ctrl && is_key_pressed(KeyCode::Z) {
-            command = Some(if shift { Command::Redo } else { Command::Undo });
+            command = Some(if shift { Command::Redo } else { Command::PartialUndo });
+        }
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            if is_key_pressed(KeyCode::U) { command = Some(Command::Undo); }
+            if is_key_pressed(KeyCode::R) { command = Some(Command::Redo); }
         }
         if ctrl && is_key_pressed(KeyCode::Y) {
             command = Some(Command::Redo);
@@ -722,6 +769,10 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     if !documents.list.iter().any(|d| d.map.dirty()) || files::confirm(&form).await {
                         return Ok(());
                     }
+                }
+                Command::PartialUndo => {
+                    rebuild |= history.partial_undo(doc);
+                    status.clear();
                 }
                 Command::Undo | Command::Redo => {
                     rebuild |= history.apply(doc, cmd == Command::Undo);
@@ -853,6 +904,50 @@ mod tests {
         update_editor_camera(&mut camera, area, &view, true);
         assert!(camera.layout().unwrap().tile_size() < 72.0);
     }
+    #[test]
+    fn partial_undo_reverses_one_complete_brush_stamp_and_redoes_each_step() {
+        let mut doc = new_map();
+        let mut history = History::default();
+        let specs = wml::parse("[terrain_type]\nstring=Ww\neditor_group=water\nsymbol_image=water\n[/terrain_type]").unwrap();
+        let palette = Palette::new(&specs, &Default::default()).unwrap();
+        let [a,b,c,d,e] = [0,1,2,3,4].map(|x| Hex { x, y: 0 });
+        let brush = &palette.brushes[0];
+        shapes::paint(&mut doc, &mut history, &[a,b], brush, false);
+        shapes::paint(&mut doc, &mut history, &[b,c], brush, false);
+        shapes::paint(&mut doc, &mut history, &[d,e], brush, false);
+        assert!(history.finish());
+        assert!(history.partial_undo(&mut doc));
+        assert!([a,b,c].iter().all(|&at| doc.map().terrain_at(at) == Some("Ww")));
+        assert!([d,e].iter().all(|&at| doc.map().terrain_at(at) == Some("Gg")));
+        assert!(history.apply(&mut doc, true));
+        assert!(!doc.dirty());
+        assert!(history.apply(&mut doc, false));
+        assert_eq!(doc.map().terrain_at(c), Some("Ww"));
+        assert_eq!(doc.map().terrain_at(d), Some("Gg"));
+        assert!(history.apply(&mut doc, false));
+        assert!([a,b,c,d,e].iter().all(|&at| doc.map().terrain_at(at) == Some("Ww")));
+        assert!(history.partial_undo(&mut doc));
+        assert_eq!(doc.map().terrain_at(e), Some("Gg"));
+    }
+
+    #[test]
+    fn selection_partial_undo_restores_one_movement_including_overlapping_hexes() {
+        let mut doc = new_map();
+        let mut history = History::default();
+        let [a,b,c] = [0,1,2].map(|x| Hex { x, y: 0 });
+        for at in [a,b,c] { history.select(at, true); }
+        history.finish_selection_step();
+        for at in [a,c] { history.select(at, false); }
+        history.finish_selection();
+        history.partial_undo(&mut doc);
+        assert_eq!(history.selected, HashSet::from([a,b,c]));
+        history.partial_undo(&mut doc);
+        assert!(history.selected.is_empty());
+        history.apply(&mut doc, false);
+        history.apply(&mut doc, false);
+        assert_eq!(history.selected, HashSet::from([b]));
+    }
+
     #[test]
     fn a_brush_stroke_undoes_and_redoes_as_one_edit() {
         let mut doc = new_map();
