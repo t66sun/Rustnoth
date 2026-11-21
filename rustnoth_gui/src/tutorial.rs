@@ -21,6 +21,7 @@ mod advice;
 mod ending;
 mod second;
 mod briefing;
+pub(crate) use briefing::localize_round_hints;
 mod reinforcements;
 pub(super) use ending::prepare_campaign;
 
