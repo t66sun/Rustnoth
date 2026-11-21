@@ -78,7 +78,7 @@ impl Browser {
         let mut route = CampaignCarryover::default();
         loop {
             let board = self.board(&id, &mut route.gold)?;
-            let Some(next) = play_board(board, Players::HotSeat, Some(&mut route)).await? else { return Ok(()) };
+            let Some(next) = play_board(board, Players::Campaign, Some(&mut route)).await? else { return Ok(()) };
             id = next;
             next_frame().await;
         }

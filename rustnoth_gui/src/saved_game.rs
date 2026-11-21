@@ -74,10 +74,10 @@ pub(super) fn save(
     set(
         &mut record,
         "players",
-        if players == Players::HotSeat {
-            "hot_seat"
-        } else {
-            "computer"
+        match players {
+            Players::HotSeat => "hot_seat",
+            Players::VersusComputer => "computer",
+            Players::Campaign => "campaign",
         },
     );
     if let Some([x, y, zoom]) = camera {
@@ -132,6 +132,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     let players = match record.attribute("players") {
         Some("computer") => Players::VersusComputer,
         Some("hot_seat") => Players::HotSeat,
+        Some("campaign") => Players::Campaign,
         _ => return Err(invalid("Unknown control mode in saved game").into()),
     };
     let mut events = Vec::new();
@@ -214,11 +215,12 @@ mod tests {
         assert!(opening.iter().any(|&(side,_,xp)| side == 1 && xp == 12));
         live.apply(Action::EndTurn).unwrap();
         assert!(live.save_victory_replay());
-        save(&temp, "West replay", &board, Players::HotSeat, Some(map), live.history(),None,None,Some(&starting_roster)).unwrap();
+        save(&temp, "West replay", &board, Players::Campaign, Some(map), live.history(),None,None,Some(&starting_roster)).unwrap();
         let entries = slots(&temp).unwrap();
-        let (mut archive, _) = load(&entries[0], &temp).unwrap();
+        let (mut archive, players) = load(&entries[0], &temp).unwrap();
+        assert_eq!(players, Players::Campaign);
         let mut replay = archive.restore.take().unwrap();
-        let mut watch = Session::new(archive.scenario.start_campaign(12, |_| Ok(replay.map.unwrap()),replay.replay_roster.as_mut()).unwrap());
+        let mut watch = Session::with_players(archive.scenario.start_campaign(12, |_| Ok(replay.map.unwrap()),replay.replay_roster.as_mut()).unwrap(), players);
         assert_eq!(units(&watch), opening);
         for event in replay.events { event.apply(&mut watch).unwrap(); }
         assert_eq!(watch.state(), live.state());
