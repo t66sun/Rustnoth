@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-/// GUI2 tree views scroll their content in pixels. Scrolling alone never changes the selected node.
+/// GUI2 lists scroll in pixels independently of the currently selected row.
 #[derive(Default)]
 pub(super) struct Scroll {
     pub offset: f32,
@@ -15,8 +15,7 @@ impl Scroll {
         Rect::new(bar.x, bar.y + pos, bar.w, length)
     }
 
-    pub fn reveal(&mut self, row: usize, row_height: f32, view: f32) {
-        let top = row as f32 * row_height;
+    pub fn reveal(&mut self, top: f32, row_height: f32, view: f32) {
         self.offset = self.offset.clamp((top + row_height - view).max(0.).min(top), top);
     }
 
@@ -60,7 +59,7 @@ mod tests {
         assert_eq!(scroll.offset, 935.);
         scroll.update(bar, height, vec2(250., 200.), false, false, 0.);
         assert!(scroll.grab.is_none());
-        scroll.reveal(0, 82., bar.h);
+        scroll.reveal(0., 82., bar.h);
         assert_eq!(scroll.offset, 0.);
     }
 }

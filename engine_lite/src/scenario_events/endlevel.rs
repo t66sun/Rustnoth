@@ -86,6 +86,18 @@ message=The battle is over.
     }
 
     #[test]
+    fn only_human_victories_with_replay_save_enabled_archive_a_replay() {
+        for (fields, archive) in [("next_scenario=null", true), ("replay_save=no", false),
+                ("result=defeat", false), ("carryover_report=no", true)] {
+            let scenario = bundle("side 1 turn end", fields);
+            let mut game = scenario.start(1, |_| unreachable!()).unwrap();
+            assert!(!game.save_victory_replay());
+            game.step(Action::EndTurn).unwrap();
+            assert_eq!(game.save_victory_replay(), archive);
+        }
+    }
+
+    #[test]
     fn normal_victory_continues_only_for_surviving_human_sides() {
         let source = r#"[units]
 [unit_type]
