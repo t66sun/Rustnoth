@@ -13,6 +13,7 @@ mod recruiting;
 mod weapons;
 mod ending;
 pub(super) use ending::prepare_campaign;
+mod advice;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -56,13 +57,14 @@ pub(super) struct Lesson {
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
     weapons: weapons::Exercise,
+    advice: advice::Advice,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
     fn new(mentor: Hex, hero: Hero, healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, weapons, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     #[cfg(test)]
@@ -160,6 +162,7 @@ impl Lesson {
 
     pub(super) fn after_computer(&mut self, session: &mut Session<'_>) {
         use engine_lite::fixed_match::MatchState;
+        self.advice.begin_turn(session);
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
