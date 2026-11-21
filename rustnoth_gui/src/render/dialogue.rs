@@ -213,7 +213,7 @@ pub fn draw_dialogue(line: &DialogueLine, assets: &AssetCatalog, art: &mut Board
 }
 
 // The desktop font draws plain text. Keep the contents of stock Pango spans and emphasis.
-fn plain_text(source: &str) -> String {
+pub(super) fn plain_text(source: &str) -> String {
     let mut rest = source;
     let mut text = String::new();
     while let Some((before, after)) = rest.split_once('<') {

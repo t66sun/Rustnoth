@@ -197,6 +197,12 @@ impl Text {
         self.rasterize(width, height, [215; 3])
     }
 
+    pub(crate) fn fitted_label(&self, text: &str, size: u16, limit: u16, markup: bool, color: [u8; 3]) -> Option<macroquad::texture::Image> {
+        let (width, height) = self.prepare(text, size, Some(limit), 0, markup);
+        // Keep long objectives scrollable without requiring an oversized GPU texture.
+        (height <= 2048).then(|| self.rasterize(width, height, color))
+    }
+
     fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {
         let mut bytes = vec![0; usize::from(width) * usize::from(height) * 4];
         unsafe {
