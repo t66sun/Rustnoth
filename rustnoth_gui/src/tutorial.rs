@@ -17,6 +17,7 @@ mod advice;
 mod ending;
 mod second;
 mod briefing;
+mod reinforcements;
 pub(super) use ending::prepare_campaign;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";

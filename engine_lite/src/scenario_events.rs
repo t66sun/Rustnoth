@@ -56,6 +56,8 @@ pub(crate) enum BoardChange {
     HealUnit(crate::board::HealUnit),
     Dialogue(crate::fixed_match::dialogue::Message),
     TutorialHint(Node),
+    TutorialPrint(Node),
+    TutorialEndTurn(Option<Node>),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     PersonalRecruits(PersonalRecruits),
@@ -399,6 +401,9 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "rustnoth_tutorial_print" => EventAction::Board(BoardChange::TutorialPrint(cfg.clone())),
+            "rustnoth_tutorial_disallow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(Some(cfg.clone()))),
+            "rustnoth_tutorial_allow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(None)),
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
             "rustnoth_tutorial_hint" if cfg.children.is_empty() && cfg.attributes.iter().all(|(key, value)|
                     matches!(key.as_str(), "caption" | "message" | "remove") && !value.text.contains('$')) =>

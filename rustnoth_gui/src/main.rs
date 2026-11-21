@@ -483,7 +483,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session));
+        let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session))
+            .or_else(|| session.tutorial_end_turn_denial());
         let show_end = can_end || denial.is_some();
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some());
@@ -622,6 +623,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
         visible_turn_label = if session.legal_actions().contains(&Action::EndTurn)
+            || session.tutorial_end_turn_denial().is_some()
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
             Some(end_label.as_str())
         } else if campaign && session.next_scenario().is_some() {
@@ -633,6 +635,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         if session.dialogue().is_none() && let Some(prompt) = data.lesson.as_ref()
             .and_then(|lesson| lesson.prompt(selection.unit().is_some())) {
             visible_prompt.push_str(prompt);
+        } else if session.dialogue().is_none() && let Some(print) = session.tutorial_print() {
+            visible_prompt = locale.attribute(&data.wesnoth_root, print, "text", "");
         }
         let last_page = render::draw(
             session.state(),
