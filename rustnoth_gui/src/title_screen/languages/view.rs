@@ -74,6 +74,16 @@ impl Label {
         Self::lines(font, vec![text.into()], point, rgb)
     }
 
+    fn link(art: &Art, url: &str) -> Self {
+        #[cfg(windows)]
+        if let Some(renderer) = &art.text_renderer {
+            let width = renderer.text_width(url, 17);
+            let markup = format!("<span underline='single' color='#ffe100'>{url}</span>");
+            return Self::pixels(renderer.render(&markup, width, false, true));
+        }
+        Self::new(art, art.font.as_ref(), url, 17, [255, 225, 0])
+    }
+
     fn paragraph(art: &Art, msg: &str, width: f32) -> Self {
         #[cfg(windows)]
         if let Some(renderer) = &art.text_renderer {
@@ -162,13 +172,20 @@ pub(super) struct Information {
     pub width: f32,
 }
 
+// GUI2 centers the text in the label's pixel grid. At a half-pixel it puts
+// the extra column on the left.
+fn link_bounds(panel: Rect, text: Vec2) -> Rect {
+    let left = panel.x + ((panel.w - text.x) / 2.).round().max(0.);
+    Rect::new(left, panel.y + 13., text.x, text.y)
+}
+
 impl Information {
     pub fn new(art: &Art, width: f32) -> Self {
         let msg = super::INFORMATION.map(|s| art.locale.ui(s));
         let intro = format!("{}\n\n{}", msg[0], msg[1]);
         Self {
             paragraphs: [Label::paragraph(art, &intro, width), Label::paragraph(art, msg[2], width)],
-            urls: LINKS.map(|url| Label::new(art, art.font.as_ref(), url, 17, [255, 225, 0])),
+            urls: LINKS.map(|url| Label::link(art, url)),
             width,
         }
     }
@@ -188,11 +205,12 @@ impl Information {
             outline(box_rect, EDGE);
             outline(inset(box_rect, 1.), DARK_BORDER);
             outline(inset(box_rect, 2.), EDGE);
-            let x = (box_rect.x + (box_rect.w - url.size.x) * 0.5).floor().max(side.x);
-            let pos = vec2(x, box_rect.y + 13.);
-            url.draw(pos);
-            draw_rectangle(pos.x, pos.y + url.size.y - 2., url.size.x, 1., Color::from_rgba(255, 225, 0, 255));
-            if click && side.contains(pointer) && Rect::new(pos.x, pos.y, url.size.x, url.size.y).contains(pointer) {
+            let bounds = link_bounds(box_rect, url.size);
+            url.draw(bounds.point());
+            if url.texture.is_none() {
+                draw_rectangle(bounds.x, bounds.bottom() - 1., bounds.w, 1., Color::from_rgba(255, 225, 0, 255));
+            }
+            if click && side.contains(pointer) && bounds.contains(pointer) {
                 super::open_link(LINKS[i])?;
             }
             y = box_rect.bottom() + 20.;
@@ -204,6 +222,14 @@ impl Information {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translation_links_round_half_pixels_into_the_center_of_the_panel() {
+        let stats = link_bounds(Rect::new(476., 330., 556., 47.), vec2(209., 21.));
+        assert_eq!(stats, Rect::new(650., 343., 209., 21.));
+        let wiki = link_bounds(Rect::new(476., 456., 556., 47.), vec2(337., 21.));
+        assert_eq!(wiki, Rect::new(586., 469., 337., 21.));
+    }
 
     #[test]
     fn language_window_places_the_list_and_confirmation_buttons_in_the_gui2_grid() {
