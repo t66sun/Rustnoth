@@ -293,6 +293,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let speed = display_preferences::speed::Speed::load()?;
+    let mouse_scroll_threshold = title_screen::profile::mouse_scroll_threshold(
+        &title_screen::profile::read_profile().unwrap_or_default(),
+    );
     let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     let preference_dir = display_preferences::config_directory()?;
@@ -478,8 +481,13 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 );
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
+                let edge = if menu.is_none() && !is_mouse_button_down(MouseButton::Middle) {
+                    top_menu.vertical_edge_scroll(pointer, vec2(screen_width(), screen_height()), mouse_scroll_threshold)
+                } else {
+                    0
+                };
                 let distance = speed.pan_distance(get_frame_time());
-                camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
+                camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
             }
         }
         let input_blocked = input_blocked || minimap_action;

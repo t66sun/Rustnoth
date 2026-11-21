@@ -16,7 +16,7 @@ mod community;
 mod achievements;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
-mod profile;
+pub(crate) mod profile;
 pub(crate) mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
