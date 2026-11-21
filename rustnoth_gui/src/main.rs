@@ -330,10 +330,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             commands.insert(0, map_menus::Command::UnitList);
         }
         if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
-        let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
-        let show_objectives = session.objectives().is_some() && !walking && !dialogue_open
-            && (top.command == Some(map_menus::Command::Objectives)
-                || !top.handled && render::objectives::hotkey());
+        let auto_objectives = !walking && session.has_objective_notice();
+        let top = if walking || dialogue_open || auto_objectives { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
+        let show_objectives = auto_objectives || session.objectives().is_some() && !walking && !dialogue_open
+            && (top.command == Some(map_menus::Command::Objectives) || !top.handled && render::objectives::hotkey());
         let input_blocked = walking || dialogue_open || top.handled || show_objectives;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
@@ -576,8 +576,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
-        if show_objectives && let Some(objectives) = session.objectives() {
-            render::objectives::show(objectives, &data.title, &locale, &mut art, &data.wesnoth_root).await;
+        if show_objectives {
+            let empty = Default::default();
+            render::objectives::show(session.objectives().unwrap_or(&empty), &data.title, &locale, &mut art, &data.wesnoth_root).await;
+            session.acknowledge_objectives();
             continue;
         }
         if let Some(prompt) = end_prompt {

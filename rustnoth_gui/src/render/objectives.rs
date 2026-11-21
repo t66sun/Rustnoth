@@ -10,6 +10,7 @@ pub fn hotkey() -> bool {
 }
 
 fn objective_text(objectives: &ScenarioObjectives, locale: &Locale) -> String {
+    if objectives.is_empty() { return locale.game("No objectives available").to_owned(); }
     let mut sections = Vec::new();
     for (heading, entries, color) in [
         ("Victory:", &objectives.victory, "#00ff00"),
