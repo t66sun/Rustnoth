@@ -17,6 +17,7 @@ impl Veteran {
         let mut n = Node::default();
         n.set_literal("type", &u.type_id);
         n.set_literal("canrecruit", u.can_recruit);
+        if u.guardian { n.set_literal("ai_special", "guardian"); }
         n.set_literal("variation", &u.variation);
         n.set_literal("experience", u.experience);
         n.set_literal("earned_amlas", self.earned_amlas);
@@ -73,7 +74,7 @@ impl Veteran {
                 modifications, experience: unit.experience, hitpoints: None, moves_left: None, attacks_left: None,
                 immunities: unit.immunities, unpetrifiable: unit.unpetrifiable, unhealable: unit.unhealable,
                 unplagueable: unit.unplagueable, undead_variation: unit.undead_variation.clone(),
-                poisoned: false, slowed: false, petrified: false, uncovered: false,
+                poisoned: false, slowed: false, petrified: false, uncovered: false, guardian: unit.guardian,
             },
             earned_amlas: unit.default_amlas,
             recall_filter: unit.recall_filter.clone(),
