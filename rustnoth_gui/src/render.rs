@@ -1,4 +1,5 @@
 mod frame;
+pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::skirmish_preview;
 mod lighting;
@@ -83,6 +84,20 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
     cover
 }
 
+pub(crate) struct GridArt([Option<Texture2D>; 2]);
+
+impl GridArt {
+    pub(crate) fn load(terrain_dir: &Path) -> Self {
+        Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
+    }
+
+    pub(crate) fn draw(&self, center: Vec2, size: f32) {
+        for grid in self.0.iter().flatten() {
+            draw_centered(grid, center, size);
+        }
+    }
+}
+
 pub struct BoardArt {
     frame: FrameArt,
     minimap: minimap::Art,
@@ -92,13 +107,15 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
-    border_background: Option<Texture2D>,    grid: [Option<Texture2D>; 2],
+    border_background: Option<Texture2D>,
+    grid: GridArt,
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
     pub(crate) walk: walking::Walk,
+    speed: crate::display_preferences::speed::Speed,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
@@ -123,6 +140,10 @@ pub struct BoardArt {
 }
 
 impl BoardArt {
+    fn animation_rate(&self) -> f32 {
+        self.speed.animation_rate(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
+    }
+
     pub fn start_walk(&mut self, route: Vec<Hex>, view: &Observation, assets: &AssetCatalog) {
         if route.len() < 2 { return; }
         let Some(unit) = view.units.iter().find(|u| Some(&u.position) == route.last() && u.side == view.side) else { return; };
@@ -133,10 +154,10 @@ impl BoardArt {
                 load_texture(&path, palette)
             })
         });
-        self.walk.start(route, (get_time() * 1000.0) as u64);
+        self.walk.start(route, (get_time() * 1000.0) as u64, self.animation_rate());
     }
 
-    pub fn new(wesnoth_root: &Path) -> Result<Self, macroquad::Error> {
+    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -171,13 +192,15 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
-            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
+            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
+            grid: GridArt::load(&terrain_dir),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             standing: HashMap::new(),
             combat_pose: None,
             moving: HashMap::new(),
             walk: walking::Walk::default(),
+            speed,
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
@@ -406,7 +429,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             art.rules.draw(tile.position, center, size, false, tod, now);
             if art.show_grid {
                 if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                for grid in art.grid.iter().flatten() { draw_centered(grid, center, size); }
+                art.grid.draw(center, size);
             }
         }
         if let Some(owner) = tile.village_owner {

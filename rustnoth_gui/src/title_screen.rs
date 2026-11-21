@@ -11,15 +11,16 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
-mod button_canvas;
+pub(crate) mod button_canvas;
 mod scaled_art;
 mod tip_pages;
 #[cfg(windows)]
-mod tip_pango;
+pub(crate) mod tip_pango;
 mod button_labels;
 use tip_pages::TipPages;
 mod version;
@@ -228,25 +229,33 @@ impl TitleScreen {
 
     async fn open(&self, command: Command, art: &Art) -> Result<(), Box<dyn Error>> {
         let installed;
-        let data = match &self.games {
-            Games::Prepared(data) => data,
+        let (data, modifications) = match &self.games {
+            Games::Prepared(data) => (data, Default::default()),
             Games::Installed => {
                 let root = self.root.clone();
-                let worker = std::thread::spawn(move || desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits)));
+                let worker = std::thread::spawn(move || -> std::io::Result<_> {
+                    let data = desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits))?;
+                    let mut extra = engine_lite::wml::Node::default();
+                    if matches!(command, Command::Campaigns) && let Some(userdata) = profile::native_data_directory() {
+                        crate::campaign_browser::modifications::load_installed(&mut extra, &root, &userdata)?;
+                    }
+                    Ok((data, extra))
+                });
                 while !worker.is_finished() {
                     art.draw_background(screen_width(), screen_height());
                     dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
                     next_frame().await;
                 }
-                installed = worker.join().map_err(|_| "Game data preparation stopped")??;
-                &installed
+                let (data, extra) = worker.join().map_err(|_| "Game data preparation stopped")??;
+                installed = data;
+                (&installed, extra)
             }
         };
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
                 let browser = if matches!(&self.games, Games::Installed) {
-                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed)?
+                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed, modifications)?
                 } else {
                     Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?
                 };
@@ -276,6 +285,35 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 
+struct ButtonBacking {
+    pixels: ::image::RgbaImage,
+    sizes: std::cell::RefCell<std::collections::HashMap<(u16, u16), Texture2D>>,
+}
+
+impl ButtonBacking {
+    fn draw(&self, bounds: Rect, state: button_canvas::State) {
+        let width = (bounds.w - 2.).round().max(1.) as u16;
+        let height = (bounds.h - 2.).round().max(1.) as u16;
+        let mut sizes = self.sizes.borrow_mut();
+        let texture = sizes.entry((width, height)).or_insert_with(|| {
+            // At exact half-texels the native nearest sampler takes the higher
+            // texel. Interpolated GPU coordinates can fall just below that tie.
+            let center = |p: u16, src: u32, dst: u16| ((2 * u32::from(p) + 1) * src) / (2 * u32::from(dst));
+            let mut bytes = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+            for y in 0..height {
+                let row = center(y, self.pixels.height(), height);
+                for x in 0..width {
+                    bytes.extend_from_slice(&self.pixels.get_pixel(center(x, self.pixels.width(), width), row).0);
+                }
+            }
+            let tex = Texture2D::from_rgba8(width, height, &bytes);
+            tex.set_filter(FilterMode::Nearest);
+            tex
+        });
+        button_canvas::draw(bounds, texture, state);
+    }
+}
+
 struct Art {
     #[cfg(windows)]
     text_renderer: Option<tip_pango::Text>,
@@ -290,7 +328,7 @@ struct Art {
     map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
-    buttons: [Texture2D; 3],
+    buttons: [ButtonBacking; 3],
     font: Option<Font>,
     italic: Option<Font>,
 }
@@ -321,10 +359,28 @@ fn logo_bounds(view_width: f32, size: Vec2) -> Rect {
 }
 
 fn panel(rect: Rect) {
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::from_rgba(0, 0, 0, 137));
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, Color::from_rgba(16, 22, 35, 255));
-    draw_rectangle_lines(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0, 1.0,
-        Color::from_rgba(114, 79, 46, 255));
+    draw_rectangle(rect.x + 3., rect.y + 3., rect.w - 6., rect.h - 6., Color::from_rgba(0, 0, 0, 137));
+    for (inset, thickness, rgba) in [(0., 3., [16,22,35,255]), (1., 1., [114,79,46,255])] {
+        let [r,g,b,a] = rgba;
+        let color = Color::from_rgba(r,g,b,a);
+        for band in panel_rim(rect, inset, thickness) {
+            draw_rectangle(band.x, band.y, band.w, band.h, color);
+        }
+    }
+}
+
+// SDL draws each successive GUI2 rectangle inside the preceding one.
+fn panel_rim(rect: Rect, inset: f32, thickness: f32) -> [Rect; 4] {
+    let x = rect.x + inset;
+    let y = rect.y + inset;
+    let w = rect.w - 2. * inset;
+    let h = rect.h - 2. * inset;
+    [
+        Rect::new(x, y, w, thickness),
+        Rect::new(x, y + h - thickness, w, thickness),
+        Rect::new(x, y + thickness, thickness, h - 2. * thickness),
+        Rect::new(x + w - thickness, y + thickness, thickness, h - 2. * thickness),
+    ]
 }
 
 fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
@@ -394,6 +450,12 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
+        let button = |name: &str| -> Result<ButtonBacking, Box<dyn Error>> {
+            Ok(ButtonBacking {
+                pixels: crate::artwork::rgba(&read_file(&root.join(name))?)?,
+                sizes: Default::default(),
+            })
+        };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
@@ -412,9 +474,9 @@ impl Art {
                 &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
-            buttons: [texture("images/buttons/button_normal/background.png")?,
-                texture("images/buttons/button_normal/background-active.png")?,
-                texture("images/buttons/button_normal/background-pressed.png")?],
+            buttons: [button("images/buttons/button_normal/background.png")?,
+                button("images/buttons/button_normal/background-active.png")?,
+                button("images/buttons/button_normal/background-pressed.png")?],
             font, italic,
         })
     }
@@ -474,8 +536,9 @@ impl Art {
     }
 
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
-        let state = if pressed { 2 } else { usize::from(focused) };
-        button_canvas::draw(rect, &self.buttons[state], state);
+        use button_canvas::State;
+        let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
+        self.buttons[state as usize].draw(rect, state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
@@ -558,6 +621,19 @@ mod tests {
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
         assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
         assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+    }
+
+    #[test]
+    fn title_tip_panel_draws_its_gold_edge_one_full_pixel_inside() {
+        let panel = Rect::new(73., 467., 710., 258.);
+        let dark = panel_rim(panel, 0., 3.);
+        let gold = panel_rim(panel, 1., 1.);
+        let hits = |bands: &[Rect; 4], x| bands.iter().any(|r| r.contains(vec2(x, 600.5)));
+        assert!(!hits(&dark, 72.5));
+        assert!(hits(&dark, 73.5) && hits(&dark, 75.5));
+        assert!(!hits(&dark, 76.5));
+        assert!(hits(&gold, 74.5) && hits(&gold, 781.5));
+        assert!(!hits(&gold, 73.5) && !hits(&gold, 75.5));
     }
 
     #[test]

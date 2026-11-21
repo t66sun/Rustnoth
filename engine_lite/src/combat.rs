@@ -99,7 +99,27 @@ pub fn resolve_exchange(
     rounds: NonZeroU32,
     rng: &mut ReplayRng,
 ) -> CombatResult {
-    exchange_with_blows(attacker, defender, rounds, rng, None)
+    exchange_with_blows(attacker, defender, rounds, rng, false, None)
+}
+
+// Wesnoth 1.18.8 attack::perform_hit rolls a hit count, then samples the
+// positions without replacement in index order. Each side consumes its
+// sequence backwards, generating another only when that side strikes again.
+fn biased_strikes(strikes: u32, chance: u8, rng: &mut ReplayRng) -> Vec<bool> {
+    let expected = u64::from(strikes) * u64::from(chance);
+    let mut hits = expected / 100;
+    let remainder = (expected % 100) as u32;
+    if remainder != 0 && rng.next_u32() % 100 < remainder {
+        hits += 1;
+    }
+    let mut sequence = vec![false; strikes as usize];
+    let mut remaining: Vec<_> = (0..strikes).collect();
+    for _ in 0..hits {
+        let index = rng.next_u32() % remaining.len() as u32;
+        let strike = remaining.remove(index as usize);
+        sequence[strike as usize] = true;
+    }
+    sequence
 }
 
 pub(crate) fn exchange_with_blows(
@@ -107,6 +127,7 @@ pub(crate) fn exchange_with_blows(
     defender: Combatant,
     rounds: NonZeroU32,
     rng: &mut ReplayRng,
+    biased: bool,
     mut blows: Option<&mut Vec<ResolvedBlow>>,
 ) -> CombatResult {
     let order = strike_order(&attacker, &defender);
@@ -116,6 +137,7 @@ pub(crate) fn exchange_with_blows(
     let participants = [attacker, defender];
     let mut poisoned = participants.each_ref().map(|unit| unit.poison.active);
     let mut petrified = [false; 2];
+    let mut sequences = [Vec::new(), Vec::new()];
 
     if strike_limit > 0 && !hp.contains(&0) {
         'fight: for _ in 0..rounds.get() {
@@ -127,7 +149,15 @@ pub(crate) fn exchange_with_blows(
                     }
                     let target = 1 - index;
                     let before = hp[target];
-                    let hit = rng.next_u32() % 100 < u32::from(unit.hit_chance);
+                    let hit = if biased {
+                        let sequence = &mut sequences[index];
+                        if sequence.is_empty() {
+                            *sequence = biased_strikes(unit.strikes, unit.hit_chance, rng);
+                        }
+                        sequence.pop().expect("a striking participant has at least one blow")
+                    } else {
+                        rng.next_u32() % 100 < u32::from(unit.hit_chance)
+                    };
                     if hit {
                         poisoned[1 - index] |= unit.poison.affects(participants[1 - index].poison);
                         petrified[1 - index] = apply_hit(&participants, &mut hp, &mut slowed, index);
@@ -201,11 +231,32 @@ mod tests {
     }
 
     #[test]
+    fn biased_combat_spends_only_the_current_strikers_draws_and_refills_each_round() {
+        let mut rng = ReplayRng::new(5489);
+        assert_eq!(biased_strikes(3, 60, &mut rng), [true, true, false]);
+        assert_eq!(rng.seed_and_calls(), (5489, 3));
+        let mut trace = Vec::new();
+        let mut rng = ReplayRng::new(5489);
+        exchange_with_blows(unit(40, 4, 1, 50), unit(1, 4, 1, 50),
+            NonZeroU32::MIN, &mut rng, true, Some(&mut trace));
+        assert_eq!(trace.iter().map(|blow| blow.hit).collect::<Vec<_>>(),
+            [false, true, false, true, true]);
+        assert_eq!(rng.seed_and_calls(), (5489, 4));
+        let mut trace = Vec::new();
+        let mut rng = ReplayRng::new(5489);
+        exchange_with_blows(unit(40, 2, 1, 100), unit(40, 2, 1, 0),
+            NonZeroU32::new(2).unwrap(), &mut rng, true, Some(&mut trace));
+        assert_eq!(trace.len(), 8);
+        assert!(trace.iter().all(|blow| blow.hit != blow.retaliation));
+        assert_eq!(rng.seed_and_calls(), (5489, 4));
+    }
+
+    #[test]
     fn display_records_only_completed_blows_including_retaliation_and_misses() {
         let mut trace = Vec::new();
         let mut rng = ReplayRng::new(5489);
         exchange_with_blows(unit(6, 4, 5, 0), unit(20, 2, 9, 100),
-            NonZeroU32::MIN, &mut rng, Some(&mut trace));
+            NonZeroU32::MIN, &mut rng, false, Some(&mut trace));
         assert_eq!(trace, [
             ResolvedBlow {retaliation:false,hit:false,lost_hp:0,remaining_hp:[6,20]},
             ResolvedBlow {retaliation:true,hit:true,lost_hp:6,remaining_hp:[0,20]}

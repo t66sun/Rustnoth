@@ -24,6 +24,7 @@ fn buttons(width: f32, doc: &EditableMap, history: &History) -> impl Iterator<It
         (Close, "editor-close-map", 64.0, true),
         (Undo, "undo", undo_x, !history.undo.is_empty()),
         (Redo, "redo", undo_x + 31.0, !history.redo.is_empty()),
+        (ToggleGrid, "togglegrid", width - 214.0, true),
     ]
     .into_iter()
     .filter(move |(cmd, ..)| *cmd != Close || !compact)
@@ -41,7 +42,7 @@ impl Toolbar {
     }
 
     pub(super) fn draw(
-        &mut self, width: f32, point: Vec2, modal: bool, doc: &EditableMap, history: &History,
+        &mut self, width: f32, point: Vec2, modal: bool, show_grid: bool, doc: &EditableMap, history: &History,
         assets: &AssetCatalog, art: &mut Art, tip: &mut Option<&'static str>,
     ) -> Option<Command> {
         let hover = buttons(width, doc, history)
@@ -51,10 +52,12 @@ impl Toolbar {
             is_mouse_button_released(MouseButton::Left));
         for button in buttons(width, doc, history) {
             let hot = hover == Some(button.command);
-            let suffix = if hot && self.pressed == hover { "-pressed" }
+            let selected = button.command == Command::ToggleGrid && show_grid;
+            let suffix = if selected || hot && self.pressed == hover { "-pressed" }
                 else if hot { "-active" } else { "" };
+            let frame_state = if hot && selected { "-active-pressed" } else { suffix };
             let effect = if button.enabled { "" } else { "~GS()" };
-            let frame = format!("buttons/button_square/button_square_30{suffix}.png{effect}");
+            let frame = format!("buttons/button_square/button_square_30{frame_state}.png{effect}");
             let icon = format!("icons/action/{}_30{suffix}.png{effect}", button.image);
             art.image(assets, &frame, button.area);
             art.image(assets, &icon, button.area);
@@ -79,13 +82,13 @@ mod tests {
             buttons(width, doc, history).map(|b| (b.command, b.area.x as i32, b.enabled)).collect::<Vec<_>>();
         assert_eq!(slots(1200., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, false), (Command::Close, 64, true),
-            (Command::Undo, 137, false), (Command::Redo, 168, false),
+            (Command::Undo, 137, false), (Command::Redo, 168, false), (Command::ToggleGrid, 986, true),
         ]);
         history.paint(&mut doc, Hex { x: 0, y: 0 }, "Ww");
         history.finish();
         assert_eq!(slots(800., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, true),
-            (Command::Undo, 106, true), (Command::Redo, 137, false),
+            (Command::Undo, 106, true), (Command::Redo, 137, false), (Command::ToggleGrid, 586, true),
         ]);
         history.apply(&mut doc, true);
         assert!(buttons(1200., &doc, &history).any(|b| b.command == Command::Redo && b.enabled));

@@ -45,7 +45,6 @@ rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-ro
 rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.";
-const PAN_PIXELS_PER_SECOND: f32 = 480.0;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -194,6 +193,7 @@ impl Launch {
 }
 
 struct BoardData {
+    fresh_attack_seeds: bool,
     source: Vec<u8>,
     core: Vec<u8>,
     restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
@@ -223,6 +223,8 @@ impl BoardData {
         let skip_turn_confirmation = end_turn::side_overrides(config);
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
+            fresh_attack_seeds: document.attribute("rustnoth_interactive_rng") == Some("yes")
+                && document.attribute("random_mode").unwrap_or_default().is_empty(),
             scenario,
             lesson: None,
             story,
@@ -257,10 +259,12 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         Ok(map)
     }, carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
+    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
-    let mut art = render::BoardArt::new(&data.wesnoth_root)?;
+    let speed = display_preferences::speed::Speed::load()?;
+    let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     if let Some(checkpoint) = restore {
         for event in checkpoint.events { event.apply(&mut session)?; }
         if let Some(view) = session.observation() {
@@ -395,7 +399,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 );
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
-                let distance = PAN_PIXELS_PER_SECOND * get_frame_time();
+                let distance = speed.pan_distance(get_frame_time());
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }

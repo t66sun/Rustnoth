@@ -97,7 +97,7 @@ api! {
     }
 }
 
-pub(super) struct Text {
+pub(crate) struct Text {
     api: Api,
     layout: Handle,
     map: Handle,
@@ -115,7 +115,7 @@ impl Drop for Text {
 }
 
 impl Text {
-    pub(super) fn load(assets: &Path, family: &str) -> Option<Self> {
+    pub(crate) fn load(assets: &Path, family: &str) -> Option<Self> {
         // Asset paths supplied on the command line are data only. Resolve DLLs through Steam.
         let api = crate::desktop::steam_game_roots().iter().find_map(|dir| Api::load(dir))?;
         let fonts = assets.join("fonts");
@@ -149,13 +149,13 @@ impl Text {
         }
     }
 
-    fn prepare(&self, text: &str, size: u16, width: Option<u16>, right: bool, markup: bool) -> (u16, u16) {
+    fn prepare(&self, text: &str, size: u16, width: Option<u16>, alignment: i32, markup: bool) -> (u16, u16) {
         unsafe {
             let api = &self.api;
             (api.pango_font_description_set_size)(self.font, i32::from(size) * 1024);
             (api.pango_layout_set_font_description)(self.layout, self.font);
             (api.pango_layout_set_width)(self.layout, width.map_or(-1, |w| i32::from(w) * 1024));
-            (api.pango_layout_set_alignment)(self.layout, if right { 2 } else { 0 });
+            (api.pango_layout_set_alignment)(self.layout, alignment);
             if markup {
                 (api.pango_layout_set_markup)(self.layout, text.as_ptr().cast(), text.len() as i32);
             } else {
@@ -170,7 +170,7 @@ impl Text {
     }
 
     pub(super) fn measure(&self, text: &str, width: u16, right: bool, markup: bool) -> u16 {
-        self.prepare(text, 17, Some(width), right, markup).1
+        self.prepare(text, 17, Some(width), if right { 2 } else { 0 }, markup).1
     }
 
     pub(super) fn render(&self, text: &str, width: u16, right: bool, markup: bool) -> macroquad::texture::Image {
@@ -178,9 +178,14 @@ impl Text {
         self.rasterize(width, height, [215; 3])
     }
 
-    pub(super) fn button(&self, text: &str, size: u16, color: [u8; 3]) -> macroquad::texture::Image {
-        let (width, height) = self.prepare(text, size, None, false, false);
+    pub(crate) fn button(&self, text: &str, size: u16, color: [u8; 3]) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, size, None, 0, false);
         self.rasterize(width, height, color)
+    }
+
+    pub(crate) fn paragraph(&self, text: &str, width: u16, alignment: i32) -> macroquad::texture::Image {
+        let (_, height) = self.prepare(text, 17, Some(width), alignment, true);
+        self.rasterize(width, height, [215; 3])
     }
 
     fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {

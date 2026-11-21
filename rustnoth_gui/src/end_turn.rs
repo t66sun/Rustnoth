@@ -45,7 +45,7 @@ impl Mode {
 
 fn acted_this_turn(history: &[Event]) -> bool {
     let last_action = history.iter().rev().find(|event| !matches!(event, Event::Dismiss));
-    matches!(last_action, Some(Event::Player(action, _)) if *action != Action::EndTurn)
+    matches!(last_action, Some(Event::Player(action, ..)) if *action != Action::EndTurn)
 }
 
 pub(super) fn side_overrides(config: &wml::Node) -> Vec<bool> {
@@ -146,6 +146,6 @@ no_turn_confirmation=yes
         session.apply(Action::EndTurn).unwrap();
         assert_eq!(Mode::NoMoves.prompt(&session, &[]), Some(NO_MOVES));
         assert_eq!(Mode::NoMoves.prompt(&session, &overrides), None);
-        assert!(!acted_this_turn(&[Event::Computer, Event::Dismiss]));
+        assert!(!acted_this_turn(&[Event::Computer(None), Event::Dismiss]));
     }
 }
