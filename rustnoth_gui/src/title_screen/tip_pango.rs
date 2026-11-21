@@ -178,9 +178,18 @@ impl Text {
         self.rasterize(width, height, [215; 3])
     }
 
+    pub(crate) fn text_width(&self, text: &str, size: u16) -> u16 {
+        self.prepare(text, size, None, 0, false).0
+    }
+
     pub(crate) fn button(&self, text: &str, size: u16, color: [u8; 3]) -> macroquad::texture::Image {
         let (width, height) = self.prepare(text, size, None, 0, false);
         self.rasterize(width, height, color)
+    }
+
+    pub(crate) fn hex_report(&self, text: &str) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, 13, None, 1, false);
+        self.rasterize(width, height, [221; 3])
     }
 
     pub(crate) fn paragraph(&self, text: &str, width: u16, alignment: i32) -> macroquad::texture::Image {

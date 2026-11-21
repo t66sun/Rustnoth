@@ -32,7 +32,7 @@ pub mod carryover;
 mod amla_tests;
 mod illumination;
 mod teleport;
-mod walk;
+pub mod walk;
 mod vision;
 mod recruit;
 mod plague;
@@ -455,13 +455,13 @@ impl<'data> FixedMatch<'data> {
     /// Execute this side's movement once, recording the reached route for presentation.
     pub fn move_with_trace(&mut self, from: Hex, to: Hex, trace: &mut Vec<Hex>) -> Result<MatchState, MatchError> {
         trace.clear();
-        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(trace))
+        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(walk::Trace::Own(trace)))
     }
 
     fn step_with_choices(
         &mut self, action: Action, attacker: Option<&str>, defender: Option<&str>,
         display: Option<(usize, &mut Option<combat_display::VisibleCombat>)>,
-        movement_trace: Option<&mut Vec<Hex>>,
+        movement_trace: Option<walk::Trace<'_>>,
     ) -> Result<MatchState, MatchError> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);

@@ -3,6 +3,7 @@ use std::{fs, io, path::{Path, PathBuf}};
 
 pub(super) struct Document {
     pub map: EditableMap,
+    pub locations: super::locations::Locations,
     pub history: History,
     pub camera: BoardCamera,
     pub path: Option<PathBuf>,
@@ -10,7 +11,12 @@ pub(super) struct Document {
 
 impl Document {
     fn blank() -> Self {
-        Self { map: new_map(), history: History::default(), camera: BoardCamera::default(), path: None }
+        Self::new(new_map(), None)
+    }
+
+    fn new(map: EditableMap, path: Option<PathBuf>) -> Self {
+        Self { locations: super::locations::Locations::new(&map), map,
+            history: History::default(), camera: BoardCamera::default(), path }
     }
 
     pub fn name(&self) -> &str {
@@ -29,7 +35,7 @@ impl Default for Documents {
 
 impl Documents {
     pub fn new_map(&mut self, map: EditableMap) {
-        self.list.push(Document { map, path: None, camera: BoardCamera::default(), history: History::default() });
+        self.list.push(Document::new(map, None));
         self.current = self.list.len() - 1;
     }
 
@@ -43,7 +49,7 @@ impl Documents {
         if map.map().width() < 1 || map.map().height() < 1 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Map contains no playable hexes"));
         }
-        self.list.push(Document { map, path: Some(path), history: History::default(), camera: BoardCamera::default() });
+        self.list.push(Document::new(map, Some(path)));
         self.current = self.list.len() - 1;
         Ok(())
     }

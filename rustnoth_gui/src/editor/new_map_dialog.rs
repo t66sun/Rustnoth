@@ -37,7 +37,7 @@ pub(super) async fn show(root: &Path, assets: &AssetCatalog, art: &mut Art,
         set_camera(&dialog::setup_camera(w,h));
         draw_texture_ex(&background,0.,0.,WHITE,DrawTextureParams { dest_size:Some(vec2(w,h)),..Default::default() });
         draw_rectangle(panel.x,panel.y,panel.w,panel.h,Color::from_rgba(114,79,46,255));
-        art.image(assets,"dialogs/opaque-background.png",Rect::new(panel.x+2.,panel.y+2.,panel.w-4.,panel.h-4.));
+        art.panel(assets,"dialogs/opaque-background.png",Rect::new(panel.x+2.,panel.y+2.,panel.w-4.,panel.h-4.));
         dialog::text(font,"New Map",panel.x+15.,panel.y+35.,22,dialog::GOLD);
         if is_key_pressed(KeyCode::Tab) {
             let back = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
