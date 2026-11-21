@@ -12,6 +12,10 @@ pub struct Node {
 }
 
 impl Node {
+    pub(crate) fn set_literal(&mut self, name: &str, value: impl ToString) {
+        self.attributes.insert(name.to_owned(), Value { text: value.to_string(), translations: Vec::new() });
+    }
+
     pub fn attribute(&self, name: &str) -> Option<&str> {
         self.attributes.get(name).map(|value| value.text.as_str())
     }

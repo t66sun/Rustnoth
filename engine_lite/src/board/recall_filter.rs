@@ -15,6 +15,31 @@ enum Selector {
 }
 
 impl RecallFilter {
+    // Store resolved type trees from the previous scenario's catalog.
+    pub(super) fn config(&self) -> Option<Node> {
+        if self.0.is_empty() { return None; }
+        let mut node = Node::default();
+        let mut resolved_types: Option<BTreeSet<String>> = None;
+        for selector in &self.0 {
+            let (key, ids) = match selector {
+                Selector::Unsupported => {
+                    node.children.push(("unsupported".into(), Node::default()));
+                    return Some(node);
+                }
+                Selector::Type(ids) => {
+                    if let Some(types) = &mut resolved_types { types.retain(|id| ids.contains(id)); }
+                    else { resolved_types = Some(ids.clone()); }
+                    continue;
+                }
+                Selector::Race(ids) => ("race", ids),
+                Selector::Id(ids) => ("id", ids),
+            };
+            node.set_literal(key, ids.iter().cloned().collect::<Vec<_>>().join(","));
+        }
+        if let Some(types) = resolved_types { node.set_literal("type", types.into_iter().collect::<Vec<_>>().join(",")); }
+        Some(node)
+    }
+
     pub(super) fn read(node: Option<Node>, types: &BTreeMap<String, UnitType>) -> Self {
         let Some(node) = node else { return Self::default() };
         if !node.children.is_empty() {
