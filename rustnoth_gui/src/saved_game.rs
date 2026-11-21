@@ -289,6 +289,7 @@ mod tests {
                 weapon: 2,
             }),
             Some("Knight".into()),
+            None,
         );
         assert_eq!(Event::decode(&preferred.encode()).unwrap(), preferred);
         fs::remove_dir_all(temp).unwrap();

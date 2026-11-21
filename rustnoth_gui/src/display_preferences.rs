@@ -21,6 +21,18 @@ const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
 const SKIP_AI: Setting = Setting { file: "skip-ai-moves", off: "off", on: "on" };
 const SAVE_REPLAYS: Setting = Setting { file: "save-replays", off: "off", on: "on" };
 
+#[derive(Clone, Copy)]
+pub(crate) enum HexReport { Coordinates, Terrain }
+
+impl HexReport {
+    fn setting(self) -> Setting {
+        let file = match self { Self::Coordinates => "editor-draw-coordinates", Self::Terrain => "editor-draw-terrain-codes" };
+        Setting { file, off: "off", on: "on" }
+    }
+    pub fn load(self) -> io::Result<bool> { self.setting().read(&config_directory()?) }
+    pub fn save(self, value: bool) -> io::Result<()> { self.setting().write(&config_directory()?, value) }
+}
+
 impl Setting {
     fn read(&self, dir: &Path) -> io::Result<bool> {
         self.read_or(dir, false)
@@ -53,6 +65,51 @@ pub fn save_replays() -> io::Result<bool> { SAVE_REPLAYS.read_or(&config_directo
 pub fn set_save_replays(enabled: bool) -> io::Result<()> { SAVE_REPLAYS.write(&config_directory()?, enabled) }
 pub fn save_skip_ai_moves(enabled: bool) -> io::Result<()> { SKIP_AI.write(&config_directory()?, enabled) }
 
+const EDITOR_HELP: Setting = Setting { file: "editor-help-text-shown", off: "off", on: "on" };
+pub fn editor_help() -> io::Result<bool> { EDITOR_HELP.read_or(&config_directory()?, true) }
+pub fn save_editor_help(enabled: bool) -> io::Result<()> { EDITOR_HELP.write(&config_directory()?, enabled) }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MiniLayer { Terrain, Units, Villages, TeamColors, TerrainImages }
+
+impl MiniLayer {
+    pub const ALL: [Self;5] = [Self::Terrain, Self::Units, Self::Villages, Self::TeamColors, Self::TerrainImages];
+
+    fn setting(self) -> Setting {
+        let file = match self {
+            Self::Terrain => "minimap-draw-terrain",
+            Self::Units => "minimap-draw-units",
+            Self::Villages => "minimap-draw-villages",
+            Self::TeamColors => "minimap-unit-coding",
+            Self::TerrainImages => "minimap-terrain-coding",
+        };
+        Setting {file, off:"off", on:"on"}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MiniLayers([bool; 5]);
+
+impl Default for MiniLayers {
+    fn default() -> Self { Self([true; 5]) }
+}
+
+impl MiniLayers {
+    pub fn load() -> Self {
+        let Ok(dir) = config_directory() else { return Self::default() };
+        Self(MiniLayer::ALL.map(|layer| layer.setting().read_or(&dir, true).unwrap_or(true)))
+    }
+
+    pub fn enabled(self, layer: MiniLayer) -> bool { self.0[layer as usize] }
+
+    pub fn toggle(&mut self, layer: MiniLayer, dir: &Path) -> io::Result<()> {
+        let next = !self.enabled(layer);
+        layer.setting().write(dir, next)?;
+        self.0[layer as usize] = next;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +136,10 @@ mod tests {
         fs::remove_file(dir.join("skip-ai-moves")).unwrap();
         assert!(!WINDOW.read(&dir).unwrap());
         fs::remove_file(dir.join("map-grid")).unwrap();
+        assert!(EDITOR_HELP.read_or(&dir, true).unwrap());
+        EDITOR_HELP.write(&dir, false).unwrap();
+        assert!(!EDITOR_HELP.read_or(&dir, true).unwrap());
+        fs::remove_file(dir.join(EDITOR_HELP.file)).unwrap();
         fs::remove_file(dir.join("window-mode")).unwrap();
         fs::remove_dir(dir).unwrap();
     }
