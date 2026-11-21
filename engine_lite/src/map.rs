@@ -22,6 +22,16 @@ pub struct ScenarioMap {
     special_locations: HashMap<String, Hex>,
 }
 
+/// Terrain and current visibility for explored, non-playable display hexes.
+pub type KnownBorder<'a> = std::collections::BTreeMap<Hex, (&'a str, bool)>;
+
+/// The authored half-hexes surrounding the playable rectangle.
+pub fn border_positions(width: i32, height: i32) -> impl Iterator<Item = Hex> {
+    (-1..=width)
+        .flat_map(move |x| [Hex { x, y: -1 }, Hex { x, y: height }])
+        .chain((0..height).flat_map(move |y| [Hex { x: -1, y }, Hex { x: width, y }]))
+}
+
 impl ScenarioMap {
     /// Reads scenario map data. Terrain codes are kept as text without a terrain catalog.
     pub fn parse(text: &str) -> Result<Self, MapParseError> {
