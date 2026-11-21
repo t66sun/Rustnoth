@@ -3,11 +3,12 @@ use std::{error::Error, fs, path::Path};
 
 use engine_lite::{campaign, fixed_match::Action, hex::Hex, wml::{self, Node}, wml_emit};
 use macroquad::prelude::*;
-use rustnoth_gui::{save_replay::Event, session::{Players, Session}, team_colors::TeamColors};
+use rustnoth_gui::{save_replay::Event, session::{Players, Session}};
 
 use crate::{BoardData, desktop, dialog, render, show_board};
 
 mod opening;
+mod introduction;
 mod healing;
 mod recruiting;
 mod end_turn;
@@ -245,7 +246,6 @@ pub(super) fn draw_prompt(prompt: &str, font: Option<&Font>) {
 
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
-    let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
     let installed = root.to_owned();
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
     loop {
@@ -260,6 +260,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let maps = root.join(desktop::TUTORIAL).join("maps");
     let mut selected = campaign::select(&definition, FIRST_SCENARIO, |file| fs::read_to_string(maps.join(file)))?;
     mode.classify(&mut selected);
+    let Some(hero) = introduction::choose(&selected, core, &maps, root, seed).await? else { return Ok(()) };
     let (_, scenario) = selected.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
     let lesson = opening::prepare(scenario, hero)?;
     crate::campaign_browser::modifications::apply(scenario, modifications)?;
@@ -268,50 +269,6 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let mut board = BoardData::from_source(&bytes, core, maps, root.to_owned(), seed)?;
     board.lesson = Some(lesson);
     show_board(board, Players::Campaign).await
-}
-
-async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<Hero>, Box<dyn Error>> {
-    let images = root.join(desktop::TUTORIAL).join("images/units");
-    let colors = TeamColors::parse(&fs::read(root.join("data/core/team-colors.cfg"))?)?;
-    let sprites = [
-        render::load_texture(&images.join("konrad-fighter.png"), None).ok_or("missing Konrad tutorial sprite")?,
-        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing Li’sar tutorial sprite")?,
-    ];
-    let heroes = [Hero::Konrad, Hero::Lisar];
-    let mut focus = 0;
-    let mut pressed = None;
-    let mut previous_pointer = mouse_position();
-    loop {
-        let frame = form.begin(246.0);
-        let panel = frame.panel;
-        let font = form.font.as_ref();
-        let center = panel.x + panel.w * 0.5;
-        dialog::text(font, "Select Character", panel.x + 22.0, panel.y + 34.0, 24, dialog::GOLD);
-        dialog::text(font, "Who do you want to play as?", panel.x + 22.0, panel.y + 70.0, 18, dialog::PALE);
-        let buttons = [Rect::new(center - 141.0, panel.y + 173.0, 132.0, 40.0),
-            Rect::new(center + 9.0, panel.y + 173.0, 132.0, 40.0)];
-        let hovered = buttons.iter().position(|b| b.contains(frame.mouse));
-        if previous_pointer != mouse_position() {
-            if let Some(index) = hovered { focus = index; }
-            previous_pointer = mouse_position();
-        }
-        if [KeyCode::Left, KeyCode::Right, KeyCode::Tab].into_iter().any(is_key_pressed) { focus = 1 - focus; }
-        if frame.clicked { pressed = hovered; }
-        let clicked = if is_mouse_button_released(MouseButton::Left) { pressed.take().filter(|i| Some(*i) == hovered) } else { None };
-        for (index, bounds) in buttons.into_iter().enumerate() {
-            let cx = bounds.x + bounds.w * 0.5;
-            draw_texture(&sprites[index], cx - sprites[index].width() * 0.5, bounds.y - sprites[index].height(), WHITE);
-            dialog::button(bounds, hovered == Some(index), index == focus);
-            let label = heroes[index].name();
-            let width = measure_text(label, font, 18, 1.0).width;
-            dialog::text(font, label, cx - width * 0.5, bounds.y + 26.0, 18, dialog::PALE);
-        }
-        set_default_camera();
-        if is_key_pressed(KeyCode::Escape) { return Ok(None); }
-        if frame.confirm { return Ok(Some(heroes[focus])); }
-        if let Some(index) = clicked { return Ok(Some(heroes[index])); }
-        next_frame().await;
-    }
 }
 
 #[test]
