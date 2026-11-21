@@ -74,6 +74,10 @@ impl Documents {
         self.list.iter().enumerate().map(|(i, doc)| format!("{}{}{}",
             if i == self.current { "✓ " } else { "" }, doc.name(), if doc.map.dirty() { " *" } else { "" })).collect()
     }
+
+    pub fn save_targets(&self, all: bool) -> std::ops::Range<usize> {
+        if all { 0..self.list.len() } else { self.current..self.current+1 }
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +115,8 @@ mod tests {
         original.history.finish();
         docs.new_map();
         assert_eq!(docs.titles(), ["Untitled *", "✓ Untitled"]);
+        assert_eq!(docs.save_targets(true), 0..2);
+        assert_eq!(docs.save_targets(false), 1..2);
         assert_eq!(docs.list[1].map.map().terrain_at(hex), Some("Gg"));
         docs.close();
         let original = &mut docs.list[docs.current];
