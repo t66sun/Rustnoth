@@ -45,11 +45,15 @@ pub(super) fn catalog(
     directory: &Path,
 ) -> Result<(Node, HashMap<String, Campaign>), Box<dyn Error>> {
     let folders = folders_by_define(directory)?;
+    let mut mods = Vec::new();
     let mut descriptors: Vec<_> = config
         .children
         .into_iter()
-        .filter(|(tag, cfg)| tag == "campaign" && cfg.attribute("type") != Some("mp"))
-        .map(|(_, n)| n)
+        .filter_map(|(tag, cfg)| match tag.as_str() {
+            "campaign" if cfg.attribute("type") != Some("mp") => Some(cfg),
+            "modification" if super::modifications::eligible(&cfg) => { mods.push((tag, cfg)); None }
+            _ => None,
+        })
         .collect();
     descriptors.sort_by_key(|n| {
         n.attribute("rank")
@@ -98,6 +102,7 @@ pub(super) fn catalog(
     if installed.is_empty() {
         return Err("No installed single-player campaigns were found".into());
     }
+    result.children.extend(mods);
     Ok((result, installed))
 }
 
