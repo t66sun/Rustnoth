@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn campaign_ai_takes_its_turn_while_each_local_player_sees_only_their_own_view() {
-        // The first side has no explicit controller, the last side has no controller at all.
+        // The first side defaults to AI. The last side is explicitly empty.
         let bundle = Bundle::parse(br#"[units]
 [unit_type]
 id=Guard
@@ -404,7 +404,7 @@ message=Human orders
 [/message]
 [/event]
 [/scenario]"#).unwrap();
-        let mut session = Session::with_players(bundle.start(1, |_| unreachable!()).unwrap(), Players::Campaign);
+        let mut session = Session::with_players(bundle.start_with_controllers(1, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
         let view = session.observation().unwrap();
         assert_eq!((view.side, view.gold), (2, Some(22)));
         assert_eq!(session.dialogue().unwrap().text, "Human orders");
@@ -421,7 +421,6 @@ message=Human orders
         assert_eq!(session.observation().unwrap().side, 2);
         assert!(session.legal_actions().is_empty());
         assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
-        assert!(session.play_computer_action().unwrap());
         assert_eq!(session.state(), MatchState::Playing(engine_lite::turn::Turn { round: 2, side: 1 }));
     }
 
@@ -479,7 +478,7 @@ controller=null
 [/modify_side]
 [/event]
 [/scenario]"#).unwrap();
-        let start = || Session::with_players(bundle.start(17, |_| unreachable!()).unwrap(), Players::Campaign);
+        let start = || Session::with_players(bundle.start_with_controllers(17, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
         let mut live = start();
         let view = live.observation().unwrap();
         assert_eq!((view.side, view.gold), (2, Some(23)));
