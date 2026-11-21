@@ -131,7 +131,7 @@ mod tests {
             [brush]\nid=brush-3\nradius=2\n[relative]\nx=0\n[/relative]\n[/brush]\n\
             [terrain_type]\nstring=Ww\neditor_group=water\nsymbol_image=water\n[/terrain_type]").unwrap();
         let mut shapes = Shapes::from_config(&cfg);
-        let palette = Palette::new(&cfg).unwrap();
+        let palette = Palette::new(&cfg, &Default::default()).unwrap();
         let mut doc = new_map();
         let mut history = History::default();
         let first = shapes.footprint(doc.map(), Hex { x: 1, y: 2 });

@@ -76,6 +76,10 @@ impl<'rules> Session<'rules> {
 
     pub fn history(&self) -> &[crate::save_replay::Event] { &self.history }
 
+    pub fn has_unused_unit(&self, unmoved_only: bool) -> bool {
+        self.observation().is_some_and(|view| self.game.has_unused_unit(view, unmoved_only))
+    }
+
     pub fn dismiss_dialogue(&mut self) {
         if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
     }
