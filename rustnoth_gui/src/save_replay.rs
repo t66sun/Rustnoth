@@ -10,8 +10,8 @@ use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    Player(Action, Option<String>),
-    Computer,
+    Player(Action, Option<String>, Option<u32>),
+    Computer(Option<u32>),
     Dismiss,
 }
 
@@ -32,10 +32,10 @@ pub fn invalid(reason: &str) -> io::Error {
 impl Event {
     pub fn apply(&self, session: &mut Session<'_>) -> Result<(), Box<dyn std::error::Error>> {
         match self {
-            Self::Player(action, choice) => {
-                session.apply_with_advancement(action.clone(), choice.as_deref())?;
+            Self::Player(action, choice, seed) => {
+                session.apply_with_seed(action.clone(), choice.as_deref(), None, *seed)?;
             }
-            Self::Computer if session.play_computer_action()? => {}
+            Self::Computer(seed) if session.play_computer_with_seed(*seed)? => {}
             Self::Dismiss if session.dialogue().is_some() => session.dismiss_dialogue(),
             _ => return Err(invalid("Saved command does not match the current turn").into()),
         }
@@ -44,14 +44,17 @@ impl Event {
 
     pub fn encode(&self) -> Node {
         let mut node = Node::default();
+        if let Self::Player(_, _, Some(seed)) | Self::Computer(Some(seed)) = self {
+            set(&mut node, "attack_seed", seed);
+        }
         let at = |n: &mut Node, x, y, p: Hex| {
             set(n, x, p.x);
             set(n, y, p.y)
         };
         let kind = match self {
-            Self::Computer => "computer",
+            Self::Computer(_) => "computer",
             Self::Dismiss => "dismiss_dialogue",
-            Self::Player(action, choice) => {
+            Self::Player(action, choice, _) => {
                 if let Some(id) = choice {
                     set(&mut node, "advance", id);
                 }
@@ -105,8 +108,14 @@ impl Event {
                 y: coordinate(y)?,
             })
         };
-        let action = match field("kind")? {
-            "computer" => return Ok(Self::Computer),
+        let kind = field("kind")?;
+        let seed = node.attribute("attack_seed").map(|s| s.parse::<u32>())
+            .transpose().map_err(|_| invalid("Invalid saved attack seed"))?;
+        if seed.is_some() && !matches!(kind, "computer" | "attack") {
+            return Err(invalid("Unexpected seed on a non-combat command"));
+        }
+        let action = match kind {
+            "computer" => return Ok(Self::Computer(seed)),
             "dismiss_dialogue" => return Ok(Self::Dismiss),
             "end_turn" => Action::EndTurn,
             "move" => Action::Move {
@@ -136,6 +145,7 @@ impl Event {
         Ok(Self::Player(
             action,
             node.attribute("advance").map(str::to_owned),
+            seed,
         ))
     }
 }
