@@ -401,8 +401,9 @@ pub(crate) async fn show(
             .unwrap_or(150)
             .max(120);
         let since = get_time();
+        let rate = f64::from(art.animation_rate());
         loop {
-            let time = start.saturating_add(((get_time() - since) * 1000.0) as i64);
+            let time = start.saturating_add(((get_time() - since) * 1000.0 * rate) as i64);
             if is_key_pressed(KeyCode::Escape) {
                 next_frame().await;
                 break 'combat;
