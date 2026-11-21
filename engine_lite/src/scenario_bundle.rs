@@ -83,7 +83,20 @@ impl Bundle {
         read_map_file: impl FnOnce(&str) -> io::Result<String>,
         carryover: Option<&mut crate::fixed_match::carryover::CampaignCarryover>,
     ) -> Result<FixedMatch<'_>, Box<dyn Error>> {
+        self.start_with_controllers(seed, read_map_file, carryover, false)
+    }
+
+    /// Single-player campaigns follow WML controller changes. Hotseat and fixed
+    /// matches supply their own players, including when restoring older replays.
+    pub fn start_with_controllers(
+        &self,
+        seed: u32,
+        read_map_file: impl FnOnce(&str) -> io::Result<String>,
+        carryover: Option<&mut crate::fixed_match::carryover::CampaignCarryover>,
+        skip_null_controllers: bool,
+    ) -> Result<FixedMatch<'_>, Box<dyn Error>> {
         let mut start = scenario_start::load(&self.scenario, &self.unit_types, read_map_file)?;
+        start.skip_null_controllers = skip_null_controllers;
         let claimed = match &carryover {
             Some(route) => route.restore_units(&self.scenario, &mut start.board)?,
             None => Default::default(),
@@ -135,6 +148,67 @@ fn read_resistance(units: &Node) -> BTreeMap<String, DamageTable> {
 mod tests {
     use super::*;
     use crate::fixed_match::Action;
+
+    #[test]
+    fn campaign_skips_null_turns_after_events_and_wraps_at_the_last_playing_side() {
+        use crate::{fixed_match::MatchState, turn::Turn};
+        let side = |n, controller| format!("[side]\nside={n}\ncontroller={controller}\ndefeat_condition=never\ngold=0\n[/side]\n");
+        let sides = [side(1, "null"), side(2, "human"), side(3, "null"), side(4, "null"),
+                     side(5, "ai"), side(6, "null")].concat();
+        let events = r#"
+[event]
+name=side 5 turn 1 end
+[modify_side]
+side=6
+controller=ai
+[/modify_side]
+[/event]
+[event]
+name=turn 1 end
+[gold]
+side=5
+amount=7
+[/gold]
+[/event]
+[event]
+name=side 1 turn,side 3 turn,side 4 turn,side 1 turn end,side 3 turn refresh
+[gold]
+side=1
+amount=100
+[/gold]
+[/event]
+"#;
+        let source = format!("[units]\n[/units]\n[scenario]\nturns=2\nmap_data=\"Xv,Xv,Xv\nXv,Gg,Xv\nXv,Xv,Xv\"\n{sides}{events}\n[/scenario]");
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let playing = |round, side| MatchState::Playing(Turn { round, side });
+        let start = |controllers| bundle.start_with_controllers(7, |_| unreachable!(), None, controllers).unwrap();
+        assert_eq!(start(false).state(), playing(1, 1)); // standalone hotseat
+        let mut game = start(true);
+        assert_eq!(game.state(), playing(1, 2));
+        assert_eq!(game.step(Action::EndTurn).unwrap(), playing(1, 5));
+        // The final dormant side was activated at side-turn end. Round end waits for it.
+        assert_eq!(game.step(Action::EndTurn).unwrap(), playing(1, 6));
+        assert_eq!(game.audit_snapshot().gold[4], 0);
+        assert_eq!(game.step(Action::EndTurn).unwrap(), playing(2, 2));
+        assert_eq!(game.audit_snapshot().gold, [0, 2, 0, 0, 7, 0]);
+        assert_eq!(game.step(Action::EndTurn).unwrap(), playing(2, 5));
+        assert_eq!(game.step(Action::EndTurn).unwrap(), playing(2, 6));
+        assert_eq!(game.step(Action::EndTurn).unwrap(), MatchState::Draw);
+        assert_eq!(game.audit_snapshot().gold, [0, 2, 0, 0, 9, 2]);
+    }
+
+    #[test]
+    fn all_null_campaigns_require_a_playing_side_unless_the_opening_already_ended() {
+        use crate::fixed_match::{MatchError, MatchState};
+        let source = "[units]\n[/units]\n[scenario]\nmap_data=\"Xv,Xv,Xv\nXv,Gg,Xv\nXv,Xv,Xv\"\n";
+        let sides = "[side]\ncontroller=null\ndefeat_condition=never\n[/side]\n".repeat(2);
+        let read = |event| Bundle::parse(format!("{source}{sides}{event}\n[/scenario]").as_bytes()).unwrap();
+        let empty = read("");
+        let error = empty.start_with_controllers(7, |_| unreachable!(), None, true).err().unwrap();
+        assert_eq!(error.downcast_ref::<MatchError>(), Some(&MatchError::EmptyTurnController));
+        let ended = read("[event]\nname=start\n[endlevel]\nresult=victory\n[/endlevel]\n[/event]");
+        assert_eq!(ended.start_with_controllers(7, |_| unreachable!(), None, true).unwrap().state(), MatchState::CampaignVictory);
+    }
 
     #[test]
     fn replaying_the_saved_campaign_classification_reproduces_biased_strikes() {
