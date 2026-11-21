@@ -201,11 +201,13 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn with_events(&mut self, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
-        self.with_events_at(None, handle)
+        self.with_events_at(None, None, handle)
     }
 
-    fn with_events_at(&mut self, primary: Option<Hex>, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
+    fn with_events_at(&mut self, primary: Option<Hex>, secondary: Option<Hex>, handle: impl FnOnce(&mut ScenarioEvents, &mut EventState<'_>)) -> Result<(), MatchError> {
         if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
+        let speaker_ids = [primary, secondary].map(|hex|
+            hex.and_then(|at| self.scenario.board.unit_at(at).map(|unit| unit.serial)));
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
         let mut killed = false;
@@ -217,7 +219,7 @@ impl<'data> FixedMatch<'data> {
                     continue;
                 }
                 BoardChange::Dialogue(message) => {
-                    self.queue_dialogue(message);
+                    self.queue_dialogue(message, speaker_ids);
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -570,7 +572,7 @@ impl<'data> FixedMatch<'data> {
         });
         let primary = context(position);
         let secondary = second.and_then(context);
-        self.with_events_at(Some(position), |events, state| events.dispatch(name, primary, secondary, state))
+        self.with_events_at(Some(position), second, |events, state| events.dispatch(name, primary, secondary, state))
     }
 
     fn capture_village(&mut self, side: usize, to: Hex) -> Result<bool, MatchError> {

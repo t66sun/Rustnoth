@@ -19,6 +19,18 @@ pub(crate) enum DefeatCondition {
     Always,
 }
 
+impl DefeatCondition {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        Some(match value {
+            "no_leader_left" => Self::NoLeaderLeft,
+            "no_units_left" => Self::NoUnitsLeft,
+            "never" => Self::Never,
+            "always" => Self::Always,
+            _ => return None,
+        })
+    }
+}
+
 /// Literal scenario objectives shown by the desktop client.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScenarioObjectives {
@@ -125,12 +137,8 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
             Some("reserved") => SideController::Reserved,
             _ => SideController::Ai,
         },
-        defeat_condition: match cfg.attribute("defeat_condition") {
-            Some("no_units_left") => DefeatCondition::NoUnitsLeft,
-            Some("never") => DefeatCondition::Never,
-            Some("always") => DefeatCondition::Always,
-            _ => DefeatCondition::NoLeaderLeft,
-        },
+        defeat_condition: cfg.attribute("defeat_condition").and_then(DefeatCondition::from_wml)
+            .unwrap_or(DefeatCondition::NoLeaderLeft),
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
         fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),

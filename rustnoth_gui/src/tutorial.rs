@@ -10,6 +10,7 @@ use crate::{BoardData, desktop, dialog, render, show_board};
 mod opening;
 mod healing;
 mod recruiting;
+mod practice;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -43,7 +44,7 @@ impl Hero {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, Complete }
+enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, Practice, Complete }
 
 pub(super) struct Lesson {
     step: Step,
@@ -77,7 +78,7 @@ impl Lesson {
             Step::ToVillage => &self.healing.village_prompt,
             Step::ToKeep => &self.recruiting.keep_prompt,
             Step::Recruit => &self.recruiting.recruit_prompt,
-            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Complete => return,
+            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Practice | Step::Complete => return,
         };
         let view = render::board_viewport();
         let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
@@ -97,12 +98,15 @@ impl Lesson {
             (Step::ToVillage, Action::Move { to, .. }) => self.healing.villages.contains(to),
             (Step::ToKeep, Action::Move { to, .. }) => *to == self.recruiting.keep,
             (Step::ToKeep | Step::Recruit, Action::Attack(_)) => true,
-            (Step::Recruit, Action::Recruit { .. }) | (Step::EndThird, _) => true,
+            (Step::Recruit, Action::Recruit { .. }) | (Step::EndThird | Step::Practice, _) => true,
             _ => false,
         });
     }
 
     pub(super) fn advance(&mut self, session: &mut Session<'_>) {
+        if practice::guardians_have_arrived(session) {
+            self.step = Step::Practice;
+        }
         self.step = match self.step {
             Step::Approach => Step::Attack,
             Step::Attack => {
@@ -137,6 +141,9 @@ impl Lesson {
 
     pub(super) fn after_computer(&mut self, session: &mut Session<'_>) {
         use engine_lite::fixed_match::MatchState;
+        if practice::guardians_have_arrived(session) {
+            self.step = Step::Practice;
+        }
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }

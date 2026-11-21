@@ -24,6 +24,7 @@ use crate::{
 pub(crate) enum SideAction {
     Gold(i32),
     Economy {
+        defeat_condition: Option<crate::scenario_sides::DefeatCondition>,
         gold: Option<i32>,
         income: Option<i32>,
         village_gold: Option<i32>,
@@ -257,11 +258,15 @@ impl EventAction {
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
-                !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support")
+                !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support" | "defeat_condition")
                     || !value.translations.is_empty() || value.text.contains('$')
             }) { return None; }
             let number = |key| cfg.attribute(key).map(|value| value.trim().parse::<i32>()).transpose();
             let action = SideAction::Economy {
+                defeat_condition: match cfg.attribute("defeat_condition") {
+                    Some(value) => Some(crate::scenario_sides::DefeatCondition::from_wml(value)?),
+                    None => None,
+                },
                 gold: number("gold").ok()?,
                 income: number("income").ok()?,
                 village_gold: number("village_gold").ok()?,
@@ -344,7 +349,8 @@ impl SideAction {
             match self {
                 SideAction::Objectives(objectives) => teams[index].objectives.clone_from(objectives),
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
-                SideAction::Economy { gold, income, village_gold, village_support } => {
+                SideAction::Economy { gold, income, village_gold, village_support, defeat_condition } => {
+                    if let Some(rule) = defeat_condition { teams[index].defeat_condition = *rule; }
                     let side = &mut teams[index];
                     if let Some(value) = gold { funds[index] = i64::from(*value); }
                     if let Some(value) = income { side.income_bonus = *value; }
