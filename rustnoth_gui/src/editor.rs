@@ -120,6 +120,7 @@ enum Command {
     Undo,
     Redo,
     FillSelection,
+    ToggleGrid,
 }
 
 impl Command {
@@ -133,6 +134,7 @@ impl Command {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
+            Self::ToggleGrid => "Toggle Grid",
         }
     }
 }
@@ -161,6 +163,7 @@ fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observa
 
 fn draw_terrain(
     rules: &EditorTerrain,
+    grid: Option<&render::GridArt>,
     view: &Observation,
     layout: &BoardLayout,
     area: Viewport,
@@ -184,14 +187,18 @@ fn draw_terrain(
                 for x in (lo_x..=hi_x).filter(|x| x.rem_euclid(2) == odd) {
                     let hex = Hex { x, y };
                     let [left, top] = layout.tile_origin(hex);
+                    let center = vec2(left + size * 0.5, top + size * 0.5);
                     rules.draw(
                         hex,
-                        vec2(left + size * 0.5, top + size * 0.5),
+                        center,
                         size,
                         front,
                         "",
                         ms,
                     );
+                    if !front && let Some(grid) = grid {
+                        grid.draw(center, size);
+                    }
                     if front && history.selected.contains(&hex) {
                         art.image(assets, "editor/selection-overlay.png", Rect::new(left, top, size, size));
                     }
@@ -256,6 +263,7 @@ fn text_button(
 }
 
 struct Chrome {
+    show_grid: bool,
     menu: Option<bool>,
     tip: Option<&'static str>,
     toolbar: toolbar::Toolbar,
@@ -316,7 +324,7 @@ impl Chrome {
                 triggered = true;
             }
         }
-        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), doc, history,
+        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
             assets, art, &mut self.tip);
         let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
         dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
@@ -401,10 +409,12 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut camera = BoardCamera::default();
     let mut history = History::default();
     let mut chrome = Chrome {
+        show_grid: crate::display_preferences::grid()?,
         menu: None,
         tip: None,
         toolbar: Default::default(),
     };
+    let grid = render::GridArt::load(&root.join("data/core/images/terrain"));
     let mut name = "Untitled".to_string();
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
@@ -529,6 +539,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if let Some(layout) = camera.layout() {
             draw_terrain(
                 &rules,
+                chrome.show_grid.then_some(&grid),
                 &view,
                 layout,
                 area,
@@ -635,18 +646,35 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if !modal && shift && !ctrl && is_key_pressed(KeyCode::F) {
             command = Some(Command::FillSelection);
         }
+        let grid_modifier = if cfg!(target_os = "macos") {
+            is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
+        } else {
+            is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+        };
+        if !modal && grid_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
+            && !is_key_down(KeyCode::RightAlt) && is_key_pressed(KeyCode::G) {
+            command = Some(Command::ToggleGrid);
+        }
         if is_key_pressed(KeyCode::Escape) && !palette_menu {
             if chrome.menu.take().is_none() {
                 command = Some(Command::Exit);
             }
         }
         if let Some(cmd) = command {
-            drawing = None;
-            selecting = false;
-            last_selection = None;
-            history.finish_selection();
-            rebuild |= history.finish();
+            if cmd != Command::ToggleGrid {
+                drawing = None;
+                selecting = false;
+                last_selection = None;
+                history.finish_selection();
+                rebuild |= history.finish();
+            }
             match cmd {
+                Command::ToggleGrid => {
+                    match crate::display_preferences::save_grid(!chrome.show_grid) {
+                        Ok(()) => chrome.show_grid = !chrome.show_grid,
+                        Err(error) => status = error.to_string(),
+                    }
+                }
                 Command::Exit => {
                     if !doc.dirty() || files::confirm(&form).await {
                         return Ok(());
