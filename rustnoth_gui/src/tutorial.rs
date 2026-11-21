@@ -50,7 +50,7 @@ enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitTh
 pub(super) struct Lesson {
     step: Step,
     mentor: Hex,
-    attack_hint: Node,
+    attack_instructions: [healing::Line; 2],
     select_prompt: String,
     movement_prompt: String,
     healing: healing::Exercises,
@@ -61,12 +61,26 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, attack_hint: Node, healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
-        Self { step: Step::Approach, mentor, attack_hint, select_prompt: format!("Click on {}", hero.name()),
+    fn new(mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
+        Self { step: Step::Approach, mentor, attack_instructions, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+        for line in &mut self.attack_instructions {
+            let cfg = match line {
+                healing::Line::Message(cfg) | healing::Line::Hint(cfg) => cfg,
+            };
+            for key in ["message", "caption"] {
+                if cfg.attributes.contains_key(key) {
+                    let text = locale.attribute(root, cfg, key, "");
+                    put(cfg, key, &text);
+                }
+            }
+        }
+    }
 
     pub(super) fn selected(&mut self, at: Hex, session: &mut Session<'_>) {
         self.weapons.selected(at, session);
@@ -126,7 +140,7 @@ impl Lesson {
     pub(super) fn advance(&mut self, session: &mut Session<'_>) {
         self.step = match self.step {
             Step::Approach => {
-                session.set_tutorial_hint(&self.attack_hint);
+                healing::say(&self.attack_instructions, session, None);
                 Step::Attack
             }
             Step::Attack => {

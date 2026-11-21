@@ -74,9 +74,11 @@ impl Line {
         if let Some(text) = line.attribute("message").filter(|text| text.contains("$student_hp"))
             && let Some(hp) = student_hp(session) {
             let mut cfg = line.clone();
+            let hp_text = hp.to_string();
             let value = text.replace("$student_hp_heal_amount", &(hp - before_healing.unwrap_or(hp)).to_string())
                 .replace("$($student_hp-15)", &(hp - 15).to_string())
-                .replace("$student_hp", &hp.to_string());
+                .replace("$student_hp|", &hp_text)
+                .replace("$student_hp", &hp_text);
             put(&mut cfg, "message", &value);
             session.present_message(&cfg);
         } else {
