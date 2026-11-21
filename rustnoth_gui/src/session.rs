@@ -347,6 +347,10 @@ impl<'rules> Session<'rules> {
         true
     }
 
+    pub fn known_border(&self) -> engine_lite::map::KnownBorder<'_> {
+        self.observation.as_ref().map(|view| self.game.known_border(view.side)).unwrap_or_default()
+    }
+
     pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
         self.observation.as_ref().map(|view| self.game.map_item_images(view.side)).unwrap_or_default()
     }

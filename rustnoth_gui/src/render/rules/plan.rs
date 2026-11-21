@@ -22,14 +22,13 @@ pub(super) struct Tile {
     pub flags: HashSet<String>,
 }
 
-/// Geometry and terrain come exclusively from the current observation. Unknown neighbors
-/// have no terrain code which could match an authored road, shore or forest.
-pub(super) fn build(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
-    sorted(view, build_with_flags(catalog, view))
+/// Playable terrain comes only from the observation. The referee separately
+/// projects explored border terrain for the display.
+pub(super) fn battlefield(catalog: &Catalog, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) -> HashMap<Hex, Tile> {
+    sorted(view, build_with_flags(catalog, view, border))
 }
 
-/// Standalone map export can use the map file's authored border. Gameplay only
-/// supplies terrain that is present in the current side's observation.
+/// Standalone map export and the editor use the entire authored border.
 pub(super) fn map_tiles(
     catalog: &Catalog,
     view: &Observation,
@@ -50,9 +49,10 @@ fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Til
     tiles
 }
 
-pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation) -> HashMap<Hex, Tile> {
+pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) -> HashMap<Hex, Tile> {
     apply(catalog, view, |at| {
-        (at.x >= -1 && at.y >= -1).then_some("_off^_usr")
+        border.get(&at).map(|&(code, _)| code)
+            .or_else(|| (at.x >= -1 && at.y >= -1).then_some("_off^_usr"))
     })
 }
 
@@ -223,7 +223,7 @@ set_no_flag=claimed
         )
         .unwrap();
         let view = super::super::map_observation(&map);
-        let tiles = build_with_flags(&catalog, &view);
+        let tiles = build_with_flags(&catalog, &view, &Default::default());
         assert!(tiles[&Hex { x: 0, y: 1 }].flags.contains("origin"));
         assert!(tiles[&Hex { x: 0, y: 2 }].flags.contains("claimed"));
         assert!(!tiles[&Hex { x: 0, y: 0 }].flags.contains("claimed"));
@@ -237,12 +237,15 @@ set_no_flag=claimed
         let view = super::super::map_observation(&map);
         let border = Hex { x: 0, y: map.height() };
         assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].flags.contains("forest"));
+        let explored = [(border, ("Gg^Fp", false))].into_iter().collect();
+        assert!(build_with_flags(&catalog, &view, &explored)[&border].flags.contains("forest"));
+        assert!(!build_with_flags(&catalog, &view, &Default::default())[&border].flags.contains("forest"));
 
         let mut obscured = view;
         obscured.height = 2;
         obscured.tiles[0].terrain = "Gg^Fp".into();
         let origin = obscured.tiles[0].position;
-        assert!(!build_with_flags(&catalog, &obscured)[&origin].flags.contains("forest"));
+        assert!(!build_with_flags(&catalog, &obscured, &Default::default())[&origin].flags.contains("forest"));
     }
 
     #[test]
@@ -266,7 +269,7 @@ set_no_flag=claimed
                 time_color: [0; 3],
             }],
         };
-        let tiles = build(&catalog, &view);
+        let tiles = battlefield(&catalog, &view, &Default::default());
         assert!(tiles[&at].flags.contains("base") && tiles[&at].flags.contains("_board"));
         let layers = &tiles[&at].layers;
         assert_eq!(layers.len(), 1);

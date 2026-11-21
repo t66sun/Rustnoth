@@ -129,7 +129,7 @@ pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
     let view = session.observation().ok_or("missing tutorial opening view")?;
     let opening = session.dialogue().ok_or("missing authored tutorial introduction")?;
     let mut art = render::BoardArt::new(root, Speed::load()?)?;
-    art.load(view, &data.assets, session.map_item_images());
+    art.load(view, &data.assets, &session);
     let mut camera = BoardCamera::default();
     camera.update(render::board_viewport(), view, false);
     camera.center_world([0.75*keep.x as f32+0.5, keep.y as f32+0.5*keep.x.rem_euclid(2) as f32+0.5]);

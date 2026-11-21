@@ -314,7 +314,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref(), locale.ui("Skip")).await;
     }
     if let Some(observation) = session.observation() {
-        art.load(observation, &data.assets, session.map_item_images());
+        art.load(observation, &data.assets, &session);
     }
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
@@ -400,7 +400,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     selection.clear();
                     if let Some(view) = session.observation() {
                         selection.select_own(from, view);
-                        art.load(view, &data.assets, session.map_item_images());
+                        art.load(view, &data.assets, &session);
                     }
                     menu = None;
                     message = None;
@@ -488,7 +488,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             lesson.after_computer(&mut session);
         }
         if computer_acted && let Some(view) = session.observation() {
-            art.load(view, &data.assets, session.map_item_images());
+            art.load(view, &data.assets, &session);
             if let Some(walk) = ai_walk { art.start_observed_walk(walk, &data.assets); }
         }
         let clicked = !input_blocked && !computer_acted && is_mouse_button_pressed(MouseButton::Left);
@@ -612,7 +612,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                         if let Some(position) = walk.last().copied().or(reselect) {
                             selection.select_own(position, observation);
                         }
-                        art.load(observation, &data.assets, session.map_item_images());
+                        art.load(observation, &data.assets, &session);
                         art.start_walk(walk, observation, &data.assets);
                     }
                 }
