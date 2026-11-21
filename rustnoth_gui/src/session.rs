@@ -114,7 +114,17 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter().map(PendingLine::from));
+            self.collect_presentation(viewer);
+        }
+    }
+
+    fn collect_presentation(&mut self, viewer: usize) {
+        use engine_lite::fixed_match::dialogue::Presentation;
+        for item in self.game.take_presentation(viewer) {
+            match item {
+                Presentation::Dialogue(line) => self.dialogue.push_back(line.into()),
+                Presentation::TutorialHint(hint) => self.set_tutorial_hint(&hint),
+            }
         }
     }
 
@@ -156,7 +166,7 @@ impl<'rules> Session<'rules> {
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
-            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter().map(PendingLine::from));
+            self.collect_presentation(view.side);
         }
     }
 

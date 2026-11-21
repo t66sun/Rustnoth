@@ -51,6 +51,7 @@ pub(crate) struct PendingAction(Box<EventAction>);
 pub(crate) enum BoardChange {
     HealUnit(crate::board::HealUnit),
     Dialogue(crate::fixed_match::dialogue::Message),
+    TutorialHint(Node),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     PersonalRecruits(PersonalRecruits),
@@ -371,6 +372,9 @@ fn read_actions<'a>(
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
+            "rustnoth_tutorial_hint" if cfg.children.is_empty() && cfg.attributes.iter().all(|(key, value)|
+                    matches!(key.as_str(), "caption" | "message" | "remove") && !value.text.contains('$')) =>
+                EventAction::Board(BoardChange::TutorialHint(cfg.clone())),
             "if" => {
                 if !cfg.attributes.is_empty() { return None; }
                 let mut tests = Vec::new();

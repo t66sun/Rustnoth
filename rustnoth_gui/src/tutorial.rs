@@ -12,6 +12,7 @@ mod healing;
 mod recruiting;
 mod weapons;
 mod ending;
+mod briefing;
 pub(super) use ending::prepare_campaign;
 mod advice;
 
