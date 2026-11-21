@@ -277,6 +277,35 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 
+struct ButtonBacking {
+    pixels: ::image::RgbaImage,
+    sizes: std::cell::RefCell<std::collections::HashMap<(u16, u16), Texture2D>>,
+}
+
+impl ButtonBacking {
+    fn draw(&self, bounds: Rect, state: button_canvas::State) {
+        let width = (bounds.w - 2.).round().max(1.) as u16;
+        let height = (bounds.h - 2.).round().max(1.) as u16;
+        let mut sizes = self.sizes.borrow_mut();
+        let texture = sizes.entry((width, height)).or_insert_with(|| {
+            // At exact half-texels the native nearest sampler takes the higher
+            // texel. Interpolated GPU coordinates can fall just below that tie.
+            let center = |p: u16, src: u32, dst: u16| ((2 * u32::from(p) + 1) * src) / (2 * u32::from(dst));
+            let mut bytes = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+            for y in 0..height {
+                let row = center(y, self.pixels.height(), height);
+                for x in 0..width {
+                    bytes.extend_from_slice(&self.pixels.get_pixel(center(x, self.pixels.width(), width), row).0);
+                }
+            }
+            let tex = Texture2D::from_rgba8(width, height, &bytes);
+            tex.set_filter(FilterMode::Nearest);
+            tex
+        });
+        button_canvas::draw(bounds, texture, state);
+    }
+}
+
 struct Art {
     #[cfg(windows)]
     text_renderer: Option<tip_pango::Text>,
@@ -291,7 +320,7 @@ struct Art {
     map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
-    buttons: [Texture2D; 3],
+    buttons: [ButtonBacking; 3],
     font: Option<Font>,
     italic: Option<Font>,
 }
@@ -413,10 +442,11 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
-        let button = |name: &str| -> Result<Texture2D, Box<dyn Error>> {
-            let texture = texture(name)?;
-            texture.set_filter(FilterMode::Nearest);
-            Ok(texture)
+        let button = |name: &str| -> Result<ButtonBacking, Box<dyn Error>> {
+            Ok(ButtonBacking {
+                pixels: crate::artwork::rgba(&read_file(&root.join(name))?)?,
+                sizes: Default::default(),
+            })
         };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
@@ -500,7 +530,7 @@ impl Art {
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
         use button_canvas::State;
         let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
-        button_canvas::draw(rect, &self.buttons[state as usize], state);
+        self.buttons[state as usize].draw(rect, state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
