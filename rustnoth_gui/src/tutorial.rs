@@ -56,6 +56,7 @@ pub(super) struct Lesson {
     end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
+    attack_hint: Node,
     select_prompt: String,
     movement_prompt: String,
     undo_prompt: String,
@@ -69,8 +70,8 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
-        Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(mentor: Hex, hero: Hero, attack_hint: Node, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
+        Self { attack_hint, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
@@ -92,7 +93,7 @@ impl Lesson {
 
     pub(super) fn select_student(&mut self, session: &mut Session<'_>) -> bool {
         if self.step == Step::Approach && let Some(line) = self.selection_hint.take() {
-            session.present_message(&line);
+            session.set_tutorial_hint(&line);
             return true;
         }
         false
@@ -145,6 +146,7 @@ impl Lesson {
         self.step = match self.step {
             Step::Approach => {
                 if matches!(session.history().last(), Some(Event::Player(Action::Move { to, .. }, _, _)) if to.distance(self.mentor) == 1) {
+                    session.set_tutorial_hint(&self.attack_hint);
                     Step::Attack
                 } else {
                     self.show_undo_prompt = !session.legal_actions().iter().any(|action|
@@ -168,11 +170,11 @@ impl Lesson {
             Step::ToKeep | Step::Recruit if matches!(session.history().last(),
                 Some(rustnoth_gui::save_replay::Event::Player(Action::Attack(_), ..))) => Step::EndThird,
             Step::ToKeep => {
-                session.present_message(&self.recruiting.instruction);
+                session.set_tutorial_hint(&self.recruiting.instruction);
                 Step::Recruit
             }
             Step::Recruit if self.recruiting.recruited(session) => {
-                session.present_message(&self.recruiting.crowns);
+                session.set_tutorial_hint(&self.recruiting.crowns);
                 Step::EndThird
             }
             Step::EndThird if matches!(session.history().last(),
@@ -234,6 +236,7 @@ impl Lesson {
         for event in &session.history()[..session.history().len() - 1] {
             event.apply(&mut restored)?;
         }
+        restored.restore_tutorial_hint(session);
         self.restrict(&mut restored);
         *session = restored;
         self.show_undo_prompt = false;

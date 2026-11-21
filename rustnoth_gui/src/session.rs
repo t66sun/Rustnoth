@@ -157,6 +157,10 @@ impl<'rules> Session<'rules> {
 
     pub fn tutorial_hint(&self) -> &str { &self.tutorial_hint }
 
+    pub fn restore_tutorial_hint(&mut self, previous: &Self) {
+        self.tutorial_hint.clone_from(&previous.tutorial_hint);
+    }
+
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
