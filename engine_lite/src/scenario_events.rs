@@ -7,7 +7,7 @@ pub(crate) mod kill;
 mod items;
 mod have_unit;
 use have_unit::HaveUnit;
-mod variables;
+pub(crate) mod variables;
 mod time_areas;
 pub(crate) use time_areas::TimeAreaChange;
 mod personal_recruits;
@@ -540,9 +540,18 @@ pub(crate) struct ScenarioEvents {
 
 impl ScenarioEvents {
     pub(crate) fn read(scenario: &Node, side_count: usize) -> Self {
+        Self::from_events(scenario, side_count, scenario.children.iter()
+            .filter(|(tag, _)| tag == "event").map(|(_, event)| event))
+    }
+
+    pub(crate) fn accepts_event(scenario: &Node, side_count: usize, event: &Node) -> bool {
+        !Self::from_events(scenario, side_count, [event]).handlers.is_empty()
+    }
+
+    fn from_events<'a>(scenario: &Node, side_count: usize, events: impl IntoIterator<Item=&'a Node>) -> Self {
         let mut handlers = Vec::new();
         let mut ids = BTreeSet::new();
-        for (_, event) in scenario.children.iter().filter(|(tag, _)| tag == "event") {
+        for event in events {
             if let Some(id) = event.attribute("id").filter(|id| !id.is_empty())
                 && !ids.insert(id)
             {

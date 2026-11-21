@@ -4,6 +4,22 @@ use std::{error::Error, io};
 
 use crate::{scenario_map, wml::{Node, Value}};
 
+/// Option values are stored in scalar scenario variables.
+pub fn accepts_option_id(id: &str) -> bool { crate::scenario_events::variables::scalar_name(id) }
+
+/// Append preprocessed single-player modification events in selection order.
+pub fn apply_modification(scenario: &mut Node, modification: &Node) -> Result<(), io::Error> {
+    let sides = scenario.children.iter().filter(|(tag, _)| tag == "side").count();
+    for (tag, event) in &modification.children {
+        if tag == "event" && !crate::scenario_events::ScenarioEvents::accepts_event(scenario, sides, event) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, format!("{}: unsupported event '{}'",
+                modification.attribute("name").unwrap_or("Modification"), event.attribute("name").unwrap_or(""))));
+        }
+    }
+    scenario.children.extend(modification.children.iter().filter(|(tag, _)| tag == "event").cloned());
+    Ok(())
+}
+
 /// Scenario IDs and display names in the order of the original campaign file.
 pub fn scenarios(campaign: &Node) -> impl Iterator<Item = (&str, &str)> {
     campaign.children.iter().filter(|(tag, _)| tag == "scenario").filter_map(|(_, node)| {

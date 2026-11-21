@@ -53,11 +53,11 @@ impl Region {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(super) enum Tool { Paint, Fill, Select }
+pub(super) enum Tool { Paint, Fill, Select, Location, Paste }
 
 impl Tool {
     pub fn panel(self, bounds: Rect, compact: bool, point: Vec2, art: &mut Art, assets: &AssetCatalog,
-                 tip: &mut Option<&'static str>) -> Self {
+                 tip: &mut Option<&'static str>, can_paste: bool) -> Self {
         let background = if compact { "themes/editor/classic/tools-800.png" } else { "themes/editor/classic/tools.png" };
         art.image(assets, background, bounds);
         let (size, left, stride) = if compact { (25, 13., 26.) } else { (30, 14., 32.) };
@@ -65,6 +65,7 @@ impl Tool {
         for (tool, icon, label, col, row) in [
             (Self::Paint, "paint", "Paint Tool (P)", 0., 0.),
             (Self::Select, "select", "Selection Tool (S)", 1., 0.),
+            (Self::Location, "starting-position", "Starting Locations Tool", 2., 0.),
             (Self::Fill, "fill", "Fill Tool (F)", 0., 1.),
         ] {
             let button = Rect::new(bounds.x + left + col * stride, bounds.y + 5.0 + row * stride, size as f32, size as f32);
@@ -83,6 +84,29 @@ impl Tool {
                 if is_mouse_button_pressed(MouseButton::Left) {
                     selected = tool;
                 }
+            }
+        }
+        // Scenario-only actions have gray artwork on a plain terrain document.
+        for (icon, col, row) in [
+            ("editor-tool-item", 3., 0.), ("editor-tool-village", 4., 0.),
+            ("editor-paste", 1., 1.), ("editor-tool-label", 2., 1.),
+            ("editor-tool-unit", 3., 1.), ("", 4., 1.),
+        ] {
+            let rect = Rect::new(bounds.x + left + col * stride, bounds.y + 5. + row * stride, size as f32, size as f32);
+            if icon == "editor-paste" && can_paste {
+                let hot = rect.contains(point);
+                let suffix = if self == Self::Paste { "-pressed" } else if hot { "-active" } else { "" };
+                art.image(assets, &format!("buttons/button_square/button_square_{size}{suffix}.png"), rect);
+                art.image(assets, &format!("icons/action/{icon}_{size}{suffix}.png"), rect);
+                if hot {
+                    *tip = Some("Paste");
+                    if is_mouse_button_pressed(MouseButton::Left) { selected = Self::Paste; }
+                }
+                continue;
+            }
+            art.image(assets, &format!("buttons/button_square/button_square_{size}.png~GS()"), rect);
+            if !icon.is_empty() {
+                art.image(assets, &format!("icons/action/{icon}_{size}.png~GS()"), rect);
             }
         }
         selected
