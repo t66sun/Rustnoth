@@ -101,7 +101,7 @@ mod tests {
     fn campaign_headers_cycle_from_ascending_to_descending_to_original_rank() {
         let campaigns = [("Zebra", "3 YW"), ("beta", "4 BW"), ("Alpha", "45 BW"),
             ("Gamma", ""), ("Echo", "8 AF"), ("delta", "60 BF")].map(|(name, year)| Entry {
-                name: name.into(), date: Date::read(Some(year)), scenario: 0,
+                name: name.into(), search_text: name.to_lowercase(), date: Date::read(Some(year)), scenario: 0,
                 description: String::new(), icon: None, image: None, background: None, descriptor: None,
             });
         let name = Order::Rank.toggle(Field::Name);
