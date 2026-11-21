@@ -412,9 +412,15 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 continue;
             }
         }
+        let mut briefing_scroll = false;
+        art.briefing_highlight = None;
         if let Some(observation) = session.observation() {
-            let reset = is_key_pressed(KeyCode::Home);
+            let reset = is_key_pressed(KeyCode::Home) && !dialogue_open;
             camera.update(render::board_viewport(), observation, reset);
+            if let Some(focus) = session.dialogue().and_then(|line| line.focus) {
+                briefing_scroll = camera.scroll_briefing(focus, get_frame_time(), speed.scroll, art.animation_rate());
+                if !briefing_scroll { art.briefing_highlight = Some(focus.hex); }
+            }
             if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
             if !reset && !input_blocked {
                 if is_mouse_button_pressed(MouseButton::Left)
@@ -616,7 +622,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 recruit_dialog::Result::Cancel => {}
             }
         }
-        if !art.walk.active() && let Some(line) = session.dialogue() {
+        if !briefing_scroll && !art.walk.active() && let Some(line) = session.dialogue() {
             let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
             if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
                 || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
