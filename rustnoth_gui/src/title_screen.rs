@@ -16,6 +16,8 @@ mod profile;
 mod panel_blur;
 mod panel_grid;
 mod scaled_art;
+mod tip_pages;
+use tip_pages::TipPages;
 mod version;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
@@ -89,7 +91,7 @@ impl TitleScreen {
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
         let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
-        let mut pages = TipPages::new(tips(&tip_source, &art.locale)?);
+        let mut pages = TipPages::new(tips(&tip_source, &art.locale)?, &self.root, &art.locale);
         let actions = menu(match &self.games {
             Games::Prepared(data) => data.campaign.is_some(),
             Games::Installed => desktop::campaign_available(&self.root),
@@ -172,7 +174,7 @@ impl TitleScreen {
                                 let logo = load_texture(&self.root, &locale.logo(&self.root))?;
                                 locale::save(&crate::display_preferences::config_directory()?, &id)?;
                                 art.set_locale(&self.root,locale,logo,map);
-                                pages = TipPages::new(translated);
+                                pages = TipPages::new(translated, &self.root, &art.locale);
                                 Ok(())
                             })();
                             error = change.err().map(|e|e.to_string());
@@ -261,37 +263,14 @@ impl TitleScreen {
 fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     // The final, retired tip in the native file is enclosed in this preprocessor block.
     let active = source.split_once("#ifdef __UNUSED__").map_or(source, |(active, _)| active);
-    let plain = |text: &str| locale.game(text).replace("<i>", "").replace("</i>", "").replace("<b>", "").replace("</b>", "");
+    let translated = |text: &str| locale.game(text).to_owned();
     let entries: Vec<_> = wml::parse(active)?.children.iter().filter(|(tag, _)| tag == "tip")
-        .filter_map(|(_, config)| Some((plain(config.attribute("text")?), plain(config.attribute("source")?))))
+        .filter_map(|(_, config)| Some((translated(config.attribute("text")?), translated(config.attribute("source")?))))
         .collect();
     if entries.is_empty() { return Err("no title screen tips in data/tips.cfg".into()); }
     Ok(entries)
 }
 
-struct TipPages {
-    entries: Vec<(String, String)>,
-    measured: std::cell::Cell<Option<(u32, f32)>>,
-}
-
-impl TipPages {
-    fn new(entries: Vec<(String, String)>) -> Self {
-        Self { entries, measured: Default::default() }
-    }
-
-    fn height(&self, width: f32, font: Option<&Font>, italic: Option<&Font>) -> f32 {
-        let key = width.to_bits();
-        if let Some((cached, height)) = self.measured.get() && key == cached {
-            return height;
-        }
-        let height = self.entries.iter().map(|(body, source)| {
-            panel_grid::label_height(wrap_at(body, font, width, 17).len())
-                + panel_grid::label_height(wrap_at(source, italic, width, 17).len())
-        }).fold(0.0, f32::max);
-        self.measured.set(Some((key, height)));
-        height
-    }
-}
 
 struct Art {
     blurred_panels: std::cell::RefCell<Option<panel_blur::Panels>>,
@@ -457,11 +436,9 @@ impl Art {
         let menu_w = bw + inset * 2.0;
         let menu_h = actions.len() as f32 * (bh + 10.0) + 2.0 * padding;
         let tip_text_w = (w - 34.0 - menu_w - 2.0 * inset).clamp(1.0, 650.0).floor();
-        let body_lines = wrap_at(body, font, tip_text_w, 17);
-        let source_lines = wrap_at(source, italic, tip_text_w, 17);
-        let source_height = panel_grid::label_height(source_lines.len());
-        let page_height = pages.height(tip_text_w, font, italic)
-            .max(panel_grid::label_height(body_lines.len()) + source_height);
+        let width = tip_text_w as u16;
+        let page = pages.page(body, source, width, font, italic);
+        let page_height = pages.height(width, font, italic).max(page.height());
         let tip_h = 2.0 * padding + page_height + plain_h + 30.0;
         let tip_w = tip_text_w + inset * 2.0;
         let footer_height = if big { 42.0 } else { 40.0 };
@@ -471,19 +448,8 @@ impl Art {
         panel_blur::draw(&self.blurred_panels, [tip, menu], vec2(w, h));
         panel(tip);
         panel(menu);
-        let text_color = Color::from_rgba(215, 215, 215, 255);
-        let mut y = tip.y + inset + 17.0;
-        for line in body_lines {
-            dialog::text(font, &line, tip.x + inset, y, 17, text_color);
-            y += 22.0;
-        }
         let controls_y = tip.bottom() - inset - plain_h;
-        y = controls_y - 10.0 - source_height + 17.0;
-        for line in source_lines {
-            let x = tip.right() - inset - measure_text(&line, italic, 17, 1.0).width;
-            dialog::text(italic, &line, x, y, 17, text_color);
-            y += 22.0;
-        }
+        page.draw(tip.x + inset, tip.y + inset, controls_y - 10.0, font, italic);
         let mut buttons: Vec<_> = actions.iter().enumerate().map(|(i, action)| (*action,
             Rect::new(menu.x + inset, menu.y + inset + i as f32 * (bh + 10.0), bw, bh))).collect();
         let [help_w, prev_w, next_w] = [Command::Help, Command::Previous, Command::Next]
@@ -617,7 +583,7 @@ mod tests {
     fn title_shows_the_active_native_tips_and_their_attribution() {
         let tip = "[tip]\ntext=_ \"Use <b>Recruit</b>.\"\nsource=_ \"<i>Konrad</i>\"\n[/tip]\n";
         assert_eq!(tips(&format!("{tip}#ifdef __UNUSED__\n{tip}#endif"), &locale::Locale::default()).unwrap(),
-            [("Use Recruit.".to_owned(), "Konrad".to_owned())]);
+            [("Use <b>Recruit</b>.".to_owned(), "<i>Konrad</i>".to_owned())]);
     }
 
     #[test]
