@@ -11,6 +11,8 @@ const NEUTRAL_VILLAGE: Rgba<u8> = Rgba([30, 30, 30, 255]); // stock "white" rang
 pub(super) struct Geometry {
     bounds: Rect,
     scale: Vec2,
+    // Source pixels per display pixel in Wesnoth's 24-pixel minimap surface.
+    sample_step: Vec2,
 }
 
 impl Geometry {
@@ -24,6 +26,7 @@ impl Geometry {
             bounds: Rect::new(area.x + ((area.width - w) / 2.0).floor(),
                               area.y + ((area.height - h) / 2.0).floor(), w, h),
             scale: vec2(w, h) / extent,
+            sample_step: extent * SAMPLE as f32 / vec2(w, h),
         })
     }
 
@@ -34,13 +37,14 @@ impl Geometry {
         })
     }
 
-    fn outline(&self, viewport: Viewport, layout: &BoardLayout) -> Option<Rect> {
+    fn outline(&self, viewport: Viewport, layout: &BoardLayout) -> Rect {
         let [x, y] = layout.tile_origin(Hex { x: 0, y: 0 });
         let zoom = layout.tile_size();
-        let local = vec2((viewport.x - x) / zoom - 0.25, (viewport.y - y) / zoom - 0.5);
-        let pos = self.bounds.point() + local * self.scale;
+        let local = vec2((viewport.x - x) / zoom, (viewport.y - y) / zoom - 0.25);
+        let offset = local * self.scale;
+        let pos = self.bounds.point() + vec2(offset.x.trunc(), offset.y.trunc());
         let size = vec2(viewport.width, viewport.height) * self.scale / zoom;
-        Rect::new(pos.x, pos.y, size.x, size.y).intersect(self.bounds)
+        Rect::new(pos.x - 1.0, pos.y - 1.0, size.x.trunc() + 2.0, size.y.trunc() + 2.0)
     }
 
     fn tile(&self, hex: Hex) -> Rect {
@@ -86,7 +90,12 @@ impl Art {
                             pixel[3] = pixel[3].min(mask[3]);
                         }
                     }
-                    imageops::resize(&base, SAMPLE, SAMPLE, imageops::FilterType::Nearest)
+                    // scale_surface_sharp takes floor(dst * scale) at both resize stages.
+                    let dx = base.width() as f32 / SAMPLE as f32;
+                    let dy = base.height() as f32 / SAMPLE as f32;
+                    RgbaImage::from_fn(SAMPLE, SAMPLE, |x, y| *base.get_pixel(
+                        (x as f32 * dx) as u32, (y as f32 * dy) as u32,
+                    ))
                 });
                 Symbol { pixels, village }
             });
@@ -122,13 +131,24 @@ impl Art {
         if let Some(texture) = &self.texture {
             draw_texture(texture, bounds.x, bounds.y, WHITE);
         }
-        if let Some(rect) = layout.and_then(|layout| geometry.outline(viewport, layout)) {
-            draw_rectangle_lines(rect.x.round(), rect.y.round(), rect.w.round(), rect.h.round(), 1.0, WHITE);
+        if let Some(layout) = layout {
+            let rect = geometry.outline(viewport, layout);
+            let clip = Rect::new(area.x, area.y, area.width, area.height);
+            for side in [
+                Rect::new(rect.x, rect.y, rect.w, 1.0),
+                Rect::new(rect.x, rect.bottom() - 1.0, rect.w, 1.0),
+                Rect::new(rect.x, rect.y, 1.0, rect.h),
+                Rect::new(rect.right() - 1.0, rect.y, 1.0, rect.h),
+            ] {
+                if let Some(line) = side.intersect(clip) {
+                    draw_rectangle(line.x, line.y, line.w, line.h, WHITE);
+                }
+            }
         }
     }
 }
 
-// Sample pixel centers into the 24-pixel native symbols, clipping partial edge tiles.
+// Status and ownership overlays use the final minimap's coordinates.
 fn paint(image: &mut RgbaImage, rect: Rect, mut sample: impl FnMut(u32, u32) -> Rgba<u8>) {
     let first = |p: f32| (p - 0.5).ceil().max(0.0) as u32;
     for y in first(rect.y)..first(rect.bottom()).min(image.height()) {
@@ -171,7 +191,7 @@ fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Sym
         let Some(symbol) = symbols.get(&tile.terrain) else { continue };
         if let Some(pixels) = &symbol.pixels {
             let highlighted = reachable.contains(&tile.position);
-            paint(&mut image, rect, |x, y| {
+            paint_symbol(&mut image, geometry, tile.position, |x, y| {
                 let mut pixel = *pixels.get_pixel(x, y);
                 if highlighted {
                     for channel in &mut pixel.0[..3] { *channel = channel.saturating_add(50); }
@@ -198,10 +218,52 @@ fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Sym
     image
 }
 
+// Project each destination pixel into the unscaled composite before choosing a
+// symbol pixel. Sampling each tile separately at its rounded output width shifts
+// the texture on nearly every hex of a map that does not scale by an integer.
+fn paint_symbol(image: &mut RgbaImage, geometry: &Geometry, hex: Hex,
+                mut sample: impl FnMut(u32, u32) -> Rgba<u8>) {
+    let span = SAMPLE as i32;
+    let left = hex.x * (span * 3 / 4) - span / 4;
+    let top = hex.y * span + (hex.x.rem_euclid(2) - 1) * (span / 2);
+    let step = geometry.sample_step;
+    let rows = ((top as f32 / step.y).floor() as u32)
+        ..(((top + span) as f32 / step.y).ceil() as u32).min(image.height());
+    let cols = ((left as f32 / step.x).floor() as u32)
+        ..(((left + span) as f32 / step.x).ceil() as u32).min(image.width());
+    for y in rows {
+        let sy = (y as f32 * step.y) as i32 - top;
+        if !(0..span).contains(&sy) { continue; }
+        for x in cols.clone() {
+            let sx = (x as f32 * step.x) as i32 - left;
+            if (0..span).contains(&sx) {
+                image.get_pixel_mut(x, y).blend(&sample(sx as u32, sy as u32));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_lite::observation::ObservedTile;
+
+    #[test]
+    fn editor_camera_extends_into_the_minimap_letterbox_at_zero_scroll() {
+        let area = Viewport { x: 1032.0, y: 11.0, width: 160.0, height: 212.0 };
+        let geo = Geometry::new(44, 33, area).unwrap();
+        assert_eq!(geo.bounds, Rect::new(1032., 37., 160., 160.));
+        let map = Viewport { x: 0., y: 68., width: 1019., height: 752. };
+        let layout = BoardLayout::battlefield(44, 33, map).unwrap()
+            .native_scale(Some(Hex { x: 0, y: 0 }));
+        assert_eq!(geo.outline(map, &layout), Rect::new(1030., 33., 70., 52.));
+
+        let mut image = RgbaImage::new(160, 160);
+        paint_symbol(&mut image, &geo, Hex { x: 0, y: 0 },
+                     |x, y| Rgba([x as u8, y as u8, 0, 255]));
+        assert_eq!(*image.get_pixel(0, 0), Rgba([6, 12, 0, 255]));
+        assert_eq!(*image.get_pixel(1, 1), Rgba([10, 16, 0, 255]));
+    }
 
     #[test]
     fn observed_symbols_darkened_by_fog_and_neutral_villages_survive_scaling() {
