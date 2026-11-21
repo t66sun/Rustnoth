@@ -17,7 +17,7 @@ mod panel_blur;
 mod panel_grid;
 mod tip_pages;
 #[cfg(windows)]
-mod tip_pango;
+pub(crate) mod tip_pango;
 mod button_labels;
 use tip_pages::TipPages;
 mod version;

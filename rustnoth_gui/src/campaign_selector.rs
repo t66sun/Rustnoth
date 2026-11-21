@@ -5,6 +5,9 @@ mod difficulty;
 mod sort;
 #[path = "campaign_layout.rs"]
 mod layout;
+#[path = "campaign_text.rs"]
+mod campaign_text;
+use campaign_text::{Caption, Typography};
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -43,7 +46,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
         Some(Entry {
             name: locale.attribute(install, node, "name", id),
             date: sort::Date::read(node.attribute("start_year")),
-            description: plain(&locale.attribute(install, node, "description", "")),
+            description: locale.attribute(install, node, "description", ""),
             icon: node.attribute("icon"), image: node.attribute("image"),
             background: node.attribute("background"), scenario, descriptor: Some(node),
         })
@@ -54,7 +57,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
             Entry {
                 name: locale.attribute(install, node, "name", id),
                 date: sort::Date::Undated,
-                description: plain(&locale.attribute(install, node, "description", id)),
+                description: locale.attribute(install, node, "description", id),
                 icon: None, image: None, background: None, scenario, descriptor: None,
             }
         }).collect();
@@ -112,7 +115,7 @@ impl<'a> Selector<'a> {
         clear_background(BLACK);
         let entries = if self.show_levels { &self.levels } else { &self.campaigns };
         let name_width = entries.iter().map(|entry|
-            measure_text(&entry.name, self.art.font.as_ref(), 17, 1.0).width.ceil() as i32
+            self.art.typography.width(&entry.name, Caption::Row, self.art.font.as_ref()) as i32
         ).max().unwrap_or(0);
         let layout::Layout { window, panel, list, details, search, play, cancel } =
             layout::Layout::new(w, h, name_width as f32);
@@ -209,7 +212,8 @@ impl<'a> Selector<'a> {
         };
 
         self.art.window(window);
-        self.art.label(self.art.locale.ui("Play a Campaign"), panel.x, window.y+37.0, 22, GOLD);
+        self.art.typography.draw(self.art.locale.ui("Play a Campaign"), Caption::Title,
+            Rect::new(panel.x, window.y+15., panel.w, 30.), self.art.font.as_ref());
         fill(search, Color::from_rgba(10, 14, 21, 255));
         outline(search, if self.editing { GOLD } else { EDGE });
         let query_label = fit(self.art.font.as_ref(), self.query.clone(), search.w-16.0, 16);
@@ -255,7 +259,8 @@ impl<'a> Selector<'a> {
                 label_x = cell.right()+5.0;
             }
             let name = fit(self.art.font.as_ref(), item.name.clone(), rect.right()-label_x-4.0, 17);
-            self.art.label(&name, label_x, rect.center().y+6.0, 17, LABEL);
+            self.art.typography.draw(&name, Caption::Row,
+                Rect::new(label_x, rect.y, rect.right()-label_x-4., rect.h), self.art.font.as_ref());
         }
         clip(None, scale);
         self.art.scrollbar(bar, self.first, row_h, rows.len(), scale);
@@ -263,8 +268,9 @@ impl<'a> Selector<'a> {
         if let Some(e) = entry {
             let portrait = e.image.and_then(|id| self.art.get(id));
             let font = self.art.font.as_ref();
-            let lines = crate::title_screen::wrap(&e.description, font, details.w-10.0);
-            let text_h = lines.len() as f32 * 21.0;
+            let align = e.descriptor.and_then(|cfg| cfg.attribute("description_alignment"));
+            let paragraph = self.art.typography.description(&e.description, details.w-10., align, font);
+            let text_h = paragraph.height();
             let image_size = portrait.as_ref().map(Texture2D::size).unwrap_or(Vec2::ZERO);
             let width_scale = ((details.w-10.0) / image_size.x.max(1.0)).min(1.0);
             let image_size = image_size * width_scale;
@@ -276,11 +282,7 @@ impl<'a> Selector<'a> {
             self.description_offset = self.description_offset.min((overflow / 21.0).ceil() as usize);
             let offset = (self.description_offset as f32 * 21.0).min(overflow);
             clip(Some(details), scale);
-            let mut baseline = details.y + 5.0 + 17.0 - offset;
-            for line in &lines {
-                text(font, line, details.x+5.0, baseline, 17, LABEL);
-                baseline += 21.0;
-            }
+            paragraph.draw(details.x + 5., details.y + 5. - offset, font);
             if let Some(portrait) = portrait {
                 image(&portrait, layout::portrait(details, text_h, image_size, offset));
             }
@@ -341,6 +343,7 @@ fn contain(tex: &Texture2D, rect: Rect, upscale: bool) {
 }
 
 struct Art {
+    typography: Typography,
     locale: Locale,
     roots: Vec<PathBuf>,
     font: Option<Font>,
@@ -356,7 +359,8 @@ impl Art {
         }
         roots.push(root.join("data/core/images"));
         let font = fs::read(root.join("fonts").join(locale::font_name(&locale.effective))).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Self { locale, roots, font, textures: HashMap::new() }
+        let typography = Typography::new(root, locale.game("Lato"));
+        Self { locale, roots, font, typography, textures: HashMap::new() }
     }
     fn get(&mut self, id: &str) -> Option<Texture2D> {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
@@ -414,10 +418,10 @@ impl Art {
         } else { "buttons/large-button.png" };
         fill(rect, Color::from_rgba(38,47,60,255));
         if let Some(image_asset) = self.get(asset) { image(&image_asset, rect); }
+        let style = if label == "game^Play" { Caption::Play } else { Caption::Button };
         let label = self.locale.ui(label);
         let label = label.split_once('^').map_or(label, |(_, display)| display);
-        let size = measure_text(label, self.font.as_ref(), 17, 1.0);
-        self.label(label, rect.center().x-size.width*0.5, rect.center().y+6.0, 17, GOLD);
+        self.typography.draw(label, style, rect, self.font.as_ref());
     }
 }
 
@@ -437,7 +441,8 @@ mod tests {
         assert_eq!(campaigns.len(), 1);
         assert_eq!((campaigns[0].name.as_str(), campaigns[0].scenario), ("The South Guard", 1));
         assert_eq!((campaigns[0].icon, campaigns[0].image), (Some("data/icon.png"), Some("data/art.png")));
-        assert_eq!(campaigns[0].description, "Deoran rides south.");
+        assert_eq!(campaigns[0].description, "<i>Deoran</i> rides south.");
+        assert_eq!(plain(&campaigns[0].description), "Deoran rides south.");
         assert_eq!(levels[filtered(&levels,0..levels.len(),"CROSS")[0]].scenario, 0);
         assert_eq!(filtered(&levels,0..levels.len(),"missing"), Vec::<usize>::new());
     }
