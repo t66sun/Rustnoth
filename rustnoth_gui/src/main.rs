@@ -89,7 +89,7 @@ fn main() -> ExitCode {
         window_resizable: true,
         ..Conf::default()
     };
-    Window::from_config(configuration, async move {
+    Window::from_config(sprite_batches(configuration), async move {
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen).await,
@@ -103,6 +103,15 @@ fn main() -> ExitCode {
         }
     });
     ExitCode::SUCCESS
+}
+
+fn sprite_batches(window: Conf) -> macroquad::conf::Conf {
+    // Changing terrain textures starts a fresh GPU buffer pair. Most pairs hold
+    // one quad. Consecutive glyphs or sprites sharing a texture can still batch.
+    let mut config = macroquad::conf::Conf::from(window);
+    config.draw_call_vertex_capacity = 64 * 4;
+    config.draw_call_index_capacity = 64 * 6;
+    config
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -643,6 +652,16 @@ fn select_move(
 mod tests {
     use super::*;
     use engine_lite::observation::ObservedUnit;
+
+    #[test]
+    fn textured_batches_fit_the_largest_board_primitive_without_reserving_a_full_mesh() {
+        let config = sprite_batches(Conf::default());
+        // A filled circle emits a 20-triangle fan in macroquad.
+        assert!(config.draw_call_vertex_capacity >= 22 && config.draw_call_index_capacity >= 60);
+        let bytes = config.draw_call_vertex_capacity * size_of::<Vertex>()
+            + config.draw_call_index_capacity * size_of::<u16>();
+        assert!(bytes <= 16 * 1024, "{bytes} bytes for each texture change");
+    }
 
     #[test]
     fn defaults_to_the_sibling_asset_checkout_and_accepts_an_override() {
