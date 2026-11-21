@@ -429,6 +429,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut camera = BoardCamera::default();
     let mut history = History::default();
     let mut clipboard = clipboard::Clipboard::default();
+    let mut transform_buttons = clipboard::TransformButtons::default();
     let mut chrome = Chrome {
         show_grid: crate::display_preferences::grid()?,
         menu: None,
@@ -642,6 +643,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
         shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal,
             point, &mut art, &assets, &mut chrome.tip);
+        transform_buttons.draw(tools, compact, point, !modal && tool == Tool::Paste,
+            &mut clipboard, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
