@@ -25,11 +25,15 @@ impl Battlefield<'_> {
         enemies: impl Fn(usize, usize) -> bool,
     ) -> bool {
         let Some(unit) = self.unit_at(position) else { return false };
+        self.unit_visible_at(viewer, position, unit, self.resting.contains(&position), lawful_bonus, enemies)
+    }
+
+    pub(crate) fn unit_visible_at(&self, viewer: usize, position: Hex, unit: &UnitState<'_>,
+        resting: bool, lawful_bonus: i32, enemies: impl Fn(usize, usize) -> bool) -> bool {
         if unit.uncovered || unit.side == viewer || !enemies(viewer, unit.side) || unit.unit_type.hiding.is_empty() {
             return true;
         }
         let terrain = self.map.terrain_at(position).expect("unit on a playable hex");
-        let resting = self.resting.contains(&position);
         !unit.hides_on(terrain, lawful_bonus, resting)
             || position.neighbors().filter_map(|hex| self.unit_at(hex))
                 .any(|neighbor| enemies(unit.side, neighbor.side))
