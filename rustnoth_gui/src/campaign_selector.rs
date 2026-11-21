@@ -298,9 +298,9 @@ impl<'a> Selector<'a> {
         self.art.button(cancel, "Cancel", pointer);
         if self.campaigns_only {
             self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
-            let box_width = (window.w * 0.233).round();
-            let control = Rect::new(window.right()-18.0-box_width, window.bottom()-98.0, box_width, 30.0);
-            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing);
+            let box_width = (window.w * 0.233).floor();
+            let control = Rect::new(window.right()-19.0-box_width, window.bottom()-98.0, box_width, 30.0);
+            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing, vec2(w, h));
         }
         action
     }
@@ -363,7 +363,15 @@ impl Art {
         let path = Path::new(id.split('~').next()?);
         let texture = relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
             .and_then(|bytes| crate::artwork::image(&bytes).ok())
-            .map(|image| {
+            .map(|mut image| {
+                if id.ends_with("~GS()") {
+                    for px in image.get_image_data_mut() {
+                        if px[3] != 0 {
+                            let gray = ((77*u16::from(px[0]) + 150*u16::from(px[1]) + 29*u16::from(px[2])) / 256) as u8;
+                            px[..3].fill(gray);
+                        }
+                    }
+                }
                 let texture = Texture2D::from_image(&image);
                 texture.set_filter(FilterMode::Nearest);
                 texture
@@ -377,13 +385,17 @@ impl Art {
     fn window(&mut self, window: Rect) {
         fill(window, Color::from_rgba(16, 22, 35, 255));
         frame(window);
-        if let Some(tile) = self.get("dialogs/opaque-background.png") {
-            let mut y = window.y+2.0;
-            while y < window.bottom()-2.0 {
-                let h = tile.height().min(window.bottom()-2.0-y);
-                let mut x = window.x+2.0;
-                while x < window.right()-2.0 {
-                    let w = tile.width().min(window.right()-2.0-x);
+        self.tile("dialogs/opaque-background.png",
+            Rect::new(window.x+2., window.y+2., window.w-4., window.h-4.));
+    }
+    fn tile(&mut self, asset: &str, bounds: Rect) {
+        if let Some(tile) = self.get(asset) {
+            let mut y = bounds.y;
+            while y < bounds.bottom() {
+                let h = tile.height().min(bounds.bottom()-y);
+                let mut x = bounds.x;
+                while x < bounds.right() {
+                    let w = tile.width().min(bounds.right()-x);
                     draw_texture_ex(&tile,x,y,WHITE,DrawTextureParams {
                         source: Some(Rect::new(0.0,0.0,w,h)), ..Default::default()
                     });
