@@ -183,6 +183,10 @@ impl<'data> FixedMatch<'data> {
             events.fire("prestart", state);
             events.fire("start", state);
         })?;
+        // fire_start refreshes the initial local viewer's objectives before side-turn events.
+        if let Some(viewer) = game.scenario.sides.iter_mut().find(|side| side.controller == crate::scenario_sides::SideController::Human) {
+            viewer.objectives_changed = true;
+        }
         game.check_victory();
         if let MatchState::Playing(turn) = game.state {
             if game.scenario.last_round.is_some_and(|limit| turn.round > limit) {
@@ -218,6 +222,10 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::Dialogue(message) => {
                     self.queue_dialogue(message);
+                    continue;
+                }
+                BoardChange::ShowObjectives(sides) => {
+                    for index in sides { self.scenario.sides[index].objectives_changed = true; }
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -337,10 +345,25 @@ impl<'data> FixedMatch<'data> {
         })
     }
 
+    /// Authored controllers in turn order, without exposing the referee's board.
+    pub fn side_controllers(&self) -> impl ExactSizeIterator<Item = crate::scenario_sides::SideController> + Clone + '_ {
+        self.scenario.sides.iter().map(|side| side.controller)
+    }
+
     /// Current WML objectives for the chosen side of the desktop match.
     pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
         self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
             .filter(|objectives| !objectives.is_empty())
+    }
+
+    pub fn objectives_changed(&self, side: usize) -> bool {
+        side.checked_sub(1).and_then(|i| self.scenario.sides.get(i)).is_some_and(|s| s.objectives_changed)
+    }
+
+    pub fn acknowledge_objectives(&mut self, side: usize) {
+        if let Some(viewer) = side.checked_sub(1).and_then(|i| self.scenario.sides.get_mut(i)) {
+            viewer.objectives_changed = false;
+        }
     }
 
     /// Campaign destination after a scripted victory or a surviving human side's victory.
@@ -351,7 +374,7 @@ impl<'data> FixedMatch<'data> {
     pub fn save_victory_replay(&self) -> bool { self.replay_save && self.human_won() }
 
     fn human_won(&self) -> bool {
-        let human_won = |side: usize| self.scenario.sides[side - 1].human;
+        let human_won = |side: usize| self.scenario.sides[side - 1].controller == crate::scenario_sides::SideController::Human;
         match &self.state {
             MatchState::CampaignVictory => true,
             MatchState::Won(side) => human_won(*side),

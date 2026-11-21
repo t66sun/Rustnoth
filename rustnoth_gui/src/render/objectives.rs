@@ -1,105 +1,157 @@
 use engine_lite::scenario_sides::ScenarioObjectives;
-
+use crate::title_screen::{self, locale::Locale};
 use super::*;
 
-pub(super) fn draw_button(art: &BoardArt, bounds: Rect, caption: &str) {
-    let (mx, my) = mouse_position();
-    let hovered = bounds.contains(vec2(mx, my));
-    draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, if hovered { BUTTON_HIGHLIGHTED } else { BUTTON });
-    draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, BORDER);
-    let text = measure_text(caption, art.font.as_ref(), 17, 1.0);
-    label(&art.font, caption, bounds.x + (bounds.w - text.width) * 0.5, bounds.y + bounds.h * 0.5 + 6.0, 17, TEXT);
-}
+const TITLE: [u8; 3] = [186, 172, 125];
+const BODY: [u8; 3] = [215; 3];
 
 pub fn hotkey() -> bool {
     is_key_pressed(KeyCode::J) && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl))
 }
 
-fn header_label(font: &Option<Font>, text: &str, x: f32, y: f32, size: u16, color: Color, width: f32) {
-    if width > 0.0 && !text.is_empty() {
-        let measured = measure_text(text, font.as_ref(), size, 1.0).width;
-        draw_text_ex(text, x, y, TextParams {
-            font: font.as_ref(), font_size: size, font_scale: (width / measured).min(1.0),
-            color, ..TextParams::default()
-        });
-    }
-}
-
-fn wrap_entries(objectives: &ScenarioObjectives, font: Option<&Font>, width: f32) -> Vec<(String, bool)> {
-    let mut lines = Vec::new();
-    for (heading, entries) in [("Victory", &objectives.victory), ("Defeat", &objectives.defeat)] {
+fn objective_text(objectives: &ScenarioObjectives, locale: &Locale) -> String {
+    if objectives.is_empty() { return locale.game("No objectives available").to_owned(); }
+    let mut sections = Vec::new();
+    for (heading, entries, color) in [
+        ("Victory:", &objectives.victory, "#00ff00"),
+        ("Defeat:", &objectives.defeat, "#ff0000"),
+    ] {
         if entries.is_empty() { continue; }
-        lines.push((heading.to_owned(), true));
+        let mut lines = vec![format!("<big>{}</big>", locale.game(heading))];
         for entry in entries {
-            for paragraph in entry.lines() {
-                let mut line = String::new();
-                for word in paragraph.split_whitespace() {
-                    let next = if line.is_empty() { word.into() } else { format!("{line} {word}") };
-                    if !line.is_empty() && measure_text(&next, font, 18, 1.0).width > width {
-                        lines.push((line, false));
-                        line = word.to_owned();
-                    } else {
-                        line = next;
-                    }
-                }
-                if !line.is_empty() { lines.push((line, false)); }
+            lines.push(format!("<span foreground='{color}'>• {entry}</span>"));
+        }
+        sections.push(lines.join("\n"));
+    }
+    sections.join("\n\n")
+}
+
+struct Label {
+    size: Vec2,
+    texture: Option<Texture2D>,
+    lines: Vec<String>,
+    font_size: u16,
+    color: Color,
+}
+
+impl Label {
+    fn new(text: &str, markup: bool, size: u16, rgb: [u8; 3], limit: f32, font: Option<&Font>,
+        #[cfg(windows)] renderer: Option<&title_screen::tip_pango::Text>) -> Self
+    {
+        let color = Color::from_rgba(rgb[0], rgb[1], rgb[2], 255);
+        #[cfg(windows)]
+        if let Some(image) = renderer.and_then(|r| r.fitted_label(text, size, limit as u16, markup, rgb)) {
+            let texture = Texture2D::from_image(&image);
+            texture.set_filter(FilterMode::Nearest);
+            return Self { size: texture.size(), texture: Some(texture), lines: Vec::new(), font_size: size, color };
+        }
+        let plain = if markup { super::dialogue::plain_text(text) } else { text.into() };
+        let lines = title_screen::wrap_at(&plain, font, limit, size);
+        let width = lines.iter().map(|line| measure_text(line, font, size, 1.).width.ceil()).fold(0., f32::max);
+        let height = lines.len() as f32 * f32::from(size + 5);
+        Self { size: vec2(width, height), texture: None, lines, font_size: size, color }
+    }
+
+    fn draw(&self, position: Vec2, scroll: f32, height: f32, font: Option<&Font>) {
+        if let Some(texture) = &self.texture {
+            let h = height.min(texture.height() - scroll);
+            if h > 0. {
+                draw_texture_ex(texture, position.x, position.y, WHITE, DrawTextureParams {
+                    source: Some(Rect::new(0., scroll, texture.width(), h)), ..Default::default()
+                });
+            }
+        } else {
+            let step = f32::from(self.font_size + 5);
+            for (index, line) in self.lines.iter().enumerate().skip((scroll / step).ceil() as usize) {
+                let top = index as f32 * step - scroll;
+                if top + f32::from(self.font_size) > height { break; }
+                crate::dialog::text(font, line, position.x, position.y + top + f32::from(self.font_size),
+                    self.font_size, self.color);
             }
         }
     }
-    lines
 }
 
-pub async fn show(objectives: &ScenarioObjectives, art: &mut BoardArt, root: &Path) {
-    let background = get_texture(&mut art.paths, root.join("images/dialogs/opaque-background.png"));
-    let mut first = 0usize;
-    let mut wrapped_width = 0.0;
-    let mut lines = Vec::new();
-    let mut opening_frame = true;
-    loop {
-        clear_background(BACKGROUND);
-        let w = (screen_width() - 16.0).clamp(1.0, 660.0);
-        let h = (screen_height() - 16.0).clamp(1.0, 540.0);
-        let x = (screen_width() - w) * 0.5;
-        let y = (screen_height() - h) * 0.5;
-        draw_rectangle(x, y, w, h, PANEL);
-        if let Some(texture) = &background {
-            draw_texture_ex(texture, x, y, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), ..Default::default() });
-        }
-        draw_rectangle_lines(x, y, w, h, 1.0, BORDER);
-        label(&art.font, "Scenario objectives", x + 16.0, y + 36.0, 26, TEXT);
+fn panel(view: Vec2, title: Vec2, body: Vec2) -> Rect {
+    // The default message window has 10/13px borders. Each label has a
+    // five-pixel margin; the unused image column is invisible.
+    let size = vec2(title.x.max(body.x) + 33., title.y + body.y + 43.).min(view);
+    let origin = ((view - size) * 0.5).floor();
+    Rect::new(origin.x, origin.y, size.x, size.y)
+}
 
-        let line_width = (w - 48.0).max(1.0);
-        if wrapped_width != line_width {
-            lines = wrap_entries(objectives, art.font.as_ref(), line_width);
-            wrapped_width = line_width;
+pub async fn show(objectives: &ScenarioObjectives, title: &str, locale: &Locale, art: &mut BoardArt, root: &Path) {
+    let frame = get_screen_data();
+    let board = Texture2D::from_image(&frame);
+    board.set_filter(FilterMode::Nearest);
+    let tile = get_texture(&mut art.paths, root.join("images/dialogs/translucent65-background.png"));
+    let body_text = objective_text(objectives, locale);
+    #[cfg(windows)]
+    let renderer = title_screen::tip_pango::Text::load(root, "Lato");
+    let font = art.font.as_ref();
+    let mut opening = true;
+    let mut click_armed = false;
+    let mut scroll = 0f32;
+    let mut previous = Vec2::ZERO;
+    let mut labels = None;
+    loop {
+        let view = vec2(screen_width(), screen_height());
+        let scale = (view.x / 350.).min(view.y / 180.).clamp(0.01, 1.);
+        let canvas = view / scale;
+        if canvas != previous || labels.is_none() {
+            let limit = (canvas.x.min(800.) - 33.).max(1.);
+            let title = Label::new(title, false, 22, TITLE, limit, font, #[cfg(windows)] renderer.as_ref());
+            let body = Label::new(&body_text, true, 17, BODY, limit, font, #[cfg(windows)] renderer.as_ref());
+            let bounds = panel(canvas, title.size, body.size);
+            let pixels = title_screen::panel_blur::backdrop(&frame, canvas, bounds, 5);
+            let blur = Texture2D::from_image(&pixels);
+            blur.set_filter(FilterMode::Nearest);
+            labels = Some((title, body, bounds, blur));
+            previous = canvas;
         }
-        let visible = (((h - 135.0) / 25.0).max(1.0) as usize).min(lines.len());
-        let last = lines.len().saturating_sub(visible);
-        let delta = if is_key_pressed(KeyCode::PageDown) { visible as isize }
-            else if is_key_pressed(KeyCode::PageUp) { -(visible as isize) }
-            else if is_key_pressed(KeyCode::Down) { 1 } else if is_key_pressed(KeyCode::Up) { -1 }
-            else if mouse_wheel().1 > 0.0 { -1 } else if mouse_wheel().1 < 0.0 { 1 } else { 0 };
-        first = first.saturating_add_signed(delta).min(last);
-        for (index, (line, heading)) in lines.iter().skip(first).take(visible).enumerate() {
-            let (inset, size, color) = if *heading { (16.0, 21, SELECTED) } else { (28.0, 18, TEXT) };
-            header_label(&art.font, line, x + inset, y + 72.0 + index as f32 * 25.0, size, color, line_width);
-        }
-        let footer = y + h - 56.0;
-        let (mx, my) = mouse_position();
-        let pointer = vec2(mx, my);
-        let clicked = !opening_frame && is_mouse_button_pressed(MouseButton::Left);
-        if last > 0 {
-            for (offset, caption, destination) in [(0.0, "‹", first.saturating_sub(visible)), (52.0, "›", (first + visible).min(last))] {
-                let bounds = Rect::new(x + 16.0 + offset, footer, 46.0, 42.0);
-                draw_button(art, bounds, caption);
-                if clicked && bounds.contains(pointer) { first = destination; }
-            }
-        }
-        let close = Rect::new(x + w - 96.0, footer, 80.0, 42.0);
-        draw_button(art, close, "Close");
-        if !opening_frame && (hotkey() || is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Enter)
-            || clicked && close.contains(pointer)) { break; }
-        opening_frame = false;
+        let (title, body, r, blur) = labels.as_ref().unwrap();
+        set_camera(&crate::dialog::setup_camera(canvas.x, canvas.y));
+        draw_texture_ex(&board, 0., 0., WHITE, DrawTextureParams {
+            dest_size: Some(canvas), flip_y: true, ..Default::default()
+        });
+        draw_texture(blur, r.x, r.y, WHITE);
+        draw_rectangle_lines(r.x + 0.5, r.y + 0.5, r.w - 1., r.h - 1., 1., Color::from_rgba(16, 22, 35, 255));
+        draw_rectangle_lines(r.x + 1.5, r.y + 1.5, r.w - 3., r.h - 3., 1., Color::from_rgba(114, 79, 46, 255));
+        let inset = Rect::new(r.x + 2., r.y + 2., r.w - 4., r.h - 4.);
+        if let Some(tile) = &tile { title_screen::tiled(inset, tile); }
+        else { draw_rectangle(inset.x, inset.y, inset.w, inset.h, Color::from_rgba(0, 0, 0, 166)); }
+
+        let title_pos = r.point() + vec2(15., 15.);
+        let body_pos = title_pos + vec2(0., title.size.y + 10.);
+        let visible = (r.bottom() - 18. - body_pos.y).max(0.);
+        let delta = if is_key_pressed(KeyCode::PageDown) { visible }
+            else if is_key_pressed(KeyCode::PageUp) { -visible }
+            else if is_key_pressed(KeyCode::Down) { 22. }
+            else if is_key_pressed(KeyCode::Up) { -22. }
+            else { -mouse_wheel().1 * 22. };
+        scroll = (scroll + delta).round().clamp(0., (body.size.y - visible).max(0.));
+        title.draw(title_pos, 0., (r.h - 33.).max(0.), font);
+        body.draw(body_pos, scroll, visible, font);
+        set_default_camera();
+        if !opening && is_mouse_button_pressed(MouseButton::Left) { click_armed = true; }
+        let dismissed = !opening && (hotkey() || is_key_pressed(KeyCode::Escape)
+            || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+            || click_armed && is_mouse_button_released(MouseButton::Left));
+        opening = false;
         next_frame().await;
+        if dismissed { return; }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_transient_wraps_the_scenario_text_inside_a_centered_message() {
+        let objectives = ScenarioObjectives { victory: vec!["Hold the bridge".into()], defeat: vec!["Death of Deoran".into()] };
+        let message = objective_text(&objectives, &Locale::default());
+        assert_eq!(message, "<big>Victory:</big>\n<span foreground='#00ff00'>• Hold the bridge</span>\n\n<big>Defeat:</big>\n<span foreground='#ff0000'>• Death of Deoran</span>");
+        assert_eq!(panel(vec2(1200., 820.), vec2(213., 27.), vec2(270., 130.)), Rect::new(448., 310., 303., 200.));
     }
 }
