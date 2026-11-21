@@ -185,7 +185,8 @@ impl<'data> FixedMatch<'data> {
         })?;
         // fire_start refreshes the initial local viewer's objectives before side-turn events.
         if let Some(index) = game.scenario.sides.iter().position(|side| side.controller == crate::scenario_sides::SideController::Human) {
-            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides);
+            let remaining = game.remaining_turns();
+            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides, remaining);
         }
         game.check_victory()?;
         if let MatchState::Playing(mut turn) = game.state {
@@ -229,13 +230,15 @@ impl<'data> FixedMatch<'data> {
                     continue;
                 }
                 BoardChange::ShowObjectives(sides) => {
+                    let remaining = self.remaining_turns();
                     for index in sides {
-                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides);
+                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides, remaining);
                     }
                     continue;
                 }
                 BoardChange::SetObjectives { sides, definition, notify } => {
-                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides);
+                    let remaining = self.remaining_turns();
+                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides, remaining);
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -373,7 +376,12 @@ impl<'data> FixedMatch<'data> {
 
     pub fn evaluate_objectives_for(&self, side: usize) -> Option<crate::scenario_sides::ScenarioObjectives> {
         if !self.has_authored_objectives(side) { return None; }
-        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len())
+        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len(), self.remaining_turns())
+    }
+
+    fn remaining_turns(&self) -> Option<u64> {
+        let limit = self.scenario.last_round?;
+        (limit >= self.current_round).then(|| (i64::from(limit) - i64::from(self.current_round) + 1) as u64)
     }
 
     pub fn objectives_changed(&self, side: usize) -> bool {
