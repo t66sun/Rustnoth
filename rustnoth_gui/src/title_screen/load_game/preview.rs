@@ -64,7 +64,7 @@ impl Preview {
             for event in &restore.events { event.apply(&mut session)?; }
         }
         let turn = match session.state() { MatchState::Playing(t) => Some(t.round), _ => None };
-        let map = session.observation().and_then(|view| render::observed_preview(root, &data.assets, view, 260.));
+        let map = session.observation().and_then(|view| render::save_preview(&data.assets, view, 260.));
         let leader = session.observation().and_then(|view| {
             let unit = view.units.iter().find(|unit| unit.side == view.side && unit.can_recruit)?;
             let image = data.assets.unit_image(&unit.type_id).and_then(|p| render::load_texture(&p, None));
