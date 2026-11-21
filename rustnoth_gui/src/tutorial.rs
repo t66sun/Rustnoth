@@ -13,6 +13,7 @@ mod recruiting;
 mod end_turn;
 mod weapons;
 mod practice;
+mod advice;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -41,7 +42,7 @@ enum Hero { Konrad, Lisar }
 
 impl Hero {
     fn name(self) -> &'static str {
-        match self { Self::Konrad => "Konrad", Self::Lisar => "Li’sar" }
+        match self { Self::Konrad => "Konrad", Self::Lisar => "Liâ€™sar" }
     }
 }
 
@@ -60,13 +61,14 @@ pub(super) struct Lesson {
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
     weapons: weapons::Exercise,
+    advice: advice::Advice,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
     fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
         Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
@@ -183,6 +185,7 @@ impl Lesson {
         if practice::guardians_have_arrived(session) {
             self.step = Step::Practice;
         }
+        self.advice.begin_turn(session);
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
@@ -250,7 +253,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
     loop {
         let frame = form.begin(110.0);
-        dialog::text(form.font.as_ref(), "Loading Battle Training…", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
+        dialog::text(form.font.as_ref(), "Loading Battle Trainingâ€¦", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
         set_default_camera();
         next_frame().await;
         if worker.is_finished() { break; }
@@ -275,7 +278,7 @@ async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<H
     let colors = TeamColors::parse(&fs::read(root.join("data/core/team-colors.cfg"))?)?;
     let sprites = [
         render::load_texture(&images.join("konrad-fighter.png"), None).ok_or("missing Konrad tutorial sprite")?,
-        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing Li’sar tutorial sprite")?,
+        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing Liâ€™sar tutorial sprite")?,
     ];
     let heroes = [Hero::Konrad, Hero::Lisar];
     let mut focus = 0;

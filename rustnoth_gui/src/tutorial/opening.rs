@@ -148,6 +148,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     if let Some(event) = super::practice::death_event(scenario, hero) {
         events.push(("event".into(), event));
     }
+    lesson.advice = super::advice::Advice::project(scenario, hero, &mut events);
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
@@ -222,7 +223,7 @@ mod tests {
             (Hero::Lisar, ne, "Welcome Lisar", "Attack with Lisar"),
         ] {
             let mut scenario = opening();
-            let summary = "You will learn the basics of:\n• <small>Movement</small>\n• <small>Attacking</small>\n• <small>Healing</small>\n• <small>Recruiting</small>";
+            let summary = "You will learn the basics of:\nâ€¢ <small>Movement</small>\nâ€¢ <small>Attacking</small>\nâ€¢ <small>Healing</small>\nâ€¢ <small>Recruiting</small>";
             scenario.children.extend(wml::parse(format!(r#"[event]
 name=prestart
 [store_unit]
