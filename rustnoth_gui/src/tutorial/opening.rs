@@ -69,8 +69,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
         .ok_or("missing meet-Delfador event")?;
     let quintain = children(meet, "unit").find(|it| it.attribute("id") == Some("Quintain") && placed(it) == Some(mentor_hex))
         .ok_or("missing summoned quintain")?;
-    let mut hint = gender_command(meet, hero, "hint_message").ok_or("missing attack instructions")?.clone();
-    put(&mut hint, "speaker", "narrator");
+    let hint = gender_command(meet, hero, "hint_message").ok_or("missing attack instructions")?.clone();
 
     let mut events = vec![("event".into(), intro)];
     for destination in mentor_hex.neighbors() {
@@ -94,7 +93,6 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
                 event.children.push(("unit".into(), quintain.clone()));
             }
         }
-        event.children.push(("message".into(), hint.clone()));
         events.push(("event".into(), event));
     }
     let attack = children(scenario, "event").find(|event| event.attribute("name") == Some("attack_end")
@@ -122,7 +120,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    let mut lesson = Lesson::new(mentor_hex, hero, healing, recruiting, weapons);
+    let mut lesson = Lesson::new(mentor_hex, hero, hint, healing, recruiting, weapons);
     lesson.advice = advice;
     Ok(lesson)
 }
@@ -158,10 +156,11 @@ mod tests {
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
             [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
+            [hint_message]\nremove=yes\n[/hint_message]\n\
             [message]\nspeaker=student\nmessage=It fights back!\n[/message]\n\
             [message]\nspeaker=Delfador\nmessage=$student_hp to $($student_hp-15)\n[/message]\n\
             [hint_message]\nmessage=Finish your turn\n[/hint_message]\n[print]\ntext=End your turn\n[/print]\n[/event]\n\
-            [event]\nname=turn 2\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
+            [event]\nname=turn 2\n[hint_message]\nremove=yes\n[/hint_message]\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
             [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
             [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n\
             [message]\nspeaker=student\nmessage=I will recruit elves\nfemale_message=female^I shall recruit elves\n[/message]\n\
@@ -207,9 +206,12 @@ mod tests {
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { to, .. } if to.distance(center) == 1)));
             let movement = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to: dst, .. } if *dst == to)).unwrap().clone();
             session.apply(movement).unwrap();
+            let after_move = session.history().to_vec();
             lesson.advance(&mut session);
-            assert_eq!(session.dialogue().unwrap().text, hint);
+            assert_eq!(session.tutorial_hint(), hint);
+            assert!(session.dialogue().is_none());
             session.dismiss_dialogue();
+            assert_eq!(session.history(), after_move, "a floating hint adds no replayable dismissal");
             let view = session.observation().unwrap();
             let mentor = view.units.iter().find(|u| u.type_id == "Elder Mage").unwrap();
             assert_eq!(mentor.position, if to == ne { center.neighbor(Direction::SouthEast).unwrap() } else { ne });
@@ -218,12 +220,13 @@ mod tests {
             session.apply(session.legal_actions()[0].clone()).unwrap();
             lesson.advance(&mut session);
             assert_eq!(session.dialogue().unwrap().text, "It fights back!");
+            assert!(session.tutorial_hint().is_empty(), "clear Attacking before Delfador speaks");
             session.dismiss_dialogue();
             let hp = healing::student_hp(&session).unwrap();
             assert_eq!(session.dialogue().unwrap().text, format!("{hp} to {}", hp - 15));
             session.dismiss_dialogue();
-            assert_eq!(session.dialogue().unwrap().text, "Finish your turn");
-            session.dismiss_dialogue();
+            assert_eq!(session.tutorial_hint(), "Finish your turn");
+            assert!(session.dialogue().is_none());
             assert_eq!(session.legal_actions(), &[Action::EndTurn]);
             let next_turn = |lesson: &mut Lesson, session: &mut Session<'_>| {
                 session.apply(Action::EndTurn).unwrap();
@@ -236,6 +239,7 @@ mod tests {
             };
             next_turn(&mut lesson, &mut session);
             let hp = healing::student_hp(&session).unwrap();
+            assert!(session.tutorial_hint().is_empty(), "clear the end-turn hint at the start of turn two");
             assert_eq!(session.dialogue().unwrap().text, match hero {
                 Hero::Konrad => format!("I have {hp} left"), Hero::Lisar => format!("I retain {hp}")
             });
@@ -244,8 +248,8 @@ mod tests {
             assert!(session.legal_actions().iter().all(|a| matches!(a, Action::Move {to,..} if lesson.healing.villages.contains(to))));
             session.apply(session.legal_actions()[0].clone()).unwrap();
             lesson.advance(&mut session);
-            assert_eq!(session.dialogue().unwrap().text, "You captured the village");
-            session.dismiss_dialogue();
+            assert_eq!(session.tutorial_hint(), "You captured the village");
+            assert!(session.dialogue().is_none());
             assert_eq!(session.legal_actions(), &[Action::EndTurn]);
             next_turn(&mut lesson, &mut session);
             let recovered = healing::student_hp(&session).unwrap() - lesson.before_healing.unwrap();
@@ -260,8 +264,8 @@ mod tests {
             let to_keep = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to, .. } if *to == lesson.recruiting.keep)).unwrap().clone();
             session.apply(to_keep).unwrap();
             lesson.advance(&mut session);
-            assert_eq!(session.dialogue().unwrap().text, "Right-click a castle");
-            session.dismiss_dialogue();
+            assert_eq!(session.tutorial_hint(), "<b><big>Recruiting</big></b>\nRight-click a castle");
+            assert!(session.dialogue().is_none());
             let gold = session.observation().unwrap().gold.unwrap();
             for n in 1..=2 {
                 assert!(!session.legal_actions().contains(&Action::EndTurn));
@@ -275,15 +279,17 @@ mod tests {
                 assert!(fighters.iter().all(|u| u.moves_left == Some(0) && u.attacks_left == Some(0)));
                 if n == 1 { assert!(session.dialogue().is_none()); }
             }
-            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "Konrad wears a crown" } else { "Lisar wears a crown" });
-            session.dismiss_dialogue();
+            let crown = if hero == Hero::Konrad { "Konrad wears a crown" } else { "Lisar wears a crown" };
+            assert_eq!(session.tutorial_hint(), crown);
+            assert!(session.dialogue().is_none());
             assert!(session.legal_actions().contains(&Action::EndTurn));
             next_turn(&mut lesson, &mut session);
             assert!(!lesson.finished());
             assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "Send your fighters, Konrad" } else { "Send your fighters, Lisar" });
+            assert_eq!(session.tutorial_hint(), crown, "Traits follows the spoken instructions");
             session.dismiss_dialogue();
-            assert_eq!(session.dialogue().unwrap().text, "Examine the recruits");
-            session.dismiss_dialogue();
+            assert_eq!(session.tutorial_hint(), "<b><big>Traits</big></b>\nExamine the recruits");
+            assert!(session.dialogue().is_none());
             assert!(!session.legal_actions().contains(&Action::EndTurn));
             let student = session.observation().unwrap().units.iter().find(|u| u.side == 1 && u.can_recruit).unwrap().position;
             lesson.selected(student, &mut session);

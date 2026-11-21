@@ -50,6 +50,7 @@ enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitTh
 pub(super) struct Lesson {
     step: Step,
     mentor: Hex,
+    attack_hint: Node,
     select_prompt: String,
     movement_prompt: String,
     healing: healing::Exercises,
@@ -60,8 +61,8 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
-        Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(mentor: Hex, hero: Hero, attack_hint: Node, healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
+        Self { step: Step::Approach, mentor, attack_hint, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
@@ -124,7 +125,10 @@ impl Lesson {
 
     pub(super) fn advance(&mut self, session: &mut Session<'_>) {
         self.step = match self.step {
-            Step::Approach => Step::Attack,
+            Step::Approach => {
+                session.set_tutorial_hint(&self.attack_hint);
+                Step::Attack
+            }
             Step::Attack => {
                 healing::say(&self.healing.after_attack, session, None);
                 Step::EndFirst
@@ -141,11 +145,11 @@ impl Lesson {
             Step::ToKeep | Step::Recruit if matches!(session.history().last(),
                 Some(rustnoth_gui::save_replay::Event::Player(Action::Attack(_), ..))) => Step::EndThird,
             Step::ToKeep => {
-                session.present_message(&self.recruiting.instruction);
+                session.set_tutorial_hint(&self.recruiting.instruction);
                 Step::Recruit
             }
             Step::Recruit if self.recruiting.recruited(session) => {
-                session.present_message(&self.recruiting.crowns);
+                session.set_tutorial_hint(&self.recruiting.crowns);
                 Step::EndThird
             }
             Step::EndThird if matches!(session.history().last(),

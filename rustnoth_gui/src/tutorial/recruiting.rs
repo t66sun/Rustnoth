@@ -33,9 +33,8 @@ impl Exercise {
             .ok_or("missing tutorial recruit goal")?;
         let fighter = goal.attribute("type").ok_or("missing tutorial fighter type")?.to_owned();
         let count = goal.attribute("count").ok_or("missing tutorial recruit count")?.parse()?;
-        let mut instruction = children(arrival, "hint_message").next().ok_or("missing recruiting hint")?.clone();
-        let mut crowns = gender_command(recruited, hero, "hint_message").ok_or("missing leader hint")?.clone();
-        for hint in [&mut instruction, &mut crowns] { put(hint, "speaker", "narrator"); }
+        let instruction = children(arrival, "hint_message").next().ok_or("missing recruiting hint")?.clone();
+        let crowns = gender_command(recruited, hero, "hint_message").ok_or("missing leader hint")?.clone();
 
         // The stock moveto event is installed at refresh, after healing. Preserve that
         // lifetime even if a previous lesson's move already passed through the keep.
