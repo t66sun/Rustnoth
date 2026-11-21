@@ -47,7 +47,7 @@ pub(super) fn highlight(r: Rect, selected: bool, image: &Texture2D) {
 }
 
 // GUI2 positions text by its Pango layout, including its ascent and descent.
-pub(super) struct Label {
+pub(in crate::title_screen) struct Label {
     texture: Option<Texture2D>,
     lines: Vec<String>,
     font: Option<Font>,

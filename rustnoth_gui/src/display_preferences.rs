@@ -18,6 +18,8 @@ struct Setting { file: &'static str, off: &'static str, on: &'static str }
 
 const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
 const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
+const SKIP_AI: Setting = Setting { file: "skip-ai-moves", off: "off", on: "on" };
+const SAVE_REPLAYS: Setting = Setting { file: "save-replays", off: "off", on: "on" };
 
 #[derive(Clone, Copy)]
 pub(crate) enum HexReport { Coordinates, Terrain }
@@ -58,6 +60,10 @@ pub fn load() -> io::Result<bool> { WINDOW.read(&config_directory()?) }
 pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory()?, fullscreen) }
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
+pub fn skip_ai_moves() -> io::Result<bool> { SKIP_AI.read(&config_directory()?) }
+pub fn save_replays() -> io::Result<bool> { SAVE_REPLAYS.read_or(&config_directory()?, true) }
+pub fn set_save_replays(enabled: bool) -> io::Result<()> { SAVE_REPLAYS.write(&config_directory()?, enabled) }
+pub fn save_skip_ai_moves(enabled: bool) -> io::Result<()> { SKIP_AI.write(&config_directory()?, enabled) }
 
 const EDITOR_HELP: Setting = Setting { file: "editor-help-text-shown", off: "off", on: "on" };
 pub fn editor_help() -> io::Result<bool> { EDITOR_HELP.read_or(&config_directory()?, true) }
@@ -120,6 +126,14 @@ mod tests {
         assert!(!GRID.read(&dir).unwrap());
         GRID.write(&dir, true).unwrap();
         assert!(GRID.read(&dir).unwrap());
+        assert!(!SKIP_AI.read(&dir).unwrap());
+        assert!(SAVE_REPLAYS.read_or(&dir, true).unwrap());
+        SAVE_REPLAYS.write(&dir, false).unwrap();
+        assert!(!SAVE_REPLAYS.read_or(&dir, true).unwrap());
+        fs::remove_file(dir.join(SAVE_REPLAYS.file)).unwrap();
+        SKIP_AI.write(&dir, true).unwrap();
+        assert!(SKIP_AI.read(&dir).unwrap());
+        fs::remove_file(dir.join("skip-ai-moves")).unwrap();
         assert!(!WINDOW.read(&dir).unwrap());
         fs::remove_file(dir.join("map-grid")).unwrap();
         assert!(EDITOR_HELP.read_or(&dir, true).unwrap());

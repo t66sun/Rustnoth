@@ -1,4 +1,5 @@
 //! Decode original artwork before uploading pixels to the GPU.
+pub(crate) mod scaled;
 use image::RgbaImage;
 use macroquad::texture::Image;
 use std::error::Error;

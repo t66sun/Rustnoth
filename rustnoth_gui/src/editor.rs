@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod new_map_dialog;
 mod documents;
 mod menubar;
 mod locations;
@@ -12,6 +13,7 @@ mod palette;
 mod toolbar;
 mod shapes;
 mod terrain_report;
+mod village_report;
 
 use crate::{
     camera::BoardCamera,
@@ -32,15 +34,19 @@ type Changes = BTreeMap<Hex, String>;
 
 enum Edit {
     Location(engine_lite::map::editor::LocationEdit),
+    Resize(Box<EditableMap>),
     Terrain(Changes),
     Selection(HashSet<Hex>),
+    Stroke(Vec<Edit>),
 }
 
 #[derive(Default)]
 struct History {
     stroke: Changes,
+    terrain_steps: Vec<Changes>,
     selected: HashSet<Hex>,
     selection_stroke: HashSet<Hex>,
+    selection_steps: Vec<HashSet<Hex>>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
 }
@@ -58,11 +64,18 @@ impl History {
         }
     }
 
+    fn finish_brush_step(&mut self) {
+        if !self.stroke.is_empty() {
+            self.terrain_steps.push(std::mem::take(&mut self.stroke));
+        }
+    }
+
     fn finish(&mut self) -> bool {
-        if self.stroke.is_empty() {
+        self.finish_brush_step();
+        if self.terrain_steps.is_empty() {
             return false;
         }
-        self.undo.push(Edit::Terrain(std::mem::take(&mut self.stroke)));
+        self.undo.push(Edit::Stroke(self.terrain_steps.drain(..).map(Edit::Terrain).collect()));
         self.redo.clear();
         true
     }
@@ -74,9 +87,16 @@ impl History {
         }
     }
 
-    fn finish_selection(&mut self) {
+    fn finish_selection_step(&mut self) {
         if !self.selection_stroke.is_empty() {
-            self.undo.push(Edit::Selection(std::mem::take(&mut self.selection_stroke)));
+            self.selection_steps.push(std::mem::take(&mut self.selection_stroke));
+        }
+    }
+
+    fn finish_selection(&mut self) {
+        self.finish_selection_step();
+        if !self.selection_steps.is_empty() {
+            self.undo.push(Edit::Stroke(self.selection_steps.drain(..).map(Edit::Selection).collect()));
             self.redo.clear();
         }
     }
@@ -103,17 +123,42 @@ impl History {
         let Some(edit) = from.pop() else {
             return false;
         };
-        match edit {
-            Edit::Location(edit) => {
-                to.push(Edit::Location(doc.restore_locations(edit)));
-                false
+        let (inverse, dirty) = edit.perform(doc, &mut self.selected);
+        to.push(inverse);
+        dirty
+    }
+
+    fn partial_undo(&mut self, doc: &mut EditableMap) -> bool {
+        if let Some(Edit::Stroke(steps)) = self.undo.last_mut()
+            && steps.len() > 1 {
+            let (inverse, dirty) = steps.pop().unwrap().perform(doc, &mut self.selected);
+            self.redo.push(inverse);
+            return dirty;
+        }
+        self.apply(doc, true)
+    }
+}
+
+impl Edit {
+    fn perform(self, doc: &mut EditableMap, selected: &mut HashSet<Hex>) -> (Edit, bool) {
+        match self {
+            Edit::Resize(map) => (Edit::Resize(Box::new(doc.swap_geometry(*map))), true),
+            Edit::Location(edit) => (Edit::Location(doc.restore_locations(edit)), false),
+            Edit::Stroke(steps) => {
+                let mut inverse = Vec::with_capacity(steps.len());
+                let mut dirty = false;
+                for step in steps.into_iter().rev() {
+                    let (opposite, changed) = step.perform(doc, selected);
+                    inverse.push(opposite);
+                    dirty |= changed;
+                }
+                (Edit::Stroke(inverse), dirty)
             }
             Edit::Selection(delta) => {
                 for &hex in &delta {
-                    if !self.selected.remove(&hex) { self.selected.insert(hex); }
+                    if !selected.remove(&hex) { selected.insert(hex); }
                 }
-                to.push(Edit::Selection(delta));
-                false
+                (Edit::Selection(delta), false)
             }
             Edit::Terrain(changes) => {
                 let mut inverse = Changes::new();
@@ -122,8 +167,7 @@ impl History {
                         inverse.insert(hex, old);
                     }
                 }
-                to.push(Edit::Terrain(inverse));
-                true
+                (Edit::Terrain(inverse), true)
             }
         }
     }
@@ -132,10 +176,15 @@ impl History {
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Command {
     New,
+    Resize,
     Open,
     Save,
+    SaveAs,
+    SaveAll,
+    Revert,
     Close,
     Exit,
+    PartialUndo,
     Undo,
     Redo,
     FillSelection,
@@ -158,10 +207,15 @@ impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::New => "New Map",
+            Self::Resize => "Resize Map…",
             Self::Open => "Open Map…",
-            Self::Save => "Save Map As…",
+            Self::Save => "Save Map",
+            Self::SaveAs => "Save Map As…",
+            Self::SaveAll => "Save All Maps",
+            Self::Revert => "Revert Map",
             Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
+            Self::PartialUndo => "Partial Undo",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
@@ -184,8 +238,7 @@ impl Command {
 
 fn new_map() -> EditableMap {
     // Wesnoth's default context is 44 by 33 playable hexes with one stored border.
-    let row = ["Gg"; 44 + 2].join(", ");
-    EditableMap::parse(vec![row; 33 + 2].join("\n") + "\n").expect("valid blank grass map")
+    new_map_dialog::make(44, 33, "Gg").expect("valid blank grass map")
 }
 
 const SIDEBAR_WIDTH: f32 = 181.0;
@@ -260,7 +313,7 @@ fn draw_terrain(
         }
     }
     // Show brush feedback while the pointer is held. Rebuild connected terrain once per stroke.
-    for &at in history.stroke.keys() {
+    for &at in history.terrain_steps.iter().flat_map(|step| step.keys()).chain(history.stroke.keys()) {
         let [x, y] = layout.tile_origin(at);
         if let Some(code) = doc.map().terrain_at(at) {
             let (base, overlay) = code.split_once('^').unwrap_or((code, ""));
@@ -306,6 +359,7 @@ impl Chrome {
         art: &mut Art,
         font: Option<&Font>,
         names: &[String],
+        can_revert: bool,
         doc: &EditableMap,
         history: &History,
         selection: clipboard::SelectionState,
@@ -327,7 +381,7 @@ impl Chrome {
         art.panel(assets, "themes/classic/sidebar.png", sidebar);
         let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, &self.labels, doc, history,
             assets, art, &mut self.tip, selection);
-        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
+        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names, can_revert).or(tool_action);
         result
     }
 }
@@ -374,9 +428,11 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
     let mut reports = terrain_report::Reports::new(root);
+    let mut villages = village_report::Villages::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
     let mut clipboard = clipboard::Clipboard::default();
+    let mut transform_buttons = clipboard::TransformButtons::default();
     let mut chrome = Chrome {
         labels: hex_labels::Labels::new(root)?,
         show_grid: crate::display_preferences::grid()?,
@@ -398,11 +454,13 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     loop {
         let names = if chrome.menu == Some(menubar::Menu::Window) { documents.titles() } else { Vec::new() };
         let current = &mut documents.list[documents.current];
-        let documents::Document { map: doc, history, camera, path, locations } = current;
+        let can_revert = current.can_revert();
+        let documents::Document { map: doc, history, camera, locations, .. } = current;
         if rebuild {
             region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
+            villages.update(&view, &assets);
             add_minimap_border(&mut view, doc);
             mini.load(&view, &assets);
             rebuild = false;
@@ -482,6 +540,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     } else {
                         for &at in &footprint { history.select(at, !ctrl); }
                     }
+                    history.finish_selection_step();
                     last_selection = Some((hex, ctrl, shift));
                 }
             }
@@ -571,10 +630,12 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             &mut art,
             form.font.as_ref(),
             &names,
+            can_revert,
             doc,
             history,
             selection,
         );
+        villages.draw(w, &mut art, &assets, form.font.as_ref());
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
@@ -597,6 +658,8 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     else { Rect::new(w - sidebar, 304., sidebar, 155.) };
         tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip, !clipboard.empty());
         shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal, point, &mut art, &assets, &mut chrome.tip);
+        transform_buttons.draw(tools, compact, point, !modal && tool == Tool::Paste,
+            &mut clipboard, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         if tool == Tool::Location {
@@ -647,10 +710,16 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             command = Some(Command::Open);
         }
         if ctrl && is_key_pressed(KeyCode::S) {
-            command = Some(Command::Save);
+            command = Some(if shift { Command::SaveAs } else { Command::Save });
         }
+        if !ctrl && !shift && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt))
+            && is_key_pressed(KeyCode::S) { command = Some(Command::SaveAll); }
         if ctrl && is_key_pressed(KeyCode::Z) {
-            command = Some(if shift { Command::Redo } else { Command::Undo });
+            command = Some(if shift { Command::Redo } else { Command::PartialUndo });
+        }
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            if is_key_pressed(KeyCode::U) { command = Some(Command::Undo); }
+            if is_key_pressed(KeyCode::R) { command = Some(Command::Redo); }
         }
         if ctrl && is_key_pressed(KeyCode::Y) {
             command = Some(Command::Redo);
@@ -680,6 +749,10 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             if chrome.menu.take().is_none() {
                 command = Some(Command::Exit);
             }
+        }
+        if !modal && !ctrl && !shift && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt))
+            && is_key_pressed(KeyCode::R) {
+            command = Some(Command::Resize);
         }
         if let Some(cmd) = command.filter(|&cmd| selection.enabled(cmd)) {
             if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp | Command::Coordinates | Command::TerrainCodes) {
@@ -721,21 +794,45 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                         return Ok(());
                     }
                 }
+                Command::PartialUndo => {
+                    rebuild |= history.partial_undo(doc);
+                    status.clear();
+                }
                 Command::Undo | Command::Redo => {
                     rebuild |= history.apply(doc, cmd == Command::Undo);
                     status.clear();
                 }
-                Command::Save => {
-                    let bytes = doc.text();
-                    let name = path.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str()).unwrap_or("Untitled");
-                    match files::save(&folder, &form, name, &bytes).await {
-                        Ok(Some(saved)) => {
-                            *path = Some(fs::canonicalize(&saved)?);
-                            *doc = EditableMap::parse(bytes)?;
-                            status = format!("Saved {}", saved.display());
+                Command::Save | Command::SaveAs | Command::SaveAll => {
+                    let targets = documents.save_targets(cmd == Command::SaveAll);
+                    let mut saved = Vec::new();
+                    let mut errors = Vec::new();
+                    for index in targets {
+                        let record = &documents.list[index];
+                        let bytes = record.map.text();
+                        let other_paths = documents.list.iter().enumerate().filter(|(i, _)| *i != index)
+                            .filter_map(|(_, item)| item.path.clone()).collect::<Vec<_>>();
+                        let result = files::save(&folder, root, record.path.as_deref(), cmd == Command::SaveAs,
+                            &other_paths, &form, record.name(), &bytes).await;
+                        match result {
+                            Ok(Some(path)) => {
+                                let document = &mut documents.list[index];
+                                document.path = Some(fs::canonicalize(&path)?);
+                                document.map = EditableMap::parse(bytes)?;
+                                saved.push(path.display().to_string());
+                            }
+                            Ok(None) => {}
+                            Err(error) => errors.push(format!("{}: {error}", record.name())),
                         }
-                        Err(e) => status = e.to_string(),
-                        _ => {}
+                    }
+                    if !errors.is_empty() { status = errors.join("\n"); }
+                    else if !saved.is_empty() { status = format!("Saved {}", saved.join(", ")); }
+                }
+                Command::Revert => {
+                    if can_revert && files::confirm(&form).await {
+                        match documents.list[documents.current].revert() {
+                            Ok(()) => { status.clear(); rebuild = true; }
+                            Err(error) => status = error.to_string(),
+                        }
                     }
                 }
                 Command::FillSelection => {
@@ -748,10 +845,26 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                         status.clear();
                     }
                 }
+                Command::Resize => {
+                    if let Some(choice) = new_map_dialog::dimensions(root, &assets, &mut art,
+                        form.font.as_ref(), doc, true).await?
+                        && choice.size != [doc.map().width() as usize, doc.map().height() as usize] {
+                        let fill = (!choice.copy_edges).then_some(palette.brushes[palette.bg].code.as_str());
+                        let next = doc.resized(choice.size, choice.anchor, fill)?;
+                        history.undo.push(Edit::Resize(Box::new(doc.swap_geometry(next))));
+                        history.redo.clear();
+                        rebuild = true;
+                        status.clear();
+                    }
+                }
                 Command::New => {
-                    documents.new_map();
-                    rebuild = true;
-                    status.clear();
+                    if let Some([width,height]) = new_map_dialog::show(root, &assets, &mut art,
+                        form.font.as_ref(), doc).await? {
+                        let map = new_map_dialog::make(width, height, &palette.brushes[palette.bg].code)?;
+                        documents.new_map(map);
+                        rebuild = true;
+                        status.clear();
+                    }
                 }
                 Command::Close => {
                     if !doc.dirty() || files::confirm(&form).await {
@@ -780,6 +893,25 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_undo_and_redo_follow_the_current_saved_geometry() {
+        let mut map = new_map();
+        let mut history = History::default();
+        let next = map.resized([8,6], 0, None).unwrap();
+        history.undo.push(Edit::Resize(Box::new(map.swap_geometry(next))));
+        assert!(map.dirty());
+        assert!(history.apply(&mut map, true));
+        assert!(!map.dirty());
+        assert!(history.apply(&mut map, false));
+        map = EditableMap::parse(map.text()).unwrap();
+        assert!(history.apply(&mut map, true));
+        assert_eq!((map.map().width(),map.map().height()), (44,33));
+        assert!(map.dirty());
+        assert!(history.apply(&mut map, false));
+        assert_eq!((map.map().width(),map.map().height()), (8,6));
+        assert!(!map.dirty());
+    }
 
     #[test]
     fn selection_edits_and_background_fill_share_undo_order() {
@@ -845,6 +977,50 @@ mod tests {
         update_editor_camera(&mut camera, area, &view, true);
         assert!(camera.layout().unwrap().tile_size() < 72.0);
     }
+    #[test]
+    fn partial_undo_reverses_one_complete_brush_stamp_and_redoes_each_step() {
+        let mut doc = new_map();
+        let mut history = History::default();
+        let specs = wml::parse("[terrain_type]\nstring=Ww\neditor_group=water\nsymbol_image=water\n[/terrain_type]").unwrap();
+        let palette = Palette::new(&specs, &Default::default()).unwrap();
+        let [a,b,c,d,e] = [0,1,2,3,4].map(|x| Hex { x, y: 0 });
+        let brush = &palette.brushes[0];
+        shapes::paint(&mut doc, &mut history, &[a,b], brush, false);
+        shapes::paint(&mut doc, &mut history, &[b,c], brush, false);
+        shapes::paint(&mut doc, &mut history, &[d,e], brush, false);
+        assert!(history.finish());
+        assert!(history.partial_undo(&mut doc));
+        assert!([a,b,c].iter().all(|&at| doc.map().terrain_at(at) == Some("Ww")));
+        assert!([d,e].iter().all(|&at| doc.map().terrain_at(at) == Some("Gg")));
+        assert!(history.apply(&mut doc, true));
+        assert!(!doc.dirty());
+        assert!(history.apply(&mut doc, false));
+        assert_eq!(doc.map().terrain_at(c), Some("Ww"));
+        assert_eq!(doc.map().terrain_at(d), Some("Gg"));
+        assert!(history.apply(&mut doc, false));
+        assert!([a,b,c,d,e].iter().all(|&at| doc.map().terrain_at(at) == Some("Ww")));
+        assert!(history.partial_undo(&mut doc));
+        assert_eq!(doc.map().terrain_at(e), Some("Gg"));
+    }
+
+    #[test]
+    fn selection_partial_undo_restores_one_movement_including_overlapping_hexes() {
+        let mut doc = new_map();
+        let mut history = History::default();
+        let [a,b,c] = [0,1,2].map(|x| Hex { x, y: 0 });
+        for at in [a,b,c] { history.select(at, true); }
+        history.finish_selection_step();
+        for at in [a,c] { history.select(at, false); }
+        history.finish_selection();
+        history.partial_undo(&mut doc);
+        assert_eq!(history.selected, HashSet::from([a,b,c]));
+        history.partial_undo(&mut doc);
+        assert!(history.selected.is_empty());
+        history.apply(&mut doc, false);
+        history.apply(&mut doc, false);
+        assert_eq!(history.selected, HashSet::from([b]));
+    }
+
     #[test]
     fn a_brush_stroke_undoes_and_redoes_as_one_edit() {
         let mut doc = new_map();
