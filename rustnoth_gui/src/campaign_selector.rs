@@ -5,6 +5,8 @@ mod difficulty;
 mod sort;
 #[path = "campaign_layout.rs"]
 mod layout;
+#[path = "campaign_backdrop.rs"]
+mod backdrop;
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -215,16 +217,9 @@ impl<'a> Selector<'a> {
         let query_label = fit(self.art.font.as_ref(), self.query.clone(), search.w-16.0, 16);
         self.art.label(&query_label, search.x+8.0, search.y+21.0, 16, LABEL);
         let backdrop = entry.and_then(|e| e.background).unwrap_or("story/landscape-battlefield_nohumans.webp");
-        if let Some(tex) = self.art.get(backdrop) {
-            let dst = layout::backdrop(panel, tex.size());
-            clip(Some(panel), scale);
-            draw_texture_ex(&tex, dst.x, dst.y, Color::from_rgba(255,255,255,63),
-                DrawTextureParams { dest_size: Some(dst.size()), ..Default::default() });
-            clip(None, scale);
-        }
-        fill(panel, Color::from_rgba(0, 0, 0, 138));
+        let shaded = self.art.backdrop(backdrop, window, panel);
         frame(panel);
-        fill(Rect::new(list.x, list.y, list.w, 30.0), Color::from_rgba(0, 0, 0, 89));
+        backdrop::draw_list(&shaded, panel, Rect::new(list.x, list.y, list.w, 30.0));
         if self.show_levels {
             self.art.label(self.art.locale.ui("Name"), list.x+10.0, list.y+21.0, 16, GOLD);
         } else {
@@ -236,7 +231,7 @@ impl<'a> Selector<'a> {
         for (row, &index) in rows.iter().skip(self.first).take(visible+1).enumerate() {
             let rect = Rect::new(body.x, top+row as f32*row_h, body.w, row_h);
             let item = &entries[index];
-            fill(rect, Color::from_rgba(0,0,0,89));
+            backdrop::draw_list(&shaded, panel, rect);
             if self.cursor == self.first+row || rect.contains(pointer) {
                 if let Some(texture) = self.art.get("dialogs/selection-background-fancy.png") {
                     let alpha = if self.cursor == self.first+row {255} else {191};
@@ -258,6 +253,7 @@ impl<'a> Selector<'a> {
             self.art.label(&name, label_x, rect.center().y+6.0, 17, LABEL);
         }
         clip(None, scale);
+        backdrop::draw_list(&shaded, panel, bar);
         self.art.scrollbar(bar, self.first, row_h, rows.len(), scale);
         if rows.is_empty() { self.art.label(self.art.locale.ui("No matches"), list.x+12.0, top+28.0, 16, LABEL); }
         if let Some(e) = entry {
@@ -345,6 +341,7 @@ struct Art {
     roots: Vec<PathBuf>,
     font: Option<Font>,
     textures: HashMap<String, Option<Texture2D>>,
+    backdrop: Option<backdrop::Backdrop>,
 }
 impl Art {
     fn new(root: &Path, campaign: &Node, locale: Locale) -> Self {
@@ -356,20 +353,30 @@ impl Art {
         }
         roots.push(root.join("data/core/images"));
         let font = fs::read(root.join("fonts").join(locale::font_name(&locale.effective))).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Self { locale, roots, font, textures: HashMap::new() }
+        Self { locale, roots, font, textures: HashMap::new(), backdrop: None }
+    }
+    fn pixels(&self, id: &str) -> Option<Image> {
+        let path = Path::new(id.split('~').next()?);
+        relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
+            .and_then(|bytes| crate::artwork::image(&bytes).ok())
     }
     fn get(&mut self, id: &str) -> Option<Texture2D> {
         if let Some(image) = self.textures.get(id) { return image.clone(); }
-        let path = Path::new(id.split('~').next()?);
-        let texture = relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
-            .and_then(|bytes| crate::artwork::image(&bytes).ok())
-            .map(|image| {
-                let texture = Texture2D::from_image(&image);
-                texture.set_filter(FilterMode::Nearest);
-                texture
-            });
+        let texture = self.pixels(id).map(|image| {
+            let texture = Texture2D::from_image(&image);
+            texture.set_filter(FilterMode::Nearest);
+            texture
+        });
         self.textures.insert(id.into(), texture.clone());
         texture
+    }
+    fn backdrop(&mut self, id: &str, window: Rect, panel: Rect) -> Texture2D {
+        if let Some(cached) = &self.backdrop && cached.id == id && cached.bounds == panel {
+            return cached.draw();
+        }
+        let tile = self.pixels("dialogs/opaque-background.png");
+        let scene = self.pixels(id);
+        self.backdrop.insert(backdrop::Backdrop::new(id, window, panel, tile.as_ref(), scene.as_ref())).draw()
     }
     fn label(&self, label: &str, x: f32, y: f32, size: u16, color: Color) {
         text(self.font.as_ref(), label, x, y, size, color);
@@ -394,7 +401,6 @@ impl Art {
         }
     }
     fn scrollbar(&mut self, bar: Rect, first: usize, item_height: f32, count: usize, scale: f32) {
-        fill(bar, Color::from_rgba(0, 0, 0, 89));
         let content_h = (count as f32 * item_height).max(bar.h);
         let length = (bar.h * bar.h / content_h).floor().max(11.).min(bar.h);
         let pos = (bar.h * first as f32 * item_height / content_h).floor().min(bar.h-length);
