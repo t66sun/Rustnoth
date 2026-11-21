@@ -11,11 +11,18 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
+mod scaled_art;
+mod tip_pages;
+#[cfg(windows)]
+mod tip_pango;
+mod button_labels;
+use tip_pages::TipPages;
 mod version;
 
 use crate::{campaign_browser::Browser, desktop, dialog, read_file, setup::Setup};
@@ -31,7 +38,7 @@ pub(super) struct TitleScreen {
     pub(super) seed: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Command { Campaigns, Multiplayer, Load, Addons, Editor, Preferences, Achievements, Community, Credits, Quit, Help, Previous, Next, Language, About }
 
 impl Command {
@@ -261,46 +268,27 @@ impl TitleScreen {
 fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     // The final, retired tip in the native file is enclosed in this preprocessor block.
     let active = source.split_once("#ifdef __UNUSED__").map_or(source, |(active, _)| active);
-    let plain = |text: &str| locale.game(text).replace("<i>", "").replace("</i>", "").replace("<b>", "").replace("</b>", "");
+    let translated = |text: &str| locale.game(text).to_owned();
     let entries: Vec<_> = wml::parse(active)?.children.iter().filter(|(tag, _)| tag == "tip")
-        .filter_map(|(_, config)| Some((plain(config.attribute("text")?), plain(config.attribute("source")?))))
+        .filter_map(|(_, config)| Some((translated(config.attribute("text")?), translated(config.attribute("source")?))))
         .collect();
     if entries.is_empty() { return Err("no title screen tips in data/tips.cfg".into()); }
     Ok(entries)
 }
 
-struct TipPages {
-    entries: Vec<(String, String)>,
-    measured: std::cell::Cell<Option<(u32, f32)>>,
-}
-
-impl TipPages {
-    fn new(entries: Vec<(String, String)>) -> Self {
-        Self { entries, measured: Default::default() }
-    }
-
-    fn height(&self, width: f32, font: Option<&Font>, italic: Option<&Font>) -> f32 {
-        let key = width.to_bits();
-        if let Some((cached, height)) = self.measured.get() && key == cached {
-            return height;
-        }
-        let height = self.entries.iter().map(|(body, source)| {
-            panel_grid::label_height(wrap_at(body, font, width, 17).len())
-                + panel_grid::label_height(wrap_at(source, italic, width, 17).len())
-        }).fold(0.0, f32::max);
-        self.measured.set(Some((key, height)));
-        height
-    }
-}
 
 struct Art {
+    #[cfg(windows)]
+    text_renderer: Option<tip_pango::Text>,
+    #[cfg(windows)]
+    button_labels: button_labels::Cache,
     blurred_panels: std::cell::RefCell<Option<panel_blur::Panels>>,
     about: version::Footer,
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     languages: Vec<locale::Language>,
-    background: Texture2D,
-    map: Texture2D,
+    background: scaled_art::Artwork,
+    map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
     buttons: [Texture2D; 3],
@@ -334,10 +322,28 @@ fn logo_bounds(view_width: f32, size: Vec2) -> Rect {
 }
 
 fn panel(rect: Rect) {
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::from_rgba(0, 0, 0, 137));
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, Color::from_rgba(16, 22, 35, 255));
-    draw_rectangle_lines(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0, 1.0,
-        Color::from_rgba(114, 79, 46, 255));
+    draw_rectangle(rect.x + 3., rect.y + 3., rect.w - 6., rect.h - 6., Color::from_rgba(0, 0, 0, 137));
+    for (inset, thickness, rgba) in [(0., 3., [16,22,35,255]), (1., 1., [114,79,46,255])] {
+        let [r,g,b,a] = rgba;
+        let color = Color::from_rgba(r,g,b,a);
+        for band in panel_rim(rect, inset, thickness) {
+            draw_rectangle(band.x, band.y, band.w, band.h, color);
+        }
+    }
+}
+
+// SDL draws each successive GUI2 rectangle inside the preceding one.
+fn panel_rim(rect: Rect, inset: f32, thickness: f32) -> [Rect; 4] {
+    let x = rect.x + inset;
+    let y = rect.y + inset;
+    let w = rect.w - 2. * inset;
+    let h = rect.h - 2. * inset;
+    [
+        Rect::new(x, y, w, thickness),
+        Rect::new(x, y + h - thickness, w, thickness),
+        Rect::new(x, y + thickness, thickness, h - 2. * thickness),
+        Rect::new(x + w - thickness, y + thickness, thickness, h - 2. * thickness),
+    ]
 }
 
 fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
@@ -348,15 +354,14 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     Ok(texture)
 }
 
-fn localized_map(root: &Path, locale: &locale::Locale) -> Result<Texture2D, Box<dyn Error>> {
+fn localized_map(root: &Path, locale: &locale::Locale) -> Result<scaled_art::Artwork, Box<dyn Error>> {
     let (base, overlay) = locale.title_map(root);
-    let Some(overlay) = overlay else { return load_texture(root, &base) };
     let mut pixels = crate::artwork::rgba(&read_file(&root.join(base))?)?;
-    let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
-    ::image::imageops::overlay(&mut pixels, &names, 0, 0);
-    let texture = Texture2D::from_rgba8(pixels.width().try_into()?, pixels.height().try_into()?, pixels.as_raw());
-    texture.set_filter(FilterMode::Linear);
-    Ok(texture)
+    if let Some(overlay) = overlay {
+        let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
+        ::image::imageops::overlay(&mut pixels, &names, 0, 0);
+    }
+    Ok(scaled_art::Artwork::new(pixels))
 }
 
 fn load_font(root:&Path,name:&str)->Option<Font> {
@@ -378,12 +383,17 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 }
 
 impl Art {
-    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:scaled_art::Artwork) {
         *self.blurred_panels.get_mut() = None;
         self.map = map;
         self.logo = logo;
         if locale::font_name(&self.locale.effective)!=locale::font_name(&locale.effective) {
             (self.font,self.italic)=title_fonts(root,&locale.effective);
+        }
+        #[cfg(windows)]
+        {
+            self.text_renderer = tip_pango::Text::load(root, locale.game("Lato"));
+            self.button_labels = Default::default();
         }
         self.locale=locale;
     }
@@ -393,19 +403,13 @@ impl Art {
             self.about.draw(self, rect, focused, pressed);
             return;
         }
-        let text=self.locale.ui(cmd.label());
+        self.button_frame(rect, focused, pressed);
         if cmd==Command::Language {
-            self.button_frame(rect, focused, pressed);
             let icon=&self.language_icons[if pressed {2} else {usize::from(focused)}];
             let size = icon.size().min(rect.size());
             image(Rect::new(rect.x+5.0, rect.y+((rect.h-size.y)*0.5).floor(), size.x, size.y), icon);
-            let name = self.locale.language_name(&self.languages);
-            let font = self.font.as_ref();
-            let metrics = measure_text(name, font, 13, 1.0);
-            let x = (rect.right() - 10.0 - metrics.width).round();
-            let y = rect.y + ((rect.h - metrics.height - 2.0)*0.5).floor() + metrics.offset_y;
-            dialog::text(font, name, x, y, 13, Color::from_rgba(186,172,125,255));
-        } else { self.button(rect,text,focused,pressed); }
+        }
+        self.draw_command_label(rect, cmd);
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
@@ -413,13 +417,18 @@ impl Art {
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
         Ok(Self {
+            #[cfg(windows)]
+            text_renderer: tip_pango::Text::load(root, locale.game("Lato")),
+            #[cfg(windows)]
+            button_labels: Default::default(),
             blurred_panels: Default::default(),
             about: version::Footer::load(root)?,
             // Partial artwork installations can still show the effective locale identifier.
             languages: locale::list(root).unwrap_or_default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
-            background: texture("data/core/images/maps/background.webp")?,
+            background: scaled_art::Artwork::new(crate::artwork::rgba(
+                &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
             buttons: [texture("images/buttons/button_normal/background.png")?,
@@ -432,8 +441,8 @@ impl Art {
     fn draw_background(&self, w: f32, h: f32) {
         clear_background(BLACK);
         let view = vec2(w, h);
-        image(Rect::new(0.0, 0.0, w, h), &self.background);
-        image(fit_map(view, self.map.size()), &self.map);
+        self.background.draw(Rect::new(0.0, 0.0, w, h), view);
+        self.map.draw(fit_map(view, self.map.size()), view);
         for texture in [&self.logo_shadow, &self.logo] {
             image(logo_bounds(w, texture.size()), texture);
         }
@@ -449,19 +458,15 @@ impl Art {
         };
         let font = self.font.as_ref();
         let italic = self.italic.as_ref().or(font);
-        let label_width = |cmd: Command| {
-            measure_text(self.locale.ui(cmd.label()), font, 16, 1.0).width.ceil() + extra
-        };
+        let label_width = |cmd: Command| self.command_label_width(cmd) + extra;
         let bw = actions.iter().copied().map(label_width).fold(wide, f32::max);
         let inset = padding + 5.0;
         let menu_w = bw + inset * 2.0;
         let menu_h = actions.len() as f32 * (bh + 10.0) + 2.0 * padding;
         let tip_text_w = (w - 34.0 - menu_w - 2.0 * inset).clamp(1.0, 650.0).floor();
-        let body_lines = wrap_at(body, font, tip_text_w, 17);
-        let source_lines = wrap_at(source, italic, tip_text_w, 17);
-        let source_height = panel_grid::label_height(source_lines.len());
-        let page_height = pages.height(tip_text_w, font, italic)
-            .max(panel_grid::label_height(body_lines.len()) + source_height);
+        let width = tip_text_w as u16;
+        let page = pages.page(body, source, width, self);
+        let page_height = pages.height(width, self).max(page.height());
         let tip_h = 2.0 * padding + page_height + plain_h + 30.0;
         let tip_w = tip_text_w + inset * 2.0;
         let footer_height = if big { 42.0 } else { 40.0 };
@@ -471,19 +476,8 @@ impl Art {
         panel_blur::draw(&self.blurred_panels, [tip, menu], vec2(w, h));
         panel(tip);
         panel(menu);
-        let text_color = Color::from_rgba(215, 215, 215, 255);
-        let mut y = tip.y + inset + 17.0;
-        for line in body_lines {
-            dialog::text(font, &line, tip.x + inset, y, 17, text_color);
-            y += 22.0;
-        }
         let controls_y = tip.bottom() - inset - plain_h;
-        y = controls_y - 10.0 - source_height + 17.0;
-        for line in source_lines {
-            let x = tip.right() - inset - measure_text(&line, italic, 17, 1.0).width;
-            dialog::text(italic, &line, x, y, 17, text_color);
-            y += 22.0;
-        }
+        page.draw(tip.x + inset, tip.y + inset, controls_y - 10.0, font, italic);
         let mut buttons: Vec<_> = actions.iter().enumerate().map(|(i, action)| (*action,
             Rect::new(menu.x + inset, menu.y + inset + i as f32 * (bh + 10.0), bw, bh))).collect();
         let [help_w, prev_w, next_w] = [Command::Help, Command::Previous, Command::Next]
@@ -493,8 +487,7 @@ impl Art {
         buttons.push((Command::Previous, Rect::new(next.x - 10.0 - prev_w, controls_y, prev_w, plain_h)));
         buttons.push((Command::Next, next));
         buttons.push((Command::About, version::footer_bounds(h)));
-        let name = self.locale.language_name(&self.languages);
-        let text_width = measure_text(name, font, 13, 1.0).width;
+        let text_width = self.command_label_width(Command::Language);
         buttons.push((Command::Language, language_button_bounds(w, h, text_width)));
         buttons
     }
@@ -588,6 +581,19 @@ mod tests {
     }
 
     #[test]
+    fn title_tip_panel_draws_its_gold_edge_one_full_pixel_inside() {
+        let panel = Rect::new(73., 467., 710., 258.);
+        let dark = panel_rim(panel, 0., 3.);
+        let gold = panel_rim(panel, 1., 1.);
+        let hits = |bands: &[Rect; 4], x| bands.iter().any(|r| r.contains(vec2(x, 600.5)));
+        assert!(!hits(&dark, 72.5));
+        assert!(hits(&dark, 73.5) && hits(&dark, 75.5));
+        assert!(!hits(&dark, 76.5));
+        assert!(hits(&gold, 74.5) && hits(&gold, 781.5));
+        assert!(!hits(&gold, 73.5) && !hits(&gold, 75.5));
+    }
+
+    #[test]
     fn title_map_keeps_its_aspect_and_centers_on_both_axes() {
         let map = vec2(1000.0, 700.0);
         assert_eq!(fit_map(vec2(1600.0, 700.0), map), Rect::new(300.0, 0.0, 1000.0, 700.0));
@@ -606,7 +612,7 @@ mod tests {
     fn title_shows_the_active_native_tips_and_their_attribution() {
         let tip = "[tip]\ntext=_ \"Use <b>Recruit</b>.\"\nsource=_ \"<i>Konrad</i>\"\n[/tip]\n";
         assert_eq!(tips(&format!("{tip}#ifdef __UNUSED__\n{tip}#endif"), &locale::Locale::default()).unwrap(),
-            [("Use Recruit.".to_owned(), "Konrad".to_owned())]);
+            [("Use <b>Recruit</b>.".to_owned(), "<i>Konrad</i>".to_owned())]);
     }
 
     #[test]

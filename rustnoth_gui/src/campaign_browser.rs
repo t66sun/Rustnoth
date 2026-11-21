@@ -101,6 +101,7 @@ impl Browser {
                         self.play_from(id.to_owned()).await
                     };
                     error = result.err().map(|cause| format!("{id} — {cause}"));
+                    while macroquad::prelude::get_char_pressed().is_some() {}
                 }
                 ListAction::Back => return Ok(()),
                 ListAction::Idle => {}
