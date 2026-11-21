@@ -38,8 +38,9 @@ pub fn load<'rules>(
         .map_err(ScenarioStartError::Placement)?;
     let experience_modifier = integer(scenario, "experience_modifier")
         .unwrap_or(DEFAULT_EXPERIENCE_MODIFIER);
-    let board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
+    let mut board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
         .map_err(ScenarioStartError::Board)?;
+    board.biased_combat = scenario.attribute("random_mode") == Some("biased");
 
     let sides = read_sides(scenario);
     Ok(ScenarioStart {
