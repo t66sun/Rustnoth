@@ -20,7 +20,7 @@ pub(crate) mod button_canvas;
 mod scaled_art;
 mod tip_pages;
 #[cfg(windows)]
-mod tip_pango;
+pub(crate) mod tip_pango;
 mod button_labels;
 use tip_pages::TipPages;
 mod version;
