@@ -100,7 +100,7 @@ pub(super) fn cache_directory() -> io::Result<PathBuf> {
 
 fn prepared(root: &Path, binary: &Path, cache: &Path, source: &str, defines: &str) -> io::Result<PathBuf> {
     let input = root.join(source).join("_main.cfg");
-    prepare_file(root, binary, cache, &input, defines, &[])
+    prepare_file(root, binary, cache, &input, defines, &[], None)
 }
 
 pub(super) fn achievements(root: &Path) -> io::Result<Vec<u8>> {
@@ -115,10 +115,15 @@ pub(super) fn achievements(root: &Path) -> io::Result<Vec<u8>> {
     }
     includes.retain(|file| file.is_file());
     includes.sort();
-    fs::read(prepare_file(root, &executable(root)?, &cache_directory()?, &source, "SKIP_CORE,NO_TERRAIN_GFX", &includes)?)
+    fs::read(prepare_file(root, &executable(root)?, &cache_directory()?, &source, "SKIP_CORE,NO_TERRAIN_GFX", &includes, None)?)
 }
 
-fn prepare_file(root: &Path, binary: &Path, cache: &Path, input: &Path, defines: &str, includes: &[PathBuf]) -> io::Result<PathBuf> {
+pub(super) fn prepare_addon(root: &Path, userdata: &Path, input: &Path, includes: &[PathBuf]) -> io::Result<Vec<u8>> {
+    fs::read(prepare_file(root, &executable(root)?, &cache_directory()?, input,
+        "TITLE_SCREEN,NO_TERRAIN_GFX", includes, Some(userdata))?)
+}
+
+fn prepare_file(root: &Path, binary: &Path, cache: &Path, input: &Path, defines: &str, includes: &[PathBuf], userdata: Option<&Path>) -> io::Result<PathBuf> {
     let mut hash = DefaultHasher::new();
     input.hash(&mut hash);
     defines.hash(&mut hash);
@@ -145,7 +150,7 @@ fn prepare_file(root: &Path, binary: &Path, cache: &Path, input: &Path, defines:
         let result = process.arg("--data-dir").arg(root)
             .arg("--userconfig-dir").arg(stage.join("config"))
             .arg("--usercache-dir").arg(stage.join("cache"))
-            .arg("--userdata-dir").arg(stage.join("userdata"))
+            .arg("--userdata-dir").arg(userdata.map(Path::to_owned).unwrap_or_else(|| stage.join("userdata")))
             .arg("--no-log-to-file").arg(format!("--preprocess-defines={defines}"))
             .arg("--preprocess").arg(input).arg(&stage)
             .stdin(Stdio::null()).output()?;
@@ -155,7 +160,7 @@ fn prepare_file(root: &Path, binary: &Path, cache: &Path, input: &Path, defines:
             return Err(io::Error::other(format!("{}: {detail} ({})", input.display(), result.status)));
         }
         let generated = stage.join(input.file_name().expect("a configuration file"));
-        if fs::metadata(&generated)?.len() == 0 && input.file_name().is_some_and(|n| n == "_main.cfg") {
+        if userdata.is_none() && fs::metadata(&generated)?.len() == 0 && input.file_name().is_some_and(|n| n == "_main.cfg") {
             return Err(io::Error::new(io::ErrorKind::InvalidData,"Wesnoth produced an empty configuration"));
         }
         match fs::rename(generated, &output) {

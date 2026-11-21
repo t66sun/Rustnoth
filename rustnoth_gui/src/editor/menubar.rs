@@ -15,8 +15,9 @@ impl Menu {
 
     fn entries(self) -> &'static [Command] {
         match self {
-            File => &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit],
-            Map => &[Command::Resize, Command::Refresh, Command::ToggleGrid, Command::FillSelection],
+            File => &[Command::New, Command::Open, Command::Revert, Command::Save, Command::SaveAs, Command::Close, Command::Exit],
+            Map => &[Command::Resize, Command::ToggleHelp, Command::Refresh, Command::ToggleGrid, Command::Coordinates,
+                Command::TerrainCodes, Command::FillSelection],
             _ => &[],
         }
     }
@@ -53,7 +54,7 @@ impl Menubar {
     }
 
     pub fn draw(&self, open: &mut Option<Menu>, point: Vec2, assets: &AssetCatalog,
-            art: &mut Art, font: Option<&Font>, names: &[String]) -> Option<Command> {
+            art: &mut Art, font: Option<&Font>, names: &[String], can_revert: bool) -> Option<Command> {
         let click = is_mouse_button_pressed(MouseButton::Left);
         let mut triggered = false;
         for (menu, label) in HEADERS {
@@ -95,8 +96,9 @@ impl Menubar {
             } else {
                 (entries[row], entries[row].label())
             };
-            dialog::text(font, label, area.x + 9., area.y + 19., 16, WHITE);
-            if hot && click && !triggered { result = Some(cmd); }
+            let enabled = cmd != Command::Revert || can_revert;
+            dialog::text(font, label, area.x + 9., area.y + 19., 16, if enabled { WHITE } else { GRAY });
+            if enabled && hot && click && !triggered { result = Some(cmd); }
         }
         if click && !triggered { *open = None; }
         result
@@ -111,6 +113,7 @@ mod tests {
         assert_eq!(Window.bounds(), Rect::new(200.,1.,100.,20.));
         assert_eq!(Side.bounds(), Rect::new(500.,1.,100.,20.));
         assert!(Map.entries().contains(&Command::ToggleGrid));
+        assert_eq!(&Map.entries()[..2], &[Command::Resize, Command::ToggleHelp]);
         assert!(File.entries().contains(&Command::Open));
         assert!(Window.enabled() && !Areas.enabled() && !Side.enabled());
     }

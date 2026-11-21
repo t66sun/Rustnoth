@@ -5,11 +5,12 @@ use engine_lite::wml::Node;
 use macroquad::prelude::*;
 use rustnoth_gui::assets::AssetCatalog;
 
-use crate::{dialog, render};
+use crate::{artwork::{self, scaled::Artwork}, dialog, render};
 
 pub(super) struct Part {
     pub(super) title: String,
     pub(super) text: String,
+    markup: String,
     placement: Placement,
     layers: Vec<Layer>,
     markers: Vec<Marker>,
@@ -89,11 +90,15 @@ impl Layer {
     }
 
     fn area(&self, original: Vec2, screen: Vec2) -> Rect {
-        let width = if self.scale_y && self.aspect { (original.x * screen.y / original.y).min(screen.x) }
-            else if self.scale_x { screen.x } else { original.x };
-        let height = if self.scale_x && self.aspect { (original.y * screen.x / original.x).min(screen.y) }
-            else if self.scale_y { screen.y } else { original.y };
-        Rect::new(((screen.x - width) / 2.).max(0.), ((screen.y - height) / 2.).max(0.), width, height)
+        let (sw, sh) = (screen.x as i64, screen.y as i64);
+        let (ow, oh) = (original.x as i64, original.y as i64);
+        let width = if self.scale_y && self.aspect { (ow * sh / oh).min(sw) }
+            else if self.scale_x { sw } else { ow };
+        let height = if self.scale_x && self.aspect { (oh * sw / ow).min(sh) }
+            else if self.scale_y { sh } else { oh };
+        // The WFL canvas divides each side separately when centering a layer.
+        Rect::new((sw / 2 - width / 2).max(0) as f32, (sh / 2 - height / 2).max(0) as f32,
+                  width as f32, height as f32)
     }
 }
 
@@ -120,11 +125,12 @@ pub(super) fn read(scenario: &Node, name: &str) -> Vec<Part> {
             let title = if flag(node, "show_title", node.attribute("title").is_some()) {
                 plain_text(literal(node, "title").unwrap_or(name))
             } else { String::new() };
-            let text = plain_text(literal(node, "story").unwrap_or_default());
+            let markup = literal(node, "story").unwrap_or_default().to_owned();
+            let text = plain_text(&markup);
             if !text.is_empty() || !layers.is_empty() || !markers.is_empty() || !title.is_empty() {
                 let placement = match node.attribute("text_layout") { Some("top") => Placement::Top,
                     Some("middle") => Placement::Middle, _ => Placement::Bottom };
-                parts.push(Part { title, text, placement, layers, markers });
+                parts.push(Part { title, text, markup, placement, layers, markers });
             }
         }
     }
@@ -147,22 +153,22 @@ fn lines(font: Option<&Font>, text: &str, width: f32) -> Vec<String> {
     lines
 }
 
-fn draw_art(part: &Part, textures: &HashMap<&str, Option<Texture2D>>, screen: Vec2) {
+fn draw_art(part: &Part, layers: &HashMap<&str, Option<Artwork>>,
+            markers: &HashMap<&str, Option<Texture2D>>, screen: Vec2) {
     let mut origin = Vec2::ZERO;
     let mut scale = Vec2::ONE;
     for (index, layer) in part.layers.iter().enumerate() {
-        let Some(Some(image)) = textures.get(layer.file.as_str()) else { continue };
-        let size = vec2(image.width(), image.height());
+        let Some(Some(image)) = layers.get(layer.file.as_str()) else { continue };
+        let size = image.size();
         let rect = layer.area(size, screen);
         if index == 0 || layer.base {
             origin = rect.point();
             scale = rect.size() / size;
         }
-        draw_texture_ex(image, rect.x, rect.y, WHITE,
-            DrawTextureParams { dest_size: Some(rect.size()), ..Default::default() });
+        image.draw(rect, screen);
     }
     for marker in &part.markers {
-        let Some(Some(image)) = textures.get(marker.file.as_str()) else { continue };
+        let Some(Some(image)) = markers.get(marker.file.as_str()) else { continue };
         let mut size = vec2(image.width(), image.height());
         if marker.resize { size *= scale; }
         let mut at = origin + marker.position * scale;
@@ -209,18 +215,29 @@ impl Skin {
     }
 }
 
-pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Font>) {
+pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, font: Option<&Font>) {
     let skin = Skin::load(assets);
+    #[cfg(windows)]
+    let renderer = crate::title_screen::tip_pango::Text::load(root, "Lato");
     let mut index = 0;
     while let Some(part) = parts.get(index) {
-        let mut textures = HashMap::new();
-        for file in part.layers.iter().map(|layer| &layer.file).chain(part.markers.iter().map(|m| &m.file)) {
-            textures.entry(file.as_str()).or_insert_with(|| assets.resolve_image(Path::new(file))
+        let mut layers = HashMap::new();
+        for layer in &part.layers {
+            layers.entry(layer.file.as_str()).or_insert_with(|| {
+                let path = assets.resolve_image(Path::new(&layer.file))?;
+                let bytes = std::fs::read(path).ok()?;
+                artwork::rgba(&bytes).ok().map(Artwork::new)
+            });
+        }
+        let mut markers = HashMap::new();
+        for file in part.markers.iter().map(|m| &m.file) {
+            markers.entry(file.as_str()).or_insert_with(|| assets.resolve_image(Path::new(file))
                 .and_then(|path| render::load_texture(&path, None)));
         }
         let mut first = 0;
         let mut previous_width = 0.;
         let mut wrapped = Vec::new();
+        let mut block: Option<Texture2D> = None;
         loop {
             let scale = (screen_width() / 520.).min(screen_height() / 360.).clamp(0.01, 1.);
             let screen = vec2(screen_width(), screen_height()) / scale;
@@ -228,23 +245,40 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
             let mouse = vec2(mx, my) / scale;
             set_camera(&dialog::setup_camera(screen.x, screen.y));
             clear_background(BLACK);
-            draw_art(part, &textures, screen);
+            draw_art(part, &layers, &markers, screen);
             if !part.title.is_empty() {
                 dialog::text(font, &dialog::fit(font, part.title.clone(), screen.x - 40.0, 26),
                     20.0, 46.0, 26, WHITE);
             }
             let panel = part.placement.panel(screen, !part.title.is_empty());
             skin.panel(panel, part.placement, !part.title.is_empty());
-            let width = panel.w - 166.0;
+            // The controls use 112 pixels plus their 20px side borders. The label
+            // uses another 20px each side, and 3px separating its scrollbar.
+            let width = (panel.w - 195.).max(1.);
             if previous_width != width {
-                wrapped = lines(font, &part.text, width);
+                #[cfg(windows)]
+                if let Some(renderer) = &renderer && !part.text.is_empty() {
+                    let img = renderer.paragraph(&part.markup, width as u16, 0);
+                    let texture = Texture2D::from_image(&img);
+                    texture.set_filter(FilterMode::Nearest);
+                    block = Some(texture);
+                }
+                if block.is_none() { wrapped = lines(font, &part.text, width); }
                 previous_width = width;
             }
-            let count = ((panel.h - 46.0) / 25.0).floor().max(1.0) as usize;
-            first = first.min(wrapped.len().saturating_sub(1));
-            let shown = count.min(wrapped.len() - first);
-            for (row, line) in wrapped.iter().skip(first).take(count).enumerate() {
-                dialog::text(font, line, 20.0, panel.y + 43.0 + row as f32 * 25.0, 19, dialog::PALE);
+            let count = ((panel.h - 40.) / 27.).floor().max(1.) as usize;
+            let rows = block.as_ref().map_or(wrapped.len(), |t| (t.height()/27.).ceil() as usize);
+            first = first.min(rows.saturating_sub(1));
+            let shown = count.min(rows - first);
+            if let Some(tex) = &block {
+                let top = first as f32 * 27.;
+                let source = Rect::new(0.,top,tex.width(),(tex.height()-top).min(count as f32*27.));
+                draw_texture_ex(tex, 20., panel.y+20., WHITE,
+                    DrawTextureParams { source:Some(source), dest_size:Some(source.size()), ..Default::default() });
+            } else {
+                for (row, line) in wrapped.iter().skip(first).take(count).enumerate() {
+                    dialog::text(font, line, 20., panel.y + 38. + row as f32 * 27., 17, dialog::PALE);
+                }
             }
             let skip_rect = Rect::new(panel.right() - 116.0, panel.bottom() - 53.0, 96.0, 33.0);
             let prior = Rect::new(skip_rect.x, skip_rect.y - 67.0, 40.0, 56.0);
@@ -265,7 +299,7 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
                 if first > 0 { first = first.saturating_sub(count); }
                 else if index > 0 { index -= 1; break; }
             } else if next {
-                if first + shown < wrapped.len() { first += shown; }
+                if first + shown < rows { first += shown; }
                 else { index += 1; break; }
             }
         }
@@ -275,6 +309,21 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn south_guard_opening_uses_the_integer_story_canvas_rectangle() {
+        let config = engine_lite::wml::parse("background=story/fall.webp").unwrap();
+        let layer = Layer::read(&config, true).unwrap();
+        assert_eq!(layer.area(vec2(1024.,385.),vec2(1200.,820.)), Rect::new(0.,185.,1200.,451.));
+    }
+
+    #[test]
+    fn narrative_keeps_the_authored_pango_span_color() {
+        let scene = engine_lite::wml::parse("[story]\n[part]\nstory=\"<span color='#baac7d'>The king</span>\"\n[/part]\n[/story]").unwrap();
+        let parts = read(&scene, "");
+        assert_eq!(parts[0].markup, "<span color='#baac7d'>The king</span>");
+        assert_eq!(parts[0].text, "The king");
+    }
 
     #[test]
     fn authored_story_text_layout_places_the_native_panel_below_the_title() {
