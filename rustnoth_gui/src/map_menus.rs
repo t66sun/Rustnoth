@@ -7,6 +7,7 @@ use std::path::Path;
 enum Group {
     Menu,
     Actions,
+    Context,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Command {
@@ -18,6 +19,7 @@ pub(super) enum Command {
     Recruit,
     RecruitAt(Hex),
     Recall,
+    Undo,
 }
 impl Command {
     fn label(self) -> &'static str {
@@ -29,6 +31,7 @@ impl Command {
             Self::NextUnit => "Next Unit",
             Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
+            Self::Undo => "Undo",
         }
     }
 }
@@ -37,6 +40,7 @@ pub(super) struct State {
     open: Option<Group>,
     recruit_at: Option<(Hex, Vec2)>,
     cursor: usize,
+    context: Vec2,
 }
 pub(super) struct Response {
     pub handled: bool,
@@ -123,7 +127,11 @@ fn items(group: Group, commands: &[Command]) -> Vec<Command> {
     commands
         .iter()
         .copied()
-        .filter(|c| matches!(c, Command::Objectives | Command::UnitList | Command::Save | Command::Quit) == (group == Group::Menu))
+        .filter(|c| match group {
+            Group::Menu => matches!(c, Command::Objectives | Command::UnitList | Command::Save | Command::Quit),
+            Group::Actions => matches!(c, Command::NextUnit | Command::Recruit | Command::Recall | Command::Undo),
+            Group::Context => *c == Command::Undo,
+        })
         .collect()
 }
 fn row(button: Rect, i: usize, scale: f32) -> Rect {
@@ -136,6 +144,14 @@ fn row(button: Rect, i: usize, scale: f32) -> Rect {
 }
 
 impl State {
+    fn anchor(&self, group: Group, buttons: [Rect; 2]) -> Rect {
+        match group {
+            Group::Menu => buttons[0],
+            Group::Actions => buttons[1],
+            Group::Context => Rect::new(self.context.x, self.context.y, 0.0, 0.0),
+        }
+    }
+
     pub fn open_recruit_at(&mut self, hex: Hex, pointer: Vec2, actions: &[Action]) {
         self.recruit_at = actions.iter().any(|a| matches!(a, Action::Recruit { to, .. } if *to == hex))
             .then_some((hex, pointer));
@@ -166,6 +182,20 @@ impl State {
         }
         let prior = self.open;
         let mut command = None;
+        if prior.is_none() && commands.contains(&Command::Undo) {
+            if is_mouse_button_pressed(MouseButton::Right) && crate::render::board_viewport().contains(pointer.to_array()) {
+                self.open = Some(Group::Context);
+                self.cursor = 0;
+                self.context = vec2(pointer.x.min(screen_width() - 192.0 * s), pointer.y.min(screen_height() - 27.0 * s));
+                return Response { handled: true, command: None };
+            }
+            if is_key_pressed(KeyCode::U) && ![
+                KeyCode::LeftAlt, KeyCode::RightAlt, KeyCode::LeftControl, KeyCode::RightControl,
+                KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftSuper, KeyCode::RightSuper,
+            ].into_iter().any(is_key_down) {
+                return Response { handled: true, command: Some(Command::Undo) };
+            }
+        }
         if click && let Some(group) = group_at(pointer) {
             self.open =
                 (prior != Some(group) && !items(group, commands).is_empty()).then_some(group);
@@ -177,7 +207,7 @@ impl State {
         }
         if let Some(group) = prior {
             let options = items(group, commands);
-            let button = bounds[usize::from(group == Group::Actions)];
+            let button = self.anchor(group, bounds);
             if options.is_empty()
                 || is_key_pressed(KeyCode::Escape)
                 || is_mouse_button_pressed(MouseButton::Right)
@@ -197,7 +227,7 @@ impl State {
                 self.cursor = (self.cursor + 1) % options.len();
             } else if is_key_pressed(KeyCode::Up) {
                 self.cursor = (self.cursor + options.len() - 1) % options.len();
-            } else if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::Left) {
+            } else if group != Group::Context && (is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::Left)) {
                 let other = if group == Group::Menu {
                     Group::Actions
                 } else {
@@ -270,9 +300,9 @@ impl State {
                 );
             }
             text(name, r, true, Color::from_rgba(239, 224, 184, 255));
-            if self.open != Some(group) {
-                continue;
-            }
+        }
+        if let Some(group) = self.open {
+            let r = self.anchor(group, bounds);
             for (j, cmd) in items(group, commands).iter().enumerate() {
                 let r = row(r, j, s);
                 let focus = r.contains(pointer) || self.cursor == j;
@@ -296,6 +326,15 @@ mod tests {
         assert!(state.recruit_at.is_none());
         state.open_recruit_at(target, Vec2::ZERO, &actions);
         assert_eq!(state.recruit_at.unwrap().0, target);
+    }
+    #[test]
+    fn tutorial_context_menu_offers_only_the_available_undo() {
+        let commands = [Command::Quit, Command::NextUnit, Command::Undo];
+        assert_eq!(items(Group::Context, &commands), [Command::Undo]);
+        assert!(items(Group::Context, &commands[..2]).is_empty());
+        let state = State { context: vec2(100., 200.), ..Default::default() };
+        let row = row(state.anchor(Group::Context, geometry(1024., 768.).0), 0, 1.);
+        assert_eq!(row, Rect::new(100., 200., 192., 27.));
     }
     #[test]
     fn actions_only_offer_recruitment_with_a_legal_castle_destination() {
