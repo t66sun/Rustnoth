@@ -35,7 +35,7 @@ impl Default for Documents {
 
 impl Documents {
     pub fn new_map(&mut self, map: EditableMap) {
-        self.list.push(Document { map, path: None, camera: BoardCamera::default(), history: History::default() });
+        self.list.push(Document::new(map, None));
         self.current = self.list.len() - 1;
     }
 
