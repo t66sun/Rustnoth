@@ -12,6 +12,16 @@ pub fn hotkey() -> bool {
 fn objective_text(objectives: &ScenarioObjectives, locale: &Locale) -> String {
     if objectives.is_empty() { return locale.game("No objectives available").to_owned(); }
     let mut sections = Vec::new();
+    if !objectives.summary.is_empty() {
+        // objectives.lua enlarges only the first line, preserving markup on later lines.
+        let mut lines = objectives.summary.split('\n');
+        let mut summary = format!("<big>{}</big>", lines.next().unwrap_or_default());
+        for line in lines {
+            summary.push('\n');
+            summary.push_str(line);
+        }
+        sections.push(summary);
+    }
     for (heading, entries, color) in [
         ("Victory:", &objectives.victory, "#00ff00"),
         ("Defeat:", &objectives.defeat, "#ff0000"),
@@ -149,9 +159,20 @@ mod tests {
 
     #[test]
     fn native_transient_wraps_the_scenario_text_inside_a_centered_message() {
-        let objectives = ScenarioObjectives { victory: vec!["Hold the bridge".into()], defeat: vec!["Death of Deoran".into()] };
+        let objectives = ScenarioObjectives { victory: vec!["Hold the bridge".into()], defeat: vec!["Death of Deoran".into()], ..Default::default() };
         let message = objective_text(&objectives, &Locale::default());
         assert_eq!(message, "<big>Victory:</big>\n<span foreground='#00ff00'>• Hold the bridge</span>\n\n<big>Defeat:</big>\n<span foreground='#ff0000'>• Death of Deoran</span>");
         assert_eq!(panel(vec2(1200., 820.), vec2(213., 27.), vec2(270., 130.)), Rect::new(448., 310., 303., 200.));
+    }
+
+    #[test]
+    fn tutorial_summary_keeps_the_list_size_and_precedes_the_victory_heading() {
+        let objectives = ScenarioObjectives {
+            summary: "You will learn the basics of:\n• <small>Movement</small>".into(),
+            victory: vec!["Destroy a fierce enemy".into()],
+            ..Default::default()
+        };
+        assert_eq!(objective_text(&objectives, &Locale::default()),
+            "<big>You will learn the basics of:</big>\n• <small>Movement</small>\n\n<big>Victory:</big>\n<span foreground='#00ff00'>• Destroy a fierce enemy</span>");
     }
 }

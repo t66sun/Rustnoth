@@ -77,6 +77,14 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     put(&mut hint, "speaker", "narrator");
 
     let mut events = vec![("event".into(), intro)];
+    for prestart in children(scenario, "event").filter(|event| event.attribute("name") == Some("prestart")) {
+        // Character selection replaces the Lua setup but the student's objectives still apply.
+        let mut setup = node(&[("name", "prestart")]);
+        setup.children.extend(prestart.children.iter().filter(|(tag, _)| tag == "objectives").cloned());
+        if !setup.children.is_empty() {
+            events.push(("event".into(), setup));
+        }
+    }
     for destination in mentor_hex.neighbors() {
         let mut event = node(&[("name", "moveto")]);
         let mut filter = node(&[("id", "student"), ("side", "1")]);
@@ -181,6 +189,25 @@ mod tests {
             (Hero::Lisar, ne, "Welcome Lisar", "Attack with Lisar"),
         ] {
             let mut scenario = opening();
+            let summary = "You will learn the basics of:\n• <small>Movement</small>\n• <small>Attacking</small>\n• <small>Healing</small>\n• <small>Recruiting</small>";
+            scenario.children.extend(wml::parse(format!(r#"[event]
+name=prestart
+[store_unit]
+variable=student_store
+[/store_unit]
+[objectives]
+side=1
+summary= _ "{summary}"
+[objective]
+description= _ "Destroy a fierce enemy"
+condition=win
+[/objective]
+[objective]
+description= _ "Get yourself killed"
+condition=lose
+[/objective]
+[/objectives]
+[/event]"#)).unwrap().children);
             let mut lesson = prepare(&mut scenario, hero).unwrap();
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
@@ -190,6 +217,12 @@ mod tests {
             let mut session = Session::with_players(bundle.start_with_controllers(9, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
             assert_eq!(session.dialogue().unwrap().text, introduction);
             session.dismiss_dialogue();
+            assert!(session.has_objective_notice());
+            let goals = session.objectives().unwrap();
+            assert_eq!(goals.summary, summary);
+            assert_eq!(goals.victory, ["Destroy a fierce enemy"]);
+            assert_eq!(goals.defeat, ["Get yourself killed"]);
+            session.acknowledge_objectives();
             assert!(session.legal_actions().contains(&Action::EndTurn));
             lesson.restrict(&mut session);
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
