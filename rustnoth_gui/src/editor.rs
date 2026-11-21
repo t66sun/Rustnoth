@@ -294,9 +294,10 @@ fn draw_terrain(
                         front,
                         "",
                         ms,
+                        None,
                     );
                     if !front && let Some(grid) = grid {
-                        grid.draw(center, size);
+                        grid.draw(center, size, None);
                     }
                     if front && history.selected.contains(&hex) {
                         art.image(assets, "editor/selection-overlay.png", Rect::new(left, top, size, size));

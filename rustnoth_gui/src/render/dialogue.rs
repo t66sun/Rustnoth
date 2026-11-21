@@ -230,7 +230,7 @@ pub(super) fn plain_text(source: &str) -> String {
     text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
-fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
     let mut result = Vec::new();
     for paragraph in text.split('\n') {
         let mut line = String::new();

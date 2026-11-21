@@ -83,7 +83,7 @@ pub(super) fn draw(
     };
     if let Some(Some(sprite)) = art.units.get(&unit.type_id).and_then(|u| u.get(&unit.side)) {
         let cell = rect(3.0, 3.0, 72.0, 72.0);
-        super::super::draw_centered(sprite, cell.center(), cell.w);
+        super::super::draw_centered(sprite, cell.center(), cell.w, None);
     }
 
     let status = &art.frame.unit_report.conditions;

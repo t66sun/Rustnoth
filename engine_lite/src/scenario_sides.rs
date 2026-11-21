@@ -19,6 +19,18 @@ pub(crate) enum DefeatCondition {
     Always,
 }
 
+impl DefeatCondition {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        Some(match value {
+            "no_leader_left" => Self::NoLeaderLeft,
+            "no_units_left" => Self::NoUnitsLeft,
+            "never" => Self::Never,
+            "always" => Self::Always,
+            _ => return None,
+        })
+    }
+}
+
 /// Literal scenario objectives shown by the desktop client.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScenarioObjectives {
@@ -36,6 +48,27 @@ impl ScenarioObjectives {
     }
 }
 
+/// Single-player WML controllers. An omitted controller uses Wesnoth's AI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SideController {
+    Human,
+    Ai,
+    Empty,
+    Reserved,
+}
+
+impl SideController {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        match value {
+            "human" => Some(Self::Human),
+            "ai" => Some(Self::Ai),
+            "null" => Some(Self::Empty),
+            "reserved" => Some(Self::Reserved),
+            _ => None,
+        }
+    }
+}
+
 /// The initial rules settings for a side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SideConfig {
@@ -43,8 +76,8 @@ pub struct SideConfig {
     pub side: usize,
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
+    pub(crate) controller: SideController,
     pub(crate) objectives_changed: bool,
-    pub(crate) human: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -100,14 +133,10 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         side,
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
+        controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
         objectives_changed: false,
-        human: cfg.attribute("controller") == Some("human"),
-        defeat_condition: match cfg.attribute("defeat_condition") {
-            Some("no_units_left") => DefeatCondition::NoUnitsLeft,
-            Some("never") => DefeatCondition::Never,
-            Some("always") => DefeatCondition::Always,
-            _ => DefeatCondition::NoLeaderLeft,
-        },
+        defeat_condition: cfg.attribute("defeat_condition").and_then(DefeatCondition::from_wml)
+            .unwrap_or(DefeatCondition::NoLeaderLeft),
         fog: bool_attribute(cfg, "fog", false),
         shroud: bool_attribute(cfg, "shroud", false),
         fog_data: cfg.attribute("fog_data").unwrap_or_default().to_owned(),
