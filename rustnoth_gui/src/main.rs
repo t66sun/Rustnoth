@@ -273,7 +273,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             if let Some(focus) = checkpoint.camera { camera.restore(focus); }
         }
     } else {
-        story::show(&data.story, &data.assets, art.font.as_ref()).await;
+        story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref()).await;
     }
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, session.map_item_images());
