@@ -47,6 +47,15 @@ impl ScenarioObjectives {
     }
 }
 
+/// Single-player WML controllers. An omitted controller uses Wesnoth's AI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SideController {
+    Human,
+    Ai,
+    Empty,
+    Reserved,
+}
+
 /// The initial rules settings for a side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SideConfig {
@@ -54,7 +63,7 @@ pub struct SideConfig {
     pub side: usize,
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
-    pub(crate) human: bool,
+    pub(crate) controller: SideController,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -110,7 +119,12 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         side,
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
-        human: cfg.attribute("controller") == Some("human"),
+        controller: match cfg.attribute("controller") {
+            Some("human") => SideController::Human,
+            Some("null") => SideController::Empty,
+            Some("reserved") => SideController::Reserved,
+            _ => SideController::Ai,
+        },
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,

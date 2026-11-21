@@ -119,7 +119,7 @@ impl Browser {
     async fn play_from(&self, id: String) -> Result<(), Box<dyn Error>> {
         let mut route = CampaignCarryover::default();
         let board = self.board(&id, &mut route.gold)?;
-        self.play_route(board, route, Players::HotSeat).await
+        self.play_route(board, route, Players::Campaign).await
     }
 
     pub(super) async fn play_route(&self, mut board: BoardData, mut route: CampaignCarryover, players: Players) -> Result<(), Box<dyn Error>> {
