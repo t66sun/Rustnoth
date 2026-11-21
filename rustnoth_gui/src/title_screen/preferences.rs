@@ -1,5 +1,6 @@
 //! Wesnoth's Preferences window, with the General and Display pages.
 use super::{Art, dialog, load_texture, version};
+mod hotkey_list;
 use crate::display_preferences::{self, speed::{FACTORS, Speed}};
 use macroquad::prelude::*;
 use std::{error::Error, io, path::Path};
@@ -26,17 +27,20 @@ pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Page { General, Display }
+enum Page { General, Hotkeys, Display }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control { GeneralTab, DisplayTab, Scroll, Accelerated, Factor, Fullscreen, Grid, About, Close }
+enum Control { GeneralTab, HotkeysTab, DisplayTab, Scroll, Accelerated, Factor, Fullscreen, Grid,
+    HotkeyFilter, HotkeyList, HotkeyAdd, HotkeyClear, HotkeyDefaults, About, Close }
 
 impl Page {
     fn controls(self) -> &'static [Control] {
         use Control::*;
         match self {
-            Self::General => &[GeneralTab, DisplayTab, Scroll, Accelerated, Factor, About, Close],
-            Self::Display => &[GeneralTab, DisplayTab, Fullscreen, Grid, About, Close],
+            Self::General => &[GeneralTab, HotkeysTab, DisplayTab, Scroll, Accelerated, Factor, About, Close],
+            Self::Display => &[GeneralTab, HotkeysTab, DisplayTab, Fullscreen, Grid, About, Close],
+            Self::Hotkeys => &[GeneralTab, HotkeysTab, DisplayTab, HotkeyFilter, HotkeyList,
+                HotkeyAdd, HotkeyClear, HotkeyDefaults, About, Close],
         }
     }
 }
@@ -63,7 +67,13 @@ impl Layout {
         use Control::*;
         match control {
             GeneralTab => self.tab(0),
+            HotkeysTab => self.tab(1),
             DisplayTab => self.tab(2),
+            HotkeyFilter => self.rect(395.,52.,380.,28.),
+            HotkeyList => self.rect(217.,90.,558.,411.),
+            HotkeyAdd => self.rect(217.,511.,130.,30.),
+            HotkeyClear => self.rect(357.,511.,130.,30.),
+            HotkeyDefaults => self.rect(647.,511.,128.,30.),
             Scroll => {
                 let x = 217. + self.scroll_label_width + 10.;
                 self.rect(x, 52., 775. - x, 22.)
@@ -112,6 +122,7 @@ impl WidgetArt {
         for (i, (label, icon)) in TABS.iter().zip(&self.icons).enumerate() {
             let (active, target) = match i {
                 0 => (page == Page::General, Some(Control::GeneralTab)),
+                1 => (page == Page::Hotkeys, Some(Control::HotkeysTab)),
                 2 => (page == Page::Display, Some(Control::DisplayTab)),
                 _ => (false, None),
             };
@@ -171,10 +182,12 @@ fn set_step(control: Control, speed: &mut Speed, step: u8) {
 
 pub(super) async fn show(
     root: &Path, art: &Art, fullscreen: &mut bool, windowed_size: &mut Vec2,
+    bindings: &mut super::hotkeys::Bindings,
     draw_behind: impl Fn(f32, f32),
 ) -> Result<(), Box<dyn Error>> {
     use Control::*;
     let skin = WidgetArt::load(root)?;
+    let mut hotkeys_page = hotkey_list::List::new(root);
     let font = art.font.as_ref();
     let mut speed = Speed::load()?;
     let mut saved_speed = speed;
@@ -194,12 +207,14 @@ pub(super) async fn show(
         let controls = page.controls();
         let mouse = Vec2::from(mouse_position()) / scale;
         let hover = controls.iter().copied().find(|&c| layout.control(c).contains(mouse));
-        if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Down) {
+        let capture = page == Page::Hotkeys && hotkeys_page.modal();
+        if !capture && (is_key_pressed(KeyCode::Tab) || focus != HotkeyList &&
+            (is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Down))) {
             let back = is_key_pressed(KeyCode::Up) || is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             let index = controls.iter().position(|&c| c == focus).unwrap_or(0);
             focus = controls[(index + if back { controls.len() - 1 } else { 1 }) % controls.len()];
         }
-        if is_mouse_button_pressed(MouseButton::Left) {
+        if !capture && is_mouse_button_pressed(MouseButton::Left) {
             down = hover;
             if let Some(c) = hover { focus = c; }
         }
@@ -213,12 +228,17 @@ pub(super) async fn show(
             if is_key_pressed(KeyCode::Home) { set_step(focus, &mut speed, 0); }
             if is_key_pressed(KeyCode::End) { set_step(focus, &mut speed, max); }
         }
-        let activate = if released { down.take().filter(|&c| Some(c) == hover) }
+        let activate = if capture { None } else if released { down.take().filter(|&c| Some(c) == hover) }
             else if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) { Some(focus) }
             else { None };
-        if is_key_pressed(KeyCode::Escape) || activate == Some(Close) { return Ok(()); }
+        if !capture && is_key_pressed(KeyCode::Escape) || activate == Some(Close) { return Ok(()); }
         let change: io::Result<()> = match activate {
             Some(GeneralTab) => { page = Page::General; Ok(()) }
+            Some(HotkeysTab) => {
+                page = Page::Hotkeys;
+                while get_char_pressed().is_some() {}
+                Ok(())
+            }
             Some(DisplayTab) => { page = Page::Display; Ok(()) }
             Some(Accelerated) => { speed.accelerated = !speed.accelerated; Ok(()) }
             Some(Grid) => display_preferences::save_grid(!grid).map(|()| grid = !grid),
@@ -243,6 +263,11 @@ pub(super) async fn show(
         let highlight = hover.or(Some(focus));
         skin.tabs(art, &layout, page, highlight);
         match page {
+            Page::Hotkeys => {
+                if let Err(e) = hotkeys_page.draw(bindings, art, &skin, &layout, mouse, focus, activate) {
+                    error = Some(e.to_string());
+                }
+            }
             Page::General => {
                 dialog::text(font, scroll_label, window.x + 217., window.y + 69., 17, LABEL);
                 skin.check(art, layout.control(Accelerated), "Accelerated speed", speed.accelerated, highlight == Some(Accelerated));
