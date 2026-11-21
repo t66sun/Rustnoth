@@ -1,6 +1,6 @@
 //! The stock tutorial opens on Delfador before it places the chosen student.
-use super::{BoardData, Hero, Node, opening::children, put};
-use crate::{camera::BoardCamera, desktop, dialog, display_preferences::speed::Speed, map_menus, render, title_screen};
+use super::{Hero, Node, opening::children, put};
+use crate::{BoardData, camera::BoardCamera, desktop, dialog, display_preferences::speed::Speed, map_menus, render, title_screen};
 use engine_lite::{hex::Hex, map::ScenarioMap, wml_emit};
 use macroquad::prelude::*;
 use rustnoth_gui::{session::{Players, Session}, team_colors::TeamColors};
@@ -117,7 +117,7 @@ impl Picker {
     }
 }
 
-pub(super) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Path, seed: u32) -> Result<Option<Hero>, Box<dyn Error>> {
+pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Path, seed: u32) -> Result<Option<Hero>, Box<dyn Error>> {
     let mut preview = document.clone();
     let (_, level) = preview.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
     let keep = preview_scenario(level)?;
@@ -132,7 +132,7 @@ pub(super) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
     art.load(view, &data.assets, &session);
     let mut camera = BoardCamera::default();
     camera.update(render::board_viewport(), view, false);
-    camera.center_world([0.75*keep.x as f32+0.5, keep.y as f32+0.5*keep.x.rem_euclid(2) as f32+0.5]);
+    camera.open_at(Some(keep));
     let menus = map_menus::State::default();
     let menu_art = map_menus::Art::new(root);
     let mut picker = Picker::load(root)?;

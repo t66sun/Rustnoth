@@ -33,6 +33,8 @@ mod amla_tests;
 mod illumination;
 mod teleport;
 pub mod walk;
+#[cfg(test)]
+mod tutorial_bridge_tests;
 mod vision;
 mod recruit;
 mod plague;
@@ -117,12 +119,17 @@ pub struct FixedMatch<'data> {
     rng: ReplayRng,
     state: MatchState,
     show_end_report: bool,
+    linger_mode: bool,
     replay_save: bool,
     current_round: i32,
     kill_stack: Vec<Hex>,
+    firing_enemies_defeated: bool,
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
-    dialogue: Vec<(Vec<usize>, dialogue::DialogueLine)>,
+    presentation: Vec<(Vec<usize>, dialogue::Presentation)>,
+    tutorial_print: Option<crate::wml::Node>,
+    tutorial_undo_print: Option<crate::wml::Value>,
+    tutorial_end_turn_denial: Option<crate::wml::Node>,
     gold: Vec<i64>,
 }
 
@@ -158,9 +165,11 @@ impl<'data> FixedMatch<'data> {
         }
         let mut game = Self {
             show_end_report: true,
+            linger_mode: true,
             replay_save: true,
             current_round: scenario.start_round,
             kill_stack: Vec::new(),
+            firing_enemies_defeated: false,
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
@@ -170,7 +179,10 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
-            dialogue: Vec::new(),
+            presentation: Vec::new(),
+            tutorial_print: None,
+            tutorial_undo_print: None,
+            tutorial_end_turn_denial: None,
             gold,
         };
         for side in 1..=side_count {
@@ -183,9 +195,10 @@ impl<'data> FixedMatch<'data> {
         })?;
         // fire_start refreshes the initial local viewer's objectives before side-turn events.
         if let Some(index) = game.scenario.sides.iter().position(|side| side.controller == crate::scenario_sides::SideController::Human) {
-            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides);
+            let remaining = game.remaining_turns();
+            game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides, remaining);
         }
-        game.check_victory();
+        game.check_victory()?;
         if let MatchState::Playing(mut turn) = game.state {
             turn.side = game.turn_sides().next().ok_or(MatchError::EmptyTurnController)?;
             game.state = MatchState::Playing(turn);
@@ -226,14 +239,38 @@ impl<'data> FixedMatch<'data> {
                     self.queue_dialogue(message, speaker_ids);
                     continue;
                 }
+                BoardChange::MoveUnit { id, destination } => {
+                    self.scenario.board.move_event_unit(&id, destination, |kind, terrain|
+                        self.rules.walking_cost(kind, terrain).is_some()).map_err(MatchError::OpeningUnit)?;
+                    continue;
+                }
                 BoardChange::ShowObjectives(sides) => {
+                    let remaining = self.remaining_turns();
                     for index in sides {
-                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides);
+                        self.scenario.events.refresh_objectives(index, &self.scenario.board, &mut self.scenario.sides, remaining);
                     }
                     continue;
                 }
                 BoardChange::SetObjectives { sides, definition, notify } => {
-                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides);
+                    let remaining = self.remaining_turns();
+                    self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides, remaining);
+                    continue;
+                }
+                BoardChange::TutorialPrint(cfg) => {
+                    self.tutorial_print = cfg.attribute("text").is_some_and(|s| !s.is_empty()).then_some(cfg);
+                    continue;
+                }
+                BoardChange::TutorialUndoPrint(text) => {
+                    self.tutorial_undo_print = Some(text);
+                    continue;
+                }
+                BoardChange::TutorialEndTurn(reason) => {
+                    self.tutorial_end_turn_denial = reason;
+                    continue;
+                }
+                BoardChange::TutorialHint(hint) => {
+                    let sides = (1..=self.scenario.sides.len()).collect();
+                    self.presentation.push((sides, dialogue::Presentation::TutorialHint(hint)));
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -250,9 +287,10 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.last_round = change.apply(self.scenario.last_round);
                     continue;
                 }
-                BoardChange::EndLevel { victory, report, replay_save, next_scenario, gold } => {
+                BoardChange::EndLevel { victory, report, linger, replay_save, next_scenario, gold } => {
                     if matches!(self.state, MatchState::Playing(_)) {
                         self.show_end_report = report;
+                        self.linger_mode = linger;
                         self.replay_save = replay_save;
                         for (treasury, settings) in self.scenario.treasuries.iter_mut().zip(gold) {
                             treasury.override_with(settings);
@@ -264,6 +302,10 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::PersonalRecruits(change) => {
                     self.scenario.board.change_personal_recruits(&change);
+                    continue;
+                }
+                BoardChange::SetUnitMoves { filter, moves } => {
+                    self.scenario.board.set_unit_moves(&filter, moves);
                     continue;
                 }
                 BoardChange::CaptureVillage(capture) => capture,
@@ -323,12 +365,18 @@ impl<'data> FixedMatch<'data> {
                 }
             });
         }
-        if killed && self.kill_stack.is_empty() { self.check_victory(); }
+        if killed && self.kill_stack.is_empty() { self.check_victory()?; }
         Ok(())
     }
 
     pub fn show_end_report(&self) -> bool {
         self.show_end_report && !matches!(self.state, MatchState::Playing(_))
+    }
+
+    /// Linger uses the last round's global time of day even after turn play has stopped.
+    pub fn linger_time(&self) -> Option<&crate::time_of_day::TimeOfDay> {
+        (self.linger_mode && !matches!(self.state, MatchState::Playing(_)))
+            .then(|| self.scenario.schedule.at_turn(self.current_round))
     }
 
     pub fn state(&self) -> MatchState {
@@ -371,7 +419,12 @@ impl<'data> FixedMatch<'data> {
 
     pub fn evaluate_objectives_for(&self, side: usize) -> Option<crate::scenario_sides::ScenarioObjectives> {
         if !self.has_authored_objectives(side) { return None; }
-        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len())
+        self.scenario.events.evaluated_objectives(side, &self.scenario.board, self.scenario.sides.len(), self.remaining_turns())
+    }
+
+    fn remaining_turns(&self) -> Option<u64> {
+        let limit = self.scenario.last_round?;
+        (limit >= self.current_round).then(|| (i64::from(limit) - i64::from(self.current_round) + 1) as u64)
     }
 
     pub fn objectives_changed(&self, side: usize) -> bool {
@@ -535,7 +588,7 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
-        self.dialogue.clear();
+        self.presentation.clear();
         let sides = &self.scenario.sides;
         let viewer = &sides[turn.side - 1];
         if (viewer.fog || viewer.shroud || attacker.is_some() || defender.is_some()) && !matches!(action, Action::EndTurn)
@@ -566,7 +619,7 @@ impl<'data> FixedMatch<'data> {
                 }
                 self.refog(defender_side);
                 self.reveal_travelled_hexes(choice.from, [choice.from]);
-                self.check_victory();
+                self.check_victory()?;
             }
             Action::Recruit { unit_type, to } => {
                 self.recruit(turn.side, &unit_type, to)?;
@@ -829,25 +882,36 @@ impl<'data> FixedMatch<'data> {
         self.scenario.sides.iter().filter(|side| self.takes_turn(side)).map(|side| side.side)
     }
 
-    fn check_victory(&mut self) {
-        if !matches!(self.state, MatchState::Playing(_)) { return; }
+    fn check_victory(&mut self) -> Result<(), MatchError> {
+        if self.firing_enemies_defeated || !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let living: BTreeSet<_> = self.surviving_sides().collect();
         let sides = &self.scenario.sides;
         let mut winners: Vec<usize> = Vec::with_capacity(living.len());
         for side in living {
             if winners.iter().any(|&other| sides[side - 1].is_enemy(&sides[other - 1])) {
-                return;
+                return Ok(());
             }
             winners.push(side);
         }
+        if winners.iter().any(|&side| sides[side - 1].controller == crate::scenario_sides::SideController::Human)
+            && self.scenario.events.has_handler("enemies_defeated") {
+            // As in play_controller::check_victory, the WML handler gets to end
+            // even a scenario with victory_when_enemies_defeated=no.
+            self.firing_enemies_defeated = true;
+            let result = self.with_events(|events, state| events.fire("enemies_defeated", state));
+            self.firing_enemies_defeated = false;
+            result?;
+            if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
+        }
         if winners.iter().any(|side| self.scenario.manual_victory_sides.contains(side)) {
-            return;
+            return Ok(());
         }
         self.state = match winners.as_slice() {
             [] => MatchState::Draw,
             [side] => MatchState::Won(*side),
             _ => MatchState::AlliedVictory(winners),
         };
+        Ok(())
     }
 }
 
