@@ -146,7 +146,7 @@ pub(super) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
         }, |art| {
             menus.draw(&menu_art, art.font.as_ref(), &[]);
             if let Some(r) = render::end_turn_button(screen_width(), screen_height(), true) {
-                render::draw_turn_button(r, false, art, &picker.end_turn);
+                render::draw_turn_button(r, false, false, art, &picker.end_turn);
             }
             if introduction { (render::draw_dialogue(opening, &data.assets, art, page), None) }
             else { (false, picker.draw(art.font.as_ref())) }

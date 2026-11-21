@@ -1,6 +1,7 @@
 //! Geometry and bitmaps of the default Wesnoth 1.18 battlefield theme.
 use super::*;
 mod unit_report;
+mod end_button;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -60,7 +61,7 @@ pub(super) struct FrameArt {
     bar: Texture,
     sidebar: Texture,
     minimap: [Texture; 2],
-    buttons: [[Texture; 3]; 2],
+    end_button: end_button::Art,
     reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
@@ -73,14 +74,11 @@ impl FrameArt {
     pub fn load(root: &Path) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
-        let buttons = |name: &str| ["", "-active", "-active-pressed"].map(|suffix|
-            load_texture(&root.join("images/buttons").join(format!("{name}{suffix}.png")), None)
-        );
         Self {
             bar: theme("classic/menubar.png"),
             sidebar: theme("classic/sidebar.png"),
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
-            buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
+            end_button: end_button::Art::load(root),
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
@@ -134,22 +132,8 @@ fn text_in(font: &Option<Font>, text: &str, bounds: Rect, size: u16, color: Colo
     draw_text_ex(text, x, y, TextParams { font: font.as_ref(), font_size: size, font_scale: scale, color, ..Default::default() });
 }
 
-pub fn turn_button(art: &BoardArt, bounds: Rect, highlighted: bool, title: &str) {
-    let compact = bounds.w <= 80.0;
-    let variants = &art.frame.buttons[usize::from(compact)];
-    let state = if highlighted && is_mouse_button_down(MouseButton::Left) { 2 } else { usize::from(highlighted) };
-    let image = variants[state].as_ref().or(variants[0].as_ref());
-    if let Some(texture) = image {
-        draw_texture_ex(texture, bounds.x, bounds.y, WHITE, DrawTextureParams {
-            dest_size: Some(vec2(bounds.w, bounds.h)), ..Default::default()
-        });
-    } else {
-        fill(bounds, if highlighted { BUTTON_HIGHLIGHTED } else { BUTTON });
-        draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, BORDER);
-    }
-    let inset = bounds.w * 0.09;
-    let label = Rect::new(bounds.x + inset, bounds.y, bounds.w - 2.0 * inset, bounds.h);
-    text_in(&art.font, title, label, if compact { 14 } else { 18 }, TEXT, true);
+pub fn turn_button(art: &mut BoardArt, bounds: Rect, highlighted: bool, enabled: bool, title: &str) {
+    art.frame.end_button.draw(bounds, highlighted, enabled, title, &art.dialogue_font);
 }
 
 pub fn draw(
