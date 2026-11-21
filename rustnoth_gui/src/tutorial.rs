@@ -83,15 +83,6 @@ impl Lesson {
     }
 }
 
-pub(super) fn draw_prompt(prompt: &str, font: Option<&Font>) {
-    let view = render::board_viewport();
-    let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
-    let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
-    let y = view.y + view.height - 24.0;
-    dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
-    dialog::text(font, &prompt, x, y, 18, WHITE);
-}
-
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
