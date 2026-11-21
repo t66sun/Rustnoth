@@ -94,11 +94,12 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
     let installed = root.to_owned();
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
-    while !worker.is_finished() {
+    loop {
         let frame = form.begin(110.0);
         dialog::text(form.font.as_ref(), "Loading Battle Training…", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
         set_default_camera();
         next_frame().await;
+        if worker.is_finished() { break; }
     }
     let file = worker.join().map_err(|_| "Tutorial preparation stopped")??;
     let definition = wml::parse(fs::read(file)?)?;
@@ -112,7 +113,6 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     wml_emit::write_config(&mut bytes, &selected)?;
     let mut board = BoardData::from_source(&bytes, core, maps, root.to_owned(), seed)?;
     board.lesson = Some(lesson);
-    next_frame().await;
     show_board(board, Players::HotSeat).await
 }
 
