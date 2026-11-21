@@ -333,6 +333,10 @@ impl<'rules> Session<'rules> {
         self.game.state()
     }
 
+    pub fn time_report(&self, hex: Option<Hex>) -> Option<engine_lite::fixed_match::TimeReport<'_>> {
+        self.game.time_report(self.observation.as_ref()?.side, hex)
+    }
+
     pub fn global_time_of_day(&self) -> Option<&engine_lite::time_of_day::TimeOfDay> {
         self.game.global_time_of_day()
     }
@@ -1041,9 +1045,14 @@ Xv,Xv,Xv,Xv"
         let observed_colors: Vec<_> = session.observation().unwrap().tiles.iter()
             .map(|tile| (tile.position, tile.time_color)).collect();
         assert_eq!(observed_colors, [(Hex { x: 0, y: 0 }, [-31, 0, 16]), (Hex { x: 1, y: 0 }, [0; 3])]);
+        let local = session.time_report(Some(Hex { x: 0, y: 0 })).unwrap();
+        assert_eq!((local.current + 1, local.schedule.len(), local.lawful), (1, 1, -40));
         for expected in [("first_watch", -25), ("first_watch", -25), ("custom_light", 13), ("custom_light", 13)] {
             let period = session.global_time_of_day().unwrap();
             assert_eq!((period.id.as_str(), period.lawful_bonus), expected);
+            let report = session.time_report(None).unwrap();
+            assert_eq!(report.schedule.len(), 2);
+            assert_eq!(report.current + 1, if expected.0 == "first_watch" { 2 } else { 1 });
             session.apply(Action::EndTurn).unwrap();
         }
         assert!(session.global_time_of_day().is_none());
