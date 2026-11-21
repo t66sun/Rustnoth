@@ -179,7 +179,7 @@ mod tests {
             tiles: vec![],
         };
         assert!(
-            plan::build_with_flags(&catalog, &view)[&Hex { x: -1, y: 0 }]
+            plan::build_with_flags(&catalog, &view, &Default::default())[&Hex { x: -1, y: 0 }]
                 .flags
                 .contains("base")
         );

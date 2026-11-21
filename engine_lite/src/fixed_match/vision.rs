@@ -7,6 +7,19 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl FixedMatch<'_> {
+    /// Terrain on non-playable border hexes for the local display. Omit
+    /// unexplored cells, just as observation_for omits unexplored map tiles.
+    pub fn known_border(&self, side: usize) -> crate::map::KnownBorder<'_> {
+        if side == 0 || side > self.vision.len() { return Default::default(); }
+        let sight = self.effective_vision(side);
+        let map = self.scenario.board.map();
+        crate::map::border_positions(map.width(), map.height()).filter_map(|at| {
+            let visibility = sight.visibility(at);
+            if visibility == HexVisibility::Shrouded { return None; }
+            Some((at, (map.terrain_at(at)?, visibility == HexVisibility::Visible)))
+        }).collect()
+    }
+
     pub(super) fn unit_sight(&self, from: Hex, origin: Hex, viewer: &UnitState<'_>) -> BTreeSet<Hex> {
         let board = &self.scenario.board;
         // On a pass through an ally, native vision_path uses the tunnel ability of
@@ -90,6 +103,49 @@ impl FixedMatch<'_> {
 mod tests {
     use super::*;
     use crate::{fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn battle_border_obeys_shroud_and_fog_without_expanding_the_policy_map() {
+        let bundle = Bundle::parse(br#"
+[units]
+    [unit_type]
+        id=Scout
+        hitpoints=10
+        movement=4
+        vision=0
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Gs^Fds,Gs^Fds,Hh,Hh,Hh,Ww,Ww,Ww
+Gs^Fds,1 Gg,Gg,Gg,Gg,Gg,2 Gg,Ww
+Gs^Fds,Gg,Gg,Gg,Gg,Gg,Gg,Ww
+Gs^Fds,Gs^Fds,Hh,Hh,Hh,Ww,Ww,Ww"
+    [side]
+        type=Scout
+        fog=yes
+        shroud=yes
+        shroud_data="|0|0|0|0|1"
+    [/side]
+    [side]
+        type=Scout
+        fog=yes
+    [/side]
+[/scenario]
+"#).unwrap();
+        let game = bundle.start(1, |_| unreachable!()).unwrap();
+        let north = Hex { x: 0, y: -1 };
+        let remembered = Hex { x: 3, y: -1 };
+        let unseen = Hex { x: 4, y: -1 };
+        let first = game.known_border(1);
+        assert_eq!(first.get(&north), Some(&("Gs^Fds", true)));
+        assert_eq!(first.get(&remembered), Some(&("Hh", false)));
+        assert!(!first.contains_key(&unseen));
+        assert_eq!(game.known_border(2).get(&north), Some(&("Gs^Fds", false)));
+        let view = game.observation_for(1).unwrap();
+        assert!(view.tiles.iter().all(|tile| !first.contains_key(&tile.position)
+            && tile.position.x >= 0 && tile.position.y >= 0
+            && tile.position.x < view.width && tile.position.y < view.height));
+    }
 
     #[test]
     fn authored_exploration_persists_and_saved_sight_resets_on_the_viewers_turn() {

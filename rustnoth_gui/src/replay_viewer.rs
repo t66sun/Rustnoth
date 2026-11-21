@@ -13,7 +13,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
     let mut cursor = 0;
     let mut playing = false;
     let mut next = 0.;
-    if let Some(view) = session.observation() { art.load(view, &data.assets, session.map_item_images()); }
+    if let Some(view) = session.observation() { art.load(view, &data.assets, session); }
     next_frame().await;
     loop {
         if is_key_pressed(KeyCode::Escape) { return Ok(()); }
@@ -56,7 +56,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
             event.apply(session)?;
             cursor += 1;
             next = get_time() + 0.65;
-            if let Some(view) = session.observation() { art.load(view, &data.assets, session.map_item_images()); }
+            if let Some(view) = session.observation() { art.load(view, &data.assets, session); }
         }
         if cursor == events.len() { playing = false; }
         next_frame().await;
