@@ -194,7 +194,7 @@ impl Battlefield<'_> {
         let rounds = weapon.combat_rounds().max(
             retaliation.map_or(NonZeroU32::MIN, |(_, response, _)| response.combat_rounds()),
         );
-        let result = exchange_with_blows(attacker_stats, defender_stats, rounds, rng, blows);
+        let result = exchange_with_blows(attacker_stats, defender_stats, rounds, rng, self.biased_combat, blows);
         let attacker_experience =
             combat_experience(defender.unit_type.level, result.defender_hitpoints == 0);
         let defender_experience =
