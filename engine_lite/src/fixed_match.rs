@@ -444,7 +444,7 @@ impl<'data> FixedMatch<'data> {
 
     pub fn save_victory_replay(&self) -> bool { self.replay_save && self.human_won() }
 
-    fn human_won(&self) -> bool {
+    pub fn human_won(&self) -> bool {
         let human_won = |side: usize| self.scenario.sides[side - 1].controller == crate::scenario_sides::SideController::Human;
         match &self.state {
             MatchState::CampaignVictory => true,
