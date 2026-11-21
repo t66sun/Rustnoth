@@ -3,6 +3,7 @@ use super::{FixedMatch, Hex};
 use crate::{strike_damage::strike_damage, time_of_day::Alignment, visibility::HexVisibility};
 
 pub struct UnitReport {
+    pub id: Option<String>,
     pub name: Option<String>,
     pub level: i32,
     pub alignment: Alignment,
@@ -10,6 +11,8 @@ pub struct UnitReport {
     pub max_movement: i32,
     pub defense: u8,
     pub traits: Vec<String>,
+    /// WML identifiers used by scenario scripts independently of translated names.
+    pub trait_ids: Vec<String>,
     pub weapons: Vec<WeaponReport>,
 }
 
@@ -102,6 +105,8 @@ impl FixedMatch<'_> {
             })
             .collect();
         Some(UnitReport {
+            id: unit.id.clone(),
+            trait_ids: unit.traits().filter_map(|t| t.attribute("id")).map(str::to_owned).collect(),
             name: unit.display_name.clone(),
             level: kind.level,
             alignment: kind.alignment,
