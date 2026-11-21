@@ -133,6 +133,15 @@ impl TitleScreen {
                     hotkeys::pressed().and_then(|key| bindings.shortcut(&key, actions))
                         .or_else(|| click.map(|index| buttons[index].0))
                 };
+            // A shortcut opens a modal without moving focus to its title button.
+            let title_focus = focus.map(|index| buttons[index].0);
+            let draw_title = |w, h| {
+                art.draw_background(w, h);
+                let (body, source) = &pages.entries[tip];
+                for (cmd, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
+                    art.command(rect, cmd, Some(cmd) == title_focus, false);
+                }
+            };
             match command {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::About) => {
@@ -146,13 +155,7 @@ impl TitleScreen {
                 }
                 Some(Command::Language) => {
                     next_frame().await;
-                    let result = languages::show(&self.root, &art, |w,h| {
-                        art.draw_background(w,h);
-                        let (body, source) = &pages.entries[tip];
-                        for (command, rect) in art.draw_panels(w,h,actions,body,source,&pages) {
-                            art.command(rect,command,command==Command::Language,false);
-                        }
-                    }).await;
+                    let result = languages::show(&self.root, &art, draw_title).await;
                     match result {
                         Ok(Some(id)) => {
                             let change = (|| -> Result<(),Box<dyn Error>> {
@@ -177,33 +180,15 @@ impl TitleScreen {
                 }
                 Some(Command::Load) => {
                     next_frame().await;
-                    error = load_game::show(&self.root, &art, |w, h| {
-                        art.draw_background(w, h);
-                        let (body, source) = &pages.entries[tip];
-                        for (command, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
-                            art.command(rect, command, false, false);
-                        }
-                    }).await.err().map(|cause| cause.to_string());
+                    error = load_game::show(&self.root, &art, draw_title).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Achievements) => {
                     next_frame().await;
-                    error = achievements::show(&self.root, &art, |w, h| {
-                        art.draw_background(w, h);
-                        let (body, source) = &pages.entries[tip];
-                        for (cmd, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
-                            art.command(rect, cmd, cmd == Command::Achievements, false);
-                        }
-                    }).await.err().map(|cause| cause.to_string());
+                    error = achievements::show(&self.root, &art, draw_title).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Preferences) => {
                     next_frame().await;
-                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, |w, h| {
-                        art.draw_background(w, h);
-                        let (body, source) = &pages.entries[tip];
-                        for (command, bounds) in art.draw_panels(w, h, actions, body, source, &pages) {
-                            art.command(bounds, command, command == Command::Preferences, false);
-                        }
-                    }).await;
+                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, draw_title).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
                 Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help | Command::Editor | Command::Credits)) => {
