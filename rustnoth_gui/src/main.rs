@@ -193,6 +193,7 @@ impl Launch {
 }
 
 struct BoardData {
+    fresh_attack_seeds: bool,
     source: Vec<u8>,
     core: Vec<u8>,
     restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
@@ -220,6 +221,8 @@ impl BoardData {
         let story = story::read(config, &title);
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
+            fresh_attack_seeds: document.attribute("rustnoth_interactive_rng") == Some("yes")
+                && document.attribute("random_mode").unwrap_or_default().is_empty(),
             scenario,
             lesson: None,
             story,
@@ -253,6 +256,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         Ok(map)
     }, carryover.as_deref_mut())?;
     let mut session = Session::with_players(game, players);
+    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();

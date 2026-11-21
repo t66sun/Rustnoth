@@ -23,15 +23,31 @@ impl FixedMatch<'_> {
         advancement: Option<&str>,
         viewer: usize,
     ) -> Result<(MatchState, Option<VisibleCombat>), MatchError> {
+        self.attack_with_action_seed(attack, advancement, Some(viewer), None)
+    }
+
+    /// A synchronized single-player attack can carry its own seed in the replay.
+    /// Restore the scenario stream before returning, including on a rejected attack.
+    pub fn attack_with_action_seed(
+        &mut self,
+        attack: AttackChoice,
+        advancement: Option<&str>,
+        viewer: Option<usize>,
+        seed: Option<u32>,
+    ) -> Result<(MatchState, Option<VisibleCombat>), MatchError> {
         let mut display = None;
+        let previous = seed.map(|seed| std::mem::replace(&mut self.rng, crate::rng::ReplayRng::new(seed)));
         let state = self.step_with_choices(
             Action::Attack(attack),
             advancement,
             None,
-            Some((viewer, &mut display)),
+            viewer.map(|side| (side, &mut display)),
             None,
-        )?;
-        Ok((state, display))
+        );
+        if let Some(rng) = previous {
+            self.rng = rng;
+        }
+        state.map(|state| (state, display))
     }
 
     pub(super) fn visible_combat(&self, viewer: usize, attack: &Attack) -> Option<VisibleCombat> {
