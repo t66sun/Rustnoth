@@ -181,8 +181,8 @@ impl Art {
         }
     }
 
-    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
-        let image = self.cache.entry(key.into()).or_insert_with(|| {
+    fn texture(&mut self, assets: &AssetCatalog, key: &str) -> Option<&Texture2D> {
+        self.cache.entry(key.into()).or_insert_with(|| {
             if let Some(name) = key.strip_suffix("~GS()") {
                 let path = assets.resolve_image(Path::new(name))?;
                 let mut image = crate::artwork::image(&std::fs::read(path).ok()?).ok()?;
@@ -197,8 +197,28 @@ impl Art {
                 .resolve_image(Path::new(key))
                 .filter(|p| p.is_file())
                 .and_then(|path| render::load_texture(&path, None))
-        });
-        if let Some(image) = image {
+        }).as_ref()
+    }
+
+    // Classic theme panels repeat their original bitmap and clip the last tile.
+    pub fn panel(&mut self, assets: &AssetCatalog, key: &str, rect: Rect) {
+        let Some(image) = self.texture(assets, key) else { return };
+        let mut y = rect.y;
+        while y < rect.bottom() {
+            let mut x = rect.x;
+            while x < rect.right() {
+                let source = Rect::new(0., 0., image.width().min(rect.right() - x),
+                    image.height().min(rect.bottom() - y));
+                draw_texture_ex(image, x, y, WHITE,
+                    DrawTextureParams { source: Some(source), dest_size: Some(source.size()), ..Default::default() });
+                x += image.width();
+            }
+            y += image.height();
+        }
+    }
+
+    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
+        if let Some(image) = self.texture(assets, key) {
             draw_texture_ex(
                 image,
                 rect.x,
@@ -330,8 +350,8 @@ impl Palette {
                 }
             }
         }
-        art.image(assets, "themes/editor/classic/palette_top.png", Rect::new(bounds.x, top, bounds.w, 45.0));
-        art.image(assets, "themes/editor/classic/palette.png", Rect::new(bounds.x, top + 45.0, bounds.w, (bounds.bottom() - top - 45.0).max(0.0)));
+        art.panel(assets, "themes/editor/classic/palette_top.png", Rect::new(bounds.x, top, bounds.w, 45.0));
+        art.panel(assets, "themes/editor/classic/palette.png", Rect::new(bounds.x, top + 45.0, bounds.w, (bounds.bottom() - top - 45.0).max(0.0)));
 
         if let Some(start) = self.menu_start {
             let rows = (((bounds.bottom() - library_y) / 24.0).floor() as usize).max(1);

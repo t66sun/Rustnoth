@@ -1,5 +1,6 @@
 //! Rustnoth's per-user window mode, shared by every desktop launch path.
 use std::{env, fs, io, path::{Path, PathBuf}};
+pub(crate) mod speed;
 
 pub(super) fn config_directory() -> io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -20,11 +21,15 @@ const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
 
 impl Setting {
     fn read(&self, dir: &Path) -> io::Result<bool> {
+        self.read_or(dir, false)
+    }
+
+    fn read_or(&self, dir: &Path, default: bool) -> io::Result<bool> {
         match fs::read_to_string(dir.join(self.file)) {
             Ok(value) if value.trim() == self.on => Ok(true),
             Ok(value) if value.trim() == self.off => Ok(false),
             Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Unknown Rustnoth {}", self.file))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(default),
             Err(error) => Err(error),
         }
     }
@@ -41,6 +46,47 @@ pub fn load() -> io::Result<bool> { WINDOW.read(&config_directory()?) }
 pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory()?, fullscreen) }
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MiniLayer { Terrain, Units, Villages, TeamColors, TerrainImages }
+
+impl MiniLayer {
+    pub const ALL: [Self;5] = [Self::Terrain, Self::Units, Self::Villages, Self::TeamColors, Self::TerrainImages];
+
+    fn setting(self) -> Setting {
+        let file = match self {
+            Self::Terrain => "minimap-draw-terrain",
+            Self::Units => "minimap-draw-units",
+            Self::Villages => "minimap-draw-villages",
+            Self::TeamColors => "minimap-unit-coding",
+            Self::TerrainImages => "minimap-terrain-coding",
+        };
+        Setting {file, off:"off", on:"on"}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MiniLayers([bool; 5]);
+
+impl Default for MiniLayers {
+    fn default() -> Self { Self([true; 5]) }
+}
+
+impl MiniLayers {
+    pub fn load() -> Self {
+        let Ok(dir) = config_directory() else { return Self::default() };
+        Self(MiniLayer::ALL.map(|layer| layer.setting().read_or(&dir, true).unwrap_or(true)))
+    }
+
+    pub fn enabled(self, layer: MiniLayer) -> bool { self.0[layer as usize] }
+
+    pub fn toggle(&mut self, layer: MiniLayer, dir: &Path) -> io::Result<()> {
+        let next = !self.enabled(layer);
+        layer.setting().write(dir, next)?;
+        self.0[layer as usize] = next;
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

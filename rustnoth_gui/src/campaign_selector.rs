@@ -1,12 +1,21 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
 #[path = "campaign_difficulty.rs"]
 mod difficulty;
+#[path = "campaign_combat_menu.rs"]
+pub(super) mod combat;
+#[path = "campaign_mod_menu.rs"]
+mod mods;
 #[path = "campaign_sort.rs"]
 mod sort;
 #[path = "campaign_layout.rs"]
 mod layout;
 #[path = "campaign_backdrop.rs"]
 mod backdrop;
+#[path = "campaign_scroll.rs"]
+mod scrolling;
+#[path = "campaign_text.rs"]
+mod campaign_text;
+use campaign_text::{Caption, Typography};
 use std::{collections::HashMap, fs, path::{Component, Path, PathBuf}};
 
 use engine_lite::wml::Node;
@@ -50,7 +59,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
         Some(Entry {
             name, search_text,
             date: sort::Date::read(node.attribute("start_year")),
-            description: plain(&description),
+            description,
             icon: node.attribute("icon"), image: node.attribute("image"),
             background: node.attribute("background"), scenario, descriptor: Some(node),
         })
@@ -62,7 +71,7 @@ fn entries<'a>(root: &'a Node, scenarios: &[(&'a str, &'a str)], locale: &mut Lo
             Entry {
                 search_text: name.to_lowercase(), name,
                 date: sort::Date::Undated,
-                description: plain(&locale.attribute(install, node, "description", id)),
+                description: locale.attribute(install, node, "description", id),
                 icon: None, image: None, background: None, scenario, descriptor: None,
             }
         }).collect();
@@ -93,13 +102,15 @@ pub(super) struct Selector<'a> {
     pub(super) campaigns_only: bool,
     show_levels: bool,
     cursor: usize,
-    first: usize,
+    scroll: scrolling::Scroll,
     query: String,
     editing: bool,
     description_offset: usize,
     last_click: Option<(usize, f64)>,
     art: Art,
     difficulty_menu: difficulty::Menu<'a>,
+    combat_menu: combat::Menu,
+    mod_menu: mods::Menu<'a>,
 }
 
 impl<'a> Selector<'a> {
@@ -110,14 +121,22 @@ impl<'a> Selector<'a> {
         // The opening title shortcut can still be in macroquad's text queue.
         while get_char_pressed().is_some() {}
         let editing = !campaigns.is_empty();
+        let mod_menu = mods::Menu::new(campaign, &mut language, root);
         Ok(Self {
             ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
-            campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, first: 0,
+            campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, scroll: Default::default(),
             query: String::new(), editing, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
             difficulty_menu: difficulty::Menu::default(),
+            combat_menu: combat::Menu::default(),
+            mod_menu,
         })
     }
+
+    pub(super) fn combat_mode(&self) -> combat::Mode { self.combat_menu.mode() }
+    pub(super) fn modifications(&self) -> Vec<Node> { self.mod_menu.selected() }
+    pub(super) fn restore_modifications(&mut self) -> std::io::Result<()> { self.mod_menu.restore() }
+    pub(super) fn remember_modifications(&mut self) -> std::io::Result<()> { self.mod_menu.remember() }
 
     pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
         if let Some(define) = self.difficulty_menu.define_for(campaign) {
@@ -134,7 +153,7 @@ impl<'a> Selector<'a> {
         clear_background(BLACK);
         let entries = if self.show_levels { &self.levels } else { &self.campaigns };
         let name_width = entries.iter().map(|entry|
-            measure_text(&entry.name, self.art.font.as_ref(), 17, 1.0).width.ceil() as i32
+            self.art.typography.width(&entry.name, Caption::Row, self.art.font.as_ref()) as i32
         ).max().unwrap_or(0);
         let layout::Layout { window, panel, list, details, search, play, cancel } =
             layout::Layout::new(w, h, name_width as f32);
@@ -142,7 +161,7 @@ impl<'a> Selector<'a> {
         let toggle = Rect::new(panel.x, bottom, 120.0, 38.0);
         let (mx, my) = mouse_position();
         let pointer = vec2(mx/scale, my/scale);
-        let modal = self.difficulty_menu.is_open();
+        let modal = self.difficulty_menu.is_open() || self.combat_menu.is_open() || self.mod_menu.is_open();
         let key = |code| !modal && is_key_pressed(code);
         let click = !modal && is_mouse_button_pressed(MouseButton::Left);
         if key(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
@@ -151,7 +170,7 @@ impl<'a> Selector<'a> {
             self.editing = false;
             self.query.clear();
             self.cursor = 0;
-            self.first = 0;
+            self.scroll = Default::default();
             self.description_offset = 0;
             self.last_click = None;
         }
@@ -185,7 +204,10 @@ impl<'a> Selector<'a> {
             if rows.get(self.cursor).copied() != selected { self.description_offset = 0; }
             self.last_click = None;
         }
-        let headers = sort::headers(list);
+        let widths = ["Name", "Timeline"].map(|name|
+            self.art.typography.width(self.art.locale.ui(name), Caption::Header, self.art.font.as_ref()).ceil());
+        let headers = sort::headers(list, widths);
+        let mut reveal = changed;
         if !self.show_levels && click
             && let Some((field, _)) = headers.iter().find(|(_, rect)| rect.contains(pointer))
         {
@@ -194,6 +216,7 @@ impl<'a> Selector<'a> {
             self.campaign_rows = self.ordering.rows(entries, &self.art.locale.effective);
             rows = filtered(entries, self.campaign_rows.iter().copied(), &self.query);
             self.cursor = selected_row(&rows, selected);
+            reveal = true;
             self.last_click = None;
         }
         let row_h = if self.show_levels { 44.0 } else { 82.0 };
@@ -208,24 +231,19 @@ impl<'a> Selector<'a> {
         if key(KeyCode::Home) { self.cursor = 0; }
         if key(KeyCode::End) { self.cursor = last; }
         let wheel = if modal { 0.0 } else { mouse_wheel().1 };
-        if list.contains(pointer) && wheel != 0.0 {
-            self.first = self.first.saturating_add_signed(if wheel > 0.0 {-3} else {3}).min(rows.len().saturating_sub(visible));
-            self.cursor = self.cursor.clamp(self.first, (self.first+visible-1).min(last));
-        }
-        self.first = self.first.clamp(self.cursor.saturating_sub(visible-1), self.cursor)
-            .min(rows.len().saturating_sub(visible));
         let body = Rect::new(list.x, top, list.w - 15.0, list.bottom() - top);
         let bar = Rect::new(body.right(), body.y, 15.0, body.h);
-        let row_click = click && body.contains(pointer);
-        if !modal && is_mouse_button_down(MouseButton::Left) && bar.contains(pointer) && rows.len() > visible {
-            self.first = (((pointer.y - bar.y) / bar.h) * (rows.len() - visible) as f32).round() as usize;
-            self.cursor = self.cursor.clamp(self.first, (self.first + visible - 1).min(last));
+        if reveal || step != 0 || key(KeyCode::Home) || key(KeyCode::End) {
+            self.scroll.reveal(self.cursor, row_h, body.h);
         }
+        let content = row_h * rows.len() as f32;
+        self.scroll.update(bar, content, pointer, click, !modal && is_mouse_button_down(MouseButton::Left),
+            if list.contains(pointer) { wheel } else { 0. });
+        let row_click = click && body.contains(pointer);
         let mut confirmed = key(KeyCode::Enter) || (!self.editing && key(KeyCode::Space))
             || click && play.contains(pointer);
         if row_click {
-            let row = ((pointer.y-top)/row_h) as usize;
-            let index = self.first+row;
+            let index = ((pointer.y-top+self.scroll.offset)/row_h) as usize;
             if index < rows.len() {
                 self.cursor = index;
                 let now = get_time();
@@ -243,7 +261,8 @@ impl<'a> Selector<'a> {
         };
 
         self.art.window(window);
-        self.art.label(self.art.locale.ui("Play a Campaign"), panel.x, window.y+37.0, 22, GOLD);
+        self.art.typography.draw(self.art.locale.ui("Play a Campaign"), Caption::Title,
+            Rect::new(panel.x, window.y+15., panel.w, 30.), self.art.font.as_ref());
         fill(search, Color::from_rgba(10, 14, 21, 255));
         outline(search, if self.editing { GOLD } else { EDGE });
         let query_label = fit(self.art.font.as_ref(), self.query.clone(), search.w-16.0, 16);
@@ -260,19 +279,20 @@ impl<'a> Selector<'a> {
             }
         }
         clip(Some(body), scale);
-        for (row, &index) in rows.iter().skip(self.first).take(visible+1).enumerate() {
-            let rect = Rect::new(body.x, top+row as f32*row_h, body.w, row_h);
+        let first = (self.scroll.offset / row_h) as usize;
+        for (row, &index) in rows.iter().enumerate().skip(first).take(visible+2) {
+            let rect = Rect::new(body.x, top+row as f32*row_h-self.scroll.offset, body.w, row_h);
             let item = &entries[index];
             backdrop::draw_list(&shaded, panel, rect);
-            if self.cursor == self.first+row || rect.contains(pointer) {
+            if self.cursor == row || body.contains(pointer) && rect.contains(pointer) {
                 if let Some(texture) = self.art.get("dialogs/selection-background-fancy.png") {
-                    let alpha = if self.cursor == self.first+row {255} else {191};
+                    let alpha = if self.cursor == row {255} else {191};
                     draw_texture_ex(&texture, rect.x, rect.y, Color::from_rgba(255,255,255,alpha),
                         DrawTextureParams { dest_size: Some(rect.size()), ..Default::default() });
                 }
-                if self.cursor == self.first+row {
+                if self.cursor == row {
                     fill(Rect::new(rect.x,rect.y,2.,rect.h), EDGE);
-                    fill(Rect::new(rect.x,rect.y+1.,2.,rect.h-2.), GOLD);
+                    fill(Rect::new(rect.x,rect.y+1.,2.,rect.h-2.), Color::from_rgba(185,158,75,255));
                 }
             }
             let mut label_x = rect.x+12.0;
@@ -282,17 +302,21 @@ impl<'a> Selector<'a> {
                 label_x = cell.right()+5.0;
             }
             let name = fit(self.art.font.as_ref(), item.name.clone(), rect.right()-label_x-4.0, 17);
-            self.art.label(&name, label_x, rect.center().y+6.0, 17, LABEL);
+            self.art.typography.draw(&name, Caption::Row,
+                Rect::new(label_x, rect.y, rect.right()-label_x-4., rect.h), self.art.font.as_ref());
         }
         clip(None, scale);
         backdrop::draw_list(&shaded, panel, bar);
-        self.art.scrollbar(bar, self.first, row_h, rows.len(), scale);
+        let thumb = self.scroll.thumb(bar, content);
+        let suffix = if self.scroll.grab.is_some() { "-pressed" } else if thumb.contains(pointer) { "-active" } else { "" };
+        self.art.scrollbar(bar, thumb, suffix, scale);
         if rows.is_empty() { self.art.label(self.art.locale.ui("No matches"), list.x+12.0, top+28.0, 16, LABEL); }
         if let Some(e) = entry {
             let portrait = e.image.and_then(|id| self.art.get(id));
             let font = self.art.font.as_ref();
-            let lines = crate::title_screen::wrap(&e.description, font, details.w-10.0);
-            let text_h = lines.len() as f32 * 21.0;
+            let align = e.descriptor.and_then(|cfg| cfg.attribute("description_alignment"));
+            let paragraph = self.art.typography.description(&e.description, details.w-10., align, font);
+            let text_h = paragraph.height();
             let image_size = portrait.as_ref().map(Texture2D::size).unwrap_or(Vec2::ZERO);
             let width_scale = ((details.w-10.0) / image_size.x.max(1.0)).min(1.0);
             let image_size = image_size * width_scale;
@@ -304,11 +328,7 @@ impl<'a> Selector<'a> {
             self.description_offset = self.description_offset.min((overflow / 21.0).ceil() as usize);
             let offset = (self.description_offset as f32 * 21.0).min(overflow);
             clip(Some(details), scale);
-            let mut baseline = details.y + 5.0 + 17.0 - offset;
-            for line in &lines {
-                text(font, line, details.x+5.0, baseline, 17, LABEL);
-                baseline += 21.0;
-            }
+            paragraph.draw(details.x + 5., details.y + 5. - offset, font);
             if let Some(portrait) = portrait {
                 image(&portrait, layout::portrait(details, text_h, image_size, offset));
             }
@@ -328,7 +348,15 @@ impl<'a> Selector<'a> {
             self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
             let box_width = (window.w * 0.233).floor();
             let control = Rect::new(window.right()-19.0-box_width, window.bottom()-98.0, box_width, 30.0);
-            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing, vec2(w, h));
+            let combat = Rect::new(window.x + (window.w * 0.428).floor(), control.y, box_width, control.h);
+            let combat_open = self.combat_menu.is_open();
+            let mods_open = self.mod_menu.is_open();
+            let difficulty_open = self.difficulty_menu.is_open();
+            self.difficulty_menu.draw(&mut self.art, control, if combat_open || mods_open { vec2(-1.,-1.) } else { pointer },
+                !self.editing && !combat_open && !mods_open, vec2(w, h));
+            self.combat_menu.draw(&mut self.art, combat, pointer, vec2(w, h), !difficulty_open && !self.difficulty_menu.is_open() && !mods_open);
+            let available = !combat_open && !self.combat_menu.is_open() && !difficulty_open && !self.difficulty_menu.is_open();
+            self.mod_menu.draw(&mut self.art, panel.x, control.y, box_width, pointer, vec2(w, h), available);
         }
         action
     }
@@ -369,10 +397,12 @@ fn contain(tex: &Texture2D, rect: Rect, upscale: bool) {
 }
 
 struct Art {
+    typography: Typography,
     locale: Locale,
     roots: Vec<PathBuf>,
     font: Option<Font>,
     textures: HashMap<String, Option<Texture2D>>,
+    team_colors: Vec<u8>,
     backdrop: Option<backdrop::Backdrop>,
 }
 impl Art {
@@ -385,9 +415,18 @@ impl Art {
         }
         roots.push(root.join("data/core/images"));
         let font = fs::read(root.join("fonts").join(locale::font_name(&locale.effective))).ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
-        Self { locale, roots, font, textures: HashMap::new(), backdrop: None }
+        let typography = Typography::new(root, locale.game("Lato"));
+        let team_colors = fs::read(root.join("data/core/team-colors.cfg")).unwrap_or_default();
+        Self { locale, roots, font, typography, textures: HashMap::new(), team_colors, backdrop: None }
     }
     fn pixels(&self, id: &str) -> Option<Image> {
+        if id.contains('~') && let Some(icon) = crate::title_screen::icon_pixels(id, &self.team_colors, &|base| {
+            if !relative(base) { return None; }
+            self.roots.iter().map(|dir| dir.join(base)).find(|path| path.is_file())
+        }) {
+            return Some(Image { width: icon.width().try_into().ok()?, height: icon.height().try_into().ok()?,
+                bytes: icon.into_raw() });
+        }
         let path = Path::new(id.split('~').next()?);
         relative(path).then(|| self.roots.iter().find_map(|root| fs::read(root.join(path)).ok())).flatten()
             .and_then(|bytes| crate::artwork::image(&bytes).ok())
@@ -445,14 +484,12 @@ impl Art {
             }
         }
     }
-    fn scrollbar(&mut self, bar: Rect, first: usize, item_height: f32, count: usize, scale: f32) {
-        let content_h = (count as f32 * item_height).max(bar.h);
-        let length = (bar.h * bar.h / content_h).floor().max(11.).min(bar.h);
-        let pos = (bar.h * first as f32 * item_height / content_h).floor().min(bar.h-length);
-        let y = bar.y + pos;
+    fn scrollbar(&mut self, bar: Rect, thumb: Rect, suffix: &str, scale: f32) {
+        let y = thumb.y;
+        let length = thumb.h;
         clip(Some(bar), scale);
         for (name, top, height) in [("scrolltop", y, 2.), ("scrollmid", y+2., length-2.), ("scrollbottom", y+length, 2.)] {
-            if let Some(tex) = self.get(&format!("buttons/scrollbars/{name}.png")) {
+            if let Some(tex) = self.get(&format!("buttons/scrollbars/{name}{suffix}.png")) {
                 image(&tex, Rect::new(bar.x,top,bar.w,height));
             }
         }
@@ -465,10 +502,10 @@ impl Art {
         } else { "buttons/large-button.png" };
         fill(rect, Color::from_rgba(38,47,60,255));
         if let Some(image_asset) = self.get(asset) { image(&image_asset, rect); }
+        let style = if label == "game^Play" { Caption::Play } else { Caption::Button };
         let label = self.locale.ui(label);
         let label = label.split_once('^').map_or(label, |(_, display)| display);
-        let size = measure_text(label, self.font.as_ref(), 17, 1.0);
-        self.label(label, rect.center().x-size.width*0.5, rect.center().y+6.0, 17, GOLD);
+        self.typography.draw(label, style, rect, self.font.as_ref());
     }
 }
 
@@ -507,7 +544,8 @@ mod tests {
         assert_eq!(campaigns.len(), 1);
         assert_eq!((campaigns[0].name.as_str(), campaigns[0].scenario), ("The South Guard", 1));
         assert_eq!((campaigns[0].icon, campaigns[0].image), (Some("data/icon.png"), Some("data/art.png")));
-        assert_eq!(campaigns[0].description, "Deoran rides south.");
+        assert_eq!(campaigns[0].description, "<i>Deoran</i> rides south.");
+        assert_eq!(plain(&campaigns[0].description), "Deoran rides south.");
         assert_eq!(levels[filtered(&levels,0..levels.len(),"CROSS")[0]].scenario, 0);
         assert_eq!(filtered(&levels,0..levels.len(),"missing"), Vec::<usize>::new());
     }
