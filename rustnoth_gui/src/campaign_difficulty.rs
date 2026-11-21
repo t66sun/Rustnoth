@@ -1,5 +1,6 @@
 use super::{Art, EDGE, GOLD, LABEL, contain, fill, image, outline, plain};
 use crate::dialog::setup_camera;
+use crate::title_screen::button_canvas::{self, State};
 use engine_lite::wml::Node;
 use macroquad::prelude::*;
 
@@ -20,7 +21,7 @@ fn options<'a>(cfg: &'a Node, locale: &mut super::Locale, root: &std::path::Path
         };
         let label = plain(&locale.attribute(root, item, "label", define));
         let desc = plain(&locale.attribute(root, item, "description", ""));
-        let menu_label = if desc.is_empty() { label.clone() } else { format!("{label} ({desc})") };
+        let menu_label = format!("{label} ({desc})");
         let description = if desc.is_empty()
             || matches!(item.attribute("auto_markup"), Some("no" | "false"))
             || matches!(item.attribute("old_markup"), Some("yes" | "true"))
@@ -50,6 +51,35 @@ pub(super) struct Menu<'a> {
     selected: usize,
     hovered: Option<usize>,
     first: usize,
+    button_down: bool,
+}
+
+fn popup_bounds(control: Rect, view: Vec2, count: usize, width: f32, row: f32) -> (Rect, usize) {
+    let below = view.y - control.bottom();
+    let available = below.max(control.y).min(700.);
+    let shown = (((available - 2.) / row).floor() as usize).clamp(1, count);
+    let height = shown as f32 * row + 2.;
+    let width = width.max(control.w).min(view.x);
+    let top = if below >= height { control.bottom() } else { (control.y - height).max(0.) };
+    (Rect::new(control.x.min(view.x - width), top, width, height), shown)
+}
+
+pub(super) fn draw_control(art: &mut Art, control: Rect, state: State, value: &str) {
+    let (background, arrow) = match state {
+        State::Focused => ("button_dropdown-pressed.png", "short_arrow_ornate_left_25-active.png"),
+        State::Pressed => ("button_dropdown.png", "short_arrow_ornate_left_25-pressed.png"),
+        State::Disabled => ("button_dropdown.png~GS()", "short_arrow_ornate_left_25.png~GS()"),
+        State::Enabled => ("button_dropdown.png", "short_arrow_ornate_left_25.png"),
+    };
+    if let Some(texture) = art.get(&format!("buttons/button_dropdown/{background}")) {
+        button_canvas::draw(control, &texture, state);
+    }
+    let cropped = super::fit(art.font.as_ref(), value.to_owned(), control.w-33.0, 15);
+    art.label(&cropped, control.x+8.0, control.y+20.0, 15, if matches!(state, State::Disabled) { Color::from_rgba(128,128,128,255) } else { GOLD });
+    if let Some(arrow) = art.get(&format!("icons/arrows/{arrow}")) {
+        draw_texture_ex(&arrow, control.right()-25.0, control.y+2.0, WHITE,
+        DrawTextureParams { dest_size:Some(vec2(25.0,25.0)), rotation:-std::f32::consts::FRAC_PI_2, ..Default::default() });
+    }
 }
 
 impl<'a> Menu<'a> {
@@ -60,6 +90,7 @@ impl<'a> Menu<'a> {
         self.campaign = campaign;
         (self.choices, self.selected) = campaign.map(|node| options(node, locale, root)).unwrap_or_default();
         self.hovered = None;
+        self.button_down = false;
         self.first = 0;
     }
 
@@ -70,54 +101,74 @@ impl<'a> Menu<'a> {
 
     pub fn is_open(&self) -> bool { self.hovered.is_some() }
 
-    pub fn draw(&mut self, art: &mut Art, control: Rect, pointer: Vec2, keyboard: bool) {
+    fn scroll_button(&mut self, wheel: f32) {
+        if wheel > 0. {
+            self.selected = self.selected.saturating_sub(1);
+        } else if wheel < 0. {
+            self.selected = (self.selected + 1).min(self.choices.len().saturating_sub(1));
+        }
+    }
+
+    pub fn draw(&mut self, art: &mut Art, control: Rect, pointer: Vec2, keyboard: bool, view: Vec2) {
         let enabled = self.choices.len() > 1;
         let label = art.locale.ui("Difficulty:");
         let label_width = measure_text(label, art.font.as_ref(), 15, 1.0).width;
         art.label(label, control.x-10.0-label_width, control.y+20.0, 15, LABEL);
-        let active = enabled && (control.contains(pointer) || self.is_open());
-        let asset = if active { "buttons/button_dropdown/button_dropdown-pressed.png" }
-            else { "buttons/button_dropdown/button_dropdown.png" };
-        fill(control, Color::from_rgba(26,30,35,255));
-        if let Some(texture) = art.get(asset) { image(&texture, control); }
-        outline(control, if enabled { EDGE } else { GRAY });
-        let value = self.choices.get(self.selected).map_or_else(|| art.locale.ui("Normal"), |choice| choice.menu_label.as_str());
-        let cropped = super::fit(art.font.as_ref(), value.to_owned(), control.w-33.0, 15);
-        art.label(&cropped, control.x+8.0, control.y+20.0, 15, if enabled { GOLD } else { LIGHTGRAY });
-        if let Some(arrow) = art.get("icons/arrows/short_arrow_ornate_left_25.png") {
-            draw_texture_ex(&arrow, control.right()-25.0, control.y+2.0, if enabled { WHITE } else { GRAY },
-                DrawTextureParams { dest_size:Some(vec2(25.0,25.0)), rotation:-std::f32::consts::FRAC_PI_2, ..Default::default() });
+        let hot = control.contains(pointer);
+        let down = is_mouse_button_pressed(MouseButton::Left);
+        let click = is_mouse_button_released(MouseButton::Left);
+        if !self.is_open() && down {
+            self.button_down = enabled && hot;
         }
-        let click = is_mouse_button_pressed(MouseButton::Left);
+        let state = if !enabled { State::Disabled }
+            else if self.is_open() || self.button_down && hot { State::Pressed }
+            else if hot { State::Focused } else { State::Enabled };
+        let value = self.choices.get(self.selected).map_or_else(|| art.locale.ui("Normal"), |choice| choice.menu_label.as_str());
+        let value = value.to_owned();
+        draw_control(art, control, state, &value);
         let Some(mut cursor) = self.hovered else {
-            if enabled && (click && control.contains(pointer) || keyboard && is_key_pressed(KeyCode::F4)) {
+            if enabled && hot { self.scroll_button(mouse_wheel().1); }
+            if enabled && (click && hot && self.button_down || keyboard && is_key_pressed(KeyCode::F4)) {
                 self.hovered = Some(self.selected);
             }
+            if click { self.button_down = false; }
             return;
         };
-        let row_h = 74.0;
+        // The image replaces the label in drop_down_list.cfg, retaining its seven-pixel border.
+        let icons: Vec<_> = self.choices.iter().map(|c| art.get(c.image.unwrap_or("misc/blank-hex.png"))).collect();
+        let row_h = icons.iter().flatten().map(Texture2D::height).fold(38., f32::max) + 14.;
+        let icon_width = icons.iter().flatten().map(Texture2D::width).fold(0., f32::max);
+        let text_width = self.choices.iter().filter(|c| !c.description.is_empty())
+            .flat_map(|c| [&c.label, &c.description])
+            .map(|s| measure_text(s, art.font.as_ref(), 15, 1.).width).fold(0., f32::max);
         let count = self.choices.len();
-        let visible = ((control.y / row_h).floor() as usize).clamp(1, count);
-        let popup = Rect::new(control.x, control.y-row_h*visible as f32, control.w, row_h*visible as f32);
+        let (popup, visible) = popup_bounds(control, view, count, icon_width + text_width.ceil() + 53., row_h);
         let wheel = if popup.contains(pointer) { mouse_wheel().1 } else { 0.0 };
         if is_key_pressed(KeyCode::Down) || wheel < 0.0 { cursor = (cursor+1).min(count-1); }
         if is_key_pressed(KeyCode::Up) || wheel > 0.0 { cursor = cursor.saturating_sub(1); }
         if is_key_pressed(KeyCode::Home) { cursor = 0; }
         if is_key_pressed(KeyCode::End) { cursor = count-1; }
         self.first = self.first.clamp(cursor.saturating_sub(visible-1), cursor).min(count-visible);
-        art.window(popup);
+        art.tile("dialogs/menu-background.png", popup);
+        outline(popup, EDGE);
         for (index, choice) in self.choices.iter().enumerate().skip(self.first).take(visible) {
-            let r = Rect::new(popup.x+1.0, popup.y+(index-self.first) as f32*row_h, popup.w-2.0, row_h);
+            let r = Rect::new(popup.x+1.0, popup.y+1.+(index-self.first) as f32*row_h, popup.w-2.0, row_h);
             if cursor==index || r.contains(pointer) {
-                if let Some(tex) = art.get("dialogs/selection-background-fancy.png") { image(&tex, r); }
-                if cursor==index { outline(r, EDGE); }
+                if let Some(tex) = art.get("dialogs/selection-background.png") {
+                    image(&tex, Rect::new(r.x+1., r.y+1., r.w-2., r.h-2.));
+                }
+                if cursor==index { outline(r, Color::from_rgba(185,158,75,255)); }
             }
-            if let Some(icon) = choice.image.and_then(|name| art.get(name)) {
-                contain(&icon, Rect::new(r.x+2.0,r.y+1.0,72.0,72.0), false);
+            if let Some(icon) = &icons[index] {
+                draw_texture(icon, r.x+12.+((icon_width-icon.width())/2.).floor(),
+                    r.y+((row_h-icon.height())/2.).floor(), WHITE);
             }
-            for (text, offset, color) in [(&choice.label,32.0,LABEL),(&choice.description,52.0,LIGHTGRAY)] {
-                let label = super::fit(art.font.as_ref(), text.clone(), r.w-80.0, 15);
-                art.label(&label, r.x+76.0, r.y+offset, 15, color);
+            if !choice.description.is_empty() {
+                for (text, offset, color) in [(&choice.label,-2.,LABEL),(&choice.description,18.,LIGHTGRAY)] {
+                    let label = super::fit(art.font.as_ref(), text.clone(), r.w-icon_width-51., 15);
+                    let width = measure_text(&label, art.font.as_ref(), 15, 1.).width;
+                    art.label(&label, r.right()-12.-width.ceil(), r.center().y+offset, 15, color);
+                }
             }
             if click && r.contains(pointer) { cursor = index; }
         }
@@ -246,6 +297,23 @@ pub(super) async fn choose(art: &mut Art, cfg: &Node) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn menu_prefers_room_below_and_clamps_wheel_selection() {
+        let control = Rect::new(861.,687.,243.,30.);
+        let view = vec2(1200.,820.);
+        assert_eq!(popup_bounds(control, view, 1, 180., 86.), (Rect::new(861.,717.,243.,88.), 1));
+        assert_eq!(popup_bounds(control, view, 3, 350., 86.), (Rect::new(850.,427.,350.,260.), 3));
+        let campaign = engine_lite::wml::parse("[difficulty]\ndefine=LOW\n[/difficulty]\n[difficulty]\ndefine=HIGH\n[/difficulty]").unwrap();
+        let mut menu = Menu::default();
+        menu.select(Some(&campaign), &mut super::super::Locale::default(), std::path::Path::new(""));
+        menu.scroll_button(1.);
+        assert_eq!(menu.define_for(&campaign), Some("LOW"));
+        menu.scroll_button(-1.);
+        menu.scroll_button(-1.);
+        assert_eq!(menu.define_for(&campaign), Some("HIGH"));
+        menu.scroll_button(1.);
+        assert_eq!(menu.define_for(&campaign), Some("LOW"));
+    }
     #[test]
     fn installed_selection_resets_to_the_authored_default_only_when_the_campaign_changes() {
         let mut locale = super::super::Locale::default();

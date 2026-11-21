@@ -89,7 +89,7 @@ impl Lesson {
     }
 }
 
-pub(super) async fn run(root: &Path, core: &[u8], seed: u32) -> Result<(), Box<dyn Error>> {
+pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
     let installed = root.to_owned();
@@ -104,6 +104,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32) -> Result<(), Box<d
     let definition = wml::parse(fs::read(file)?)?;
     let maps = root.join(desktop::TUTORIAL).join("maps");
     let mut selected = campaign::select(&definition, FIRST_SCENARIO, |file| fs::read_to_string(maps.join(file)))?;
+    mode.classify(&mut selected);
     let (_, scenario) = selected.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
     let lesson = opening::prepare(scenario, hero)?;
     let mut bytes = Vec::new();

@@ -6,10 +6,10 @@ fn backing(bounds: Rect) -> Rect {
 
 // GUI__BUTTON_NORMAL_FRAME in data/gui/macros/button.cfg. SDL line endpoints
 // are inclusive. The four final points round off the gold edges.
-fn edges(w: f32, h: f32, accent: Color) -> [(Rect, Color); 14] {
+fn edges(w: f32, h: f32, accent: Color, disabled: bool) -> [(Rect, Color); 14] {
     let dark = Color::from_rgba(1, 10, 16, 255);
-    let gold = Color::from_rgba(162, 127, 68, 255);
-    let bronze = Color::from_rgba(114, 79, 46, 255);
+    let gold = if disabled { Color::from_rgba(128, 128, 128, 255) } else { Color::from_rgba(162, 127, 68, 255) };
+    let bronze = if disabled { Color::from_rgba(89, 89, 89, 255) } else { Color::from_rgba(114, 79, 46, 255) };
     [
         (Rect::new(0., 1., 1., h - 2.), dark),
         (Rect::new(2., 1., w - 3., 1.), dark),
@@ -28,11 +28,18 @@ fn edges(w: f32, h: f32, accent: Color) -> [(Rect, Color); 14] {
     ]
 }
 
-pub(super) fn draw(bounds: Rect, background: &Texture2D, state: usize) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum State { Enabled, Focused, Pressed, Disabled }
+
+pub(crate) fn draw(bounds: Rect, background: &Texture2D, state: State) {
     super::image(backing(bounds), background);
-    let accents = [[21, 79, 109], [12, 108, 157], [1, 10, 16]];
-    let [r, g, b] = accents[state];
-    for (edge, color) in edges(bounds.w, bounds.h, Color::from_rgba(r, g, b, 255)) {
+    let [r, g, b] = match state {
+        State::Enabled => [21, 79, 109],
+        State::Focused => [12, 108, 157],
+        State::Pressed => [1, 10, 16],
+        State::Disabled => [60, 60, 60],
+    };
+    for (edge, color) in edges(bounds.w, bounds.h, Color::from_rgba(r, g, b, 255), state == State::Disabled) {
         draw_rectangle(bounds.x + edge.x, bounds.y + edge.y, edge.w, edge.h, color);
     }
 }
@@ -45,7 +52,7 @@ mod tests {
     fn large_button_keeps_its_last_backing_texels_and_rounded_points() {
         let button = Rect::new(981., 305., 116., 30.);
         assert_eq!(backing(button), Rect::new(983., 307., 114., 28.));
-        let frame = edges(button.w, button.h, WHITE);
+        let frame = edges(button.w, button.h, WHITE, false);
         let color_at = |x, y| frame.iter().rev()
             .find(|(r, _)| r.contains(vec2(x, y))).map(|(_, c)| *c);
         assert_eq!(color_at(0.5, 0.5), None);
