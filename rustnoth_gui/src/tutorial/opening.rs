@@ -220,7 +220,7 @@ mod tests {
             (Hero::Lisar, ne, "Welcome Lisar", "Attack with Lisar"),
         ] {
             let mut scenario = opening();
-            let summary = "You will learn the basics of:\nÃ¢â‚¬Â¢ <small>Movement</small>\nÃ¢â‚¬Â¢ <small>Attacking</small>\nÃ¢â‚¬Â¢ <small>Healing</small>\nÃ¢â‚¬Â¢ <small>Recruiting</small>";
+            let summary = "You will learn the basics of:\n• <small>Movement</small>\n• <small>Attacking</small>\n• <small>Healing</small>\n• <small>Recruiting</small>";
             scenario.children.extend(wml::parse(format!(r#"[event]
 name=prestart
 [store_unit]

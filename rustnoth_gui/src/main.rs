@@ -338,7 +338,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             && let Some(turn) = turn_notice::new_turn(session.state(), !session.legal_actions().is_empty(), notified) {
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
-            let message = locale.game("It is now $name|â€™s turn").replace("$name|", name);
+            let message = locale.game("It is now $name|’s turn").replace("$name|", name);
             turn_notice::show(&data.wesnoth_root, art.font.as_ref(), &message).await;
             continue;
         }

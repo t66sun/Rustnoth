@@ -45,7 +45,7 @@ pub(super) enum Hero { Konrad, Lisar }
 
 impl Hero {
     fn name(self) -> &'static str {
-        match self { Self::Konrad => "Konrad", Self::Lisar => "LiÃ¢â‚¬â„¢sar" }
+        match self { Self::Konrad => "Konrad", Self::Lisar => "Li’sar" }
     }
 }
 
@@ -260,7 +260,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
     loop {
         let frame = form.begin(110.0);
-        dialog::text(form.font.as_ref(), "Loading Battle TrainingÃ¢â‚¬Â¦", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
+        dialog::text(form.font.as_ref(), "Loading Battle Training…", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
         set_default_camera();
         next_frame().await;
         if worker.is_finished() { break; }
@@ -276,7 +276,7 @@ async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<H
     let colors = TeamColors::parse(&fs::read(root.join("data/core/team-colors.cfg"))?)?;
     let sprites = [
         render::load_texture(&images.join("konrad-fighter.png"), None).ok_or("missing Konrad tutorial sprite")?,
-        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing LiÃ¢â‚¬â„¢sar tutorial sprite")?,
+        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing Li’sar tutorial sprite")?,
     ];
     let heroes = [Hero::Konrad, Hero::Lisar];
     let mut focus = 0;

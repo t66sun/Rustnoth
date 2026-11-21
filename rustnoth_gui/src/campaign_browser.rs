@@ -104,7 +104,7 @@ impl Browser {
         let (root, selected) = (self.root.clone(), entry.clone());
         let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
         while !worker.is_finished() {
-            selector.draw(Some("Loading campaignâ€¦"));
+            selector.draw(Some("Loading campaign…"));
             set_default_camera();
             next_frame().await;
         }
@@ -165,7 +165,7 @@ impl Browser {
                         next_frame().await;
                         self.play_from(id.to_owned()).await
                     };
-                    error = result.err().map(|cause| format!("{id} â€” {cause}"));
+                    error = result.err().map(|cause| format!("{id} — {cause}"));
                     while macroquad::prelude::get_char_pressed().is_some() {}
                 }
                 ListAction::Back => return Ok(()),
