@@ -138,6 +138,8 @@ pub struct BoardArt {
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
+    #[cfg(windows)]
+    dialogue_text: dialogue::native::Art,
 }
 
 impl BoardArt {
@@ -238,6 +240,8 @@ impl BoardArt {
             team_colors: palette(TeamColors::parse),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
+            #[cfg(windows)]
+            dialogue_text: dialogue::native::Art::new(wesnoth_root),
             font,
         })
     }

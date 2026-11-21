@@ -1,4 +1,5 @@
 //! Windows installations supply the Pango, Cairo and FreeType stack used by Wesnoth.
+mod dialogue;
 use std::{ffi::{CString, c_char, c_void}, os::windows::ffi::OsStrExt, path::Path, ptr};
 
 type Handle = *mut c_void;
@@ -61,6 +62,13 @@ api! {
         fn g_object_unref(Handle);
     }
     pango = "libpango-1.0-0.dll" {
+        fn pango_parse_markup(*const c_char, i32, u32, *mut Handle, *mut *mut c_char, *mut u32, *mut Handle) -> i32;
+        fn pango_layout_set_height(Handle, i32);
+        fn pango_layout_set_ellipsize(Handle, i32);
+        fn pango_layout_get_iter(Handle) -> Handle;
+        fn pango_layout_iter_get_line_yrange(Handle, *mut i32, *mut i32);
+        fn pango_layout_iter_next_line(Handle) -> i32;
+        fn pango_layout_iter_free(Handle);
         fn pango_font_map_create_context(Handle) -> Handle;
         fn pango_layout_new(Handle) -> Handle;
         fn pango_layout_set_width(Handle, i32);
@@ -92,6 +100,7 @@ api! {
         fn cairo_surface_destroy(Handle);
         fn cairo_surface_flush(Handle);
         fn cairo_create(Handle) -> Handle;
+        fn cairo_translate(Handle, f64, f64);
         fn cairo_set_source_rgba(Handle, f64, f64, f64, f64);
         fn cairo_destroy(Handle);
     }
@@ -204,6 +213,10 @@ impl Text {
     }
 
     fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {
+        self.rasterize_at(width, height, color, 0)
+    }
+
+    fn rasterize_at(&self, width: u16, height: u16, color: [u8; 3], top: i32) -> macroquad::texture::Image {
         let mut bytes = vec![0; usize::from(width) * usize::from(height) * 4];
         unsafe {
             let api = &self.api;
@@ -211,6 +224,7 @@ impl Text {
             let surface = (api.cairo_image_surface_create_for_data)(bytes.as_mut_ptr(), 0,
                 i32::from(width), i32::from(height), i32::from(width)*4);
             let ctx = (api.cairo_create)(surface);
+            (api.cairo_translate)(ctx, 0., -f64::from(top));
             let [r, g, b] = color.map(|c| f64::from(c) / 255.);
             (api.cairo_set_source_rgba)(ctx, r, g, b, 1.);
             (api.pango_cairo_show_layout)(ctx, self.layout);
