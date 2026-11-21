@@ -9,6 +9,7 @@ mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
+mod load_game;
 mod credits;
 mod community;
 mod achievements;
@@ -176,7 +177,13 @@ impl TitleScreen {
                 }
                 Some(Command::Load) => {
                     next_frame().await;
-                    error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
+                    error = load_game::show(&self.root, &art, |w, h| {
+                        art.draw_background(w, h);
+                        let (body, source) = &pages.entries[tip];
+                        for (command, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
+                            art.command(rect, command, false, false);
+                        }
+                    }).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Achievements) => {
                     next_frame().await;

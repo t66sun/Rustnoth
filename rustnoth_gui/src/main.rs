@@ -275,7 +275,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let preference_dir = display_preferences::config_directory()?;
     let locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     if let Some(checkpoint) = restore {
-        if replay_route.is_some() {
+        if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
             return Ok(None);
         }
