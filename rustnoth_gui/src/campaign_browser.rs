@@ -122,9 +122,13 @@ impl Browser {
         self.play_route(board, route, Players::Campaign).await
     }
 
-    pub(super) async fn play_tutorial(mut self, hero: crate::tutorial::Hero, mode: CombatMode, modifications: &[wml::Node]) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn play_tutorial(mut self, mode: CombatMode, modifications: &[wml::Node]) -> Result<(), Box<dyn Error>> {
         self.mode = Some(mode);
         self.modifications = modifications.to_vec();
+        let mut opening = campaign::select(&self.campaign, crate::tutorial::FIRST_SCENARIO, |file| self.read_map(file))?;
+        mode.classify(&mut opening);
+        let maps = self.maps.as_deref().ok_or("Missing Battle Training maps")?;
+        let Some(hero) = crate::tutorial::choose_on_map(&opening, &self.core, maps, &self.root, self.seed).await? else { return Ok(()) };
         let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
         let mut route = CampaignCarryover::default();
         let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
