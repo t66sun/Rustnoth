@@ -34,6 +34,7 @@ type Changes = BTreeMap<Hex, String>;
 
 enum Edit {
     Location(engine_lite::map::editor::LocationEdit),
+    Resize(Box<EditableMap>),
     Terrain(Changes),
     Selection(HashSet<Hex>),
     Stroke(Vec<Edit>),
@@ -141,6 +142,7 @@ impl History {
 impl Edit {
     fn perform(self, doc: &mut EditableMap, selected: &mut HashSet<Hex>) -> (Edit, bool) {
         match self {
+            Edit::Resize(map) => (Edit::Resize(Box::new(doc.swap_geometry(*map))), true),
             Edit::Location(edit) => (Edit::Location(doc.restore_locations(edit)), false),
             Edit::Stroke(steps) => {
                 let mut inverse = Vec::with_capacity(steps.len());
@@ -174,6 +176,7 @@ impl Edit {
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Command {
     New,
+    Resize,
     Open,
     Save,
     SaveAs,
@@ -203,6 +206,7 @@ impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::New => "New Map",
+            Self::Resize => "Resize Map…",
             Self::Open => "Open Map…",
             Self::Save => "Save Map",
             Self::SaveAs => "Save Map As…",
@@ -742,6 +746,10 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 command = Some(Command::Exit);
             }
         }
+        if !modal && !ctrl && !shift && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt))
+            && is_key_pressed(KeyCode::R) {
+            command = Some(Command::Resize);
+        }
         if let Some(cmd) = command.filter(|&cmd| selection.enabled(cmd)) {
             if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp | Command::Coordinates | Command::TerrainCodes) {
                 drawing = None;
@@ -827,6 +835,18 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                         status.clear();
                     }
                 }
+                Command::Resize => {
+                    if let Some(choice) = new_map_dialog::dimensions(root, &assets, &mut art,
+                        form.font.as_ref(), doc, true).await?
+                        && choice.size != [doc.map().width() as usize, doc.map().height() as usize] {
+                        let fill = (!choice.copy_edges).then_some(palette.brushes[palette.bg].code.as_str());
+                        let next = doc.resized(choice.size, choice.anchor, fill)?;
+                        history.undo.push(Edit::Resize(Box::new(doc.swap_geometry(next))));
+                        history.redo.clear();
+                        rebuild = true;
+                        status.clear();
+                    }
+                }
                 Command::New => {
                     if let Some([width,height]) = new_map_dialog::show(root, &assets, &mut art,
                         form.font.as_ref(), doc).await? {
@@ -863,6 +883,25 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_undo_and_redo_follow_the_current_saved_geometry() {
+        let mut map = new_map();
+        let mut history = History::default();
+        let next = map.resized([8,6], 0, None).unwrap();
+        history.undo.push(Edit::Resize(Box::new(map.swap_geometry(next))));
+        assert!(map.dirty());
+        assert!(history.apply(&mut map, true));
+        assert!(!map.dirty());
+        assert!(history.apply(&mut map, false));
+        map = EditableMap::parse(map.text()).unwrap();
+        assert!(history.apply(&mut map, true));
+        assert_eq!((map.map().width(),map.map().height()), (44,33));
+        assert!(map.dirty());
+        assert!(history.apply(&mut map, false));
+        assert_eq!((map.map().width(),map.map().height()), (8,6));
+        assert!(!map.dirty());
+    }
 
     #[test]
     fn selection_edits_and_background_fill_share_undo_order() {
