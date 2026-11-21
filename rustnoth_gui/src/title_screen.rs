@@ -5,6 +5,7 @@ use engine_lite::wml;
 use macroquad::prelude::*;
 
 mod preferences;
+mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
@@ -68,20 +69,6 @@ fn menu(campaign: bool) -> &'static [Command] {
     else { &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
-fn shortcut(key: KeyCode, modified: bool, available: &[Command]) -> Option<Command> {
-    if modified { return None; }
-    let action = match key {
-        KeyCode::C => Command::Campaigns,
-        KeyCode::M => Command::Multiplayer,
-        KeyCode::A => Command::Addons,
-        KeyCode::E => Command::Editor,
-        KeyCode::Space => Command::Credits,
-        KeyCode::L => return Some(Command::Language),
-        _ => return None,
-    };
-    available.contains(&action).then_some(action)
-}
-
 fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize {
     match current {
         Some(index) if backward => (index + count - 1) % count,
@@ -93,6 +80,7 @@ fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize
 
 impl TitleScreen {
     pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
+        let mut bindings = hotkeys::Bindings::load(&self.root)?;
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
         let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
@@ -138,16 +126,10 @@ impl TitleScreen {
             set_default_camera();
 
             let command = if is_key_pressed(KeyCode::Escape) { Some(Command::Quit) }
-                else if is_key_pressed(KeyCode::F1) { Some(Command::Help) }
-                else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
-                else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
                 else if is_key_pressed(KeyCode::Enter) {
                     Some(buttons[focus.unwrap_or(0)].0)
                 } else {
-                    let modified = [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftAlt, KeyCode::RightAlt,
-                        KeyCode::LeftSuper, KeyCode::RightSuper, KeyCode::LeftShift, KeyCode::RightShift]
-                        .into_iter().any(is_key_down);
-                    get_last_key_pressed().and_then(|key| shortcut(key, modified, actions))
+                    hotkeys::pressed().and_then(|key| bindings.shortcut(&key, actions))
                         .or_else(|| click.map(|index| buttons[index].0))
                 };
             match command {
@@ -208,7 +190,7 @@ impl TitleScreen {
                 }
                 Some(Command::Preferences) => {
                     next_frame().await;
-                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
+                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, |w, h| {
                         art.draw_background(w, h);
                         let (body, source) = &pages.entries[tip];
                         for (command, bounds) in art.draw_panels(w, h, actions, body, source, &pages) {
@@ -229,25 +211,33 @@ impl TitleScreen {
 
     async fn open(&self, command: Command, art: &Art) -> Result<(), Box<dyn Error>> {
         let installed;
-        let data = match &self.games {
-            Games::Prepared(data) => data,
+        let (data, modifications) = match &self.games {
+            Games::Prepared(data) => (data, Default::default()),
             Games::Installed => {
                 let root = self.root.clone();
-                let worker = std::thread::spawn(move || desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits)));
+                let worker = std::thread::spawn(move || -> std::io::Result<_> {
+                    let data = desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits))?;
+                    let mut extra = engine_lite::wml::Node::default();
+                    if matches!(command, Command::Campaigns) && let Some(userdata) = profile::native_data_directory() {
+                        crate::campaign_browser::modifications::load_installed(&mut extra, &root, &userdata)?;
+                    }
+                    Ok((data, extra))
+                });
                 while !worker.is_finished() {
                     art.draw_background(screen_width(), screen_height());
                     dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
                     next_frame().await;
                 }
-                installed = worker.join().map_err(|_| "Game data preparation stopped")??;
-                &installed
+                let (data, extra) = worker.join().map_err(|_| "Game data preparation stopped")??;
+                installed = data;
+                (&installed, extra)
             }
         };
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
                 let browser = if matches!(&self.games, Games::Installed) {
-                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed)?
+                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed, modifications)?
                 } else {
                     Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?
                 };
@@ -259,7 +249,7 @@ impl TitleScreen {
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             Command::Help => help::show(&self.root, &data.core, art).await,
-            Command::Editor => crate::editor::run(&self.root, &data.core).await,
+            Command::Editor => crate::editor::run(&self.root, &data.core, art.locale.game("Lato")).await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
@@ -277,6 +267,35 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 
+struct ButtonBacking {
+    pixels: ::image::RgbaImage,
+    sizes: std::cell::RefCell<std::collections::HashMap<(u16, u16), Texture2D>>,
+}
+
+impl ButtonBacking {
+    fn draw(&self, bounds: Rect, state: button_canvas::State) {
+        let width = (bounds.w - 2.).round().max(1.) as u16;
+        let height = (bounds.h - 2.).round().max(1.) as u16;
+        let mut sizes = self.sizes.borrow_mut();
+        let texture = sizes.entry((width, height)).or_insert_with(|| {
+            // At exact half-texels the native nearest sampler takes the higher
+            // texel. Interpolated GPU coordinates can fall just below that tie.
+            let center = |p: u16, src: u32, dst: u16| ((2 * u32::from(p) + 1) * src) / (2 * u32::from(dst));
+            let mut bytes = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+            for y in 0..height {
+                let row = center(y, self.pixels.height(), height);
+                for x in 0..width {
+                    bytes.extend_from_slice(&self.pixels.get_pixel(center(x, self.pixels.width(), width), row).0);
+                }
+            }
+            let tex = Texture2D::from_rgba8(width, height, &bytes);
+            tex.set_filter(FilterMode::Nearest);
+            tex
+        });
+        button_canvas::draw(bounds, texture, state);
+    }
+}
+
 struct Art {
     #[cfg(windows)]
     text_renderer: Option<tip_pango::Text>,
@@ -291,7 +310,7 @@ struct Art {
     map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
-    buttons: [Texture2D; 3],
+    buttons: [ButtonBacking; 3],
     font: Option<Font>,
     italic: Option<Font>,
 }
@@ -413,6 +432,12 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
+        let button = |name: &str| -> Result<ButtonBacking, Box<dyn Error>> {
+            Ok(ButtonBacking {
+                pixels: crate::artwork::rgba(&read_file(&root.join(name))?)?,
+                sizes: Default::default(),
+            })
+        };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
@@ -431,9 +456,9 @@ impl Art {
                 &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
-            buttons: [texture("images/buttons/button_normal/background.png")?,
-                texture("images/buttons/button_normal/background-active.png")?,
-                texture("images/buttons/button_normal/background-pressed.png")?],
+            buttons: [button("images/buttons/button_normal/background.png")?,
+                button("images/buttons/button_normal/background-active.png")?,
+                button("images/buttons/button_normal/background-pressed.png")?],
             font, italic,
         })
     }
@@ -495,7 +520,7 @@ impl Art {
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
         use button_canvas::State;
         let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
-        button_canvas::draw(rect, &self.buttons[state as usize], state);
+        self.buttons[state as usize].draw(rect, state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
@@ -561,13 +586,18 @@ mod tests {
 
     #[test]
     fn original_title_hotkeys_open_only_available_entries_without_modifiers() {
+        let source = [("c", "title_screen__campaign"), ("m", "title_screen__multiplayer"),
+            ("a", "title_screen__addons"), ("e", "title_screen__editor"), ("space", "title_screen__credits"),
+            ("l", "changelanguage")].map(|(key,id)| format!("[hotkey]\nkey={key}\ncommand={id}\n[/hotkey]")).join("\n");
+        let bindings = hotkeys::Bindings::native(&source, PathBuf::new());
         for (key, action) in [(KeyCode::C, Command::Campaigns), (KeyCode::M, Command::Multiplayer),
             (KeyCode::A, Command::Addons), (KeyCode::E, Command::Editor),
             (KeyCode::Space, Command::Credits), (KeyCode::L, Command::Language)] {
-            assert_eq!(shortcut(key, false, menu(true)), Some(action));
-            assert_eq!(shortcut(key, true, menu(true)), None);
+            let key = hotkeys::key_name(key).unwrap();
+            assert_eq!(bindings.shortcut(&key, menu(true)), Some(action));
+            assert_eq!(bindings.shortcut(&format!("Alt+{key}"), menu(true)), None);
         }
-        assert_eq!(shortcut(KeyCode::C, false, menu(false)), None);
+        assert_eq!(bindings.shortcut("C", menu(false)), None);
     }
 
     #[test]
