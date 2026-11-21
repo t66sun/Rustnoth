@@ -22,6 +22,8 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+mod label;
+pub(crate) use label::Label;
 pub mod objectives;
 pub mod attack_dialog;
 mod dialogue;
