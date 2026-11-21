@@ -8,6 +8,7 @@ const STEP_MS: u64 = 200;
 pub(crate) struct Walk {
     route: Vec<Hex>,
     started: u64,
+    rate: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -21,9 +22,10 @@ pub(super) struct Pose {
 }
 
 impl Walk {
-    pub(crate) fn start(&mut self, route: Vec<Hex>, now: u64) {
+    pub(crate) fn start(&mut self, route: Vec<Hex>, now: u64, rate: f32) {
         self.route = route;
         self.started = now;
+        self.rate = rate;
     }
 
     pub(crate) fn active(&self) -> bool {
@@ -44,7 +46,7 @@ impl Walk {
     }
 
     pub(super) fn pose(&self, now: u64) -> Option<Pose> {
-        let elapsed = now.saturating_sub(self.started);
+        let elapsed = (now.saturating_sub(self.started) as f64 * f64::from(self.rate)) as u64;
         let index = usize::try_from(elapsed / STEP_MS).ok()?;
         let from = *self.route.get(index)?;
         let to = *self.route.get(index.checked_add(1)?)?;
@@ -72,7 +74,7 @@ mod tests {
         let b = Hex { x: 1, y: 0 };
         let c = Hex { x: 9, y: 4 };
         let mut walk = Walk::default();
-        walk.start(vec![a, b, c], 40);
+        walk.start(vec![a, b, c], 40, 1.0);
         let first = walk.pose(140).unwrap();
         assert_eq!((first.from, first.to, first.fraction, first.direction), (a, b, 0.5, Some(Direction::SouthEast)));
         assert_eq!(walk.pose(330).unwrap().fraction, 0.0);
@@ -80,7 +82,8 @@ mod tests {
         assert!(walk.pose(440).is_none());
         assert!(walk.advance(440, false));
         assert!(!walk.active());
-        walk.start(vec![a, b], 1000);
+        walk.start(vec![a, b], 1000, 2.0);
+        assert_eq!(walk.pose(1050).unwrap().fraction, 0.5);
         assert!(walk.advance(1033, true));
         assert!(!walk.advance(1034, false));
     }

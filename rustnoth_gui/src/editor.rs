@@ -264,24 +264,19 @@ impl Chrome {
     ) -> Option<Command> {
         self.tip = None;
         let sidebar = Rect::new(w - side, 0.0, side, h);
-        art.image(assets, "themes/classic/sidebar.png", sidebar);
-        art.image(
+        art.panel(
             assets,
             "themes/classic/menubar.png",
-            Rect::new(0.0, 0.0, w - side, 27.0),
+            Rect::new(0.0, 0.0, w, 27.0),
         );
-        art.image(
+        art.panel(
             assets,
             "themes/editor/classic/toolbar.png",
             Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
-        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+        art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
-        art.image(
-            assets,
-            "themes/editor/classic/menubar_rightside.png",
-            Rect::new(w - side, 0.0, side, 26.0),
-        );
+        art.panel(assets, "themes/classic/sidebar.png", sidebar);
         let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
             assets, art, &mut self.tip);
         let result = self.menubar.draw(&mut self.menu, point, assets, art, font, name).or(tool_action);
