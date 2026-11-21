@@ -1,5 +1,5 @@
-//! Local hot-seat and versus-computer checkpoints with their starting rules and map.
-use crate::BoardData;
+//! Desktop checkpoints with their starting rules, map and campaign continuation.
+use crate::{BoardData, campaign_browser::Browser};
 use engine_lite::{
     hex::Hex,
     wml::{self, Node},
@@ -18,11 +18,23 @@ use std::{
 
 pub(super) struct Restore {
     pub watch_replay: bool,
+    pub campaign: Option<Browser>,
     pub replay_roster: Option<engine_lite::fixed_match::carryover::CampaignCarryover>,
     pub map: Option<String>,
     pub events: Vec<Event>,
     pub camera: Option<[f32; 3]>,
     pub selected: Option<Hex>,
+}
+
+impl Restore {
+    pub fn is_replay(&self) -> bool {
+        self.campaign.is_none() && self.replay_roster.is_some()
+    }
+}
+
+pub(super) enum CampaignSave<'a> {
+    Replay(&'a Node),
+    Checkpoint(&'a Browser, &'a Node),
 }
 
 pub(super) struct Slot {
@@ -66,11 +78,14 @@ pub(super) fn save(
     events: &[Event],
     camera: Option<[f32; 3]>,
     selected: Option<Hex>,
-    replay_roster: Option<&Node>,
+    campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
     set(&mut record, "format", 1);
     set(&mut record, "seed", data.seed);
+    if matches!(&campaign, Some(CampaignSave::Checkpoint(..))) {
+        set(&mut record, "kind", "campaign");
+    }
     set(
         &mut record,
         "players",
@@ -108,7 +123,14 @@ pub(super) fn save(
             fs::write(draft.join("board.map"), map)?;
         }
         wml_emit::write_config(fs::File::create(draft.join("replay.cfg"))?, &record)?;
-        if let Some(roster) = replay_roster {
+        if let Some(kind) = campaign {
+            let roster = match kind {
+                CampaignSave::Replay(roster) => roster,
+                CampaignSave::Checkpoint(browser, roster) => {
+                    browser.save_route(&draft.join("campaign.cfg"))?;
+                    roster
+                }
+            };
             wml_emit::write_config(fs::File::create(draft.join("starting-roster.cfg"))?, roster)?;
         }
         fs::rename(&draft, base.join(format!("{key}.rnsave")))
@@ -173,14 +195,20 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         root.to_owned(),
         seed,
     )?;
+    let campaign = match record.attribute("kind") {
+        Some("campaign") => Some(Browser::load_route(&dir.join("campaign.cfg"), &data)?),
+        None => None,
+        _ => return Err(invalid("Unknown saved game kind").into()),
+    };
     data.restore = Some(Restore {
         watch_replay: false,
         replay_roster: match fs::read(dir.join("starting-roster.cfg")) {
             Ok(bytes) => Some(engine_lite::fixed_match::carryover::CampaignCarryover::from_replay_roster(
                 &wml::parse(bytes)?).ok_or("Invalid starting roster in campaign replay")?),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound && campaign.is_none() => None,
             Err(e) => return Err(e.into()),
         },
+        campaign,
         map,
         events,
         camera,
@@ -194,6 +222,92 @@ mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn a_midcampaign_checkpoint_replays_the_turn_and_continues_with_its_veterans_and_treasury() {
+        use engine_lite::fixed_match::carryover::CampaignCarryover;
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp = std::env::temp_dir().join(format!("rustnoth-campaign-resume-{stamp}"));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        let maps = temp.join("maps");
+        fs::create_dir(&maps).unwrap();
+        let map = "Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv";
+        fs::write(maps.join("battle.map"), map).unwrap();
+        let file = temp.join("original.cfg");
+        fs::write(&file, r#"
+[scenario]
+id=west
+map_file=battle.map
+[side]
+id=hero
+controller=human
+type=Guard
+[/side]
+[side]
+id=foe
+type=Guard
+[/side]
+[event]
+name=start
+[message]
+speaker=narrator
+message=Advance
+[/message]
+[/event]
+[event]
+name=side 1 turn end
+[endlevel]
+result=victory
+next_scenario=east
+[/endlevel]
+[/event]
+[/scenario]
+[scenario]
+id=east
+map_file=battle.map
+[side]
+id=hero
+type=Guard
+[/side]
+[side]
+id=ally
+type=Guard
+gold=20
+[/side]
+[/scenario]"#).unwrap();
+        let core = b"[units]\n[unit_type]\nid=Guard\nhitpoints=20\nmovement=4\n[/unit_type]\n[/units]";
+        let browser = Browser::load(&file, maps.clone(), core.to_vec(), temp.clone(), 12).unwrap();
+        let incoming = wml::parse("[side]\nsave_id=hero\n[unit]\nid=hero\ntype=Guard\nname=Veteran\nexperience=12\nearned_amlas=0\ncanrecruit=yes\n[/unit]\n[/side]\n[treasury]\nsave_id=ally\namount=46\nadd=true\n[/treasury]").unwrap();
+        let mut route = CampaignCarryover::from_replay_roster(&incoming).unwrap();
+        let board = browser.board("west", &mut route.gold).unwrap();
+        let opening = route.replay_roster();
+        let mut live = Session::new(board.scenario.start_campaign(12, |_| unreachable!(), Some(&mut route)).unwrap());
+        assert_eq!(live.dialogue().unwrap().text, "Advance");
+        live.dismiss_dialogue();
+        let base = temp.join("saves");
+        save(&base, "West", &board, Players::HotSeat, None, live.history(), None, None,
+            Some(CampaignSave::Checkpoint(&browser, &opening))).unwrap();
+        fs::remove_file(file).unwrap();
+        fs::remove_dir_all(maps).unwrap();
+        let (mut restored, players) = load(&slots(&base).unwrap()[0], &temp).unwrap();
+        let checkpoint = restored.restore.take().unwrap();
+        assert!(!checkpoint.is_replay());
+        let campaign = checkpoint.campaign.unwrap();
+        let mut route = checkpoint.replay_roster.unwrap();
+        let mut resumed = Session::with_players(restored.scenario.start_campaign(restored.seed, |_| unreachable!(), Some(&mut route)).unwrap(), players);
+        for command in checkpoint.events { command.apply(&mut resumed).unwrap(); }
+        assert_eq!(resumed.legal_actions(), live.legal_actions());
+        assert_eq!(resumed.observation(), live.observation());
+        assert!(resumed.dialogue().is_none());
+        resumed.apply(Action::EndTurn).unwrap();
+        assert_eq!(resumed.next_scenario(), Some("east"));
+        resumed.store_campaign_survivors(&mut route);
+        let successor = campaign.board(resumed.next_scenario().unwrap(), &mut route.gold).unwrap();
+        let game = successor.scenario.start_campaign(successor.seed, |_| unreachable!(), Some(&mut route)).unwrap();
+        assert_eq!(game.observation_for(2).unwrap().gold, Some(66));
+        assert!(game.observation_for(1).unwrap().units.iter().any(|u| u.side == 1 && u.experience == 12));
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn a_campaign_replay_reconstructs_its_incoming_veteran_before_playing_the_actions() {
@@ -214,7 +328,7 @@ mod tests {
         assert!(opening.iter().any(|&(side,_,xp)| side == 1 && xp == 12));
         live.apply(Action::EndTurn).unwrap();
         assert!(live.save_victory_replay());
-        save(&temp, "West replay", &board, Players::HotSeat, Some(map), live.history(),None,None,Some(&starting_roster)).unwrap();
+        save(&temp, "West replay", &board, Players::HotSeat, Some(map), live.history(),None,None,Some(CampaignSave::Replay(&starting_roster))).unwrap();
         let entries = slots(&temp).unwrap();
         let (mut archive, _) = load(&entries[0], &temp).unwrap();
         let mut replay = archive.restore.take().unwrap();
