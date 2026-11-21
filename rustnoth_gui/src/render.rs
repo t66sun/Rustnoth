@@ -581,7 +581,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     });
     if let Some(mask) = art.unreachable.as_ref()
         && let Some(reachable) = reach::reachable(movement.selected, movement.actions, target) {
-        for tile in view.tiles.iter().filter(|tile| !reachable.contains(&tile.position)) {
+        let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
+        for tile in view.tiles.iter().filter(|tile| Some(tile.position) != attack_target && !reachable.contains(&tile.position)) {
             let [x, y] = layout.tile_origin(tile.position);
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
@@ -689,6 +690,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.fog_edges.draw(layout, viewport);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(plan) = movement.session.hovered_attack() {
+        art.footsteps.draw_attack(layout, plan.staging, plan.target, viewport);
+    }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {
