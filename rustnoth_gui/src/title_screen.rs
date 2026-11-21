@@ -18,7 +18,7 @@ mod profile;
 mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
-mod scaled_art;
+use crate::artwork::scaled as scaled_art;
 mod tip_pages;
 #[cfg(windows)]
 pub(crate) mod tip_pango;
