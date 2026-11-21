@@ -123,7 +123,7 @@ pub struct FixedMatch<'data> {
     firing_enemies_defeated: bool,
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
-    dialogue: Vec<(Vec<usize>, dialogue::DialogueLine)>,
+    presentation: Vec<(Vec<usize>, dialogue::Presentation)>,
     gold: Vec<i64>,
 }
 
@@ -172,7 +172,7 @@ impl<'data> FixedMatch<'data> {
             rules,
             rng: ReplayRng::new(seed),
             village_owners,
-            dialogue: Vec::new(),
+            presentation: Vec::new(),
             gold,
         };
         for side in 1..=side_count {
@@ -239,6 +239,11 @@ impl<'data> FixedMatch<'data> {
                 BoardChange::SetObjectives { sides, definition, notify } => {
                     let remaining = self.remaining_turns();
                     self.scenario.events.set_objectives(definition, &sides, notify, &self.scenario.board, &mut self.scenario.sides, remaining);
+                    continue;
+                }
+                BoardChange::TutorialHint(hint) => {
+                    let sides = (1..=self.scenario.sides.len()).collect();
+                    self.presentation.push((sides, dialogue::Presentation::TutorialHint(hint)));
                     continue;
                 }
                 BoardChange::Kill(kill, primary) => {
@@ -545,7 +550,7 @@ impl<'data> FixedMatch<'data> {
         let MatchState::Playing(turn) = self.state else {
             return Err(MatchError::Finished);
         };
-        self.dialogue.clear();
+        self.presentation.clear();
         let sides = &self.scenario.sides;
         let viewer = &sides[turn.side - 1];
         if (viewer.fog || viewer.shroud || attacker.is_some() || defender.is_some()) && !matches!(action, Action::EndTurn)
