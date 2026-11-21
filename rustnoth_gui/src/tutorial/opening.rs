@@ -2,7 +2,7 @@ use std::error::Error;
 
 use engine_lite::{hex::{Direction, Hex}, wml::Node};
 
-use super::{Hero, Lesson, healing, recruiting, put};
+use super::{Hero, Lesson, healing, recruiting, weapons, put};
 
 pub(super) fn children<'a>(node: &'a Node, tag: &'a str) -> impl Iterator<Item = &'a Node> {
     node.children.iter().filter(move |(name, _)| name == tag).map(|(_, child)| child)
@@ -117,10 +117,11 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     events.push(("event".into(), finish));
     let healing = healing::Exercises::read(scenario, attack, hero)?;
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
+    let weapons = weapons::Exercise::read(scenario, hero)?;
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero, healing, recruiting))
+    Ok(Lesson::new(mentor_hex, hero, healing, recruiting, weapons))
 }
 
 #[cfg(test)]
@@ -143,6 +144,7 @@ mod tests {
             [then]\n[print]\ntext=Move Konrad to a village\n[/print]\n[/then]\n\
             [else]\n[print]\ntext=Move Lisar to a village\n[/print]\n[/else]\n[/if]";
         let keep_prompt = villages.replace("a village", "the keep");
+        let fourth = weapons::tests::turn_four();
         wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
             map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Ch,Gg,Gg,Gg,Xv\nXv,1 Kh,Ch,Gg,Gg,Gg,Xv\nXv,Ch,Ch,Gg,Gg,Vh,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
             [side]\nside=1\ncontroller=human\ngold=100\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
@@ -164,7 +166,7 @@ mod tests {
             [event]\nname=moveto\n[filter]\nx,y=1,2\n[/filter]\n[set_recruit]\nside=1\nrecruit=Elvish Fighter\n[/set_recruit]\n\
             [hint_message]\ncaption=Recruiting\nmessage=Right-click a castle\n[/hint_message]\n[print]\ntext=Recruit two fighters\n[/print]\n[/event]\n\
             [event]\nname=recruit\n[filter_condition]\n[have_unit]\ntype=Elvish Fighter\ncount=2\n[/have_unit]\n[/filter_condition]\n\
-            {crowns}\n[/event]\n[/event]")).unwrap()
+            {crowns}\n[/event]\n[/event]\n{fourth}")).unwrap()
     }
 
     #[test]
@@ -274,7 +276,18 @@ mod tests {
             session.dismiss_dialogue();
             assert!(session.legal_actions().contains(&Action::EndTurn));
             next_turn(&mut lesson, &mut session);
-            assert!(lesson.finished());
+            assert!(!lesson.finished());
+            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "Send your fighters, Konrad" } else { "Send your fighters, Lisar" });
+            session.dismiss_dialogue();
+            assert_eq!(session.dialogue().unwrap().text, "Examine the recruits");
+            session.dismiss_dialogue();
+            assert!(!session.legal_actions().contains(&Action::EndTurn));
+            let student = session.observation().unwrap().units.iter().find(|u| u.side == 1 && u.can_recruit).unwrap().position;
+            lesson.selected(student, &mut session);
+            assert_eq!(session.dialogue().unwrap().text, "Use the fighters first");
+            session.dismiss_dialogue();
+            lesson.selected(student, &mut session);
+            assert!(session.dialogue().is_none());
         }
     }
 }

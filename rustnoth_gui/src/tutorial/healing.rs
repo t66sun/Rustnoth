@@ -16,7 +16,7 @@ pub(super) struct Exercises {
     pub healed: Vec<Node>,
 }
 
-fn lines(event: &Node, hero: Hero) -> Vec<Node> {
+pub(super) fn lines(event: &Node, hero: Hero) -> Vec<Node> {
     event.children.iter().filter_map(|(tag, command)| {
         command.attribute("message")?;
         let mut line = dialogue(command, hero);

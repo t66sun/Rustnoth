@@ -535,16 +535,24 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         } else {
             None
         };
+        if clicked && let Some(selected) = selection.unit()
+            && camera.hex_at([mouse_x, mouse_y]) == Some(selected) && let Some(lesson) = &mut data.lesson {
+            lesson.selected(selected, &mut session);
+        }
         if let Some(action) = requested {
             let reselect = match &action {
                 Action::Attack(attack) => Some(attack.from),
                 _ => None,
             };
             let advancement = menu.as_ref().and_then(menu::Menu::preferred_advancement);
+            let weapon_hint = data.lesson.as_ref().and_then(|lesson| lesson.weapon_hint(&session, &action));
             let mut walk = Vec::new();
             match session.apply_recording_walk(action, advancement, Some(&mut walk)) {
                 Ok(_) => {
-                    if let Some(lesson) = &mut data.lesson { lesson.advance(&mut session); }
+                    if let Some(lesson) = &mut data.lesson {
+                        if let Some((hint, from)) = weapon_hint.zip(reselect) { lesson.explain_weapon(hint, from, &mut session); }
+                        lesson.advance(&mut session);
+                    }
                     message = None;
                     menu = None;
                     selection.clear();

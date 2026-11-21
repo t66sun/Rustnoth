@@ -10,6 +10,7 @@ use crate::{BoardData, desktop, dialog, render, show_board};
 mod opening;
 mod healing;
 mod recruiting;
+mod weapons;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -43,7 +44,7 @@ impl Hero {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, Complete }
+enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, FighterAttack, Practice, Complete }
 
 pub(super) struct Lesson {
     step: Step,
@@ -52,16 +53,30 @@ pub(super) struct Lesson {
     movement_prompt: String,
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
+    weapons: weapons::Exercise,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, healing: healing::Exercises, recruiting: recruiting::Exercise) -> Self {
+    fn new(mentor: Hex, hero: Hero, healing: healing::Exercises, recruiting: recruiting::Exercise, weapons: weapons::Exercise) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, recruiting, weapons, before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn selected(&mut self, at: Hex, session: &mut Session<'_>) {
+        self.weapons.selected(at, session);
+    }
+
+    pub(super) fn weapon_hint(&self, session: &Session<'_>, action: &Action) -> Option<usize> {
+        if !matches!(self.step, Step::FighterAttack | Step::Practice) { return None; }
+        self.weapons.weapon(session, action)
+    }
+
+    pub(super) fn explain_weapon(&mut self, hint: usize, from: Hex, session: &mut Session<'_>) {
+        self.weapons.explain(hint, from, session);
+    }
 
     pub(super) fn draw_prompt(&self, selected: bool, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
         let font = art.font.as_ref();
@@ -77,7 +92,8 @@ impl Lesson {
             Step::ToVillage => &self.healing.village_prompt,
             Step::ToKeep => &self.recruiting.keep_prompt,
             Step::Recruit => &self.recruiting.recruit_prompt,
-            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Complete => return,
+            Step::FighterAttack | Step::Practice if self.weapons.prompting => &self.weapons.prompt,
+            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::FighterAttack | Step::Practice | Step::Complete => return,
         };
         let view = render::board_viewport();
         let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
@@ -98,6 +114,8 @@ impl Lesson {
             (Step::ToKeep, Action::Move { to, .. }) => *to == self.recruiting.keep,
             (Step::ToKeep | Step::Recruit, Action::Attack(_)) => true,
             (Step::Recruit, Action::Recruit { .. }) | (Step::EndThird, _) => true,
+            (Step::FighterAttack, action) => !matches!(action, Action::EndTurn),
+            (Step::Practice, _) => true,
             _ => false,
         });
     }
@@ -130,6 +148,8 @@ impl Lesson {
             }
             Step::EndThird if matches!(session.history().last(),
                 Some(rustnoth_gui::save_replay::Event::Player(Action::EndTurn, ..))) => Step::WaitFourth,
+            Step::FighterAttack if matches!(session.history().last(),
+                Some(rustnoth_gui::save_replay::Event::Player(Action::Attack(_), ..))) => Step::Practice,
             other => other,
         };
         self.after_computer(session);
@@ -150,7 +170,10 @@ impl Lesson {
                 self.step = Step::ToKeep;
             }
             MatchState::Playing(turn) if turn.round == 4 && self.step == Step::WaitFourth => {
-                self.step = Step::Complete;
+                self.step = if self.weapons.start(session) { Step::FighterAttack } else { Step::Practice };
+            }
+            MatchState::Playing(turn) if turn.round >= 5 && self.step == Step::Practice => {
+                self.weapons.prompting = false;
             }
             MatchState::Playing(_) => {}
             _ => self.step = Step::Complete,
