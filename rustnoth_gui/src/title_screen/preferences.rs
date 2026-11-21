@@ -1,5 +1,5 @@
 //! Wesnoth's Preferences window, with the General and Display pages.
-use super::{Art, dialog, load_texture, version};
+use super::{Art, dialog, languages::Label, load_texture, version};
 mod hotkey_list;
 use crate::display_preferences::{self, speed::{FACTORS, Speed}};
 use macroquad::prelude::*;
@@ -8,7 +8,53 @@ use std::{error::Error, io, path::Path};
 const GOLD: Color = Color::from_rgba(186, 172, 125, 255);
 const LABEL: Color = Color::from_rgba(215, 215, 215, 255);
 const BORDER: Color = Color::from_rgba(114, 79, 46, 255);
-const TABS: [&str; 6] = ["General", "Hotkeys", "Display", "Sound", "Multiplayer", "Advanced"];
+const TABS: [(&str, &str); 6] = [
+    ("General", "icons/icon-general"), ("Hotkeys", "icons/icon-hotkeys"),
+    ("Display", "icons/icon-display"), ("Sound", "icons/icon-music"),
+    ("Multiplayer", "icons/icon-multiplayer"), ("Advanced", "icons/icon-advanced"),
+];
+
+// Keep each localized Pango layout for the lifetime of the window. The number
+// beside the factor slider is a separate label, spaced by five pixels in GUI2.
+struct Captions {
+    title: Label,
+    tabs: [Label; 6],
+    scroll: Label,
+    factor: Label,
+    values: [Label; FACTORS.len()],
+    skip_ai: Label,
+    accelerated: Label,
+    save_replays: Label,
+    fullscreen: Label,
+    grid: Label,
+    close: Label,
+}
+
+impl Captions {
+    fn new(art: &Art) -> Self {
+        let gold = [186, 172, 125];
+        let text = [215; 3];
+        let font = art.font.as_ref();
+        let label = |msg, point, rgb| Label::new(art, font, art.locale.ui(msg), point, rgb);
+        Self {
+            title: label("Preferences", 22, gold),
+            tabs: TABS.map(|(name, _)| label(name, 17, text)),
+            scroll: label("Scroll speed:", 17, text),
+            factor: label("Acceleration factor:", 15, text),
+            values: FACTORS.map(|n| Label::new(art, font, &n.to_string(), 15, text)),
+            skip_ai: label("Skip AI moves", 15, gold),
+            accelerated: label("Accelerated speed", 15, gold),
+            save_replays: label("Save replays at the end of scenarios", 15, gold),
+            fullscreen: label("Full screen", 15, gold),
+            grid: label("Grid overlay", 15, gold),
+            close: label("Close", 16, gold),
+        }
+    }
+}
+
+fn caption_y(row: Rect, height: f32) -> f32 {
+    row.y + ((row.h - height) / 2.).floor().max(0.)
+}
 
 pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
     let mut y = rect.y;
@@ -104,7 +150,7 @@ impl WidgetArt {
         Ok(Self {
             backdrop: load("dialogs/opaque-background")?,
             selected: load("dialogs/selection-background-fancy")?,
-            icons: TABS.iter().map(|name| load(&format!("icons/icon-{}", name.to_lowercase())))
+            icons: TABS.iter().map(|(_, icon)| load(icon))
                 .collect::<Result<_, _>>()?,
             checks: [load("buttons/checkbox")?, load("buttons/checkbox-active")?,
                 load("buttons/checkbox-pressed")?, load("buttons/checkbox-active-pressed")?],
@@ -120,8 +166,8 @@ impl WidgetArt {
         tiled(Rect::new(r.x + 2., r.y + 2., r.w - 4., r.h - 4.), &self.backdrop);
     }
 
-    fn tabs(&self, art: &Art, layout: &Layout, page: Page, focus: Option<Control>) {
-        for (i, (label, icon)) in TABS.iter().zip(&self.icons).enumerate() {
+    fn tabs(&self, captions: &Captions, layout: &Layout, page: Page, focus: Option<Control>) {
+        for (i, (label, icon)) in captions.tabs.iter().zip(&self.icons).enumerate() {
             let (active, target) = match i {
                 0 => (page == Page::General, Some(Control::GeneralTab)),
                 1 => (page == Page::Hotkeys, Some(Control::HotkeysTab)),
@@ -139,18 +185,16 @@ impl WidgetArt {
                 draw_rectangle(r.x, r.y, 2., r.h, BORDER);
                 draw_rectangle(r.x, r.y + 1., 2., r.h - 2., Color::from_rgba(185, 158, 75, 255));
             }
-            let color = if target.is_some() { WHITE } else { Color::from_rgba(170, 170, 170, 255) };
             draw_texture(icon, r.x + 5. + ((72. - icon.width()) * 0.5).floor(),
-                r.y + ((r.h - icon.height()) * 0.5).floor(), color);
-            dialog::text(art.font.as_ref(), art.locale.ui(label), r.x + 87., r.y + 47., 17,
-                if target.is_some() { LABEL } else { Color::from_rgba(128, 128, 128, 255) });
+                r.y + ((r.h - icon.height()) * 0.5).floor(), WHITE);
+            label.draw_cell(vec2(r.x + 87., caption_y(r, label.size.y)), r.w - 107.);
         }
     }
 
-    fn check(&self, art: &Art, r: Rect, label: &str, checked: bool, focused: bool) {
+    fn check(&self, r: Rect, label: &Label, checked: bool, focused: bool) {
         let tex = &self.checks[2 * usize::from(checked) + usize::from(focused)];
         draw_texture(tex, r.x, r.y, WHITE);
-        dialog::text(art.font.as_ref(), art.locale.ui(label), r.x + 25., r.y + 16., 15, GOLD);
+        label.draw_cell(vec2(r.x + 25., caption_y(r, label.size.y)), r.w - 25.);
     }
 
     fn slider(&self, r: Rect, step: u8, max: u8, focus: bool, drag: bool) {
@@ -189,6 +233,7 @@ pub(super) async fn show(
 ) -> Result<(), Box<dyn Error>> {
     use Control::*;
     let skin = WidgetArt::load(root)?;
+    let captions = Captions::new(art);
     let mut hotkeys_page = hotkey_list::List::new(root);
     let font = art.font.as_ref();
     let mut speed = Speed::load()?;
@@ -205,9 +250,7 @@ pub(super) async fn show(
         let view = vec2(screen_width(), screen_height()) / scale;
         set_camera(&dialog::setup_camera(view.x, view.y));
         draw_behind(view.x, view.y);
-        let scroll_label = art.locale.ui("Scroll speed:");
-        let label_width = measure_text(scroll_label, font, 17, 1.).width.round();
-        let layout = Layout::new(view, label_width);
+        let layout = Layout::new(view, captions.scroll.size.x);
         let controls = page.controls();
         let mouse = Vec2::from(mouse_position()) / scale;
         let hover = controls.iter().copied().find(|&c| layout.control(c).contains(mouse));
@@ -265,9 +308,9 @@ pub(super) async fn show(
         }
         skin.frame(&layout);
         let window = layout.window;
-        dialog::text(font, art.locale.ui("Preferences"), window.x + 15., window.y + 37., 22, GOLD);
+        captions.title.draw(window.point() + vec2(15., 15.));
         let highlight = hover.or(Some(focus));
-        skin.tabs(art, &layout, page, highlight);
+        skin.tabs(&captions, &layout, page, highlight);
         match page {
             Page::Hotkeys => {
                 if let Err(e) = hotkeys_page.draw(bindings, art, &skin, &layout, mouse, focus, activate) {
@@ -275,21 +318,22 @@ pub(super) async fn show(
                 }
             }
             Page::General => {
-                dialog::text(font, scroll_label, window.x + 217., window.y + 69., 17, LABEL);
-                skin.check(art, layout.control(SkipAi), "Skip AI moves", skip_ai, highlight == Some(SkipAi));
-                skin.check(art, layout.control(SaveReplays), "Save replays at the end of scenarios",
+                captions.scroll.draw(vec2(window.x + 217., caption_y(layout.control(Scroll), captions.scroll.size.y)));
+                skin.check(layout.control(SkipAi), &captions.skip_ai, skip_ai, highlight == Some(SkipAi));
+                skin.check(layout.control(SaveReplays), &captions.save_replays,
                     save_replays, highlight == Some(SaveReplays));
-                skin.check(art, layout.control(Accelerated), "Accelerated speed", speed.accelerated, highlight == Some(Accelerated));
-                let caption = format!("{}  {}", art.locale.ui("Acceleration factor:"), FACTORS[usize::from(speed.factor)]);
-                dialog::text(font, &caption, window.x + 242., window.y + 167., 15, LABEL);
+                skin.check(layout.control(Accelerated), &captions.accelerated, speed.accelerated, highlight == Some(Accelerated));
+                let factor = window.point() + vec2(242., 152.);
+                captions.factor.draw(factor);
+                captions.values[usize::from(speed.factor)].draw(factor + vec2(captions.factor.size.x + 5., 0.));
                 for control in [Scroll, Factor] {
                     let (step, max) = slider_value(control, speed).unwrap();
                     skin.slider(layout.control(control), step, max, highlight == Some(control), down == Some(control));
                 }
             }
             Page::Display => {
-                skin.check(art, layout.control(Fullscreen), "Full screen", *fullscreen, highlight == Some(Fullscreen));
-                skin.check(art, layout.control(Grid), "Grid overlay", grid, highlight == Some(Grid));
+                skin.check(layout.control(Fullscreen), &captions.fullscreen, *fullscreen, highlight == Some(Fullscreen));
+                skin.check(layout.control(Grid), &captions.grid, grid, highlight == Some(Grid));
             }
         }
         if let Some(message) = &error {
@@ -297,7 +341,9 @@ pub(super) async fn show(
             dialog::text(font, &message, window.x + 53., window.bottom() - 24., 15, Color::from_rgba(255, 140, 135, 255));
         }
         art.about.draw_icon(layout.control(About), highlight == Some(About), down == Some(About) && hover == down);
-        art.button(layout.control(Close), art.locale.ui("Close"), highlight == Some(Close), down == Some(Close) && hover == down);
+        let close = layout.control(Close);
+        art.button_frame(close, highlight == Some(Close), down == Some(Close) && hover == down);
+        captions.close.draw((close.center() - captions.close.size / 2.).floor() - vec2(0., 1.));
         set_default_camera();
         next_frame().await;
         if activate == Some(About) {
@@ -310,6 +356,15 @@ pub(super) async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preference_rows_align_label_tops_and_use_the_native_sound_icon() {
+        let layout = Layout::new(vec2(1200., 820.), 94.);
+        assert_eq!(caption_y(layout.tab(0), 21.), 187.);
+        assert_eq!(caption_y(layout.control(Control::Accelerated), 19.), 227.);
+        assert_eq!(caption_y(layout.control(Control::SkipAi), 22.), 198.);
+        assert_eq!(TABS[3], ("Sound", "icons/icon-music"));
+    }
 
     #[test]
     fn native_default_page_places_tabs_and_interactive_sliders() {
