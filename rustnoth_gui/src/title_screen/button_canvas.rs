@@ -32,11 +32,20 @@ fn edges(w: f32, h: f32, accent: Color, disabled: bool) -> [(Rect, Color); 14] {
 pub(crate) enum State { Enabled, Focused, Pressed, Disabled }
 
 pub(crate) fn draw(bounds: Rect, background: &Texture2D, state: State) {
+    frame(bounds, background, state, false);
+}
+
+pub(crate) fn icon_button(bounds: Rect, background: &Texture2D, state: State) {
+    frame(bounds, background, state, true);
+}
+
+fn frame(bounds: Rect, background: &Texture2D, state: State, icon_only: bool) {
     super::image(backing(bounds), background);
     let [r, g, b] = match state {
         State::Enabled => [21, 79, 109],
         State::Focused => [12, 108, 157],
         State::Pressed => [1, 10, 16],
+        State::Disabled if icon_only => [1, 10, 16],
         State::Disabled => [60, 60, 60],
     };
     for (edge, color) in edges(bounds.w, bounds.h, Color::from_rgba(r, g, b, 255), state == State::Disabled) {
