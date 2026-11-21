@@ -177,6 +177,7 @@ enum Command {
     Open,
     Save,
     SaveAs,
+    Revert,
     Close,
     Exit,
     PartialUndo,
@@ -205,6 +206,7 @@ impl Command {
             Self::Open => "Open Map…",
             Self::Save => "Save Map",
             Self::SaveAs => "Save Map As…",
+            Self::Revert => "Revert Map",
             Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
             Self::PartialUndo => "Partial Undo",
@@ -351,6 +353,7 @@ impl Chrome {
         art: &mut Art,
         font: Option<&Font>,
         names: &[String],
+        can_revert: bool,
         doc: &EditableMap,
         history: &History,
         selection: clipboard::SelectionState,
@@ -372,7 +375,7 @@ impl Chrome {
         art.panel(assets, "themes/classic/sidebar.png", sidebar);
         let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, &self.labels, doc, history,
             assets, art, &mut self.tip, selection);
-        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
+        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names, can_revert).or(tool_action);
         result
     }
 }
@@ -445,6 +448,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     loop {
         let names = if chrome.menu == Some(menubar::Menu::Window) { documents.titles() } else { Vec::new() };
         let current = &mut documents.list[documents.current];
+        let can_revert = current.can_revert();
         let documents::Document { map: doc, history, camera, path, locations } = current;
         if rebuild {
             region.clear();
@@ -620,6 +624,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             &mut art,
             form.font.as_ref(),
             &names,
+            can_revert,
             doc,
             history,
             selection,
@@ -802,6 +807,14 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                         }
                         Err(e) => status = e.to_string(),
                         _ => {}
+                    }
+                }
+                Command::Revert => {
+                    if can_revert && files::confirm(&form).await {
+                        match documents.list[documents.current].revert() {
+                            Ok(()) => { status.clear(); rebuild = true; }
+                            Err(error) => status = error.to_string(),
+                        }
                     }
                 }
                 Command::FillSelection => {
