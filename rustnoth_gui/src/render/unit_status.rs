@@ -55,7 +55,7 @@ impl StatusArt {
     }
 
     pub(super) fn draw(&self, unit: &ObservedUnit, style: UnitBars, tile: Vec2, size: f32,
-                       sprite_width: f32, orb: Option<Orb>, highlighted: bool) {
+                       sprite_width: f32, orb: Option<Orb>, highlighted: bool, viewport: super::Viewport) {
         let zoom = size / ART_HEX_SIZE;
         // The original uses the sprite width on both axes unless the type supplies offsets.
         let offset = style.offset.map(|[x, y]| vec2(x as f32, y as f32))
@@ -64,6 +64,7 @@ impl StatusArt {
         let orb = orb.and_then(|orb| self.orbs.get(&orb));
         let crown = self.crown.as_ref().filter(|_| unit.can_recruit);
         for texture in [orb, crown].into_iter().flatten() {
+            if !super::visible_rect(viewport, origin, texture.size() * zoom) { continue; }
             draw_texture_ex(texture, origin.x, origin.y, WHITE, DrawTextureParams {
                 dest_size: Some(vec2(texture.width(), texture.height()) * zoom),
                 ..Default::default()
@@ -74,12 +75,12 @@ impl StatusArt {
         if unit.max_hitpoints > 0 {
             let ratio = unit.hitpoints as f32 / unit.max_hitpoints as f32;
             draw_bar(origin - vec2((5.0 * zoom).trunc(), 0.), zoom,
-                unit.max_hitpoints as f32 * style.hp_scale, ratio, hp_color(ratio), alpha);
+                unit.max_hitpoints as f32 * style.hp_scale, ratio, hp_color(ratio), alpha, viewport);
         }
         if unit.experience > 0 && unit.max_experience > 0 && let Some(major) = style.advancement {
             let ratio = unit.experience as f32 / unit.max_experience as f32;
             draw_bar(origin, zoom, unit.max_experience as f32 * style.xp_scale / style.level.max(1) as f32,
-                ratio, xp_color(unit.max_experience.saturating_sub(unit.experience), major), alpha);
+                ratio, xp_color(unit.max_experience.saturating_sub(unit.experience), major), alpha, viewport);
         }
     }
 }
@@ -102,13 +103,14 @@ pub(super) fn xp_color(remaining: i32, major: bool) -> [u8; 3] {
     thresholds[match remaining { ..=8 => 0, 9..=16 => 1, 17..=24 => 2, _ => 3 }]
 }
 
-fn draw_bar(origin: Vec2, zoom: f32, height: f32, ratio: f32, [r,g,b]: [u8; 3], alpha: u8) {
+fn draw_bar(origin: Vec2, zoom: f32, height: f32, ratio: f32, [r,g,b]: [u8; 3], alpha: u8, viewport: super::Viewport) {
     let x = origin.x + (19.0 * zoom).trunc();
     let dy = (13.0 * zoom).trunc();
     let y = origin.y + dy;
     let width = (4.0 * zoom).trunc();
     let height = (height.trunc() * zoom).trunc().min((ART_HEX_SIZE * zoom * 0.8 - dy).trunc());
     if width < 1.0 || height < 1.0 { return; }
+    if !super::visible_rect(viewport, vec2(x, y) - Vec2::ONE, vec2(width, height) + Vec2::splat(2.)) { return; }
     let unfilled = (height * (1.0 - ratio.clamp(0.0, 1.0))).trunc();
     draw_rectangle(x, y, width, height, Color::from_rgba(0, 0, 0, 80));
     draw_rectangle(x, y + unfilled, width, height - unfilled, Color::from_rgba(r, g, b, alpha));

@@ -92,7 +92,7 @@ impl Focus<'_> {
             if (i == 1 && self.occupied) == above_unit
                 && let Some(texture) = texture
             {
-                draw_centered(texture, center, size);
+                draw_centered(texture, center, size, None);
             }
         }
     }
