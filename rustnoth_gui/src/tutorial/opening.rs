@@ -74,6 +74,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let quintain = children(meet, "unit").find(|it| it.attribute("id") == Some("Quintain") && placed(it) == Some(mentor_hex))
         .ok_or("missing summoned quintain")?;
     let hint = gender_command(meet, hero, "hint_message").ok_or("missing attack instructions")?.clone();
+    let introduction = gender_command(meet, hero, "message").ok_or("missing quintain introduction")?.clone();
 
     let mut events = vec![("event".into(), intro)];
     for prestart in children(scenario, "event").filter(|event| event.attribute("name") == Some("prestart")) {
@@ -129,7 +130,8 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let reasons = super::end_turn::Reasons::read(scenario, meet);
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     let weapons = weapons::Exercise::read(scenario, hero)?;
-    let mut lesson = Lesson::new(mentor_hex, hero, hint, undo_prompt, healing, recruiting, reasons, weapons);
+    let instructions = [healing::Line::Message(introduction), healing::Line::Hint(hint)];
+    let mut lesson = Lesson::new(mentor_hex, hero, instructions, undo_prompt, healing, recruiting, reasons, weapons);
     if let Some(prompt) = gender_command(start, hero, "print").and_then(|cmd| cmd.attribute("text")) {
         lesson.select_prompt = prompt.into();
     }
@@ -165,6 +167,8 @@ mod tests {
 
     fn opening() -> Node {
         let intro = gendered("message", "Welcome Konrad", "Welcome Lisar");
+        let health = gendered("message", "_ \"Young man with $student_hp HP\"", "_ \"female^年轻的女士，你有$student_hp|点生命值\"")
+            .replace("speaker=narrator", "speaker=Delfador");
         let hint = gendered("hint_message", "Attack with Konrad", "Attack with Lisar");
         let crowns = gendered("hint_message", "Konrad wears a crown", "Lisar wears a crown");
         let villages = "[if]\n[have_unit]\nid=student\ngender=male\n[/have_unit]\n\
@@ -182,7 +186,8 @@ mod tests {
             [event]\nname=start\n{intro}\n[/event]\n\
             [event]\nid=check_undo\nname=moveto\n[if]\n[then]\n[print]\ntext=\"Use <b>u</b> to undo.\"\n[/print]\n[/then]\n[/if]\n[/event]\n\
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
-            [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[disallow_end_turn]\nreason=Strike the dummy\n[/disallow_end_turn]\n[/event]\n\
+            [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n\
+            [message]\nspeaker=student\nmessage=Fight a dummy?\n[/message]\n{health}\n{hint}\n[disallow_end_turn]\nreason=Strike the dummy\n[/disallow_end_turn]\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
             [hint_message]\nremove=yes\n[/hint_message]\n\
             [message]\nspeaker=student\nmessage=It fights back!\n[/message]\n\
@@ -209,7 +214,8 @@ mod tests {
             [units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n");
         for id in ["Fighter", "Fighteress", "Elder Mage", "Quintain", "Elvish Fighter"] {
             let moves = if id == "Quintain" { 1 } else { 6 };
-            units.push_str(&format!("[unit_type]\nid={id}\ncost=14\nhitpoints=32\nmovement={moves}\nmovement_type=foot\n\
+            let hp = if id == "Fighteress" { 35 } else { 32 };
+            units.push_str(&format!("[unit_type]\nid={id}\ncost=14\nhitpoints={hp}\nmovement={moves}\nmovement_type=foot\n\
                 [attack]\nname=sword\nrange=melee\ntype=blade\ndamage=1\nnumber=1\n[/attack]\n[/unit_type]\n"));
         }
         units.push_str("[/units]");
@@ -244,6 +250,7 @@ condition=lose
             scenario.children.push(("event".into(), select));
             let mut lesson = prepare(&mut scenario, hero).unwrap();
             assert!(lesson.healing.markers().next().is_none());
+            lesson.localize_attack_instructions(std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default());
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
             let mut bytes = Vec::new();
@@ -295,9 +302,17 @@ condition=lose
             assert_eq!(session.observation(), initial.observation());
             assert_eq!(session.tutorial_hint(), movement_hint);
             let movement = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to: dst, .. } if *dst == to)).unwrap().clone();
+            let previous_hint = session.tutorial_hint().to_owned();
             session.apply(movement).unwrap();
-            let after_move = session.history().to_vec();
             lesson.advance(&mut session);
+            assert_eq!(session.dialogue().unwrap().text, "Fight a dummy?");
+            session.dismiss_dialogue();
+            let line = session.dialogue().unwrap();
+            assert_eq!(line.speaker_type.as_deref(), Some("Elder Mage"));
+            assert_eq!(line.text, if hero == Hero::Konrad { "Young man with 32 HP" } else { "年轻的女士，你有35点生命值" });
+            assert_eq!(session.tutorial_hint(), previous_hint);
+            session.dismiss_dialogue();
+            let after_move = session.history().to_vec();
             assert_eq!(session.tutorial_hint(), hint);
             assert!(session.dialogue().is_none());
             session.dismiss_dialogue();
