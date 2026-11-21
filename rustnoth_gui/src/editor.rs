@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod minimap_buttons;
 mod palette;
 
 use crate::{
@@ -341,6 +342,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut view = render::map_observation(doc.map());
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
+    let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
     let mut camera = BoardCamera::default();
     let mut history = History::default();
@@ -462,6 +464,10 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
+        if let Err(error) = mini_buttons.draw(mini_frame, point, chrome.menu.is_none(), &mut camera,
+            &mut mini, &mut art, &assets, &mut chrome.tip) {
+            status = error.to_string();
+        }
         let mini_rect = Rect::new(mini_area.x, mini_area.y, mini_area.width, mini_area.height);
         if mini_rect.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
             let map_w = view.width as f32 * 0.75;
