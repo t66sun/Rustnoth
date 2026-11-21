@@ -283,7 +283,7 @@ impl AttackDialog {
         &self,
         menu: &mut Menu,
         assets: &AssetCatalog,
-        mut backdrop: impl FnMut(),
+        art: &BoardArt,
     ) -> Option<Action> {
         let count = self.rows.len();
         let visible = count.min(5);
@@ -294,7 +294,7 @@ impl AttackDialog {
         let mut opening = true;
         let mut last_click: Option<(usize, f64)> = None;
         loop {
-            backdrop();
+            art.surface.present();
             let scale = (screen_width() / (PANEL_WIDTH + 12.0))
                 .min(screen_height() / (height + 12.0))
                 .clamp(0.01, 1.0);
