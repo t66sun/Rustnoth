@@ -334,7 +334,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let show_objectives = session.objectives().is_some() && !walking && !dialogue_open
             && (top.command == Some(map_menus::Command::Objectives)
                 || !top.handled && render::objectives::hotkey());
-        let input_blocked = walking || dialogue_open || top.handled || show_objectives;
+        let unit_list = top.command == Some(map_menus::Command::UnitList)
+            || !walking && !dialogue_open && !top.handled && commands.contains(&map_menus::Command::UnitList)
+                && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
+        let input_blocked = walking || dialogue_open || top.handled || show_objectives || unit_list;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -342,17 +345,6 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Ok(()) => art.show_grid = !art.show_grid,
                 Err(error) => message = Some(format!("Could not save grid preference: {error}")),
             }
-        }
-        let unit_list = top.command == Some(map_menus::Command::UnitList)
-            || !input_blocked && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
-        if unit_list && let Some(view) = session.observation() {
-            if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
-                selection.select_own(at, view);
-                camera.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
-                menu = None;
-            }
-            next_frame().await;
-            continue;
         }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
@@ -422,7 +414,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
         }
         let mut ai_walk = None;
-        let computer_acted = !walking && !top.handled && !show_objectives
+        let computer_acted = !input_blocked
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
@@ -576,6 +568,15 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        if unit_list && let Some(view) = session.observation() {
+            if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
+                selection.select_own(at, view);
+                camera.center_world([at.x as f32 * 0.75 + 0.5, at.y as f32 + at.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
+                menu = None;
+            }
+            next_frame().await;
+            continue;
+        }
         if show_objectives && let Some(objectives) = session.objectives() {
             render::objectives::show(objectives, &data.title, &locale, &mut art, &data.wesnoth_root).await;
             continue;
