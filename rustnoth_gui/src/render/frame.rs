@@ -1,6 +1,7 @@
 //! Geometry and bitmaps of the default Wesnoth 1.18 battlefield theme.
 use super::*;
 mod unit_report;
+mod end_button;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -54,13 +55,21 @@ impl BattlefieldFrame {
     }
 }
 
+impl BoardArt {
+    pub(crate) fn minimap_input(&mut self, point: Vec2, camera: &mut crate::camera::BoardCamera) -> std::io::Result<bool> {
+        let frame = BattlefieldFrame::new(screen_width(), screen_height());
+        self.frame.minimap_buttons.input(frame.minimap_frame, point, camera, &mut self.minimap)
+    }
+}
+
 type Texture = Option<Texture2D>;
 
 pub(super) struct FrameArt {
     bar: Texture,
     sidebar: Texture,
     minimap: [Texture; 2],
-    buttons: [[Texture; 3]; 2],
+    minimap_buttons: crate::minimap_buttons::Buttons,
+    end_button: end_button::Art,
     reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
@@ -73,14 +82,12 @@ impl FrameArt {
     pub fn load(root: &Path) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
-        let buttons = |name: &str| ["", "-active", "-active-pressed"].map(|suffix|
-            load_texture(&root.join("images/buttons").join(format!("{name}{suffix}.png")), None)
-        );
         Self {
             bar: theme("classic/menubar.png"),
             sidebar: theme("classic/sidebar.png"),
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
-            buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
+            minimap_buttons: crate::minimap_buttons::Buttons::load(root),
+            end_button: end_button::Art::load(root),
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
@@ -134,22 +141,8 @@ fn text_in(font: &Option<Font>, text: &str, bounds: Rect, size: u16, color: Colo
     draw_text_ex(text, x, y, TextParams { font: font.as_ref(), font_size: size, font_scale: scale, color, ..Default::default() });
 }
 
-pub fn turn_button(art: &BoardArt, bounds: Rect, highlighted: bool, title: &str) {
-    let compact = bounds.w <= 80.0;
-    let variants = &art.frame.buttons[usize::from(compact)];
-    let state = if highlighted && is_mouse_button_down(MouseButton::Left) { 2 } else { usize::from(highlighted) };
-    let image = variants[state].as_ref().or(variants[0].as_ref());
-    if let Some(texture) = image {
-        draw_texture_ex(texture, bounds.x, bounds.y, WHITE, DrawTextureParams {
-            dest_size: Some(vec2(bounds.w, bounds.h)), ..Default::default()
-        });
-    } else {
-        fill(bounds, if highlighted { BUTTON_HIGHLIGHTED } else { BUTTON });
-        draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 1.0, BORDER);
-    }
-    let inset = bounds.w * 0.09;
-    let label = Rect::new(bounds.x + inset, bounds.y, bounds.w - 2.0 * inset, bounds.h);
-    text_in(&art.font, title, label, if compact { 14 } else { 18 }, TEXT, true);
+pub fn turn_button(art: &mut BoardArt, bounds: Rect, highlighted: bool, enabled: bool, title: &str) {
+    art.frame.end_button.draw(bounds, highlighted, enabled, title, &art.dialogue_font);
 }
 
 pub fn draw(
@@ -166,6 +159,8 @@ pub fn draw(
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
+        let zoom = board.map_or(72., |layout| layout.tile_size());
+        art.frame.minimap_buttons.draw(frame.minimap_frame, Some(Vec2::from(mouse_position())), zoom, art.minimap.layers);
     }
 
     if movement.menu.is_none() {
@@ -173,7 +168,9 @@ pub fn draw(
         let top = frame.minimap_frame.bottom();
         let rect = |x, y, w, h| Rect::new(left + x * s, top + y * s, w * s, h * s);
         let (x, y) = mouse_position();
-        let hovered = board.filter(|_| frame.map.contains([x, y])).and_then(|b| b.hex_at([x, y]));
+        let hovered = art.briefing_highlight.or_else(|| {
+            board.filter(|_| frame.map.contains([x, y])).and_then(|b| b.hex_at([x, y]))
+        });
         let position = hovered.or(movement.selected);
         art.frame.status.draw(rect(0.0, 0.0, 171.0, 21.0), s);
         art.frame.status.draw(rect(0.0, 19.0, 171.0, 21.0), s);

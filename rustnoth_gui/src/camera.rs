@@ -1,4 +1,5 @@
 use engine_lite::hex::Hex;
+use engine_lite::fixed_match::dialogue::DialogueFocus;
 use rustnoth_gui::layout::{BoardLayout, Viewport};
 
 const ZOOM_PER_STEP: f32 = 1.25;
@@ -13,15 +14,22 @@ pub struct BoardCamera {
     last_fit: Option<(Viewport, i32, i32)>,
     layout: Option<BoardLayout>,
     drag_position: Option<[f32; 2]>,
+    briefing_velocity: f32,
 }
 
 impl BoardCamera {
     pub fn update(&mut self, viewport: Viewport, view: &engine_lite::observation::Observation, reset: bool) {
         let opening = self.layout.is_none();
         self.fit(viewport, view.width, view.height, reset);
-        if opening && !reset && let Some(layout) = self.layout.as_mut() {
+        if opening && !reset {
             let leader = view.units.iter().find(|unit| unit.side == view.side && unit.can_recruit);
-            *layout = layout.native_scale(leader.map(|unit| unit.position));
+            self.open_at(leader.map(|unit| unit.position));
+        }
+    }
+
+    pub fn open_at(&mut self, hex: Option<Hex>) {
+        if let Some(layout) = self.layout.as_mut() {
+            *layout = layout.native_scale(hex);
         }
     }
 
@@ -84,6 +92,42 @@ impl BoardCamera {
         }
     }
 
+    /// Advance the native scripted scroll before presenting the subject's dialogue.
+    pub fn scroll_briefing(&mut self, focus: DialogueFocus, dt: f32, scroll: u8, turbo: f32) -> bool {
+        let (Some(layout), Some((area, _, _))) = (self.layout.as_mut(), self.last_fit) else { return false };
+        let [x, y] = layout.tile_origin(focus.hex);
+        let size = layout.tile_size();
+        if focus.only_if_offscreen && self.briefing_velocity == 0.0
+            && x >= area.x && y >= area.y && x + size <= area.x + area.width && y + size <= area.y + area.height
+        {
+            return false;
+        }
+        let destination = layout.panned([area.x + (area.width - size) * 0.5 - x,
+                                         area.y + (area.height - size) * 0.5 - y]);
+        let [end_x, end_y] = destination.tile_origin(focus.hex);
+        let (dx, dy) = (end_x - x, end_y - y);
+        let distance = dx.hypot(dy);
+        // display::scroll_to_xy uses the configured scroll speed, a 0.3s acceleration
+        // and a 0.4s braking interval, all scaled by turbo speed.
+        let dt = dt.min(0.2);
+        let max = f32::from(scroll) * 60.0 * turbo;
+        let brake = max * turbo / 0.4;
+        let velocity = &mut self.briefing_velocity;
+        if *velocity * *velocity > 2.0 * brake * distance {
+            *velocity = (*velocity - brake * dt).max(1.0);
+        } else {
+            *velocity = (*velocity + max * turbo * dt / 0.3).min(max);
+        }
+        let step = *velocity * dt;
+        if scroll > 99 || turbo > 2.0 || distance <= step.max(0.5) {
+            *layout = destination;
+            *velocity = 0.0;
+            return false;
+        }
+        *layout = layout.panned([dx * step / distance, dy * step / distance]);
+        true
+    }
+
     /// Center the viewport on a point in map space, expressed in tile widths and heights.
     pub fn center_world(&mut self, [x, y]: [f32; 2]) {
         if let (Some((viewport, _, _)), Some(layout)) = (self.last_fit, self.layout.as_mut()) {
@@ -126,6 +170,28 @@ impl BoardCamera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn briefing_scroll_reaches_the_subject_before_dialogue_and_preserves_zoom() {
+        let mut camera = BoardCamera::default();
+        let area = Viewport { x: 0.0, y: 27.0, width: 400.0, height: 300.0 };
+        camera.fit(area, 25, 20, false);
+        let center = [200.0, 177.0];
+        camera.scroll(center, 15.0 * WHEEL_STEP);
+        let before = camera.checkpoint().unwrap();
+        let focus = DialogueFocus { hex: Hex {x: 7, y: 8}, only_if_offscreen: false };
+        assert!(camera.scroll_briefing(focus, 0.02, 50, 1.0));
+        assert_ne!(camera.checkpoint().unwrap(), before);
+        for _ in 0..200 {
+            if !camera.scroll_briefing(focus, 0.02, 50, 1.0) { break; }
+        }
+        assert_eq!(camera.hex_at(center), Some(focus.hex));
+        assert_eq!(camera.checkpoint().unwrap()[2], before[2]);
+        let final_camera = camera.checkpoint();
+        let neighbor = DialogueFocus { hex: Hex {x: 8, y: 8}, only_if_offscreen: true };
+        assert!(!camera.scroll_briefing(neighbor, 0.02, 50, 1.0));
+        assert_eq!(camera.checkpoint(), final_camera);
+    }
 
     #[test]
     fn keeps_anchored_zoom_across_resize_and_rejects_hud_input() {

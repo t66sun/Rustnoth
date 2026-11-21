@@ -31,42 +31,31 @@ struct Animation {
 }
 
 impl Rules {
-    pub(super) fn load(&mut self, assets: &AssetCatalog, view: &Observation) {
-        self.build(assets, view, None);
-    }
-
-    pub(crate) fn load_editor(&mut self, assets: &AssetCatalog, view: &Observation, map: &engine_lite::map::ScenarioMap) {
-        self.build(assets, view, Some(map));
-    }
-
-    fn build(&mut self, assets: &AssetCatalog, view: &Observation, map: Option<&engine_lite::map::ScenarioMap>) {
-        if assets.terrain_rules().is_empty() {
-            return;
-        }
-        if map.is_none() && self.bounds == (view.width, view.height)
-            && self.known.len() == view.tiles.len()
-            && self
-                .known
-                .iter()
-                .zip(&view.tiles)
-                .all(|((at, id), tile)| *at == tile.position && id == &tile.terrain)
-        {
+    pub(super) fn load(&mut self, assets: &AssetCatalog, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) {
+        // Fog alone leaves terrain unchanged; exploration can reveal a new
+        // border neighbour and change the forest/shore rules on playable tiles.
+        let known = || view.tiles.iter().map(|t| (t.position, t.terrain.as_str()))
+            .chain(border.iter().map(|(&at, &(code, _))| (at, code)));
+        if self.bounds == (view.width, view.height)
+            && self.known.iter().map(|(at, id)| (*at, id.as_str())).eq(known()) {
             return;
         }
         self.bounds = (view.width, view.height);
-        self.known = view
-            .tiles
-            .iter()
-            .map(|t| (t.position, t.terrain.clone()))
-            .collect();
+        self.known = known().map(|(at, code)| (at, code.to_owned())).collect();
+        self.build(assets, |catalog| plan::battlefield(catalog, view, border));
+    }
+
+    pub(crate) fn load_editor(&mut self, assets: &AssetCatalog, view: &Observation, map: &engine_lite::map::ScenarioMap) {
+        self.build(assets, |catalog| plan::map_tiles(catalog, view, map));
+    }
+
+    fn build(&mut self, assets: &AssetCatalog, plan: impl FnOnce(&compile::Catalog) -> HashMap<Hex, plan::Tile>) {
+        if assets.terrain_rules().is_empty() { return; }
         let catalog = self
             .catalog
             .get_or_insert_with(|| compile::compile(assets.terrain_rules(), assets.image_roots()));
         self.tiles.clear();
-        let tiles = match map {
-            Some(map) => plan::map_tiles(catalog, view, map),
-            None => plan::build(catalog, view),
-        };
+        let tiles = plan(catalog);
         for (hex, tile) in tiles {
             let mut layers = Vec::new();
             for part in &tile.layers {
@@ -217,7 +206,7 @@ set_no_flag=base
         };
         let flags = |view: &Observation| {
             // A rule can supply connectivity flags without supplying a sprite.
-            let participating = plan::build_with_flags(&catalog, view);
+            let participating = plan::build_with_flags(&catalog, view, &Default::default());
             participating[&road].flags.clone()
         };
         let result = flags(&view);

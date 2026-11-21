@@ -1,5 +1,6 @@
 mod frame;
 mod surface;
+mod tutorial_print;
 pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::{save::save_preview, skirmish_preview};
@@ -25,6 +26,7 @@ use crate::menu::Menu;
 pub mod objectives;
 pub mod attack_dialog;
 mod dialogue;
+mod tutorial_hint;
 pub use dialogue::draw_dialogue;
 mod transitions;
 mod unit_status;
@@ -116,6 +118,7 @@ pub struct BoardArt {
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
     pub(crate) walk: walking::Walk,
+    pub(crate) briefing_highlight: Option<Hex>,
     speed: crate::display_preferences::speed::Speed,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
@@ -134,16 +137,21 @@ pub struct BoardArt {
     fog: Vec<Texture2D>,
     shroud: Option<Texture2D>,
     unreachable: Option<Texture2D>,
+    linger: Option<Texture2D>,
+    pub(super) linger_color: Option<[i32; 3]>,
     cover: Vec<(Hex, Cover)>,
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
+    tutorial_hint: tutorial_hint::Art,
+    #[cfg(windows)]
+    tutorial_print: tutorial_print::Art,
     #[cfg(windows)]
     dialogue_text: dialogue::native::Art,
 }
 
 impl BoardArt {
-    fn animation_rate(&self) -> f32 {
+    pub(crate) fn animation_rate(&self) -> f32 {
         self.speed.animation_rate(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
     }
 
@@ -218,6 +226,7 @@ impl BoardArt {
             combat_pose: None,
             moving: HashMap::new(),
             walk: walking::Walk::default(),
+            briefing_highlight: None,
             speed,
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
@@ -236,8 +245,13 @@ impl BoardArt {
             fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
             shroud: load_texture(&terrain_dir.join("void/void.png"), None),
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
+            linger: load_texture(&terrain_dir.join("darken-linger.png"), None),
+            linger_color: None,
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
+            tutorial_hint: tutorial_hint::Art::new(wesnoth_root),
+            #[cfg(windows)]
+            tutorial_print: tutorial_print::Art::default(),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
             #[cfg(windows)]
@@ -246,11 +260,11 @@ impl BoardArt {
         })
     }
 
-    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, items: Vec<(Hex, &str)>) {
+    pub fn load(&mut self, observation: &Observation, assets: &AssetCatalog, session: &rustnoth_gui::session::Session<'_>) {
         self.frame.clear_unit_report();
         self.lighting.update(observation);
         self.map_items.clear();
-        for (position, image) in items {
+        for (position, image) in session.map_item_images() {
             let unlit = image.strip_suffix("~NO_TOD_SHIFT()");
             let image = unlit.unwrap_or(image);
             let path = Path::new(image);
@@ -262,11 +276,19 @@ impl BoardArt {
                 self.map_items.push((position, texture, unlit.is_none()));
             }
         }
+        let border = session.known_border();
         self.cover = map_cover(observation);
-        self.fog_edges.update(observation, &self.cover);
+        self.cover.extend(engine_lite::map::border_positions(observation.width, observation.height).filter_map(|at| {
+            match border.get(&at) {
+                Some((_, true)) => None,
+                Some((_, false)) => Some((at, Cover::Fog)),
+                None => Some((at, Cover::Shroud)),
+            }
+        }));
+        self.fog_edges.update(observation, &border, &self.cover);
         self.transitions.load(observation, assets);
         self.minimap.load(observation, assets);
-        self.rules.load(assets, observation);
+        self.rules.load(assets, observation, &border);
         for tile in &observation.tiles {
             self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
@@ -364,8 +386,8 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w > 0.0 && bounds.h > 0.0).then_some(bounds)
 }
 
-pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str) {
-    frame::turn_button(art, bounds, highlighted, text);
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, enabled: bool, art: &mut BoardArt, text: &str) {
+    frame::turn_button(art, bounds, highlighted, enabled, text);
 }
 
 pub fn menu_area() -> Rect {
@@ -388,6 +410,7 @@ pub fn draw<T>(
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, state, observation, layout, art, &movement);
+    art.tutorial_hint.draw(movement.session.tutorial_hint(), frame.map, art.dialogue_font.as_ref());
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
@@ -487,7 +510,7 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
         let [x, y] = layout.tile_origin(hex);
         let center = vec2(x + size * 0.5, y + size * 0.5);
         let texture = match cover {
-            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x as usize + hex.y as usize) % art.fog.len()]),
+            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x + hex.y).rem_euclid(art.fog.len() as i32) as usize]),
             Cover::Fog => None,
             Cover::Shroud => art.shroud.as_ref(),
         };
@@ -528,7 +551,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let now = (get_time() * 1000.0) as u64;
     let viewport = board_viewport();
     let border_period = movement.global_time.map_or("", |t| t.id.as_str());
-    for hex in border::ring(view.width, view.height) {
+    art.lighting.flat(movement.global_time.map_or([0; 3], |period| period.color));
+    for hex in engine_lite::map::border_positions(view.width, view.height) {
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
@@ -564,7 +588,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
     if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route, viewport); }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover_art = art.hover.focus(view, layout, viewport, pointer_x, pointer_y);
+    let hover_art = art.briefing_highlight.map(|hex| art.hover.at(view, hex))
+        .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
     let origin = |at: Hex| walking.filter(|p| p.unit == Some(at)).map_or_else(
@@ -622,7 +647,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
 
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
     let (mx, my) = mouse_position();
-    let hover = layout.hex_at([mx, my]);
+    let hover = art.briefing_highlight.or_else(|| layout.hex_at([mx, my]));
     for unit in &view.units {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
@@ -666,6 +691,18 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
+    if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {
+        // LAYER_LINGER_OVERLAY is painted after unit bars, fog and shroud.
+        // Its coverage only depends on the public map dimensions.
+        art.lighting.flat(color);
+        for x in -1..=view.width {
+            for y in -1..=view.height {
+                let center = Vec2::from_array(layout.tile_origin(Hex { x, y })) + Vec2::splat(size / 2.0);
+                draw_centered(texture, center, size, Some(viewport));
+            }
+        }
+        art.lighting.flat([0; 3]);
+    }
 }
 
 fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [String; 2] {
