@@ -17,6 +17,7 @@ pub(super) enum Command {
     Quit,
     NextUnit,
     Recruit,
+    RecruitAt(Hex),
     Recall,
     Undo,
 }
@@ -28,7 +29,7 @@ impl Command {
             Self::Save => "Save Game",
             Self::Quit => "Quit to Main Menu",
             Self::NextUnit => "Next Unit",
-            Self::Recruit => "Recruit",
+            Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
             Self::Undo => "Undo",
         }
@@ -37,6 +38,7 @@ impl Command {
 #[derive(Default)]
 pub(super) struct State {
     open: Option<Group>,
+    recruit_at: Option<(Hex, Vec2)>,
     cursor: usize,
     context: Vec2,
 }
@@ -150,6 +152,17 @@ impl State {
         }
     }
 
+    pub fn open_recruit_at(&mut self, hex: Hex, pointer: Vec2, actions: &[Action]) {
+        self.recruit_at = actions.iter().any(|a| matches!(a, Action::Recruit { to, .. } if *to == hex))
+            .then_some((hex, pointer));
+    }
+
+    fn recruit_row(&self, scale: f32) -> Option<(Hex, Rect)> {
+        let (hex, pointer) = self.recruit_at?;
+        let (w, h) = (192. * scale, 27. * scale);
+        Some((hex, Rect::new(pointer.x.min(screen_width() - w), pointer.y.min(screen_height() - h), w, h)))
+    }
+
     pub fn input(&mut self, commands: &[Command]) -> Response {
         let (bounds, s, _) = geometry(screen_width(), screen_height());
         let pointer = Vec2::from(mouse_position());
@@ -160,6 +173,13 @@ impl State {
                 .map(|i| if i == 0 { Group::Menu } else { Group::Actions })
         };
         let click = is_mouse_button_pressed(MouseButton::Left);
+        if let Some((hex, row)) = self.recruit_row(s) {
+            let choose = click && row.contains(pointer) || is_key_pressed(KeyCode::Enter);
+            if choose || click || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Right) {
+                self.recruit_at = None;
+            }
+            return Response { handled: true, command: choose.then_some(Command::RecruitAt(hex)) };
+        }
         let prior = self.open;
         let mut command = None;
         if prior.is_none() && commands.contains(&Command::Undo) {
@@ -251,6 +271,12 @@ impl State {
                 },
             );
         };
+        let draw_row = |cmd: Command, r: Rect, focus: bool| {
+            let color = if focus { Color::from_rgba(52, 75, 92, 255) } else { Color::from_rgba(30, 31, 32, 252) };
+            draw_rectangle(r.x, r.y, r.w, r.h, color);
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color::from_rgba(100, 82, 52, 255));
+            text(cmd.label(), r, false, WHITE);
+        };
         for (i, (group, name)) in [(Group::Menu, "Menu"), (Group::Actions, "Actions")]
             .into_iter()
             .enumerate()
@@ -280,22 +306,27 @@ impl State {
             for (j, cmd) in items(group, commands).iter().enumerate() {
                 let r = row(r, j, s);
                 let focus = r.contains(pointer) || self.cursor == j;
-                let color = if focus {
-                    Color::from_rgba(52, 75, 92, 255)
-                } else {
-                    Color::from_rgba(30, 31, 32, 252)
-                };
-                draw_rectangle(r.x, r.y, r.w, r.h, color);
-                draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color::from_rgba(100, 82, 52, 255));
-                text(cmd.label(), r, false, WHITE);
+                draw_row(*cmd, r, focus);
             }
         }
+        if let Some((hex, r)) = self.recruit_row(s) { draw_row(Command::RecruitAt(hex), r, r.contains(pointer)); }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recruit_context_uses_the_clicked_castle_hex() {
+        let mut state = State::default();
+        let target = Hex { x: 8, y: 6 };
+        let actions = [Action::Recruit { unit_type: "Elvish Fighter".into(), to: target }];
+        state.open_recruit_at(Hex { x: 7, y: 6 }, Vec2::ZERO, &actions);
+        assert!(state.recruit_at.is_none());
+        state.open_recruit_at(target, Vec2::ZERO, &actions);
+        assert_eq!(state.recruit_at.unwrap().0, target);
+    }
     #[test]
     fn tutorial_context_menu_offers_only_the_available_undo() {
         let commands = [Command::Quit, Command::NextUnit, Command::Undo];

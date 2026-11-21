@@ -2,19 +2,19 @@ use std::error::Error;
 
 use engine_lite::{hex::{Direction, Hex}, wml::Node};
 
-use super::{Hero, Lesson, healing, put};
+use super::{Hero, Lesson, healing, recruiting, put};
 
 pub(super) fn children<'a>(node: &'a Node, tag: &'a str) -> impl Iterator<Item = &'a Node> {
     node.children.iter().filter(move |(name, _)| name == tag).map(|(_, child)| child)
 }
 
-fn node(attributes: &[(&str, &str)]) -> Node {
+pub(super) fn node(attributes: &[(&str, &str)]) -> Node {
     let mut cfg = Node::default();
     for (key, value) in attributes { put(&mut cfg, key, value); }
     cfg
 }
 
-fn placed(cfg: &Node) -> Option<Hex> {
+pub(super) fn placed(cfg: &Node) -> Option<Hex> {
     Hex::from_wml(cfg.attribute("x")?.trim().parse().ok()?, cfg.attribute("y")?.trim().parse().ok()?)
 }
 
@@ -128,10 +128,11 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     }
     events.push(("event".into(), finish));
     let healing = healing::Exercises::read(scenario, attack, hero)?;
+    let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero, undo_prompt, healing))
+    Ok(Lesson::new(mentor_hex, hero, undo_prompt, healing, recruiting))
 }
 
 #[cfg(test)]
@@ -149,12 +150,14 @@ mod tests {
     fn opening() -> Node {
         let intro = gendered("message", "Welcome Konrad", "Welcome Lisar");
         let hint = gendered("hint_message", "Attack with Konrad", "Attack with Lisar");
+        let crowns = gendered("hint_message", "Konrad wears a crown", "Lisar wears a crown");
         let villages = "[if]\n[have_unit]\nid=student\ngender=male\n[/have_unit]\n\
             [then]\n[print]\ntext=Move Konrad to a village\n[/print]\n[/then]\n\
             [else]\n[print]\ntext=Move Lisar to a village\n[/print]\n[/else]\n[/if]";
+        let keep_prompt = villages.replace("a village", "the keep");
         wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
-            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Gg,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Gg,Gg,Gg,Gg,Gg,Gg,Gg^Vh,Xv\nXv,Gg,Gg,Gg,Gg,Vh,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
-            [side]\nside=1\ncontroller=human\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
+            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Ch,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Kh,Ch,Gg,Gg,Gg,Gg,Gg^Vh,Xv\nXv,Ch,Ch,Gg,Gg,Vh,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
+            [side]\nside=1\ncontroller=human\ngold=100\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
             [side]\nside=3\ncontroller=null\nno_leader=yes\nteam_name=player\n\
             [unit]\nid=Delfador\ntype=Elder Mage\nx,y=3,2\n[/unit]\n[/side]\n\
@@ -168,7 +171,13 @@ mod tests {
             [hint_message]\nmessage=Finish your turn\n[/hint_message]\n[print]\ntext=End your turn\n[/print]\n[/event]\n\
             [event]\nname=turn 2\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
             [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
-            [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n[/event]")).unwrap()
+            [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n\
+            [message]\nspeaker=student\nmessage=I will recruit elves\nfemale_message=female^I shall recruit elves\n[/message]\n\
+            [label]\nx,y=1,2\ntext=Keep\n[/label]\n{keep_prompt}\n\
+            [event]\nname=moveto\n[filter]\nx,y=1,2\n[/filter]\n[set_recruit]\nside=1\nrecruit=Elvish Fighter\n[/set_recruit]\n\
+            [hint_message]\ncaption=Recruiting\nmessage=Right-click a castle\n[/hint_message]\n[print]\ntext=Recruit two fighters\n[/print]\n[/event]\n\
+            [event]\nname=recruit\n[filter_condition]\n[have_unit]\ntype=Elvish Fighter\ncount=2\n[/have_unit]\n[/filter_condition]\n\
+            {crowns}\n[/event]\n[/event]")).unwrap()
     }
 
     #[test]
@@ -176,9 +185,12 @@ mod tests {
         let mut units = String::from("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
             [terrain_type]\nstring=Vh\ngives_income=yes\nheals=8\nmvt_alias=Gg\n[/terrain_type]\n\
             [terrain_type]\nid=village\nstring=Gg^Vh\naliasof=Gg\ngives_income=yes\n[/terrain_type]\n\
+            [terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\nmvt_alias=Gg\n[/terrain_type]\n\
+            [terrain_type]\nstring=Ch\nrecruit_onto=yes\nmvt_alias=Gg\n[/terrain_type]\n\
             [units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n");
-        for id in ["Fighter", "Fighteress", "Elder Mage", "Quintain"] {
-            units.push_str(&format!("[unit_type]\nid={id}\nhitpoints=32\nmovement=6\nmovement_type=foot\n\
+        for id in ["Fighter", "Fighteress", "Elder Mage", "Quintain", "Elvish Fighter"] {
+            let moves = if id == "Quintain" { 1 } else { 6 };
+            units.push_str(&format!("[unit_type]\nid={id}\ncost=14\nhitpoints=32\nmovement={moves}\nmovement_type=foot\n\
                 [attack]\nname=sword\nrange=melee\ntype=blade\ndamage=1\nnumber=1\n[/attack]\n[/unit_type]\n"));
         }
         units.push_str("[/units]");
@@ -224,6 +236,7 @@ condition=lose
             assert_eq!(goals.defeat, ["Get yourself killed"]);
             session.acknowledge_objectives();
             assert!(session.legal_actions().contains(&Action::EndTurn));
+            assert!(!session.legal_actions().iter().any(|action| matches!(action, Action::Recruit { .. })));
             lesson.restrict(&mut session);
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
             let restart = || -> Result<Session<'_>, Box<dyn Error>> { Ok(Session::with_players(bundle.start_with_controllers(9, |_| unreachable!(), None, true)?, Players::Campaign)) };
@@ -295,6 +308,34 @@ condition=lose
             let recovered = healing::student_hp(&session).unwrap() - lesson.before_healing.unwrap();
             assert_eq!(session.dialogue().unwrap().text, format!("Healed {recovered}"));
             assert!((0..=8).contains(&recovered));
+            session.dismiss_dialogue();
+            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "I will recruit elves" } else { "I shall recruit elves" });
+            session.dismiss_dialogue();
+            assert!(!lesson.finished());
+            assert_eq!(lesson.recruiting.keep_prompt, format!("Move {} to the keep", if hero == Hero::Konrad { "Konrad" } else { "Lisar" }));
+            assert!(!session.legal_actions().contains(&Action::EndTurn));
+            let to_keep = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to, .. } if *to == lesson.recruiting.keep)).unwrap().clone();
+            session.apply(to_keep).unwrap();
+            lesson.advance(&mut session);
+            assert_eq!(session.dialogue().unwrap().text, "Right-click a castle");
+            session.dismiss_dialogue();
+            let gold = session.observation().unwrap().gold.unwrap();
+            for n in 1..=2 {
+                assert!(!session.legal_actions().contains(&Action::EndTurn));
+                let recruit = session.legal_actions().iter().find(|a| matches!(a, Action::Recruit { unit_type, .. } if unit_type == "Elvish Fighter")).unwrap().clone();
+                session.apply(recruit).unwrap();
+                lesson.advance(&mut session);
+                let view = session.observation().unwrap();
+                assert_eq!(view.gold, Some(gold - n * 14));
+                let fighters: Vec<_> = view.units.iter().filter(|u| u.side == 1 && u.type_id == "Elvish Fighter").collect();
+                assert_eq!(fighters.len(), n as usize);
+                assert!(fighters.iter().all(|u| u.moves_left == Some(0) && u.attacks_left == Some(0)));
+                if n == 1 { assert!(session.dialogue().is_none()); }
+            }
+            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "Konrad wears a crown" } else { "Lisar wears a crown" });
+            session.dismiss_dialogue();
+            assert!(session.legal_actions().contains(&Action::EndTurn));
+            next_turn(&mut lesson, &mut session);
             assert!(lesson.finished());
         }
     }

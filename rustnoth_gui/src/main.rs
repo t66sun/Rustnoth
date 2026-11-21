@@ -392,13 +392,17 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     menu = None;
                 }
             }
-            Some(cmd @ (map_menus::Command::Recruit | map_menus::Command::Recall)) => {
+            Some(cmd @ (map_menus::Command::Recruit | map_menus::Command::RecruitAt(_) | map_menus::Command::Recall)) => {
+                let target = match cmd {
+                    map_menus::Command::RecruitAt(hex) => Some(hex),
+                    _ => map_menus::destination(cmd, session.legal_actions(), selection.unit()),
+                };
                 if let Some(view) = session.observation()
-                    && let Some(hex) = map_menus::destination(cmd,session.legal_actions(),selection.unit()) {
+                    && let Some(hex) = target {
                     selection.clear();
                     let mut options = options_at(&selection,hex,view,session.legal_actions(),&data.assets,|id| session.recall_info(id));
                     options.retain(|option| matches!((cmd,&option.action),
-                        (map_menus::Command::Recruit,Action::Recruit{..}) | (map_menus::Command::Recall,Action::Recall{..})));
+                        (map_menus::Command::Recruit | map_menus::Command::RecruitAt(_),Action::Recruit{..}) | (map_menus::Command::Recall,Action::Recall{..})));
                     menu = menu::Menu::new(hex, options, |_|Vec::new());
                 }
             }
@@ -426,6 +430,12 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             selection.clear();
             menu = None;
             message = None;
+            let pointer = Vec2::from(mouse_position());
+            let view = render::board_viewport();
+            if data.lesson.is_some() && Rect::new(view.x, view.y, view.width, view.height).contains(pointer)
+                && let Some(hex) = camera.hex_at(pointer.to_array()) {
+                top_menu.open_recruit_at(hex, pointer, session.legal_actions());
+            }
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
@@ -596,7 +606,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             },
             |art| {
                 if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
-                    lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+                    lesson.draw_prompt(selection.unit().is_some(), art, camera.layout());
                 }
                 if session.legal_actions().contains(&Action::EndTurn) && let Some(bounds) = button {
                     let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);

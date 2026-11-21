@@ -76,6 +76,10 @@ impl Art {
             occupied: occupant.is_some(),
         })
     }
+
+    pub(super) fn draw_empty_hex(&self, hex: Hex, layout: &BoardLayout) {
+        Focus { hex, halves: &self.halves[Relation::Empty as usize], occupied: false }.draw(layout, false);
+    }
 }
 
 pub(super) struct Focus<'a> {
