@@ -15,7 +15,7 @@ mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
-mod button_canvas;
+pub(crate) mod button_canvas;
 mod scaled_art;
 mod tip_pages;
 #[cfg(windows)]
@@ -492,8 +492,9 @@ impl Art {
     }
 
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
-        let state = if pressed { 2 } else { usize::from(focused) };
-        button_canvas::draw(rect, &self.buttons[state], state);
+        use button_canvas::State;
+        let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
+        button_canvas::draw(rect, &self.buttons[state as usize], state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
