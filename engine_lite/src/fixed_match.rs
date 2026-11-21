@@ -337,6 +337,11 @@ impl<'data> FixedMatch<'data> {
         })
     }
 
+    /// Authored controllers in turn order, without exposing the referee's board.
+    pub fn side_controllers(&self) -> impl ExactSizeIterator<Item = crate::scenario_sides::SideController> + Clone + '_ {
+        self.scenario.sides.iter().map(|side| side.controller)
+    }
+
     /// Current WML objectives for the chosen side of the desktop match.
     pub fn objectives_for(&self, side: usize) -> Option<&crate::scenario_sides::ScenarioObjectives> {
         self.scenario.sides.get(side.checked_sub(1)?).map(|settings| &settings.objectives)
@@ -351,7 +356,7 @@ impl<'data> FixedMatch<'data> {
     pub fn save_victory_replay(&self) -> bool { self.replay_save && self.human_won() }
 
     fn human_won(&self) -> bool {
-        let human_won = |side: usize| self.scenario.sides[side - 1].human;
+        let human_won = |side: usize| self.scenario.sides[side - 1].controller == crate::scenario_sides::SideController::Human;
         match &self.state {
             MatchState::CampaignVictory => true,
             MatchState::Won(side) => human_won(*side),
