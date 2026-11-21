@@ -259,7 +259,7 @@ impl TitleScreen {
             }
             Command::Multiplayer => Setup::load(self.root.clone(), data.core.clone(), self.seed)?.run().await,
             Command::Help => help::show(&self.root, &data.core, art).await,
-            Command::Editor => crate::editor::run(&self.root, &data.core).await,
+            Command::Editor => crate::editor::run(&self.root, &data.core, art.locale.game("Lato")).await,
             _ => unreachable!("only game entries open a child screen"),
         }
     }
