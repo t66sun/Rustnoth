@@ -12,6 +12,8 @@ pub enum Presentation {
 #[derive(Clone, Debug)]
 pub struct DialogueLine {
     pub focus: Option<DialogueFocus>,
+    /// The visible unit whose adjacent hexes the tutorial marks during this line.
+    pub zone_center: Option<Hex>,
     pub text: String,
     pub caption: Option<String>,
     pub image: Option<String>,
@@ -39,6 +41,7 @@ enum Subject {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Message {
+    zone_unit: Option<String>,
     focus: Option<(Subject, bool)>,
     speaker: String,
     sides: Option<Vec<usize>>,
@@ -66,7 +69,7 @@ impl Message {
             v.text.contains('$') && !(k == "image" && v.text == "$unit.profile" && cfg.attribute("speaker") == Some("narrator")))
             || cfg.attributes.keys().any(|k| !matches!(k.as_str(),
                 "message" | "speaker" | "side_for" | "caption" | "image" | "image_pos" |
-                "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice"))
+                "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice" | "rustnoth_tutorial_zone_unit"))
         { return None; }
         let speaker = cfg.attribute("speaker")?;
         if speaker.is_empty() { return None; }
@@ -81,8 +84,9 @@ impl Message {
             None => None,
             _ => return None,
         };
-        Some(Self { speaker: speaker.to_owned(), sides, focus, line: DialogueLine {
-            focus: None,
+        Some(Self { speaker: speaker.to_owned(), sides, focus,
+            zone_unit: cfg.attribute("rustnoth_tutorial_zone_unit").map(str::to_owned), line: DialogueLine {
+            focus: None, zone_center: None,
             text: text.to_owned(), caption: cfg.attribute("caption").map(str::to_owned),
             image, speaker_type: None, speaker_side: None, portrait_right, mirror: bool_attribute(cfg, "mirror", false),
             second_image: cfg.attribute("second_image").map(str::to_owned),
@@ -150,23 +154,25 @@ impl FixedMatch<'_> {
             };
             Some((DialogueFocus { hex, only_if_offscreen }, owner))
         });
-        let Some((focus, owner)) = focus else {
+        let zone = message.zone_unit.and_then(|id| self.scenario.board.units()
+            .find(|(_, u)| u.id.as_ref() == Some(&id)).map(|(hex, u)| (hex, u.side)));
+        if focus.is_none() && zone.is_none() {
             if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
             return;
-        };
-        // An authored camera move must not disclose the position of a concealed unit.
-        let (shown, hidden): (Vec<_>, Vec<_>) = audience.into_iter().partition(|side| {
-            let visibility = self.effective_vision(*side).at(focus.hex);
-            match owner {
-                Some(owner) => owner == *side || visibility == Some(HexVisibility::Visible)
-                    && self.unit_visible_on_known_hex(*side, focus.hex),
-                None => matches!(visibility, Some(HexVisibility::Visible | HexVisibility::Fogged)),
-            }
-        });
-        if !hidden.is_empty() { self.presentation.push((hidden, Presentation::Dialogue(line.clone()))); }
-        if !shown.is_empty() {
-            line.focus = Some(focus);
-            self.presentation.push((shown, Presentation::Dialogue(line)));
+        }
+        for side in audience {
+            let known = |hex, owner| {
+                let visibility = self.effective_vision(side).at(hex);
+                match owner {
+                    Some(owner) => owner == side || visibility == Some(HexVisibility::Visible)
+                        && self.unit_visible_on_known_hex(side, hex),
+                    None => matches!(visibility, Some(HexVisibility::Visible | HexVisibility::Fogged)),
+                }
+            };
+            let mut shown = line.clone();
+            shown.focus = focus.filter(|(f, owner)| known(f.hex, *owner)).map(|(f, _)| f);
+            shown.zone_center = zone.filter(|(hex, owner)| known(*hex, Some(*owner))).map(|(hex, _)| hex);
+            self.presentation.push((vec![side], Presentation::Dialogue(shown)));
         }
     }
 

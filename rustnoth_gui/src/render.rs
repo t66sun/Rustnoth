@@ -127,6 +127,7 @@ pub struct BoardArt {
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D, bool)>,
+    tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
     hover: hover::Art,
     footsteps: footsteps::Art,
@@ -235,6 +236,7 @@ impl BoardArt {
             flags: BTreeMap::new(),
             periods,
             map_items: Vec::new(),
+            tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
             footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
@@ -566,6 +568,20 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
+    }
+    if let Some(center) = movement.session.dialogue().and_then(|line| line.zone_center)
+        && let Some(texture) = art.tutorial_zone_image.get_or_init(|| {
+            let path = movement.assets.resolve_image(Path::new("misc/highlight-hex.png"))?;
+            load_texture(&path, None)
+        })
+    {
+        for hex in center.neighbors().filter(|hex| view.tiles.binary_search_by_key(
+            &(hex.y, hex.x), |tile| (tile.position.y, tile.position.x)).is_ok())
+        {
+            art.lighting.item(hex);
+            let [x, y] = layout.tile_origin(hex);
+            draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
+        }
     }
     art.lighting.flat([0; 3]);
     let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
