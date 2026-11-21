@@ -31,13 +31,25 @@ fn operations(expression: &str) -> Vec<&str> {
 
 fn cut(image: &RgbaImage, left: i32, top: i32, width: u32, height: u32) -> RgbaImage {
     let mut result = RgbaImage::new(width, height);
-    imageops::overlay(&mut result, image, -i64::from(left), -i64::from(top));
+    imageops::replace(&mut result, image, -i64::from(left), -i64::from(top));
     result
 }
 
 fn mask(image: &mut RgbaImage, stencil: &RgbaImage) {
     for (pixel, alpha) in image.pixels_mut().zip(stencil.pixels()) {
         pixel[3] = pixel[3].min(alpha[3]);
+    }
+}
+
+fn apply_opacity(image: &mut RgbaImage, argument: &str) {
+    let factor = match argument.split_once('%') {
+        Some((percent, _)) => percent.trim().parse::<f32>().unwrap_or(0.0) / 100.0,
+        None => argument.trim().parse::<f32>().unwrap_or(0.0),
+    };
+    // Wesnoth's float_to_color quantizes the multiplier before color_multiply.
+    let multiplier = (factor * 256.0).clamp(0.0, 255.0) as u8;
+    for pixel in image.pixels_mut() {
+        pixel[3] = (u16::from(pixel[3]) * u16::from(multiplier) / 255) as u8;
     }
 }
 
@@ -69,21 +81,19 @@ impl Bitmaps {
                     );
                 }
                 "MASK" => {
-                    let other = self.read(catalog, arg(0))?;
-                    if data.dimensions() == other.dimensions() {
+                    let (x, y) = if args.len() == 3 { (num(1), num(2)) } else { (0, 0) };
+                    // Invalid MASK arguments discard this modifier, leaving the source in the chain.
+                    if x < 0 || y < 0 { continue; }
+                    let Some(other) = self.read(catalog, arg(0)) else { continue };
+                    if x == 0 && y == 0 && data.dimensions() == other.dimensions() {
                         mask(&mut data, &other);
+                    } else {
+                        let mut positioned = RgbaImage::new(data.width(), data.height());
+                        imageops::replace(&mut positioned, other.as_ref(), i64::from(x), i64::from(y));
+                        mask(&mut data, &positioned);
                     }
                 }
-                "O" => {
-                    let factor = arg(0)
-                        .strip_suffix('%')
-                        .and_then(|n| n.parse::<f32>().ok())
-                        .map(|p| p / 100.0)
-                        .or_else(|| arg(0).parse().ok())?;
-                    for pixel in data.pixels_mut() {
-                        pixel[3] = (f32::from(pixel[3]) * factor).clamp(0.0, 255.0) as u8;
-                    }
-                }
+                "O" => apply_opacity(&mut data, arg(0)),
                 "CS" => {
                     let offsets = [num(0), num(1), num(2)];
                     for pixel in data.pixels_mut() {
@@ -163,6 +173,35 @@ mod tests {
     use image::Rgba;
 
     #[test]
+    fn terrain_cuts_copy_rgba_bytes_and_pad_outside_the_source() {
+        let mut source = RgbaImage::new(2, 1);
+        source.put_pixel(0, 0, Rgba([123, 63, 31, 137]));
+        source.put_pixel(1, 0, Rgba([4, 5, 6, 0]));
+        let result = cut(&source, -1, 0, 3, 2);
+        assert_eq!(result.get_pixel(0, 0).0, [0; 4]);
+        assert_eq!(result.get_pixel(1, 0), source.get_pixel(0, 0));
+        assert_eq!(result.get_pixel(2, 0), source.get_pixel(1, 0));
+        assert_eq!(result.get_pixel(1, 1).0, [0; 4]);
+    }
+
+    #[test]
+    fn opacity_quantizes_the_factor_before_multiplying_each_alpha() {
+        for (argument, expected) in [
+            ("0.5", [0, 1, 127, 128]),
+            ("33.3%", [0, 1, 84, 85]),
+            ("0.65", [0, 1, 165, 166]),
+            ("150%", [0, 3, 254, 255]),
+            ("-0.1", [0; 4]),
+        ] {
+            let mut image = RgbaImage::from_fn(4, 1, |x, _| Rgba([45, 16, 9, [0, 3, 254, 255][x as usize]]));
+            apply_opacity(&mut image, argument);
+            for (pixel, alpha) in image.pixels().zip(expected) {
+                assert_eq!(pixel.0, [45, 16, 9, alpha], "{argument}");
+            }
+        }
+    }
+
+    #[test]
     fn local_water_frames_are_clipped_to_the_same_hex_as_rule_fragments() {
         let mut catalog = crate::render::rules::compile::compile(&[], &[]);
         catalog.names.push("water".into());
@@ -179,5 +218,33 @@ mod tests {
         let frame = bitmaps.pixels(&catalog, 0, None).unwrap();
         assert_eq!(frame.get_pixel(0, 0)[3], 0);
         assert_eq!(frame.get_pixel(35, 35).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn positioned_masks_clip_the_stencil_and_clear_alpha_outside_its_bounds() {
+        let file = std::env::temp_dir().join(format!("rustnoth-mask-{}.png", std::process::id()));
+        let source = RgbaImage::from_pixel(3, 2, Rgba([23, 61, 17, 120]));
+        source.save(&file).unwrap();
+        let mut catalog = crate::render::rules::compile::compile(&[], &[]);
+        catalog.files.insert("base.png".into(), file.clone());
+        let mut bitmaps = Bitmaps::default();
+        let stencil = RgbaImage::from_fn(2, 2, |x, y| {
+            Rgba([3, 2, 1, if x == y { 70 } else { 250 }])
+        });
+        bitmaps.sources.insert("stencil.png".into(), Rc::new(stencil));
+        for (arguments, expected) in [
+            ("stencil.png", [70, 120, 0, 120, 70, 0]),
+            ("stencil.png,1,1", [0, 0, 0, 0, 70, 120]),
+            ("stencil.png,2,0", [0, 0, 70, 0, 0, 120]),
+            ("stencil.png,3,0", [0; 6]),
+            ("stencil.png,-1,0", [120; 6]),
+            ("missing.png", [120; 6]),
+        ] {
+            let result = bitmaps.read(&catalog, &format!("base.png~MASK({arguments})")).unwrap();
+            for (p, alpha) in result.pixels().zip(expected) {
+                assert_eq!(p.0, [23, 61, 17, alpha], "{arguments}");
+            }
+        }
+        std::fs::remove_file(file).unwrap();
     }
 }
