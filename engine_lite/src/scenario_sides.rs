@@ -25,6 +25,9 @@ pub struct ScenarioObjectives {
     pub summary: String,
     pub victory: Vec<String>,
     pub defeat: Vec<String>,
+    /// Remaining turns captured when the visible entries were last evaluated.
+    pub victory_turns: std::collections::BTreeMap<usize, u64>,
+    pub defeat_turns: std::collections::BTreeMap<usize, u64>,
 }
 
 impl ScenarioObjectives {
