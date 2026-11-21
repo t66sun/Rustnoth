@@ -128,11 +128,12 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     }
     events.push(("event".into(), finish));
     let healing = healing::Exercises::read(scenario, attack, hero)?;
+    let reasons = super::end_turn::Reasons::read(scenario, meet);
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero, undo_prompt, healing, recruiting))
+    Ok(Lesson::new(mentor_hex, hero, undo_prompt, healing, recruiting, reasons))
 }
 
 #[cfg(test)]
@@ -161,15 +162,16 @@ mod tests {
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
             [side]\nside=3\ncontroller=null\nno_leader=yes\nteam_name=player\n\
             [unit]\nid=Delfador\ntype=Elder Mage\nx,y=3,2\n[/unit]\n[/side]\n\
+            [event]\nname=prestart\n[disallow_end_turn]\nreason=Finish moving first\n[/disallow_end_turn]\n[/event]\n\
             [event]\nname=start\n{intro}\n[/event]\n\
             [event]\nid=check_undo\nname=moveto\n[if]\n[then]\n[print]\ntext=\"Use <b>u</b> to undo.\"\n[/print]\n[/then]\n[/if]\n[/event]\n\
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
-            [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[/event]\n\
+            [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[disallow_end_turn]\nreason=Strike the dummy\n[/disallow_end_turn]\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
             [message]\nspeaker=student\nmessage=It fights back!\n[/message]\n\
             [message]\nspeaker=Delfador\nmessage=$student_hp to $($student_hp-15)\n[/message]\n\
             [hint_message]\nmessage=Finish your turn\n[/hint_message]\n[print]\ntext=End your turn\n[/print]\n[/event]\n\
-            [event]\nname=turn 2\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
+            [event]\nname=turn 2\n[disallow_end_turn]\nreason=Reach a village first\n[/disallow_end_turn]\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
             [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
             [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n\
             [message]\nspeaker=student\nmessage=I will recruit elves\nfemale_message=female^I shall recruit elves\n[/message]\n\
@@ -238,6 +240,7 @@ condition=lose
             assert!(session.legal_actions().contains(&Action::EndTurn));
             assert!(!session.legal_actions().iter().any(|action| matches!(action, Action::Recruit { .. })));
             lesson.restrict(&mut session);
+            assert_eq!(lesson.end_turn_denial(&session).unwrap().attribute("reason"), Some("Finish moving first"));
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
             let restart = || -> Result<Session<'_>, Box<dyn Error>> { Ok(Session::with_players(bundle.start_with_controllers(9, |_| unreachable!(), None, true)?, Players::Campaign)) };
             let initial = restart().unwrap();
@@ -267,6 +270,7 @@ condition=lose
             assert_eq!(session.dialogue().unwrap().text, hint);
             session.dismiss_dialogue();
             assert_eq!(lesson.undo_from(&session), None);
+            assert_eq!(lesson.end_turn_denial(&session).unwrap().attribute("reason"), Some("Strike the dummy"));
             let view = session.observation().unwrap();
             let mentor = view.units.iter().find(|u| u.type_id == "Elder Mage").unwrap();
             assert_eq!(mentor.position, if to == ne { center.neighbor(Direction::SouthEast).unwrap() } else { ne });
@@ -281,6 +285,7 @@ condition=lose
             session.dismiss_dialogue();
             assert_eq!(session.dialogue().unwrap().text, "Finish your turn");
             session.dismiss_dialogue();
+            assert!(lesson.end_turn_denial(&session).is_none());
             assert_eq!(session.legal_actions(), &[Action::EndTurn]);
             let next_turn = |lesson: &mut Lesson, session: &mut Session<'_>| {
                 session.apply(Action::EndTurn).unwrap();
@@ -298,11 +303,13 @@ condition=lose
             });
             session.dismiss_dialogue();
             assert!(!session.legal_actions().is_empty());
+            assert_eq!(lesson.end_turn_denial(&session).unwrap().attribute("reason"), Some("Reach a village first"));
             assert!(session.legal_actions().iter().all(|a| matches!(a, Action::Move {to,..} if lesson.healing.villages.contains(to))));
             session.apply(session.legal_actions()[0].clone()).unwrap();
             lesson.advance(&mut session);
             assert_eq!(session.dialogue().unwrap().text, "You captured the village");
             session.dismiss_dialogue();
+            assert!(lesson.end_turn_denial(&session).is_none());
             assert_eq!(session.legal_actions(), &[Action::EndTurn]);
             next_turn(&mut lesson, &mut session);
             let recovered = healing::student_hp(&session).unwrap() - lesson.before_healing.unwrap();
