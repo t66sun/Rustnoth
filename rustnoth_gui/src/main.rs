@@ -207,6 +207,7 @@ impl Launch {
 
 struct BoardData {
     fresh_attack_seeds: bool,
+    tutorial_award: Option<title_screen::tutorial_progress::Award>,
     source: Vec<u8>,
     core: Vec<u8>,
     restore: Option<saved_game::Restore>,    lesson: Option<tutorial::Lesson>,
@@ -241,6 +242,7 @@ impl BoardData {
                 && document.attribute("random_mode").unwrap_or_default().is_empty(),
             scenario,
             lesson: None,
+            tutorial_award: title_screen::tutorial_progress::Award::from_victory(config),
             story,
             skip_turn_confirmation,
             turn_names: turn_notice::names(config),
@@ -329,6 +331,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let notify_turn = display_preferences::turn_dialog()?;
     let mut notified = None;
     let mut end_report_shown = false;
+    // Replay playback returns above. Resumed lessons retain their original victory WML.
+    let mut tutorial_award = data.lesson.as_ref().and_then(tutorial::Lesson::victory_award).or(data.tutorial_award);
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
     // Combat plays after the action is committed. Keep the controls the viewer
@@ -515,6 +519,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session))
             .or_else(|| session.tutorial_end_turn_denial());
         let show_end = can_end || denial.is_some();
+        if campaign && session.human_won() && let Some(award) = tutorial_award.take() {
+            if let Err(e) = award.record(&data.wesnoth_root, &preference_dir) {
+                message = Some(format!("Could not record tutorial achievement: {e}"));
+            }
+        }
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let final_victory = campaign && session.final_victory_ready(end_report_shown);
         let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some() || final_victory);
