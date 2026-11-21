@@ -84,6 +84,20 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
     cover
 }
 
+pub(crate) struct GridArt([Option<Texture2D>; 2]);
+
+impl GridArt {
+    pub(crate) fn load(terrain_dir: &Path) -> Self {
+        Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
+    }
+
+    pub(crate) fn draw(&self, center: Vec2, size: f32) {
+        for grid in self.0.iter().flatten() {
+            draw_centered(grid, center, size);
+        }
+    }
+}
+
 pub struct BoardArt {
     frame: FrameArt,
     minimap: minimap::Art,
@@ -93,7 +107,8 @@ pub struct BoardArt {
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
-    border_background: Option<Texture2D>,    grid: [Option<Texture2D>; 2],
+    border_background: Option<Texture2D>,
+    grid: GridArt,
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
@@ -172,7 +187,8 @@ impl BoardArt {
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
-            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),            grid: ["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)),
+            border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
+            grid: GridArt::load(&terrain_dir),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             standing: HashMap::new(),
@@ -407,7 +423,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             art.rules.draw(tile.position, center, size, false, tod, now);
             if art.show_grid {
                 if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                for grid in art.grid.iter().flatten() { draw_centered(grid, center, size); }
+                art.grid.draw(center, size);
             }
         }
         if let Some(owner) = tile.village_owner {
