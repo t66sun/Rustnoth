@@ -1,6 +1,8 @@
 //! Campaign selection using the artwork and two-pane layout of campaign_dialog.cfg.
 #[path = "campaign_difficulty.rs"]
 mod difficulty;
+#[path = "campaign_combat_menu.rs"]
+pub(super) mod combat;
 #[path = "campaign_sort.rs"]
 mod sort;
 #[path = "campaign_layout.rs"]
@@ -81,6 +83,7 @@ pub(super) struct Selector<'a> {
     last_click: Option<(usize, f64)>,
     art: Art,
     difficulty_menu: difficulty::Menu<'a>,
+    combat_menu: combat::Menu,
 }
 
 impl<'a> Selector<'a> {
@@ -94,8 +97,11 @@ impl<'a> Selector<'a> {
             query: String::new(), editing: false, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
             difficulty_menu: difficulty::Menu::default(),
+            combat_menu: combat::Menu::default(),
         })
     }
+
+    pub(super) fn combat_mode(&self) -> combat::Mode { self.combat_menu.mode() }
 
     pub(super) async fn difficulty(&mut self, campaign: &Node) -> Option<String> {
         if let Some(define) = self.difficulty_menu.define_for(campaign) {
@@ -120,7 +126,7 @@ impl<'a> Selector<'a> {
         let toggle = Rect::new(panel.x, bottom, 120.0, 38.0);
         let (mx, my) = mouse_position();
         let pointer = vec2(mx/scale, my/scale);
-        let modal = self.difficulty_menu.is_open();
+        let modal = self.difficulty_menu.is_open() || self.combat_menu.is_open();
         let key = |code| !modal && is_key_pressed(code);
         let click = !modal && is_mouse_button_pressed(MouseButton::Left);
         if key(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
@@ -300,7 +306,11 @@ impl<'a> Selector<'a> {
             self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
             let box_width = (window.w * 0.233).floor();
             let control = Rect::new(window.right()-19.0-box_width, window.bottom()-98.0, box_width, 30.0);
-            self.difficulty_menu.draw(&mut self.art, control, pointer, !self.editing, vec2(w, h));
+            let combat = Rect::new(window.x + (window.w * 0.428).floor(), control.y, box_width, control.h);
+            let combat_open = self.combat_menu.is_open();
+            self.difficulty_menu.draw(&mut self.art, control, if combat_open { vec2(-1.,-1.) } else { pointer },
+                !self.editing && !combat_open, vec2(w, h));
+            self.combat_menu.draw(&mut self.art, combat, pointer, vec2(w, h), !self.difficulty_menu.is_open());
         }
         action
     }

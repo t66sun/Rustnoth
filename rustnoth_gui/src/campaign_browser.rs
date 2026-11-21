@@ -1,5 +1,6 @@
 #[path = "campaign_selector.rs"]
 mod selector;
+pub(crate) use selector::combat::Mode as CombatMode;
 #[path = "installed_campaigns.rs"]
 mod installed;
 use std::{error::Error, fs, path::{Path, PathBuf}};
@@ -17,6 +18,7 @@ pub(super) struct Browser {
     root: PathBuf,
     seed: u32,
     installed: std::collections::HashMap<String, installed::Campaign>,
+    mode: Option<CombatMode>,
 }
 
 impl Browser {
@@ -27,16 +29,17 @@ impl Browser {
         if campaign::scenarios(&campaign).next().is_none() {
             return Err("campaign contains no scenarios with an ID".into());
         }
-        Ok(Self { campaign, maps, core, root, seed, installed: Default::default() })
+        Ok(Self { campaign, maps, core, root, seed, installed: Default::default(), mode: None })
     }
 
     pub(super) fn installed(file: &Path, folders: &Path, core: Vec<u8>, root: PathBuf, seed: u32) -> Result<Self, Box<dyn Error>> {
         let (campaign, installed) = installed::catalog(wml::parse(read_file(file)?)?, folders)?;
-        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed })
+        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed, mode: None })
     }
 
     fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
         let mut selected = campaign::select(&self.campaign, id, |file| fs::read_to_string(self.maps.join(file)))?;
+        if let Some(mode) = self.mode { mode.classify(&mut selected); }
         for (_, scenario) in selected.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
             gold.transfer_to(scenario);
         }
@@ -49,6 +52,7 @@ impl Browser {
         let descriptor = self.campaign.children.iter().find(|(tag, cfg)| tag == "campaign" && cfg.attribute("first_scenario") == Some(id))
             .map(|(_, cfg)| cfg).ok_or("Missing campaign descriptor")?;
         let Some(difficulty) = selector.difficulty(descriptor).await else { return Ok(()) };
+        let mode = selector.combat_mode();
         let (root, selected) = (self.root.clone(), entry.clone());
         let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
         while !worker.is_finished() {
@@ -58,7 +62,8 @@ impl Browser {
         }
         let file = worker.join().map_err(|_| "Campaign preparation stopped")??;
         let maps = self.root.join("data/campaigns").join(&entry.folder).join("maps");
-        let game = Self::load(&file, maps, self.core.clone(), self.root.clone(), self.seed)?;
+        let mut game = Self::load(&file, maps, self.core.clone(), self.root.clone(), self.seed)?;
+        game.mode = Some(mode);
         game.play_from(id.into()).await
     }
 
@@ -87,7 +92,7 @@ impl Browser {
                     let result = if let Some(entry) = self.installed.get(id) {
                         if id == crate::tutorial::FIRST_SCENARIO {
                             next_frame().await;
-                            crate::tutorial::run(&self.root, &self.core, self.seed).await
+                            crate::tutorial::run(&self.root, &self.core, self.seed, selector.combat_mode()).await
                         } else {
                             self.play_installed(entry, id, &mut selector).await
                         }
@@ -130,12 +135,14 @@ mod tests {
             [event]\nname=side 1 turn end\n[endlevel]\nnext_scenario=third\ncarryover_percentage=40\ncarryover_add=yes\nbonus=no\n[result]\nside=1\nbonus=yes\ncarryover_percentage=50\n[/result]\n[/endlevel]\n[/event]\n[/scenario]\n\
             [scenario]\nid=third\nname=The Harbor\nmap_file=river.map\n[side]\nid=guards\ntype=Captain\ngold=5\n[/side]\n[side]\nid=hero\nsave_id=scouts\ntype=Captain\ngold=20\n[/side]\n[event]\nname=prestart\n[gold]\nside=2\namount=2\n[/gold]\n[/event]\n[/scenario]").unwrap();
         fs::write(maps.join("river.map"), "Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Vh,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv").unwrap();
-        let browser = Browser::load(&file, maps, b"[terrain_type]\nstring=Vh\ngives_income=yes\n[/terrain_type]\n[units]\n[/units]".to_vec(), root.clone(), 9).unwrap();
+        let mut browser = Browser::load(&file, maps, b"[terrain_type]\nstring=Vh\ngives_income=yes\n[/terrain_type]\n[units]\n[/units]".to_vec(), root.clone(), 9).unwrap();
+        browser.mode = Some(CombatMode::Predictable);
         assert_eq!(campaign::scenarios(&browser.campaign).collect::<Vec<_>>(),
             [("first", ""), ("second", "River Crossing"), ("third", "The Harbor")]);
         let mut route = CampaignCarryover::default();
         assert!(browser.board("first", &mut route.gold).is_err());
         let board = browser.board("second", &mut route.gold).unwrap();
+        assert_eq!(wml::parse(&board.source).unwrap().attribute("random_mode"), Some("deterministic"));
         assert_eq!(board.title, "River Crossing");
         assert_eq!(board.story.len(), 2);
         assert_eq!(board.story[0].text, "Winter & snow.");
@@ -148,6 +155,7 @@ mod tests {
         session.apply(engine_lite::fixed_match::Action::EndTurn).unwrap();
         session.store_campaign_survivors(&mut route);
         let successor = browser.board(session.next_scenario().unwrap(), &mut route.gold).unwrap();
+        assert_eq!(wml::parse(&successor.source).unwrap().attribute("rustnoth_interactive_rng"), Some("yes"));
         assert_eq!(successor.title, "The Harbor");
         let mut next = successor.scenario.start_campaign(successor.seed, |_| unreachable!(), Some(&mut route)).unwrap();
         let snapshot = next.audit_snapshot();
