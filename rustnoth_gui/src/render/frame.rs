@@ -151,8 +151,12 @@ pub fn draw(
 ) {
     fill(frame.bar, PANEL);
     fill(frame.sidebar, PANEL);
-    paint(&art.frame.bar, frame.bar);
-    paint(&art.frame.sidebar, frame.sidebar);
+    // Classic theme panels repeat the installed bitmap and clip the last tile.
+    for (texture, bounds) in [(&art.frame.bar, frame.bar), (&art.frame.sidebar, frame.sidebar)] {
+        if let Some(texture) = texture {
+            crate::title_screen::tiled(bounds, texture);
+        }
+    }
     let s = frame.scale;
     if s <= 0.0 { return; }
     draw_reports(frame, state, observation, movement.session.economy(), art);
