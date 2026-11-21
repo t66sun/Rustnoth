@@ -33,6 +33,8 @@ mod amla_tests;
 mod illumination;
 mod teleport;
 pub mod walk;
+#[cfg(test)]
+mod tutorial_bridge_tests;
 mod vision;
 mod recruit;
 mod plague;
@@ -231,6 +233,11 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::Dialogue(message) => {
                     self.queue_dialogue(message, speaker_ids);
+                    continue;
+                }
+                BoardChange::MoveUnit { id, destination } => {
+                    self.scenario.board.move_event_unit(&id, destination, |kind, terrain|
+                        self.rules.walking_cost(kind, terrain).is_some()).map_err(MatchError::OpeningUnit)?;
                     continue;
                 }
                 BoardChange::ShowObjectives(sides) => {

@@ -43,7 +43,7 @@ enum EventAction {
     Board(BoardChange),
     Item(ItemChange),
     Variable(ScalarChange),
-    If { tests: Vec<Comparison>, units: Vec<HaveUnit>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
+    If { tests: Vec<Comparison>, units: Vec<(HaveUnit, bool)>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +66,7 @@ pub(crate) enum BoardChange {
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool, report: bool, replay_save: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
+    MoveUnit { id: String, destination: Hex },
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
 }
@@ -339,7 +340,7 @@ impl EventAction {
             }
             Self::If { tests, units, on_match, otherwise } => {
                 let matched = tests.iter().all(|test| test.matches(variables))
-                    && units.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
+                    && units.iter().all(|(test, expected)| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()) == *expected);
                 let branch = if matched { on_match } else { otherwise };
                 for change in branch { change.apply(state, items, variables, primary, board, active_side); }
                 return;
@@ -401,6 +402,12 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "move_unit" if cfg.children.is_empty() && cfg.attributes.len() == 3 => {
+                let id = cfg.attribute("id")?;
+                if id.is_empty() || id.contains([',', '$', '*', '?']) { return None; }
+                let destination = Hex::from_wml(cfg.attribute("to_x")?.parse().ok()?, cfg.attribute("to_y")?.parse().ok()?)?;
+                EventAction::Board(BoardChange::MoveUnit { id: id.to_owned(), destination })
+            }
             "rustnoth_tutorial_print" => EventAction::Board(BoardChange::TutorialPrint(cfg.clone())),
             "rustnoth_tutorial_disallow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(Some(cfg.clone()))),
             "rustnoth_tutorial_allow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(None)),
@@ -418,7 +425,12 @@ fn read_actions<'a>(
                 for (tag, child) in &cfg.children {
                     match tag.as_str() {
                         "variable" => tests.push(Comparison::read(child)?),
-                        "have_unit" => units.push(HaveUnit::read(child)?),
+                        "have_unit" => units.push((HaveUnit::read(child)?, true)),
+                        "not" if child.attributes.is_empty() => {
+                            let [(predicate, unit)] = child.children.as_slice() else { return None };
+                            if predicate != "have_unit" { return None; }
+                            units.push((HaveUnit::read(unit)?, false));
+                        }
                         "then" | "else" if child.attributes.is_empty() => {
                             has_branch = true;
                             let branch = if tag == "then" { &mut on_match } else { &mut otherwise };
