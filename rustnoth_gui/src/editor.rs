@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod new_map_dialog;
 mod documents;
 mod menubar;
 mod locations;
@@ -228,8 +229,7 @@ impl Command {
 
 fn new_map() -> EditableMap {
     // Wesnoth's default context is 44 by 33 playable hexes with one stored border.
-    let row = ["Gg"; 44 + 2].join(", ");
-    EditableMap::parse(vec![row; 33 + 2].join("\n") + "\n").expect("valid blank grass map")
+    new_map_dialog::make(44, 33, "Gg").expect("valid blank grass map")
 }
 
 const SIDEBAR_WIDTH: f32 = 181.0;
@@ -808,9 +808,13 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     }
                 }
                 Command::New => {
-                    documents.new_map();
-                    rebuild = true;
-                    status.clear();
+                    if let Some([width,height]) = new_map_dialog::show(root, &assets, &mut art,
+                        form.font.as_ref(), doc).await? {
+                        let map = new_map_dialog::make(width, height, &palette.brushes[palette.bg].code)?;
+                        documents.new_map(map);
+                        rebuild = true;
+                        status.clear();
+                    }
                 }
                 Command::Close => {
                     if !doc.dirty() || files::confirm(&form).await {
