@@ -11,10 +11,13 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
+pub(crate) mod button_canvas;
+mod scaled_art;
 mod tip_pages;
 #[cfg(windows)]
 pub(crate) mod tip_pango;
@@ -284,8 +287,8 @@ struct Art {
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     languages: Vec<locale::Language>,
-    background: Texture2D,
-    map: Texture2D,
+    background: scaled_art::Artwork,
+    map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
     buttons: [Texture2D; 3],
@@ -319,10 +322,28 @@ fn logo_bounds(view_width: f32, size: Vec2) -> Rect {
 }
 
 fn panel(rect: Rect) {
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::from_rgba(0, 0, 0, 137));
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, Color::from_rgba(16, 22, 35, 255));
-    draw_rectangle_lines(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0, 1.0,
-        Color::from_rgba(114, 79, 46, 255));
+    draw_rectangle(rect.x + 3., rect.y + 3., rect.w - 6., rect.h - 6., Color::from_rgba(0, 0, 0, 137));
+    for (inset, thickness, rgba) in [(0., 3., [16,22,35,255]), (1., 1., [114,79,46,255])] {
+        let [r,g,b,a] = rgba;
+        let color = Color::from_rgba(r,g,b,a);
+        for band in panel_rim(rect, inset, thickness) {
+            draw_rectangle(band.x, band.y, band.w, band.h, color);
+        }
+    }
+}
+
+// SDL draws each successive GUI2 rectangle inside the preceding one.
+fn panel_rim(rect: Rect, inset: f32, thickness: f32) -> [Rect; 4] {
+    let x = rect.x + inset;
+    let y = rect.y + inset;
+    let w = rect.w - 2. * inset;
+    let h = rect.h - 2. * inset;
+    [
+        Rect::new(x, y, w, thickness),
+        Rect::new(x, y + h - thickness, w, thickness),
+        Rect::new(x, y + thickness, thickness, h - 2. * thickness),
+        Rect::new(x + w - thickness, y + thickness, thickness, h - 2. * thickness),
+    ]
 }
 
 fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
@@ -333,15 +354,14 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     Ok(texture)
 }
 
-fn localized_map(root: &Path, locale: &locale::Locale) -> Result<Texture2D, Box<dyn Error>> {
+fn localized_map(root: &Path, locale: &locale::Locale) -> Result<scaled_art::Artwork, Box<dyn Error>> {
     let (base, overlay) = locale.title_map(root);
-    let Some(overlay) = overlay else { return load_texture(root, &base) };
     let mut pixels = crate::artwork::rgba(&read_file(&root.join(base))?)?;
-    let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
-    ::image::imageops::overlay(&mut pixels, &names, 0, 0);
-    let texture = Texture2D::from_rgba8(pixels.width().try_into()?, pixels.height().try_into()?, pixels.as_raw());
-    texture.set_filter(FilterMode::Linear);
-    Ok(texture)
+    if let Some(overlay) = overlay {
+        let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
+        ::image::imageops::overlay(&mut pixels, &names, 0, 0);
+    }
+    Ok(scaled_art::Artwork::new(pixels))
 }
 
 fn load_font(root:&Path,name:&str)->Option<Font> {
@@ -363,7 +383,7 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 }
 
 impl Art {
-    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:scaled_art::Artwork) {
         *self.blurred_panels.get_mut() = None;
         self.map = map;
         self.logo = logo;
@@ -407,7 +427,8 @@ impl Art {
             languages: locale::list(root).unwrap_or_default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
-            background: texture("data/core/images/maps/background.webp")?,
+            background: scaled_art::Artwork::new(crate::artwork::rgba(
+                &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
             buttons: [texture("images/buttons/button_normal/background.png")?,
@@ -420,8 +441,8 @@ impl Art {
     fn draw_background(&self, w: f32, h: f32) {
         clear_background(BLACK);
         let view = vec2(w, h);
-        image(Rect::new(0.0, 0.0, w, h), &self.background);
-        image(fit_map(view, self.map.size()), &self.map);
+        self.background.draw(Rect::new(0.0, 0.0, w, h), view);
+        self.map.draw(fit_map(view, self.map.size()), view);
         for texture in [&self.logo_shadow, &self.logo] {
             image(logo_bounds(w, texture.size()), texture);
         }
@@ -472,20 +493,9 @@ impl Art {
     }
 
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
-        let Rect { x, y, w, h } = rect;
-        let state = if pressed { 2 } else { usize::from(focused) };
-        let dark = Color::from_rgba(1, 10, 16, 255);
-        let light_gold = Color::from_rgba(162, 127, 68, 255);
-        let dark_gold = Color::from_rgba(114, 79, 46, 255);
-        let highlight = [Color::from_rgba(21, 79, 109, 255), Color::from_rgba(12, 108, 157, 255), dark][state];
-        draw_rectangle(x, y + 1.0, w - 1.0, h - 1.0, dark);
-        image(Rect::new(x + 2.0, y + 2.0, w - 4.0, h - 4.0), &self.buttons[state]);
-        draw_rectangle(x + 2.0, y, w - 3.0, 1.0, light_gold);
-        draw_rectangle(x + w - 1.0, y + 1.0, 1.0, h - 3.0, light_gold);
-        draw_rectangle(x + 1.0, y + 1.0, 1.0, h - 3.0, dark_gold);
-        draw_rectangle(x + 2.0, y + h - 2.0, w - 3.0, 1.0, dark_gold);
-        draw_rectangle(x + 3.0, y + 2.0, w - 5.0, 1.0, highlight);
-        draw_rectangle(x + w - 3.0, y + 2.0, 1.0, h - 5.0, highlight);
+        use button_canvas::State;
+        let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
+        button_canvas::draw(rect, &self.buttons[state as usize], state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
@@ -568,6 +578,19 @@ mod tests {
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
         assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
         assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+    }
+
+    #[test]
+    fn title_tip_panel_draws_its_gold_edge_one_full_pixel_inside() {
+        let panel = Rect::new(73., 467., 710., 258.);
+        let dark = panel_rim(panel, 0., 3.);
+        let gold = panel_rim(panel, 1., 1.);
+        let hits = |bands: &[Rect; 4], x| bands.iter().any(|r| r.contains(vec2(x, 600.5)));
+        assert!(!hits(&dark, 72.5));
+        assert!(hits(&dark, 73.5) && hits(&dark, 75.5));
+        assert!(!hits(&dark, 76.5));
+        assert!(hits(&gold, 74.5) && hits(&gold, 781.5));
+        assert!(!hits(&gold, 73.5) && !hits(&gold, 75.5));
     }
 
     #[test]
