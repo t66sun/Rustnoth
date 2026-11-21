@@ -12,16 +12,20 @@ from pathlib import Path
 import numpy as np
 
 
-def check(path):
+def read_capture(path):
     with Path(path).open("rb") as stream:
         width, height = struct.unpack("<II", stream.read(8))
     dtype = np.dtype([("ticks", "<i8"), ("rgb", "u1", (height, width, 3))])
-    recording = np.memmap(path, mode="r", offset=8, dtype=dtype)
+    return np.memmap(path, mode="r", offset=8, dtype=dtype)
+
+
+def check(path):
+    recording = read_capture(path)
     assert len(recording) >= 30, "sample at least 30 presented frames"
     ticks = recording["ticks"]
     assert ticks[-1] - ticks[0] >= 20_000_000 and (np.diff(ticks) > 0).all(), "capture two seconds or more"
-    sidebar_x = round(width * 1018 / 1200)
     frames = recording["rgb"]
+    sidebar_x = round(frames.shape[2] * 1018 / 1200)
     reference = frames[0].astype(np.int16)
     assert reference.std() > 10 and reference[:, sidebar_x:].std() > 10, "battlefield and sidebar must be visible"
     for index, frame in enumerate(frames[1:], 1):

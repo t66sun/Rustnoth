@@ -65,13 +65,15 @@ impl Lesson {
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn draw_prompt(&self, selected: bool, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
-        let font = art.font.as_ref();
+    pub(super) fn draw_labels(&self, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
         if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird)
             && let Some(layout) = layout {
             art.draw_keep_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep);
         }
-        let prompt: &str = match self.step {
+    }
+
+    pub(super) fn prompt(&self, selected: bool) -> Option<&str> {
+        Some(match self.step {
             Step::Approach if self.show_undo_prompt => &self.undo_prompt,
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
@@ -80,14 +82,8 @@ impl Lesson {
             Step::ToVillage => &self.healing.village_prompt,
             Step::ToKeep => &self.recruiting.keep_prompt,
             Step::Recruit => &self.recruiting.recruit_prompt,
-            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Complete => return,
-        };
-        let view = render::board_viewport();
-        let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
-        let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
-        let y = view.y + view.height - 24.0;
-        dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
-        dialog::text(font, &prompt, x, y, 18, WHITE);
+            Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::Complete => return None,
+        })
     }
 
     pub(super) fn restrict(&self, session: &mut Session<'_>) {
@@ -191,6 +187,15 @@ impl Lesson {
         self.show_undo_prompt = false;
         Ok(Some(from))
     }
+}
+
+pub(super) fn draw_prompt(prompt: &str, font: Option<&Font>) {
+    let view = render::board_viewport();
+    let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
+    let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
+    let y = view.y + view.height - 24.0;
+    dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
+    dialog::text(font, &prompt, x, y, 18, WHITE);
 }
 
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {
