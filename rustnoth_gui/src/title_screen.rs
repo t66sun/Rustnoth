@@ -15,6 +15,7 @@ mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
+mod button_canvas;
 mod scaled_art;
 mod tip_pages;
 use tip_pages::TipPages;
@@ -466,20 +467,8 @@ impl Art {
     }
 
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
-        let Rect { x, y, w, h } = rect;
         let state = if pressed { 2 } else { usize::from(focused) };
-        let dark = Color::from_rgba(1, 10, 16, 255);
-        let light_gold = Color::from_rgba(162, 127, 68, 255);
-        let dark_gold = Color::from_rgba(114, 79, 46, 255);
-        let highlight = [Color::from_rgba(21, 79, 109, 255), Color::from_rgba(12, 108, 157, 255), dark][state];
-        draw_rectangle(x, y + 1.0, w - 1.0, h - 1.0, dark);
-        image(Rect::new(x + 2.0, y + 2.0, w - 4.0, h - 4.0), &self.buttons[state]);
-        draw_rectangle(x + 2.0, y, w - 3.0, 1.0, light_gold);
-        draw_rectangle(x + w - 1.0, y + 1.0, 1.0, h - 3.0, light_gold);
-        draw_rectangle(x + 1.0, y + 1.0, 1.0, h - 3.0, dark_gold);
-        draw_rectangle(x + 2.0, y + h - 2.0, w - 3.0, 1.0, dark_gold);
-        draw_rectangle(x + 3.0, y + 2.0, w - 5.0, 1.0, highlight);
-        draw_rectangle(x + w - 3.0, y + 2.0, 1.0, h - 5.0, highlight);
+        button_canvas::draw(rect, &self.buttons[state], state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
