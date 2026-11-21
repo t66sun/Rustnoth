@@ -2,6 +2,8 @@
 mod files;
 mod fill;
 mod palette;
+mod toolbar;
+mod shapes;
 
 use crate::{
     camera::BoardCamera,
@@ -108,15 +110,17 @@ impl History {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Command {
     New,
     Open,
     Save,
+    Close,
     Exit,
     Undo,
     Redo,
     FillSelection,
+    ToggleGrid,
 }
 
 impl Command {
@@ -125,10 +129,12 @@ impl Command {
             Self::New => "New Map",
             Self::Open => "Open Map…",
             Self::Save => "Save Map As…",
+            Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
+            Self::ToggleGrid => "Toggle Grid",
         }
     }
 }
@@ -137,6 +143,13 @@ fn new_map() -> EditableMap {
     // Wesnoth's default context is 44 by 33 playable hexes with one stored border.
     let row = ["Gg"; 44 + 2].join(", ");
     EditableMap::parse(vec![row; 33 + 2].join("\n") + "\n").expect("valid blank grass map")
+}
+
+const SIDEBAR_WIDTH: f32 = 181.0;
+
+fn map_viewport(width: f32, height: f32) -> Viewport {
+    // The classic editor's main_map starts below the two toolbars. Tool hints overlay the map.
+    Viewport { x: 0.0, y: 68.0, width: width - SIDEBAR_WIDTH, height: height - 68.0 }
 }
 
 fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observation, fit: bool) {
@@ -150,6 +163,7 @@ fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observa
 
 fn draw_terrain(
     rules: &EditorTerrain,
+    grid: Option<&render::GridArt>,
     view: &Observation,
     layout: &BoardLayout,
     area: Viewport,
@@ -173,14 +187,18 @@ fn draw_terrain(
                 for x in (lo_x..=hi_x).filter(|x| x.rem_euclid(2) == odd) {
                     let hex = Hex { x, y };
                     let [left, top] = layout.tile_origin(hex);
+                    let center = vec2(left + size * 0.5, top + size * 0.5);
                     rules.draw(
                         hex,
-                        vec2(left + size * 0.5, top + size * 0.5),
+                        center,
                         size,
                         front,
                         "",
                         ms,
                     );
+                    if !front && let Some(grid) = grid {
+                        grid.draw(center, size);
+                    }
                     if front && history.selected.contains(&hex) {
                         art.image(assets, "editor/selection-overlay.png", Rect::new(left, top, size, size));
                     }
@@ -245,8 +263,10 @@ fn text_button(
 }
 
 struct Chrome {
+    show_grid: bool,
     menu: Option<bool>,
     tip: Option<&'static str>,
+    toolbar: toolbar::Toolbar,
 }
 
 impl Chrome {
@@ -260,6 +280,8 @@ impl Chrome {
         art: &mut Art,
         font: Option<&Font>,
         name: &str,
+        doc: &EditableMap,
+        history: &History,
     ) -> Option<Command> {
         self.tip = None;
         let click = is_mouse_button_pressed(MouseButton::Left);
@@ -273,8 +295,10 @@ impl Chrome {
         art.image(
             assets,
             "themes/editor/classic/toolbar.png",
-            Rect::new(0.0, 27.0, w - side, 40.0),
+            Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
+        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+            Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
         art.image(
             assets,
             "themes/editor/classic/menubar_rightside.png",
@@ -300,31 +324,13 @@ impl Chrome {
                 triggered = true;
             }
         }
-        let mut result = None;
-        for (i, (key, cmd)) in [
-            ("editor-map-load_30", Command::Open),
-            ("editor-map-save_30", Command::Save),
-            ("undo_30", Command::Undo),
-            ("redo_30", Command::Redo),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let r = Rect::new(7.0 + i as f32 * 34.0, 31.0, 30.0, 30.0);
-            art.image(assets, "buttons/button_square/button_square_30.png", r);
-            art.image(assets, &format!("icons/action/{key}.png"), r);
-            if r.contains(point) {
-                self.tip = Some(cmd.label());
-                if click && self.menu.is_none() {
-                    result = Some(cmd);
-                }
-            }
-        }
+        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
+            assets, art, &mut self.tip);
         let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
         dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
         if let Some(file) = self.menu {
             let commands: &[Command] = if file {
-                &[Command::New, Command::Open, Command::Save, Command::Exit]
+                &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit]
             } else {
                 &[Command::Undo, Command::Redo, Command::FillSelection]
             };
@@ -359,10 +365,41 @@ impl Chrome {
     }
 }
 
+// MINIMAP_THEME and its compact 1024x600 / 800x600 variant.
+fn minimap_panel(w: f32, h: f32) -> (Rect, Viewport, &'static str) {
+    let wide = w >= 1024.0 && h >= 768.0;
+    let frame = Rect::new(w - 181.0, 6.0, 181.0, if wide { 255.0 } else { 170.0 });
+    let (left, top, height, image) = if wide {
+        (13.0, 5.0, 212.0, "themes/classic/minimap.png")
+    } else {
+        (43.0, 4.0, 158.0, "themes/classic/minimap-800.png")
+    };
+    (frame, Viewport { x: frame.x + left, y: frame.y + top, width: frame.w - left - 8.0, height }, image)
+}
+
+fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
+    // getMinimap starts at (0, 0), including the last column and row of
+    // border terrain whose symbol images overlap the edge of the canvas.
+    let (w, h) = (view.width, view.height);
+    let edge = (0..h).map(|y| Hex { x: w, y })
+        .chain((0..=w).map(|x| Hex { x, y: h }));
+    for position in edge {
+        if let Some(terrain) = doc.map().terrain_at(position) {
+            view.tiles.push(engine_lite::observation::ObservedTile {
+                position, terrain: terrain.into(), visible: true,
+                village_owner: None, time_color: [0; 3],
+            });
+        }
+    }
+    view.tiles.sort_unstable_by_key(|tile| (tile.position.y, tile.position.x));
+}
+
 pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let assets = AssetCatalog::parse(root, core, b"")?;
-    let mut palette = Palette::new(&wml::parse(core)?)?;
+    let cfg = wml::parse(core)?;
+    let mut palette = Palette::load(&cfg, root)?;
+    let mut shapes = shapes::Shapes::load(root, &cfg)?;
     let mut art = Art::new();
     let mut doc = new_map();
     let mut view = render::map_observation(doc.map());
@@ -372,9 +409,12 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut camera = BoardCamera::default();
     let mut history = History::default();
     let mut chrome = Chrome {
+        show_grid: crate::display_preferences::grid()?,
         menu: None,
         tip: None,
+        toolbar: Default::default(),
     };
+    let grid = render::GridArt::load(&root.join("data/core/images/terrain"));
     let mut name = "Untitled".to_string();
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
@@ -389,6 +429,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
+            add_minimap_border(&mut view, &doc);
             mini.load(&view, &assets);
             rebuild = false;
         }
@@ -396,13 +437,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             .min(screen_height() / 440.0)
             .clamp(0.01, 1.0);
         let (w, h) = (screen_width() / scale, screen_height() / scale);
-        let sidebar = 181.0;
-        let area = Viewport {
-            x: 0.0,
-            y: 67.0,
-            width: w - sidebar,
-            height: h - 93.0,
-        };
+        let sidebar = SIDEBAR_WIDTH;
+        let area = map_viewport(w, h);
         let (mx, my) = mouse_position();
         let point = vec2(mx / scale, my / scale);
         let p = [point.x, point.y];
@@ -418,7 +454,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             is_mouse_button_pressed(MouseButton::Middle),
             is_mouse_button_down(MouseButton::Middle),
         );
-        let modal = chrome.menu.is_some();
+        let palette_menu = palette.group_menu_open();
+        let modal = chrome.menu.is_some() || palette_menu;
         if !modal && !ctrl {
             if is_key_pressed(KeyCode::P) {
                 tool = Tool::Paint;
@@ -436,11 +473,17 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             selecting = false;
             last_selection = None;
         }
-        let at = if tool != Tool::Paint && area.contains(p) {
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
+            && !is_key_down(KeyCode::RightAlt) && tool != Tool::Fill {
+            shapes.keys();
+        }
+        let at = if area.contains(p) {
             camera.layout().and_then(|layout| layout.editor_hex_at(p))
         } else {
-            camera.hex_at(p)
+            None
         };
+        let footprint = at.filter(|_| !modal && (tool == Tool::Paint || tool == Tool::Select && !shift))
+            .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
         if tool == Tool::Select && !modal {
             if let Some(hex) = at {
@@ -452,7 +495,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     if shift {
                         for at in region.hexes() { history.select(at, !ctrl); }
                     } else {
-                        history.select(hex, !ctrl);
+                        for &at in &footprint { history.select(at, !ctrl); }
                     }
                     last_selection = Some((hex, ctrl, shift));
                 }
@@ -475,15 +518,13 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
             if let Some(btn) = drawing
                 && is_mouse_button_down(btn)
-                && let Some(old) = doc.map().terrain_at(hex)
             {
                 let i = if btn == MouseButton::Left {
                     palette.fg
                 } else {
                     palette.bg
                 };
-                let code = palette.brushes[i].paint(old, shift);
-                history.paint(&mut doc, hex, &code);
+                shapes::paint(&mut doc, &mut history, &footprint, &palette.brushes[i], shift);
             }
         }
         if let Some(btn) = drawing
@@ -498,6 +539,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if let Some(layout) = camera.layout() {
             draw_terrain(
                 &rules,
+                chrome.show_grid.then_some(&grid),
                 &view,
                 layout,
                 area,
@@ -508,12 +550,15 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 &mut art,
                 &assets,
             );
+            for &hex in &footprint {
+                let [x, y] = layout.tile_origin(hex);
+                art.image(&assets, "editor/brush.png", Rect::new(x, y, layout.tile_size(), layout.tile_size()));
+            }
             if let Some(hex) = at {
                 let [x, y] = layout.tile_origin(hex);
                 let rect = Rect::new(x, y, layout.tile_size(), layout.tile_size());
                 art.image(&assets, "misc/hover-hex.png", rect);
                 if tool == Tool::Select && !modal {
-                    if !shift { art.image(&assets, "editor/brush.png", rect); }
                     let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
                     art.tinted(&assets, icon, rect, Color::from_rgba(255, 255, 255, 196));
                 }
@@ -533,13 +578,11 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             &mut art,
             form.font.as_ref(),
             &title,
+            &doc,
+            &history,
         );
-        let mini_area = Viewport {
-            x: w - sidebar + 8.0,
-            y: 31.0,
-            width: sidebar - 16.0,
-            height: (h * 0.20).min(148.0),
-        };
+        let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
+        art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
         let mini_rect = Rect::new(mini_area.x, mini_area.y, mini_area.width, mini_area.height);
         if mini_rect.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
@@ -550,47 +593,40 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             let world = (point - origin) / zoom;
             camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
-        let tools = Rect::new(w - sidebar, mini_rect.bottom() + 6.0, sidebar, 70.0);
-        tool = tool.panel(tools, point, &mut art, &assets, &mut chrome.tip);
-        let panel = Rect::new(w - sidebar, tools.bottom(), sidebar, h - tools.bottom());
-        art.image(&assets, "themes/editor/classic/palette.png", panel);
-        art.image(
-            &assets,
-            "themes/editor/classic/palette_top.png",
-            Rect::new(panel.x, panel.y, panel.w, 90.0),
-        );
-        palette.panel(panel, point, &assets, &mut art, form.font.as_ref());
-        draw_rectangle(
-            0.0,
-            h - 26.0,
-            w - sidebar,
-            26.0,
-            Color::from_rgba(30, 31, 34, 255),
-        );
-        let caption = if let Some(tip) = chrome.tip {
-            tip.to_owned()
+        let compact = w < 1024.0 || h < 768.0;
+        let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
+                    else { Rect::new(w - sidebar, 304., sidebar, 155.) };
+        tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
+        shapes.panel(tools, compact, tool != Tool::Fill && !modal, point, &mut art, &assets, &mut chrome.tip);
+        let palette_y = if compact { 312.0 } else { 467.0 };
+        let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
+        palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
+        let font = form.font.as_ref();
+        let lines = if let Some(tip) = chrome.tip {
+            vec![tip.to_owned()]
         } else if !status.is_empty() {
-            status.clone()
+            vec![status.clone()]
         } else if tool == Tool::Select {
-            "Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()
-        } else if let Some(hex) = at {
-            format!(
-                "{},{}     {}     Ctrl-click to sample · Shift to paint one layer",
-                hex.x + 1,
-                hex.y + 1,
-                doc.map().terrain_at(hex).unwrap_or("")
-            )
+            vec!["Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()]
         } else {
-            "Left and right click paint the two selected terrains".into()
+            palette.help().into()
         };
-        dialog::text(
-            form.font.as_ref(),
-            &dialog::fit(form.font.as_ref(), caption, w - sidebar - 18.0, 15),
-            9.0,
-            h - 8.0,
-            15,
-            WHITE,
-        );
+        let mut font_size = 18;
+        let width = loop {
+            let max_width = lines.iter().map(|line| measure_text(line, font, font_size, 1.0).width)
+                .fold(0.0, f32::max);
+            if max_width <= w * 0.5 || font_size <= 8 {
+                break max_width;
+            }
+            font_size -= 1;
+        };
+        let line_height = font_size as f32 + 6.0;
+        let x = (w - width) * 0.5;
+        let y = h - line_height * lines.len() as f32 - 10.0;
+        draw_rectangle(x - 5.0, y, width + 10.0, h - y, Color::from_rgba(0, 0, 0, 0xbb));
+        for (row, line) in lines.iter().enumerate() {
+            dialog::text(font, line, x, y + 5.0 + font_size as f32 + row as f32 * line_height, font_size, WHITE);
+        }
         set_default_camera();
         if ctrl && is_key_pressed(KeyCode::N) {
             command = Some(Command::New);
@@ -610,18 +646,35 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if !modal && shift && !ctrl && is_key_pressed(KeyCode::F) {
             command = Some(Command::FillSelection);
         }
-        if is_key_pressed(KeyCode::Escape) {
+        let grid_modifier = if cfg!(target_os = "macos") {
+            is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
+        } else {
+            is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+        };
+        if !modal && grid_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
+            && !is_key_down(KeyCode::RightAlt) && is_key_pressed(KeyCode::G) {
+            command = Some(Command::ToggleGrid);
+        }
+        if is_key_pressed(KeyCode::Escape) && !palette_menu {
             if chrome.menu.take().is_none() {
                 command = Some(Command::Exit);
             }
         }
         if let Some(cmd) = command {
-            drawing = None;
-            selecting = false;
-            last_selection = None;
-            history.finish_selection();
-            rebuild |= history.finish();
+            if cmd != Command::ToggleGrid {
+                drawing = None;
+                selecting = false;
+                last_selection = None;
+                history.finish_selection();
+                rebuild |= history.finish();
+            }
             match cmd {
+                Command::ToggleGrid => {
+                    match crate::display_preferences::save_grid(!chrome.show_grid) {
+                        Ok(()) => chrome.show_grid = !chrome.show_grid,
+                        Err(error) => status = error.to_string(),
+                    }
+                }
                 Command::Exit => {
                     if !doc.dirty() || files::confirm(&form).await {
                         return Ok(());
@@ -650,9 +703,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 Command::FillSelection => {
                     rebuild |= history.fill_selected(&mut doc, &palette.brushes[palette.bg]);
                 }
-                Command::New | Command::Open => {
+                Command::New | Command::Close | Command::Open => {
                     let incoming: Result<Option<(EditableMap, String)>, Box<dyn Error>> =
-                        if cmd == Command::New {
+                        if cmd != Command::Open {
                             Ok(Some((new_map(), "Untitled".into())))
                         } else {
                             async {
@@ -676,6 +729,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     match incoming {
                         Ok(Some((next, label))) => {
                             if !doc.dirty() || files::confirm(&form).await {
+                                if cmd == Command::Close { tool = Tool::Paint; }
                                 doc = next;
                                 name = label;
                                 history = History::default();
@@ -712,7 +766,7 @@ mod tests {
         history.select(a, false);
         history.finish_selection();
         let cfg = wml::parse("[terrain_type]\nstring=Ww\neditor_group=water\nsymbol_image=water\n[/terrain_type]").unwrap();
-        let palette = Palette::new(&cfg).unwrap();
+        let palette = Palette::new(&cfg, &Default::default()).unwrap();
         assert!(history.fill_selected(&mut doc, &palette.brushes[palette.bg]));
         assert_eq!(doc.map().terrain_at(b), Some("Ww"));
         assert_eq!(doc.map().terrain_at(a), Some("Gg"));
@@ -728,6 +782,16 @@ mod tests {
         assert!(history.apply(&mut doc, false));
         assert_eq!(history.selected, HashSet::from([b]));
         assert_eq!(doc.map().terrain_at(b), Some("Ww"));
+
+    }
+
+    #[test]
+    fn editor_minimap_uses_the_installed_theme_at_both_resolutions() {
+        let (panel, canvas, _) = minimap_panel(1200.0, 820.0);
+        assert_eq!(panel, Rect::new(1019.0, 6.0, 181.0, 255.0));
+        assert_eq!(canvas, Viewport { x: 1032.0, y: 11.0, width: 160.0, height: 212.0 });
+        let (_, compact, _) = minimap_panel(800.0, 600.0);
+        assert_eq!(compact, Viewport { x: 662.0, y: 10.0, width: 130.0, height: 158.0 });
     }
 
     #[test]
@@ -738,16 +802,17 @@ mod tests {
         assert_eq!(map.terrain_at(Hex { x: -1, y: -1 }), Some("Gg"));
         assert_eq!(map.terrain_at(Hex { x: 44, y: 33 }), Some("Gg"));
         let view = render::map_observation(map);
-        let area = Viewport { x: 0.0, y: 67.0, width: 1019.0, height: 753.0 };
+        let area = map_viewport(1200.0, 820.0);
+        assert_eq!((area.x, area.y, area.width, area.height), (0.0, 68.0, 1019.0, 752.0));
         let mut camera = BoardCamera::default();
         update_editor_camera(&mut camera, area, &view, false);
         let origin = Hex { x: 0, y: 0 };
         let layout = camera.layout().unwrap();
         assert_eq!(layout.tile_size(), 72.0);
-        assert_eq!(layout.tile_origin(origin), [27.0, 103.0]);
+        assert_eq!(layout.tile_origin(origin), [27.0, 104.0]);
         camera.pan([-54.0, -72.0]);
         update_editor_camera(&mut camera, area, &view, false);
-        assert_eq!(camera.layout().unwrap().tile_origin(origin), [-27.0, 31.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(origin), [-27.0, 32.0]);
         update_editor_camera(&mut camera, area, &view, true);
         assert!(camera.layout().unwrap().tile_size() < 72.0);
     }
