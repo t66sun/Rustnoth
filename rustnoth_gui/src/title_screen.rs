@@ -9,16 +9,17 @@ mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
+mod load_game;
 mod credits;
 mod community;
 mod achievements;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
-mod panel_blur;
+pub(crate) mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
-mod scaled_art;
+use crate::artwork::scaled as scaled_art;
 mod tip_pages;
 #[cfg(windows)]
 pub(crate) mod tip_pango;
@@ -132,6 +133,15 @@ impl TitleScreen {
                     hotkeys::pressed().and_then(|key| bindings.shortcut(&key, actions))
                         .or_else(|| click.map(|index| buttons[index].0))
                 };
+            // A shortcut opens a modal without moving focus to its title button.
+            let title_focus = focus.map(|index| buttons[index].0);
+            let draw_title = |w, h| {
+                art.draw_background(w, h);
+                let (body, source) = &pages.entries[tip];
+                for (cmd, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
+                    art.command(rect, cmd, Some(cmd) == title_focus, false);
+                }
+            };
             match command {
                 Some(Command::Quit) => return Ok(()),
                 Some(Command::About) => {
@@ -145,13 +155,7 @@ impl TitleScreen {
                 }
                 Some(Command::Language) => {
                     next_frame().await;
-                    let result = languages::show(&self.root, &art, |w,h| {
-                        art.draw_background(w,h);
-                        let (body, source) = &pages.entries[tip];
-                        for (command, rect) in art.draw_panels(w,h,actions,body,source,&pages) {
-                            art.command(rect,command,command==Command::Language,false);
-                        }
-                    }).await;
+                    let result = languages::show(&self.root, &art, draw_title).await;
                     match result {
                         Ok(Some(id)) => {
                             let change = (|| -> Result<(),Box<dyn Error>> {
@@ -176,27 +180,15 @@ impl TitleScreen {
                 }
                 Some(Command::Load) => {
                     next_frame().await;
-                    error = crate::save_dialog::open(&self.root).await.err().map(|cause| cause.to_string());
+                    error = load_game::show(&self.root, &art, draw_title).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Achievements) => {
                     next_frame().await;
-                    error = achievements::show(&self.root, &art, |w, h| {
-                        art.draw_background(w, h);
-                        let (body, source) = &pages.entries[tip];
-                        for (cmd, rect) in art.draw_panels(w, h, actions, body, source, &pages) {
-                            art.command(rect, cmd, cmd == Command::Achievements, false);
-                        }
-                    }).await.err().map(|cause| cause.to_string());
+                    error = achievements::show(&self.root, &art, draw_title).await.err().map(|cause| cause.to_string());
                 }
                 Some(Command::Preferences) => {
                     next_frame().await;
-                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, |w, h| {
-                        art.draw_background(w, h);
-                        let (body, source) = &pages.entries[tip];
-                        for (command, bounds) in art.draw_panels(w, h, actions, body, source, &pages) {
-                            art.command(bounds, command, command == Command::Preferences, false);
-                        }
-                    }).await;
+                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, draw_title).await;
                     error = result.err().map(|cause| cause.to_string());
                 }
                 Some(command @ (Command::Campaigns | Command::Multiplayer | Command::Help | Command::Editor | Command::Credits)) => {
@@ -267,6 +259,35 @@ fn tips(source: &str, locale: &locale::Locale) -> Result<Vec<(String, String)>, 
 }
 
 
+struct ButtonBacking {
+    pixels: ::image::RgbaImage,
+    sizes: std::cell::RefCell<std::collections::HashMap<(u16, u16), Texture2D>>,
+}
+
+impl ButtonBacking {
+    fn draw(&self, bounds: Rect, state: button_canvas::State) {
+        let width = (bounds.w - 2.).round().max(1.) as u16;
+        let height = (bounds.h - 2.).round().max(1.) as u16;
+        let mut sizes = self.sizes.borrow_mut();
+        let texture = sizes.entry((width, height)).or_insert_with(|| {
+            // At exact half-texels the native nearest sampler takes the higher
+            // texel. Interpolated GPU coordinates can fall just below that tie.
+            let center = |p: u16, src: u32, dst: u16| ((2 * u32::from(p) + 1) * src) / (2 * u32::from(dst));
+            let mut bytes = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+            for y in 0..height {
+                let row = center(y, self.pixels.height(), height);
+                for x in 0..width {
+                    bytes.extend_from_slice(&self.pixels.get_pixel(center(x, self.pixels.width(), width), row).0);
+                }
+            }
+            let tex = Texture2D::from_rgba8(width, height, &bytes);
+            tex.set_filter(FilterMode::Nearest);
+            tex
+        });
+        button_canvas::draw(bounds, texture, state);
+    }
+}
+
 struct Art {
     #[cfg(windows)]
     text_renderer: Option<tip_pango::Text>,
@@ -281,7 +302,7 @@ struct Art {
     map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
-    buttons: [Texture2D; 3],
+    buttons: [ButtonBacking; 3],
     font: Option<Font>,
     italic: Option<Font>,
 }
@@ -403,10 +424,11 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
-        let button = |name: &str| -> Result<Texture2D, Box<dyn Error>> {
-            let texture = texture(name)?;
-            texture.set_filter(FilterMode::Nearest);
-            Ok(texture)
+        let button = |name: &str| -> Result<ButtonBacking, Box<dyn Error>> {
+            Ok(ButtonBacking {
+                pixels: crate::artwork::rgba(&read_file(&root.join(name))?)?,
+                sizes: Default::default(),
+            })
         };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
@@ -490,7 +512,7 @@ impl Art {
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
         use button_canvas::State;
         let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
-        button_canvas::draw(rect, &self.buttons[state as usize], state);
+        self.buttons[state as usize].draw(rect, state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
