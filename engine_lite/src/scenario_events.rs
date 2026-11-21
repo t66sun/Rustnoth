@@ -16,14 +16,15 @@ use items::{ItemChange, MapItems};
 use variables::{Comparison, ScalarChange, Scalars};
 
 use crate::{
-    hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
+    hex::Hex, map::ScenarioMap, scenario_sides::{SideConfig, SideController}, scenario_time::{coordinate_ranges, location_ranges},
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
 };
 
 #[derive(Clone, Debug)]
 pub(crate) enum SideAction {
     Gold(i32),
-    Economy {
+    Modify {
+        controller: Option<SideController>,
         gold: Option<i32>,
         income: Option<i32>,
         village_gold: Option<i32>,
@@ -265,11 +266,13 @@ impl EventAction {
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
-                !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support")
+                // Campaigns often reveal the side in the native status table as they activate its AI.
+                !matches!(key.as_str(), "side" | "controller" | "hidden" | "gold" | "income" | "village_gold" | "village_support")
                     || !value.translations.is_empty() || value.text.contains('$')
             }) { return None; }
             let number = |key| cfg.attribute(key).map(|value| value.trim().parse::<i32>()).transpose();
-            let action = SideAction::Economy {
+            let action = SideAction::Modify {
+                controller: cfg.attribute("controller").and_then(SideController::from_wml),
                 gold: number("gold").ok()?,
                 income: number("income").ok()?,
                 village_gold: number("village_gold").ok()?,
@@ -314,7 +317,7 @@ impl EventAction {
     }
 
     fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
-        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>) {
+        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>, active_side: usize) {
         if !matches!(self, Self::Board(_)) && (!state.board_changes.is_empty()
             || matches!(self, Self::If { units, .. } if !units.is_empty() && board.is_none())) {
             state.board_changes.push(BoardChange::Resume(PendingAction(Box::new(self.clone())), primary));
@@ -329,7 +332,7 @@ impl EventAction {
                 let matched = tests.iter().all(|test| test.matches(variables))
                     && units.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
                 let branch = if matched { on_match } else { otherwise };
-                for change in branch { change.apply(state, items, variables, primary, board); }
+                for change in branch { change.apply(state, items, variables, primary, board, active_side); }
                 return;
             }
             Self::Item(change) => {
@@ -346,12 +349,14 @@ impl EventAction {
             }
             Self::Sides { sides, action } => (sides, action),
         };
-        action.apply(sides, state.gold, state.sides);
+        action.apply(sides, state, active_side);
     }
 }
 
 impl SideAction {
-    pub(crate) fn apply(&self, sides: &[usize], funds: &mut [i64], teams: &mut [SideConfig]) {
+    fn apply(&self, sides: &[usize], state: &mut EventState<'_>, active_side: usize) {
+        let teams = &mut state.sides;
+        let funds = &mut state.gold;
         for &index in sides {
             match self {
                 SideAction::Objectives { content, notify } => {
@@ -359,8 +364,13 @@ impl SideAction {
                     teams[index].objectives_changed = *notify;
                 }
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
-                SideAction::Economy { gold, income, village_gold, village_support } => {
+                SideAction::Modify { controller, gold, income, village_gold, village_support } => {
                     let side = &mut teams[index];
+                    // team::change_controller_by_wml keeps the currently playing side active.
+                    if let Some(controller) = controller
+                        && (*controller != SideController::Empty || side.side != active_side) {
+                        side.controller = *controller;
+                    }
                     if let Some(value) = gold { funds[index] = i64::from(*value); }
                     if let Some(value) = income { side.income_bonus = *value; }
                     if let Some(value) = village_gold { side.village_gold = *value; }
@@ -621,7 +631,7 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, board: &crate::board::Battlefield<'_>, state: &mut EventState<'_>) {
-        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board));
+        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board), self.active_side);
     }
 
     pub(crate) fn has_handler(&self, name: &str) -> bool {
@@ -641,7 +651,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None);
+                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None, self.active_side);
             }
             !handler.once
         });
