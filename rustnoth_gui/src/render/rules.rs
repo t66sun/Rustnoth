@@ -128,6 +128,7 @@ impl Rules {
         foreground: bool,
         tod: &str,
         ms: u64,
+        clip: Option<super::Viewport>,
     ) {
         let Some(tile) = self.tiles.get(&hex) else {
             return;
@@ -142,7 +143,7 @@ impl Rules {
             let phase = ((ms + u64::from(animation.offset)) % u64::from(animation.duration)) as u32;
             if let Some((Some(texture), _)) = animation.frames.iter().find(|(_, end)| phase < *end)
             {
-                draw_centered(texture, center, size);
+                draw_centered(texture, center, size, clip);
             }
         }
     }

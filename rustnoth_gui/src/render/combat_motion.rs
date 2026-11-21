@@ -327,6 +327,7 @@ pub(crate) async fn show(
     layout: &BoardLayout,
     art: &mut BoardArt,
     assets: &AssetCatalog,
+    mut draw_controls: impl FnMut(&mut BoardArt),
 ) {
     let mut textures = HashMap::<(usize, String), Option<Texture2D>>::new();
     let [Some(attacker), Some(defender)] = fight
@@ -405,7 +406,6 @@ pub(crate) async fn show(
         loop {
             let time = start.saturating_add(((get_time() - since) * 1000.0 * rate) as i64);
             if is_key_pressed(KeyCode::Escape) {
-                next_frame().await;
                 break 'combat;
             }
             if time >= end {
@@ -467,6 +467,7 @@ pub(crate) async fn show(
                     assets,
                     menu: None,
                 },
+                &mut draw_controls,
             );
             next_frame().await;
         }

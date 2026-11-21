@@ -134,7 +134,7 @@ impl Edges {
         self.tiles = boundaries(view, cover);
     }
 
-    pub(super) fn draw(&self, layout: &BoardLayout) {
+    pub(super) fn draw(&self, layout: &BoardLayout, viewport: super::Viewport) {
         let size = layout.tile_size();
         for tile in &self.tiles {
             let [x, y] = layout.tile_origin(tile.at);
@@ -143,7 +143,7 @@ impl Edges {
                 .iter()
                 .chain(&self.shroud[tile.shroud as usize])
             {
-                draw_centered(texture, center, size);
+                draw_centered(texture, center, size, Some(viewport));
             }
         }
     }

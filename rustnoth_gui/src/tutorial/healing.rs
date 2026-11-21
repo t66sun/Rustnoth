@@ -45,7 +45,8 @@ impl Exercises {
         let captured = children(turn_two, "event").find(|cfg| cfg.attribute("name") == Some("capture"))
             .ok_or("missing village capture lesson")?;
         let third = event("turn 3 refresh").ok_or("missing post-healing explanation")?;
-        let healed = children(third, "message").next().ok_or("missing post-healing message")?;
+        let healed = lines(third, hero);
+        if healed.is_empty() { return Err("missing post-healing message".into()); }
         Ok(Self {
             villages,
             end_prompt: children(attack, "print").find_map(|cfg| cfg.attribute("text").filter(|s| !s.is_empty()))
@@ -55,7 +56,7 @@ impl Exercises {
             after_attack: lines(attack, hero),
             second_turn: lines(turn_two, hero),
             capture: lines(captured, hero),
-            healed: vec![dialogue(healed, hero)],
+            healed,
         })
     }
 }
