@@ -340,7 +340,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         }
         if data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
         let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
-        let input_blocked = walking || dialogue_open || top.handled;
+        let show_objectives = session.objectives().is_some() && !walking && !dialogue_open
+            && (top.command == Some(map_menus::Command::Objectives)
+                || !top.handled && render::objectives::hotkey());
+        let input_blocked = walking || dialogue_open || top.handled || show_objectives;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -406,15 +409,6 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
-        if !dialogue_open && let Some(objectives) = session.objectives() {
-            let opened = top.command == Some(map_menus::Command::Objectives)
-                || (!input_blocked && render::objectives::hotkey());
-            if opened {
-                render::objectives::show(objectives, &mut art, &data.wesnoth_root).await;
-                next_frame().await;
-                continue;
-            }
-        }
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
@@ -438,7 +432,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
         }
         let mut ai_walk = None;
-        let computer_acted = !walking && !top.handled
+        let computer_acted = !walking && !top.handled && !show_objectives
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
         if computer_acted && let Some(view) = session.observation() {
             art.load(view, &data.assets, session.map_item_images());
@@ -592,6 +586,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        if show_objectives && let Some(objectives) = session.objectives() {
+            render::objectives::show(objectives, &data.title, &locale, &mut art, &data.wesnoth_root).await;
+            continue;
+        }
         if let Some(prompt) = end_prompt {
             confirmed_end_turn = end_turn::confirm(&data.wesnoth_root, &locale, prompt).await;
             next_frame().await;
