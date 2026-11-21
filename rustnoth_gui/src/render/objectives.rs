@@ -22,14 +22,20 @@ fn objective_text(objectives: &ScenarioObjectives, locale: &Locale) -> String {
         }
         sections.push(summary);
     }
-    for (heading, entries, color) in [
-        ("Victory:", &objectives.victory, "#00ff00"),
-        ("Defeat:", &objectives.defeat, "#ff0000"),
+    for (heading, entries, counters, color) in [
+        ("Victory:", &objectives.victory, &objectives.victory_turns, "#00ff00"),
+        ("Defeat:", &objectives.defeat, &objectives.defeat_turns, "#ff0000"),
     ] {
         if entries.is_empty() { continue; }
         let mut lines = vec![format!("<big>{}</big>", locale.game(heading))];
-        for entry in entries {
-            lines.push(format!("<span foreground='{color}'>• {entry}</span>"));
+        for (index, entry) in entries.iter().enumerate() {
+            let counter = counters.get(&index).map(|&count| {
+                let translated = locale.game_plural("(this turn left)", "($remaining_turns turns left)", count);
+                let value = count.to_string();
+                let text = translated.replace("$remaining_turns|", &value).replace("$remaining_turns", &value);
+                format!("<span foreground='white'><small> {text}</small></span>")
+            }).unwrap_or_default();
+            lines.push(format!("<span foreground='{color}'>• {entry}{counter}</span>"));
         }
         sections.push(lines.join("\n"));
     }
@@ -174,5 +180,18 @@ mod tests {
         };
         assert_eq!(objective_text(&objectives, &Locale::default()),
             "<big>You will learn the basics of:</big>\n• <small>Movement</small>\n\n<big>Victory:</big>\n<span foreground='#00ff00'>• Destroy a fierce enemy</span>");
+    }
+
+    #[test]
+    fn limited_objectives_append_the_native_white_countdown_to_the_marked_entry() {
+        let mut goals = ScenarioObjectives {
+            defeat: vec!["Death of Konrad".into(), "Turns run out".into()],
+            defeat_turns: [(1, 2)].into(),
+            ..Default::default()
+        };
+        let text = |suffix: &str| format!("<big>Defeat:</big>\n<span foreground='#ff0000'>• Death of Konrad</span>\n<span foreground='#ff0000'>• Turns run out<span foreground='white'><small> {suffix}</small></span></span>");
+        assert_eq!(objective_text(&goals, &Locale::default()), text("(2 turns left)"));
+        goals.defeat_turns.insert(1, 1);
+        assert_eq!(objective_text(&goals, &Locale::default()), text("(this turn left)"));
     }
 }

@@ -1,6 +1,6 @@
 //! The stock tutorial opens on Delfador before it places the chosen student.
-use super::{BoardData, Hero, Node, opening::children, put};
-use crate::{camera::BoardCamera, desktop, dialog, display_preferences::speed::Speed, map_menus, render, title_screen};
+use super::{Hero, Node, opening::children, put};
+use crate::{BoardData, camera::BoardCamera, desktop, dialog, display_preferences::speed::Speed, map_menus, render, title_screen};
 use engine_lite::{hex::Hex, map::ScenarioMap, wml_emit};
 use macroquad::prelude::*;
 use rustnoth_gui::{session::{Players, Session}, team_colors::TeamColors};
@@ -117,7 +117,7 @@ impl Picker {
     }
 }
 
-pub(super) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Path, seed: u32) -> Result<Option<Hero>, Box<dyn Error>> {
+pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Path, seed: u32) -> Result<Option<Hero>, Box<dyn Error>> {
     let mut preview = document.clone();
     let (_, level) = preview.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
     let keep = preview_scenario(level)?;

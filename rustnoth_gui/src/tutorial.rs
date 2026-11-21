@@ -1,19 +1,25 @@
 //! The opening movement and attack exercises of the installed Battle Training campaign.
-use std::{error::Error, fs, path::Path};
+use std::{error::Error, path::Path};
 
-use engine_lite::{campaign, fixed_match::Action, hex::Hex, wml::{self, Node}, wml_emit};
+use engine_lite::{fixed_match::Action, hex::Hex, wml::{self, Node}};
 use macroquad::prelude::*;
-use rustnoth_gui::{save_replay::Event, session::{Players, Session}};
+use rustnoth_gui::{save_replay::Event, session::Session};
 
-use crate::{BoardData, desktop, dialog, render, show_board};
+use crate::{desktop, dialog, render};
 
 mod opening;
 mod introduction;
+pub(super) use introduction::choose as choose_on_map;
 mod healing;
 mod recruiting;
 mod end_turn;
 mod weapons;
 mod practice;
+mod advice;
+mod ending;
+mod second;
+mod briefing;
+pub(super) use ending::prepare_campaign;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -38,7 +44,7 @@ fn put(cfg: &mut Node, key: &str, value: &str) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Hero { Konrad, Lisar }
+pub(super) enum Hero { Konrad, Lisar }
 
 impl Hero {
     fn name(self) -> &'static str {
@@ -53,6 +59,7 @@ pub(super) struct Lesson {
     end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
+    attack_instructions: [healing::Line; 2],
     select_prompt: String,
     movement_prompt: String,
     undo_prompt: String,
@@ -61,16 +68,31 @@ pub(super) struct Lesson {
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
     weapons: weapons::Exercise,
+    advice: advice::Advice,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
-        Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, before_healing: None }
+    fn new(mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
+        Self { attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+        for line in &mut self.attack_instructions {
+            let cfg = match line {
+                healing::Line::Message(cfg) | healing::Line::Hint(cfg) => cfg,
+            };
+            for key in ["message", "caption"] {
+                if cfg.attributes.contains_key(key) {
+                    let text = locale.attribute(root, cfg, key, "");
+                    put(cfg, key, &text);
+                }
+            }
+        }
+    }
 
     pub(super) fn selected(&mut self, at: Hex, session: &mut Session<'_>) {
         self.weapons.selected(at, session);
@@ -87,7 +109,7 @@ impl Lesson {
 
     pub(super) fn select_student(&mut self, session: &mut Session<'_>) -> bool {
         if self.step == Step::Approach && let Some(line) = self.selection_hint.take() {
-            session.present_message(&line);
+            session.set_tutorial_hint(&line);
             return true;
         }
         false
@@ -140,6 +162,7 @@ impl Lesson {
         self.step = match self.step {
             Step::Approach => {
                 if matches!(session.history().last(), Some(Event::Player(Action::Move { to, .. }, _, _)) if to.distance(self.mentor) == 1) {
+                    healing::say(&self.attack_instructions, session, None);
                     Step::Attack
                 } else {
                     self.show_undo_prompt = !session.legal_actions().iter().any(|action|
@@ -163,11 +186,11 @@ impl Lesson {
             Step::ToKeep | Step::Recruit if matches!(session.history().last(),
                 Some(rustnoth_gui::save_replay::Event::Player(Action::Attack(_), ..))) => Step::EndThird,
             Step::ToKeep => {
-                session.present_message(&self.recruiting.instruction);
+                session.set_tutorial_hint(&self.recruiting.instruction);
                 Step::Recruit
             }
             Step::Recruit if self.recruiting.recruited(session) => {
-                session.present_message(&self.recruiting.crowns);
+                session.set_tutorial_hint(&self.recruiting.crowns);
                 Step::EndThird
             }
             Step::EndThird if matches!(session.history().last(),
@@ -184,6 +207,7 @@ impl Lesson {
         if practice::guardians_have_arrived(session) {
             self.step = Step::Practice;
         }
+        self.advice.begin_turn(session);
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
@@ -228,20 +252,12 @@ impl Lesson {
         for event in &session.history()[..session.history().len() - 1] {
             event.apply(&mut restored)?;
         }
+        restored.restore_tutorial_hint(session);
         self.restrict(&mut restored);
         *session = restored;
         self.show_undo_prompt = false;
         Ok(Some(from))
     }
-}
-
-pub(super) fn draw_prompt(prompt: &str, font: Option<&Font>) {
-    let view = render::board_viewport();
-    let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
-    let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
-    let y = view.y + view.height - 24.0;
-    dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
-    dialog::text(font, &prompt, x, y, 18, WHITE);
 }
 
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {
@@ -256,19 +272,9 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
         if worker.is_finished() { break; }
     }
     let file = worker.join().map_err(|_| "Tutorial preparation stopped")??;
-    let definition = wml::parse(fs::read(file)?)?;
     let maps = root.join(desktop::TUTORIAL).join("maps");
-    let mut selected = campaign::select(&definition, FIRST_SCENARIO, |file| fs::read_to_string(maps.join(file)))?;
-    mode.classify(&mut selected);
-    let Some(hero) = introduction::choose(&selected, core, &maps, root, seed).await? else { return Ok(()) };
-    let (_, scenario) = selected.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
-    let lesson = opening::prepare(scenario, hero)?;
-    crate::campaign_browser::modifications::apply(scenario, modifications)?;
-    let mut bytes = Vec::new();
-    wml_emit::write_config(&mut bytes, &selected)?;
-    let mut board = BoardData::from_source(&bytes, core, maps, root.to_owned(), seed)?;
-    board.lesson = Some(lesson);
-    show_board(board, Players::Campaign).await
+    let browser = crate::campaign_browser::Browser::load(&file, maps, core.to_vec(), root.to_owned(), seed)?;
+    browser.play_tutorial(mode, modifications).await
 }
 
 #[test]
@@ -280,6 +286,6 @@ fn installed_campaign_picker_places_battle_training_first_with_its_native_artwor
     assert_eq!(tag, "campaign");
     assert_eq!(first.attribute("name"), Some("Battle Training"));
     assert_eq!(first.attribute("image"), Some("data/campaigns/tutorial/images/campaign_image.png"));
-    assert_eq!(campaign::scenarios(&catalog).collect::<Vec<_>>(), [(FIRST_SCENARIO, SCOPE)]);
+    assert_eq!(engine_lite::campaign::scenarios(&catalog).collect::<Vec<_>>(), [(FIRST_SCENARIO, SCOPE)]);
     assert_eq!(catalog.children[2].1.attribute("id"), Some("South_Guard"));
 }
