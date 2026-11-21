@@ -6,20 +6,20 @@ use std::path::Path;
 use std::{cell::RefCell, collections::HashMap};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum Caption { Title, Row, Header, Play, Button }
+pub(super) enum Caption { Title, Row, Header, Play, DisabledPlay, Button }
 
 impl Caption {
     fn size(self) -> u16 {
-        match self { Self::Title => 22, Self::Row => 17, Self::Header => 15, Self::Play => 20, Self::Button => 16 }
+        match self { Self::Title => 22, Self::Row => 17, Self::Header => 15, Self::Play | Self::DisabledPlay => 20, Self::Button => 16 }
     }
     fn color(self) -> [u8; 3] {
-        if self == Self::Row { [215; 3] } else { [186, 172, 125] }
+        match self { Self::Row => [215; 3], Self::DisabledPlay => [128; 3], _ => [186, 172, 125] }
     }
     fn origin(self, r: Rect, size: Vec2) -> Vec2 {
         let x = if matches!(self, Self::Title | Self::Row) { 0. } else { ((r.w - size.x)/2.).floor().max(0.) };
         let y = match self {
             Self::Title => 0.,
-            Self::Play | Self::Button => ((r.h - size.y - 2.)/2.).floor().max(0.),
+            Self::Play | Self::DisabledPlay | Self::Button => ((r.h - size.y - 2.)/2.).floor().max(0.),
             _ => ((r.h - size.y)/2.).floor().max(0.),
         };
         vec2(r.x + x, r.y + y)
