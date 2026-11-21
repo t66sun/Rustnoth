@@ -1,11 +1,11 @@
 //! The opening movement and attack exercises of the installed Battle Training campaign.
 use std::{error::Error, fs, path::Path};
 
-use engine_lite::{campaign, fixed_match::Action, hex::Hex, wml::{self, Node}, wml_emit};
+use engine_lite::{fixed_match::Action, hex::Hex, wml::{self, Node}};
 use macroquad::prelude::*;
-use rustnoth_gui::{save_replay::Event, session::{Players, Session}, team_colors::TeamColors};
+use rustnoth_gui::{save_replay::Event, session::Session, team_colors::TeamColors};
 
-use crate::{BoardData, desktop, dialog, render, show_board};
+use crate::{desktop, dialog, render};
 
 mod opening;
 mod healing;
@@ -14,6 +14,8 @@ mod end_turn;
 mod weapons;
 mod practice;
 mod advice;
+mod ending;
+pub(super) use ending::prepare_campaign;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -38,7 +40,7 @@ fn put(cfg: &mut Node, key: &str, value: &str) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Hero { Konrad, Lisar }
+pub(super) enum Hero { Konrad, Lisar }
 
 impl Hero {
     fn name(self) -> &'static str {
@@ -259,18 +261,9 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
         if worker.is_finished() { break; }
     }
     let file = worker.join().map_err(|_| "Tutorial preparation stopped")??;
-    let definition = wml::parse(fs::read(file)?)?;
     let maps = root.join(desktop::TUTORIAL).join("maps");
-    let mut selected = campaign::select(&definition, FIRST_SCENARIO, |file| fs::read_to_string(maps.join(file)))?;
-    mode.classify(&mut selected);
-    let (_, scenario) = selected.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing tutorial scenario")?;
-    let lesson = opening::prepare(scenario, hero)?;
-    crate::campaign_browser::modifications::apply(scenario, modifications)?;
-    let mut bytes = Vec::new();
-    wml_emit::write_config(&mut bytes, &selected)?;
-    let mut board = BoardData::from_source(&bytes, core, maps, root.to_owned(), seed)?;
-    board.lesson = Some(lesson);
-    show_board(board, Players::Campaign).await
+    let browser = crate::campaign_browser::Browser::load(&file, maps, core.to_vec(), root.to_owned(), seed)?;
+    browser.play_tutorial(hero, mode, modifications).await
 }
 
 async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<Hero>, Box<dyn Error>> {
@@ -326,6 +319,6 @@ fn installed_campaign_picker_places_battle_training_first_with_its_native_artwor
     assert_eq!(tag, "campaign");
     assert_eq!(first.attribute("name"), Some("Battle Training"));
     assert_eq!(first.attribute("image"), Some("data/campaigns/tutorial/images/campaign_image.png"));
-    assert_eq!(campaign::scenarios(&catalog).collect::<Vec<_>>(), [(FIRST_SCENARIO, SCOPE)]);
+    assert_eq!(engine_lite::campaign::scenarios(&catalog).collect::<Vec<_>>(), [(FIRST_SCENARIO, SCOPE)]);
     assert_eq!(catalog.children[2].1.attribute("id"), Some("South_Guard"));
 }

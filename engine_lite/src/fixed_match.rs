@@ -120,6 +120,7 @@ pub struct FixedMatch<'data> {
     replay_save: bool,
     current_round: i32,
     kill_stack: Vec<Hex>,
+    firing_enemies_defeated: bool,
     village_owners: BTreeMap<Hex, usize>,
     vision: Vec<VisibilityMask>,
     dialogue: Vec<(Vec<usize>, dialogue::DialogueLine)>,
@@ -161,6 +162,7 @@ impl<'data> FixedMatch<'data> {
             replay_save: true,
             current_round: scenario.start_round,
             kill_stack: Vec::new(),
+            firing_enemies_defeated: false,
             vision: scenario.sides.iter().map(|side| VisibilityMask::from_side(map, side)).collect(),
             state: MatchState::Playing(Turn {
                 round: scenario.start_round,
@@ -185,7 +187,7 @@ impl<'data> FixedMatch<'data> {
         if let Some(index) = game.scenario.sides.iter().position(|side| side.controller == crate::scenario_sides::SideController::Human) {
             game.scenario.events.refresh_objectives(index, &game.scenario.board, &mut game.scenario.sides);
         }
-        game.check_victory();
+        game.check_victory()?;
         if let MatchState::Playing(mut turn) = game.state {
             turn.side = game.turn_sides().next().ok_or(MatchError::EmptyTurnController)?;
             game.state = MatchState::Playing(turn);
@@ -323,7 +325,7 @@ impl<'data> FixedMatch<'data> {
                 }
             });
         }
-        if killed && self.kill_stack.is_empty() { self.check_victory(); }
+        if killed && self.kill_stack.is_empty() { self.check_victory()?; }
         Ok(())
     }
 
@@ -566,7 +568,7 @@ impl<'data> FixedMatch<'data> {
                 }
                 self.refog(defender_side);
                 self.reveal_travelled_hexes(choice.from, [choice.from]);
-                self.check_victory();
+                self.check_victory()?;
             }
             Action::Recruit { unit_type, to } => {
                 self.recruit(turn.side, &unit_type, to)?;
@@ -829,25 +831,36 @@ impl<'data> FixedMatch<'data> {
         self.scenario.sides.iter().filter(|side| self.takes_turn(side)).map(|side| side.side)
     }
 
-    fn check_victory(&mut self) {
-        if !matches!(self.state, MatchState::Playing(_)) { return; }
+    fn check_victory(&mut self) -> Result<(), MatchError> {
+        if self.firing_enemies_defeated || !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
         let living: BTreeSet<_> = self.surviving_sides().collect();
         let sides = &self.scenario.sides;
         let mut winners: Vec<usize> = Vec::with_capacity(living.len());
         for side in living {
             if winners.iter().any(|&other| sides[side - 1].is_enemy(&sides[other - 1])) {
-                return;
+                return Ok(());
             }
             winners.push(side);
         }
+        if winners.iter().any(|&side| sides[side - 1].controller == crate::scenario_sides::SideController::Human)
+            && self.scenario.events.has_handler("enemies_defeated") {
+            // As in play_controller::check_victory, the WML handler gets to end
+            // even a scenario with victory_when_enemies_defeated=no.
+            self.firing_enemies_defeated = true;
+            let result = self.with_events(|events, state| events.fire("enemies_defeated", state));
+            self.firing_enemies_defeated = false;
+            result?;
+            if !matches!(self.state, MatchState::Playing(_)) { return Ok(()); }
+        }
         if winners.iter().any(|side| self.scenario.manual_victory_sides.contains(side)) {
-            return;
+            return Ok(());
         }
         self.state = match winners.as_slice() {
             [] => MatchState::Draw,
             [side] => MatchState::Won(*side),
             _ => MatchState::AlliedVictory(winners),
         };
+        Ok(())
     }
 }
 

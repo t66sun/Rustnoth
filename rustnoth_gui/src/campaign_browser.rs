@@ -122,6 +122,16 @@ impl Browser {
         self.play_route(board, route, Players::Campaign).await
     }
 
+    pub(super) async fn play_tutorial(mut self, hero: crate::tutorial::Hero, mode: CombatMode, modifications: &[wml::Node]) -> Result<(), Box<dyn Error>> {
+        self.mode = Some(mode);
+        self.modifications = modifications.to_vec();
+        let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
+        let mut route = CampaignCarryover::default();
+        let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
+        board.lesson = Some(lesson);
+        self.play_route(board, route, Players::Campaign).await
+    }
+
     pub(super) async fn play_route(&self, mut board: BoardData, mut route: CampaignCarryover, players: Players) -> Result<(), Box<dyn Error>> {
         loop {
             let Some(next) = play_board(board, players, Some((self, &mut route))).await? else { return Ok(()) };
