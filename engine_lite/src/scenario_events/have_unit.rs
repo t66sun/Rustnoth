@@ -9,6 +9,7 @@ use crate::{board::{Battlefield, UnitState}, hex::Hex, wml::Node};
 pub(super) struct HaveUnit {
     filter: UnitFilter,
     exclude: Vec<UnitFilter>,
+    adjacent: Vec<UnitFilter>,
     counts: Vec<RangeInclusive<usize>>,
     levels: Vec<RangeInclusive<i32>>,
     races: Vec<String>,
@@ -56,10 +57,16 @@ impl HaveUnit {
             unit.attributes.remove("x");
             unit.attributes.remove("y");
         }
-        let exclude = std::mem::take(&mut unit.children).iter().map(|(tag, child)| {
-            if tag == "not" { UnitFilter::read(child) } else { None }
-        }).collect::<Option<_>>()?;
-        Some(Self { filter: UnitFilter::read(&unit)?, counts, levels, races, heals, search_recall, recall_only, exclude })
+        let mut exclude = Vec::new();
+        let mut adjacent = Vec::new();
+        for (tag, child) in std::mem::take(&mut unit.children) {
+            match tag.as_str() {
+                "not" => exclude.push(UnitFilter::read(&child)?),
+                "filter_adjacent" => adjacent.push(UnitFilter::read(&child)?),
+                _ => return None,
+            }
+        }
+        Some(Self { filter: UnitFilter::read(&unit)?, counts, levels, races, heals, search_recall, recall_only, exclude, adjacent })
     }
 
     fn matches_unit(&self, position: Option<Hex>, unit: &UnitState<'_>) -> bool {
@@ -72,8 +79,10 @@ impl HaveUnit {
 
     pub(super) fn matches(&self, board: &Battlefield<'_>, side_count: usize) -> bool {
         let living = board.units().filter(|(hex, unit)| !self.recall_only && unit.hitpoints > 0
-            && self.matches_unit(Some(*hex), unit));
-        let reserves = (1..=side_count).filter(|_| self.search_recall)
+            && self.matches_unit(Some(*hex), unit) && self.adjacent.iter().all(|filter|
+                hex.neighbors().any(|at| board.unit_at(at).is_some_and(|other|
+                    filter.matches_fields(Some(at), other.side, other.id.as_deref(), &other.unit_type.id)))));
+        let reserves = (1..=side_count).filter(|_| self.search_recall && self.adjacent.is_empty())
             .flat_map(|side| board.recall_roster(side)).filter(|unit| self.matches_unit(None, unit));
         let mut matches = living.map(|_| ()).chain(reserves.map(|_| ()));
         if self.counts.len() == 1 && self.counts[0] == (1..=usize::MAX) { return matches.next().is_some(); }
