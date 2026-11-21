@@ -56,6 +56,18 @@ pub enum SideController {
     Reserved,
 }
 
+impl SideController {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        match value {
+            "human" => Some(Self::Human),
+            "ai" => Some(Self::Ai),
+            "null" => Some(Self::Empty),
+            "reserved" => Some(Self::Reserved),
+            _ => None,
+        }
+    }
+}
+
 /// The initial rules settings for a side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SideConfig {
@@ -119,12 +131,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         side,
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
-        controller: match cfg.attribute("controller") {
-            Some("human") => SideController::Human,
-            Some("null") => SideController::Empty,
-            Some("reserved") => SideController::Reserved,
-            _ => SideController::Ai,
-        },
+        controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,
