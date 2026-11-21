@@ -321,10 +321,28 @@ fn logo_bounds(view_width: f32, size: Vec2) -> Rect {
 }
 
 fn panel(rect: Rect) {
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::from_rgba(0, 0, 0, 137));
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, Color::from_rgba(16, 22, 35, 255));
-    draw_rectangle_lines(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0, 1.0,
-        Color::from_rgba(114, 79, 46, 255));
+    draw_rectangle(rect.x + 3., rect.y + 3., rect.w - 6., rect.h - 6., Color::from_rgba(0, 0, 0, 137));
+    for (inset, thickness, rgba) in [(0., 3., [16,22,35,255]), (1., 1., [114,79,46,255])] {
+        let [r,g,b,a] = rgba;
+        let color = Color::from_rgba(r,g,b,a);
+        for band in panel_rim(rect, inset, thickness) {
+            draw_rectangle(band.x, band.y, band.w, band.h, color);
+        }
+    }
+}
+
+// SDL draws each successive GUI2 rectangle inside the preceding one.
+fn panel_rim(rect: Rect, inset: f32, thickness: f32) -> [Rect; 4] {
+    let x = rect.x + inset;
+    let y = rect.y + inset;
+    let w = rect.w - 2. * inset;
+    let h = rect.h - 2. * inset;
+    [
+        Rect::new(x, y, w, thickness),
+        Rect::new(x, y + h - thickness, w, thickness),
+        Rect::new(x, y + thickness, thickness, h - 2. * thickness),
+        Rect::new(x + w - thickness, y + thickness, thickness, h - 2. * thickness),
+    ]
 }
 
 fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
@@ -558,6 +576,19 @@ mod tests {
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
         assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
         assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+    }
+
+    #[test]
+    fn title_tip_panel_draws_its_gold_edge_one_full_pixel_inside() {
+        let panel = Rect::new(73., 467., 710., 258.);
+        let dark = panel_rim(panel, 0., 3.);
+        let gold = panel_rim(panel, 1., 1.);
+        let hits = |bands: &[Rect; 4], x| bands.iter().any(|r| r.contains(vec2(x, 600.5)));
+        assert!(!hits(&dark, 72.5));
+        assert!(hits(&dark, 73.5) && hits(&dark, 75.5));
+        assert!(!hits(&dark, 76.5));
+        assert!(hits(&gold, 74.5) && hits(&gold, 781.5));
+        assert!(!hits(&gold, 73.5) && !hits(&gold, 75.5));
     }
 
     #[test]
