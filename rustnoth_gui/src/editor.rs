@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod menubar;
 mod fill;
 mod minimap_buttons;
 mod palette;
@@ -123,6 +124,7 @@ enum Command {
     Redo,
     FillSelection,
     ToggleGrid,
+    Refresh,
 }
 
 impl Command {
@@ -137,6 +139,7 @@ impl Command {
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
             Self::ToggleGrid => "Toggle Grid",
+            Self::Refresh => "Refresh Display",
         }
     }
 }
@@ -236,37 +239,11 @@ fn draw_terrain(
     }
 }
 
-fn text_button(
-    area: Rect,
-    label: &str,
-    point: Vec2,
-    active: bool,
-    art: &mut Art,
-    assets: &AssetCatalog,
-    font: Option<&Font>,
-) -> bool {
-    let hot = area.contains(point);
-    let suffix = if active || hot { "-active" } else { "" };
-    art.image(
-        assets,
-        &format!("buttons/button_menu/menu_button_copper_H20{suffix}.png"),
-        area,
-    );
-    let w = measure_text(label, font, 15, 1.0).width;
-    dialog::text(
-        font,
-        label,
-        area.center().x - w / 2.0,
-        area.center().y + 5.0,
-        15,
-        WHITE,
-    );
-    hot && is_mouse_button_pressed(MouseButton::Left)
-}
 
 struct Chrome {
     show_grid: bool,
-    menu: Option<bool>,
+    menu: Option<menubar::Menu>,
+    menubar: menubar::Menubar,
     tip: Option<&'static str>,
     toolbar: toolbar::Toolbar,
 }
@@ -286,7 +263,6 @@ impl Chrome {
         history: &History,
     ) -> Option<Command> {
         self.tip = None;
-        let click = is_mouse_button_pressed(MouseButton::Left);
         let sidebar = Rect::new(w - side, 0.0, side, h);
         art.panel(
             assets,
@@ -301,63 +277,9 @@ impl Chrome {
         art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
         art.panel(assets, "themes/classic/sidebar.png", sidebar);
-        let mut triggered = false;
-        for (index, label) in ["File", "Edit"].iter().enumerate() {
-            let file = index == 0;
-            if text_button(
-                Rect::new(index as f32 * 76.0, 1.0, 75.0, 23.0),
-                label,
-                point,
-                self.menu == Some(file),
-                art,
-                assets,
-                font,
-            ) {
-                self.menu = if self.menu == Some(file) {
-                    None
-                } else {
-                    Some(file)
-                };
-                triggered = true;
-            }
-        }
-        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
+        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
             assets, art, &mut self.tip);
-        let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
-        dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
-        if let Some(file) = self.menu {
-            let commands: &[Command] = if file {
-                &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit]
-            } else {
-                &[Command::Undo, Command::Redo, Command::FillSelection]
-            };
-            for (i, &cmd) in commands.iter().enumerate() {
-                let r = Rect::new(
-                    if file { 0.0 } else { 76.0 },
-                    26.0 + i as f32 * 28.0,
-                    175.0,
-                    28.0,
-                );
-                draw_rectangle(
-                    r.x,
-                    r.y,
-                    r.w,
-                    r.h,
-                    if r.contains(point) {
-                        Color::from_rgba(44, 65, 71, 255)
-                    } else {
-                        Color::from_rgba(31, 32, 35, 255)
-                    },
-                );
-                dialog::text(font, cmd.label(), r.x + 9.0, r.y + 19.0, 16, WHITE);
-                if !triggered && click && r.contains(point) {
-                    result = Some(cmd);
-                }
-            }
-            if click && !triggered {
-                self.menu = None;
-            }
-        }
+        let result = self.menubar.draw(&mut self.menu, point, assets, art, font, name).or(tool_action);
         result
     }
 }
@@ -410,6 +332,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut chrome = Chrome {
         show_grid: crate::display_preferences::grid()?,
         menu: None,
+        menubar: menubar::Menubar::new(root),
         tip: None,
         toolbar: Default::default(),
     };
@@ -564,7 +487,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
         }
         let title = format!(
-            "{}{} — Map Editor",
+            "{}{}",
             name,
             if doc.dirty() { " *" } else { "" }
         );
@@ -673,6 +596,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 rebuild |= history.finish();
             }
             match cmd {
+                Command::Refresh => { rebuild = true; }
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,
