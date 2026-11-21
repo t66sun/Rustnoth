@@ -359,6 +359,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         if session.can_undo_tutorial_move() || data.lesson.as_ref().and_then(|lesson| lesson.undo_from(&session)).is_some() {
             commands.push(map_menus::Command::Undo);
         }
+        if session.can_show_enemy_moves() { commands.push(map_menus::Command::ShowEnemyMoves); }
         let auto_objectives = !walking && session.has_objective_notice();
         let top = if walking || dialogue_open || auto_objectives { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let show_objectives = auto_objectives || session.has_authored_objectives() && !walking && !dialogue_open
@@ -377,6 +378,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 Ok(()) => art.show_grid = !art.show_grid,
                 Err(error) => message = Some(format!("Could not save grid preference: {error}")),
             }
+        }
+        if menu.is_none() && (top.command == Some(map_menus::Command::ShowEnemyMoves)
+            || !input_blocked && map_menus::enemy_moves_hotkey()) {
+            session.show_enemy_moves(camera.hex_at(Vec2::from(mouse_position()).to_array()));
         }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
@@ -408,6 +413,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 }
             }
             Some(map_menus::Command::NextUnit) => {
+                session.clear_enemy_moves();
                 if let Some(view) = session.observation() && let Some(hex) = map_menus::next_unit(view, selection.unit()) {
                     selection.select_own(hex, view);
                     camera.center_world([hex.x as f32 * 0.75 + 0.5, hex.y as f32 + hex.x.rem_euclid(2) as f32 * 0.5 + 0.5]);
@@ -436,6 +442,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
         }
         if !input_blocked && is_mouse_button_pressed(MouseButton::Right) {
+            session.dismiss_enemy_moves(camera.hex_at(Vec2::from(mouse_position()).to_array()));
             selection.clear();
             menu = None;
             message = None;
@@ -638,7 +645,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
                 |art| draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled)).await;
         }
-        let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
+        let under_mouse = camera.hex_at([mouse_x, mouse_y]);
+        if clicked && under_mouse.is_some() {
+            session.dismiss_enemy_moves(under_mouse);
+        } else if !input_blocked && menu.is_none() && session.dialogue().is_none()
+            && !is_mouse_button_pressed(MouseButton::Right) {
+            session.hover_enemy_moves(under_mouse, selection.unit().is_some());
+        }
+        let hovered = selection.unit().zip(under_mouse)
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
         turn_enabled = session.dialogue().is_none();
