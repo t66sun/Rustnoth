@@ -21,9 +21,15 @@ impl BoardCamera {
     pub fn update(&mut self, viewport: Viewport, view: &engine_lite::observation::Observation, reset: bool) {
         let opening = self.layout.is_none();
         self.fit(viewport, view.width, view.height, reset);
-        if opening && !reset && let Some(layout) = self.layout.as_mut() {
+        if opening && !reset {
             let leader = view.units.iter().find(|unit| unit.side == view.side && unit.can_recruit);
-            *layout = layout.native_scale(leader.map(|unit| unit.position));
+            self.open_at(leader.map(|unit| unit.position));
+        }
+    }
+
+    pub fn open_at(&mut self, hex: Option<Hex>) {
+        if let Some(layout) = self.layout.as_mut() {
+            *layout = layout.native_scale(hex);
         }
     }
 

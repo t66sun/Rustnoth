@@ -13,7 +13,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
     let mut cursor = 0;
     let mut playing = false;
     let mut next = 0.;
-    if let Some(view) = session.observation() { art.load(view, &data.assets, session.map_item_images()); }
+    if let Some(view) = session.observation() { art.load(view, &data.assets, session); }
     next_frame().await;
     loop {
         if is_key_pressed(KeyCode::Escape) { return Ok(()); }
@@ -28,34 +28,35 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
             camera.drag([point.x,point.y], is_mouse_button_pressed(MouseButton::Middle), is_mouse_button_down(MouseButton::Middle));
         }
         let status = format!("Replay {cursor}/{}   ·   Space: play/pause   ·   Right: next move   ·   Esc: close",events.len());
+        let mut step = is_key_pressed(KeyCode::Right);
+        if is_key_pressed(KeyCode::Space) { playing = !playing; }
         render::draw(session.state(),session.observation(),camera.layout(),art,render::MovementView {
             session, global_time: session.global_time_of_day(), route: None, selected: None,
             actions: &[], message: Some(&status), assets: &data.assets, menu: None,
+        }, |art| {
+            if let Some(tex) = &panel {
+                let mut x = viewport.x;
+                while x < viewport.x + viewport.width {
+                    let w = tex.width().min(viewport.x + viewport.width - x);
+                    draw_texture_ex(tex, x, top, WHITE, DrawTextureParams { source: Some(Rect::new(0.,0.,w,41.)), ..Default::default() });
+                    x += w;
+                }
+            }
+            if let Some(line) = session.dialogue() { render::draw_dialogue(line, &data.assets, art, 0); }
+            for (index, x) in [7.,41.,177.].into_iter().enumerate() {
+                let r = Rect::new(viewport.x+x, top+5.,30.,30.);
+                if let Some(tex) = &frame { draw_texture(tex,r.x,r.y,WHITE); }
+                if let Some(tex) = &icons[index] { draw_texture(tex,r.x,r.y,WHITE); }
+                if r.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
+                    match index { 0 => playing = true, 1 => playing = false, _ => step = true }
+                }
+            }
         });
-        if let Some(tex) = &panel {
-            let mut x = viewport.x;
-            while x < viewport.x + viewport.width {
-                let w = tex.width().min(viewport.x + viewport.width - x);
-                draw_texture_ex(tex, x, top, WHITE, DrawTextureParams { source: Some(Rect::new(0.,0.,w,41.)), ..Default::default() });
-                x += w;
-            }
-        }
-        if let Some(line) = session.dialogue() { render::draw_dialogue(line, &data.assets, art, 0); }
-        let mut step = is_key_pressed(KeyCode::Right);
-        if is_key_pressed(KeyCode::Space) { playing = !playing; }
-        for (index, x) in [7.,41.,177.].into_iter().enumerate() {
-            let r = Rect::new(viewport.x+x, top+5.,30.,30.);
-            if let Some(tex) = &frame { draw_texture(tex,r.x,r.y,WHITE); }
-            if let Some(tex) = &icons[index] { draw_texture(tex,r.x,r.y,WHITE); }
-            if r.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
-                match index { 0 => playing = true, 1 => playing = false, _ => step = true }
-            }
-        }
         if (step || playing && get_time() >= next) && let Some(event) = events.get(cursor) {
             event.apply(session)?;
             cursor += 1;
             next = get_time() + 0.65;
-            if let Some(view) = session.observation() { art.load(view, &data.assets, session.map_item_images()); }
+            if let Some(view) = session.observation() { art.load(view, &data.assets, session); }
         }
         if cursor == events.len() { playing = false; }
         next_frame().await;

@@ -1,11 +1,12 @@
 //! Static campaign actions on scenario and turn events.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod endlevel;
 pub(crate) mod kill;
 mod items;
 mod have_unit;
+mod objectives;
 use have_unit::HaveUnit;
 pub(crate) mod variables;
 mod time_areas;
@@ -16,14 +17,16 @@ use items::{ItemChange, MapItems};
 use variables::{Comparison, ScalarChange, Scalars};
 
 use crate::{
-    hex::Hex, map::ScenarioMap, scenario_sides::SideConfig, scenario_time::{coordinate_ranges, location_ranges},
+    hex::Hex, map::ScenarioMap, scenario_sides::{SideConfig, SideController}, scenario_time::{coordinate_ranges, location_ranges},
     time_of_day::WmlRectangle, turn::Turn, wml::Node,
 };
 
 #[derive(Clone, Debug)]
 pub(crate) enum SideAction {
     Gold(i32),
-    Economy {
+    Modify {
+        controller: Option<SideController>,
+        defeat_condition: Option<crate::scenario_sides::DefeatCondition>,
         gold: Option<i32>,
         income: Option<i32>,
         village_gold: Option<i32>,
@@ -31,7 +34,6 @@ pub(crate) enum SideAction {
     },
     AllowRecruit(Vec<String>),
     SetRecruit(Vec<String>),
-    Objectives(crate::scenario_sides::ScenarioObjectives),
     DisallowRecruit(Option<Vec<String>>),
 }
 
@@ -41,7 +43,7 @@ enum EventAction {
     Board(BoardChange),
     Item(ItemChange),
     Variable(ScalarChange),
-    If { tests: Vec<Comparison>, units: Vec<HaveUnit>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
+    If { tests: Vec<Comparison>, units: Vec<(HaveUnit, bool)>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
 }
 
 #[derive(Clone, Debug)]
@@ -49,17 +51,24 @@ pub(crate) struct PendingAction(Box<EventAction>);
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    SetObjectives { sides: Vec<usize>, definition: objectives::Definition, notify: bool },
+    ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
+    SetUnitMoves { filter: UnitFilter, moves: i32 },
     Dialogue(crate::fixed_match::dialogue::Message),
     TutorialHint(Node),
+    TutorialPrint(Node),
+    TutorialUndoPrint(crate::wml::Value),
+    TutorialEndTurn(Option<Node>),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     PersonalRecruits(PersonalRecruits),
     Kill(kill::KillAction, Option<Hex>),
     Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool, report: bool, replay_save: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
+    EndLevel { victory: bool, report: bool, linger: bool, replay_save: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
+    MoveUnit { id: String, destination: Hex },
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
 }
@@ -180,6 +189,13 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "modify_unit" {
+            let [(tag, filter)] = cfg.children.as_slice() else { return None };
+            if tag != "filter" || cfg.attributes.len() != 1 { return None; }
+            if ["x", "y"].iter().any(|key| filter.attribute(key) == Some("recall")) { return None; }
+            let moves: i32 = cfg.attribute("moves")?.trim().parse().ok()?;
+            return Some(Self::Board(BoardChange::SetUnitMoves { filter: UnitFilter::read(filter)?, moves }));
+        }
         if tag == "heal_unit" {
             return crate::board::HealUnit::read(cfg).map(|heal| Self::Board(BoardChange::HealUnit(heal)));
         }
@@ -241,28 +257,41 @@ impl EventAction {
             let code = code.trim_end_matches('^').to_owned();
             return Some(Self::Board(BoardChange::Terrain { locations, code, layer, fallback }));
         }
-        if tag == "objectives" {
+        if tag == "objectives" || tag == "show_objectives" {
+            if tag == "show_objectives" && (cfg.attributes.keys().any(|k| k != "side") || !cfg.children.is_empty()) {
+                return None;
+            }
             // Unknown side filters must not publish private objectives to other sides.
             if cfg.attributes.keys().any(|key| !matches!(key.as_str(), "side" | "silent" | "summary" |
                 "victory_string" | "defeat_string" | "notes_string" | "note" | "gold_carryover_string" |
                 "bullet" | "delayed_variable_substitution"))
                 || cfg.children.iter().any(|(tag, _)| !matches!(tag.as_str(), "objective" | "note" | "gold_carryover"))
             { return None; }
-            let action = SideAction::Objectives(crate::scenario_sides::ScenarioObjectives::read(cfg));
-            let mut command = Self::side_action(cfg, side_count, action)?;
+            let mut sides = Self::side_indices(cfg, side_count)?;
             // objectives.lua uses the global list when the side filter matches no side (including side=0).
-            if let Self::Sides { sides, .. } = &mut command && sides.is_empty() {
-                sides.extend(0..side_count);
-            }
-            return Some(command);
+            if sides.is_empty() { sides.extend(0..side_count); }
+            return Some(if tag == "show_objectives" {
+                Self::Board(BoardChange::ShowObjectives(sides))
+            } else {
+                Self::Board(BoardChange::SetObjectives {
+                    sides, definition: objectives::Definition::read(cfg),
+                    notify: !crate::scenario_sides::bool_attribute(cfg, "silent", false),
+                })
+            });
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
-                !matches!(key.as_str(), "side" | "gold" | "income" | "village_gold" | "village_support")
+                // Campaigns often reveal the side in the native status table as they activate its AI.
+                !matches!(key.as_str(), "side" | "controller" | "hidden" | "defeat_condition" | "gold" | "income" | "village_gold" | "village_support")
                     || !value.translations.is_empty() || value.text.contains('$')
             }) { return None; }
             let number = |key| cfg.attribute(key).map(|value| value.trim().parse::<i32>()).transpose();
-            let action = SideAction::Economy {
+            let action = SideAction::Modify {
+                controller: cfg.attribute("controller").and_then(SideController::from_wml),
+                defeat_condition: match cfg.attribute("defeat_condition") {
+                    Some(value) => Some(crate::scenario_sides::DefeatCondition::from_wml(value)?),
+                    None => None,
+                },
                 gold: number("gold").ok()?,
                 income: number("income").ok()?,
                 village_gold: number("village_gold").ok()?,
@@ -290,6 +319,10 @@ impl EventAction {
     }
 
     fn side_action(cfg: &Node, side_count: usize, action: SideAction) -> Option<Self> {
+        Some(Self::Sides { sides: Self::side_indices(cfg, side_count)?, action })
+    }
+
+    fn side_indices(cfg: &Node, side_count: usize) -> Option<Vec<usize>> {
         let mut sides: Vec<_> = (0..side_count).collect();
         if let Some(selector) = cfg.attribute("side") {
             let mut ranges = Vec::new();
@@ -299,11 +332,11 @@ impl EventAction {
             }
             sides.retain(|index| ranges.iter().any(|r| r.contains(&(index + 1))));
         }
-        Some(Self::Sides { sides, action })
+        Some(sides)
     }
 
     fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
-        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>) {
+        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>, active_side: usize) {
         if !matches!(self, Self::Board(_)) && (!state.board_changes.is_empty()
             || matches!(self, Self::If { units, .. } if !units.is_empty() && board.is_none())) {
             state.board_changes.push(BoardChange::Resume(PendingAction(Box::new(self.clone())), primary));
@@ -316,9 +349,9 @@ impl EventAction {
             }
             Self::If { tests, units, on_match, otherwise } => {
                 let matched = tests.iter().all(|test| test.matches(variables))
-                    && units.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
+                    && units.iter().all(|(test, expected)| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()) == *expected);
                 let branch = if matched { on_match } else { otherwise };
-                for change in branch { change.apply(state, items, variables, primary, board); }
+                for change in branch { change.apply(state, items, variables, primary, board, active_side); }
                 return;
             }
             Self::Item(change) => {
@@ -335,18 +368,25 @@ impl EventAction {
             }
             Self::Sides { sides, action } => (sides, action),
         };
-        action.apply(sides, state.gold, state.sides);
+        action.apply(sides, state, active_side);
     }
 }
 
 impl SideAction {
-    pub(crate) fn apply(&self, sides: &[usize], funds: &mut [i64], teams: &mut [SideConfig]) {
+    fn apply(&self, sides: &[usize], state: &mut EventState<'_>, active_side: usize) {
+        let teams = &mut state.sides;
+        let funds = &mut state.gold;
         for &index in sides {
             match self {
-                SideAction::Objectives(objectives) => teams[index].objectives.clone_from(objectives),
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
-                SideAction::Economy { gold, income, village_gold, village_support } => {
+                SideAction::Modify { controller, defeat_condition, gold, income, village_gold, village_support } => {
+                    if let Some(rule) = defeat_condition { teams[index].defeat_condition = *rule; }
                     let side = &mut teams[index];
+                    // team::change_controller_by_wml keeps the currently playing side active.
+                    if let Some(controller) = controller
+                        && (*controller != SideController::Empty || side.side != active_side) {
+                        side.controller = *controller;
+                    }
                     if let Some(value) = gold { funds[index] = i64::from(*value); }
                     if let Some(value) = income { side.income_bonus = *value; }
                     if let Some(value) = village_gold { side.village_gold = *value; }
@@ -371,6 +411,16 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "move_unit" if cfg.children.is_empty() && cfg.attributes.len() == 3 => {
+                let id = cfg.attribute("id")?;
+                if id.is_empty() || id.contains([',', '$', '*', '?']) { return None; }
+                let destination = Hex::from_wml(cfg.attribute("to_x")?.parse().ok()?, cfg.attribute("to_y")?.parse().ok()?)?;
+                EventAction::Board(BoardChange::MoveUnit { id: id.to_owned(), destination })
+            }
+            "rustnoth_tutorial_print" => EventAction::Board(BoardChange::TutorialPrint(cfg.clone())),
+            "rustnoth_tutorial_undo" => EventAction::Board(BoardChange::TutorialUndoPrint(cfg.attributes.get("text")?.clone())),
+            "rustnoth_tutorial_disallow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(Some(cfg.clone()))),
+            "rustnoth_tutorial_allow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(None)),
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
             "rustnoth_tutorial_hint" if cfg.children.is_empty() && cfg.attributes.iter().all(|(key, value)|
                     matches!(key.as_str(), "caption" | "message" | "remove") && !value.text.contains('$')) =>
@@ -385,7 +435,12 @@ fn read_actions<'a>(
                 for (tag, child) in &cfg.children {
                     match tag.as_str() {
                         "variable" => tests.push(Comparison::read(child)?),
-                        "have_unit" => units.push(HaveUnit::read(child)?),
+                        "have_unit" => units.push((HaveUnit::read(child)?, true)),
+                        "not" if child.attributes.is_empty() => {
+                            let [(predicate, unit)] = child.children.as_slice() else { return None };
+                            if predicate != "have_unit" { return None; }
+                            units.push((HaveUnit::read(unit)?, false));
+                        }
                         "then" | "else" if child.attributes.is_empty() => {
                             has_branch = true;
                             let branch = if tag == "then" { &mut on_match } else { &mut otherwise };
@@ -400,6 +455,7 @@ fn read_actions<'a>(
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
                 report: crate::scenario_sides::bool_attribute(cfg, "carryover_report", true),
+                linger: crate::scenario_sides::bool_attribute(cfg, "linger_mode", true),
                 replay_save: crate::scenario_sides::bool_attribute(cfg, "replay_save", true),
                 next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
                 gold: crate::fixed_match::carryover::GoldOverride::endlevel(cfg, side_count),
@@ -431,6 +487,7 @@ fn presentation_only(tag: &str, cfg: &Node) -> bool {
 #[derive(Clone, Debug)]
 pub(crate) struct UnitFilter {
     locations: Vec<WmlRectangle>,
+    excluded: Vec<Self>,
     sides: Vec<usize>,
     ids: Vec<String>,
     types: Vec<String>,
@@ -438,7 +495,7 @@ pub(crate) struct UnitFilter {
 
 impl UnitFilter {
     pub(crate) fn read(cfg: &Node) -> Option<Self> {
-        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+        if cfg.attributes.iter().any(|(key, value)| {
             !matches!(key.as_str(), "x" | "y" | "side" | "id" | "type")
                 || !value.translations.is_empty() || value.text.contains('$')
         }) {
@@ -449,8 +506,12 @@ impl UnitFilter {
         let x = cfg.attribute("x").unwrap_or_default();
         let y = cfg.attribute("y").unwrap_or_default();
         let locations = coordinate_ranges(x, y, i32::MAX, i32::MAX);
+        let excluded = cfg.children.iter().map(|(tag, child)| {
+            if tag == "not" { Self::read(child) } else { None }
+        }).collect::<Option<_>>()?;
         Some(Self {
             locations,
+            excluded,
             sides: values("side").map(str::parse).collect::<Result<_, _>>().ok()?,
             ids: values("id").map(str::to_owned).collect(),
             types: values("type").map(str::to_owned).collect(),
@@ -461,12 +522,13 @@ impl UnitFilter {
         self.matches_fields(Some(unit.position), unit.side, unit.id.as_deref(), unit.type_id)
     }
 
-    fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
+    pub(crate) fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
         (self.locations.is_empty() || position.and_then(Hex::to_wml).is_some_and(|(x, y)|
             self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))))
             && (self.sides.is_empty() || self.sides.contains(&side))
             && (self.ids.is_empty() || id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
             && (self.types.is_empty() || self.types.iter().any(|id| id == type_id))
+            && !self.excluded.iter().any(|filter| filter.matches_fields(position, side, id, type_id))
     }
 }
 
@@ -536,6 +598,7 @@ struct Handler {
 
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
+    objective_definitions: BTreeMap<usize, objectives::Definition>,
     handlers: Vec<Handler>,
     active_side: usize,
     variables: Scalars,
@@ -602,6 +665,7 @@ impl ScenarioEvents {
         handlers.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
         Self {
             handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
+            objective_definitions: BTreeMap::new(),
             active_side: 1,
             variables: variables::initial(scenario),
             items: MapItems::default(),
@@ -610,7 +674,7 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, board: &crate::board::Battlefield<'_>, state: &mut EventState<'_>) {
-        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board));
+        action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board), self.active_side);
     }
 
     pub(crate) fn has_handler(&self, name: &str) -> bool {
@@ -630,7 +694,7 @@ impl ScenarioEvents {
                 return true;
             }
             for change in &handler.changes {
-                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None);
+                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None, self.active_side);
             }
             !handler.once
         });
@@ -659,17 +723,19 @@ impl ScenarioEvents {
         self.fire(&format!("side_{side}_turn_{round}_refresh"), state);
     }
 
-    pub(crate) fn end_turn(&mut self, turn: Turn, end_round: bool, state: &mut EventState<'_>) {
+    pub(crate) fn end_side_turn(&mut self, turn: Turn, state: &mut EventState<'_>) {
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
         self.fire("side_turn_end", state);
         self.fire(&format!("side_{side}_turn_end"), state);
         self.fire(&format!("side_turn_{round}_end"), state);
         self.fire(&format!("side_{side}_turn_{round}_end"), state);
-        if end_round {
-            self.fire("turn_end", state);
-            self.fire(&format!("turn_{round}_end"), state);
-        }
+    }
+
+    pub(crate) fn end_round(&mut self, round: i32, state: &mut EventState<'_>) {
+        if self.handlers.is_empty() { return; }
+        self.fire("turn_end", state);
+        self.fire(&format!("turn_{round}_end"), state);
     }
 }
 
@@ -1206,7 +1272,8 @@ village_support=2
             let turn = Turn { round: 1, side };
             events.begin_turn(turn, side == 1, &mut state);
             events.refresh(turn, &mut state);
-            events.end_turn(turn, side == 2, &mut state);
+            events.end_side_turn(turn, &mut state);
+            if side == 2 { events.end_round(turn.round, &mut state); }
         }
         assert_eq!(gold, [-4, 1, 7]);
     }

@@ -9,8 +9,11 @@ use crate::{board::{Battlefield, UnitState}, hex::Hex, wml::Node};
 pub(super) struct HaveUnit {
     filter: UnitFilter,
     exclude: Vec<UnitFilter>,
+    adjacent: Vec<UnitFilter>,
     counts: Vec<RangeInclusive<usize>>,
     levels: Vec<RangeInclusive<i32>>,
+    races: Vec<String>,
+    heals: bool,
     search_recall: bool,
     recall_only: bool,
 }
@@ -35,6 +38,13 @@ impl HaveUnit {
         let mut unit = cfg.clone();
         unit.attributes.remove("count");
         unit.attributes.remove("search_recall_list");
+        let races = unit.attributes.remove("race").map_or_else(Vec::new, |v|
+            v.text.split(',').map(|r| r.trim().to_owned()).collect());
+        let heals = match unit.attributes.remove("ability_type").as_ref().map(|v| v.text.as_str()) {
+            Some("heals") => true,
+            None => false,
+            _ => return None,
+        };
         let mut levels = Vec::new();
         if let Some(level) = unit.attributes.remove("level") {
             for part in level.text.split(',').map(str::trim) {
@@ -47,22 +57,32 @@ impl HaveUnit {
             unit.attributes.remove("x");
             unit.attributes.remove("y");
         }
-        let exclude = std::mem::take(&mut unit.children).iter().map(|(tag, child)| {
-            if tag == "not" { UnitFilter::read(child) } else { None }
-        }).collect::<Option<_>>()?;
-        Some(Self { filter: UnitFilter::read(&unit)?, counts, levels, search_recall, recall_only, exclude })
+        let mut exclude = Vec::new();
+        let mut adjacent = Vec::new();
+        for (tag, child) in std::mem::take(&mut unit.children) {
+            match tag.as_str() {
+                "not" => exclude.push(UnitFilter::read(&child)?),
+                "filter_adjacent" => adjacent.push(UnitFilter::read(&child)?),
+                _ => return None,
+            }
+        }
+        Some(Self { filter: UnitFilter::read(&unit)?, counts, levels, races, heals, search_recall, recall_only, exclude, adjacent })
     }
 
     fn matches_unit(&self, position: Option<Hex>, unit: &UnitState<'_>) -> bool {
         let matches = |filter: &UnitFilter| filter.matches_fields(position, unit.side, unit.id.as_deref(), &unit.unit_type.id);
         matches(&self.filter) && !self.exclude.iter().any(matches)
+            && (self.races.is_empty() || self.races.contains(&unit.unit_type.race))
+            && (!self.heals || unit.unit_type.has_heals)
             && (self.levels.is_empty() || self.levels.iter().any(|range| range.contains(&unit.unit_type.level)))
     }
 
     pub(super) fn matches(&self, board: &Battlefield<'_>, side_count: usize) -> bool {
         let living = board.units().filter(|(hex, unit)| !self.recall_only && unit.hitpoints > 0
-            && self.matches_unit(Some(*hex), unit));
-        let reserves = (1..=side_count).filter(|_| self.search_recall)
+            && self.matches_unit(Some(*hex), unit) && self.adjacent.iter().all(|filter|
+                hex.neighbors().any(|at| board.unit_at(at).is_some_and(|other|
+                    filter.matches_fields(Some(at), other.side, other.id.as_deref(), &other.unit_type.id)))));
+        let reserves = (1..=side_count).filter(|_| self.search_recall && self.adjacent.is_empty())
             .flat_map(|side| board.recall_roster(side)).filter(|unit| self.matches_unit(None, unit));
         let mut matches = living.map(|_| ()).chain(reserves.map(|_| ()));
         if self.counts.len() == 1 && self.counts[0] == (1..=usize::MAX) { return matches.next().is_some(); }

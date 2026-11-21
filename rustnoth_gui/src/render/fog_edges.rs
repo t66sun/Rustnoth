@@ -87,27 +87,24 @@ struct Boundary {
     shroud: u8,
 }
 
-fn boundaries(view: &Observation, cover: &[(Hex, Cover)]) -> Vec<Boundary> {
+fn boundaries(known: impl Iterator<Item = (Hex, bool)>, cover: &[(Hex, Cover)]) -> Vec<Boundary> {
     if cover.is_empty() {
         return Vec::new();
     }
     let covered: HashMap<_, _> = cover.iter().map(|(at, kind)| (*at, kind)).collect();
-    view.tiles
-        .iter()
-        .filter_map(|tile| {
+    known
+        .filter_map(|(at, visible)| {
             let mut fog = 0;
             let mut shroud = 0;
-            // Explored tiles are the only possible receivers. Off-board coordinates
-            // are absent from the bounded cover map and contribute no overlap.
-            for (i, neighbor) in tile.position.neighbors().enumerate() {
+            for (i, neighbor) in at.neighbors().enumerate() {
                 match covered.get(&neighbor) {
                     Some(Cover::Shroud) => shroud |= 1 << i,
-                    Some(Cover::Fog) if tile.visible => fog |= 1 << i,
+                    Some(Cover::Fog) if visible => fog |= 1 << i,
                     _ => {}
                 }
             }
             (fog != 0 || shroud != 0).then_some(Boundary {
-                at: tile.position,
+                at,
                 fog,
                 shroud,
             })
@@ -130,11 +127,13 @@ impl Edges {
         }
     }
 
-    pub(super) fn update(&mut self, view: &Observation, cover: &[(Hex, Cover)]) {
-        self.tiles = boundaries(view, cover);
+    pub(super) fn update(&mut self, view: &Observation, border: &engine_lite::map::KnownBorder<'_>, cover: &[(Hex, Cover)]) {
+        let known = view.tiles.iter().map(|t| (t.position, t.visible))
+            .chain(border.iter().map(|(&at, &(_, visible))| (at, visible)));
+        self.tiles = boundaries(known, cover);
     }
 
-    pub(super) fn draw(&self, layout: &BoardLayout) {
+    pub(super) fn draw(&self, layout: &BoardLayout, viewport: super::Viewport) {
         let size = layout.tile_size();
         for tile in &self.tiles {
             let [x, y] = layout.tile_origin(tile.at);
@@ -143,7 +142,7 @@ impl Edges {
                 .iter()
                 .chain(&self.shroud[tile.shroud as usize])
             {
-                draw_centered(texture, center, size);
+                draw_centered(texture, center, size, Some(viewport));
             }
         }
     }
@@ -184,7 +183,7 @@ mod tests {
             tiles: vec![tile(0, 0, true), tile(1, 0, false), tile(1, 1, false)],
             units: vec![],
         };
-        let result = boundaries(&view, &map_cover(&view));
+        let result = boundaries(view.tiles.iter().map(|t| (t.position, t.visible)), &map_cover(&view));
         assert_eq!(
             result,
             [

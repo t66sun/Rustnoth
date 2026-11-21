@@ -13,6 +13,8 @@ pub enum Event {
     Player(Action, Option<String>, Option<u32>),
     Computer(Option<u32>),
     Dismiss,
+    ObjectivesSeen,
+    TutorialUndoPrint(Value),
 }
 
 pub fn set(node: &mut Node, key: &str, value: impl ToString) {
@@ -37,6 +39,8 @@ impl Event {
             }
             Self::Computer(seed) if session.play_computer_with_seed(*seed)? => {}
             Self::Dismiss if session.dialogue().is_some() => session.dismiss_dialogue(),
+            Self::ObjectivesSeen if session.acknowledge_objectives() => {}
+            Self::TutorialUndoPrint(text) => session.restore_tutorial_print(text),
             _ => return Err(invalid("Saved command does not match the current turn").into()),
         }
         Ok(())
@@ -54,6 +58,11 @@ impl Event {
         let kind = match self {
             Self::Computer(_) => "computer",
             Self::Dismiss => "dismiss_dialogue",
+            Self::ObjectivesSeen => "objectives_seen",
+            Self::TutorialUndoPrint(text) => {
+                node.attributes.insert("text".into(), text.clone());
+                "tutorial_undo_print"
+            }
             Self::Player(action, choice, _) => {
                 if let Some(id) = choice {
                     set(&mut node, "advance", id);
@@ -117,6 +126,9 @@ impl Event {
         let action = match kind {
             "computer" => return Ok(Self::Computer(seed)),
             "dismiss_dialogue" => return Ok(Self::Dismiss),
+            "objectives_seen" => return Ok(Self::ObjectivesSeen),
+            "tutorial_undo_print" => return node.attributes.get("text").cloned().map(Self::TutorialUndoPrint)
+                .ok_or_else(|| invalid("Missing tutorial undo prompt")),
             "end_turn" => Action::EndTurn,
             "move" => Action::Move {
                 from: hex("x", "y")?,
