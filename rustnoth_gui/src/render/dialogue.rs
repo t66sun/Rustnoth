@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn profile_direction_can_be_overridden_and_double_dialogues_anchor_both_speakers() {
-        let mut line = DialogueLine { text: "Stay.".into(), caption: None, image: None, speaker_type: None,
+        let mut line = DialogueLine { focus: None, text: "Stay.".into(), caption: None, image: None, speaker_type: None,
             speaker_side: None, portrait_right: None, mirror: false, second_image: None, second_mirror: false };
         let image = "portraits/kapoue.webp~FL()~RIGHT()";
         assert_eq!(PortraitLayout::for_message(&line, image), PortraitLayout::Right);

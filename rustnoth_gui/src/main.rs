@@ -295,6 +295,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     let preference_dir = display_preferences::config_directory()?;
     let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
+    if let Some(lesson) = &mut data.lesson {
+        lesson.localize_attack_instructions(&data.wesnoth_root, &mut locale);
+    }
     if let Some(checkpoint) = restore {
         if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
@@ -361,7 +364,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let unit_list = top.command == Some(map_menus::Command::UnitList)
             || !walking && !dialogue_open && !show_objectives && !top.handled && commands.contains(&map_menus::Command::UnitList)
                 && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
-        let input_blocked = walking || dialogue_open || top.handled || show_objectives || unit_list;
+        let modal_input = walking || dialogue_open || top.handled || show_objectives || unit_list;
+        let save = data.lesson.is_none() && menu.is_none()
+            && (top.command == Some(map_menus::Command::Save) || !modal_input && save_dialog::save_pressed());
+        let input_blocked = modal_input || save;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -422,19 +428,6 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
             _ => {}
         }
-        if data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
-            next_frame().await;
-            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
-                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
-                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
-                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
-                    Ok(()) => format!("Saved {name}"),
-                    Err(e) => format!("Save failed: {e}"),
-                });
-            }
-            next_frame().await;
-            continue;
-        }
         if !input_blocked && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
                 return Ok(None);
@@ -453,9 +446,15 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
+        let mut briefing_scroll = false;
+        art.briefing_highlight = None;
         if let Some(observation) = session.observation() {
-            let reset = is_key_pressed(KeyCode::Home);
+            let reset = is_key_pressed(KeyCode::Home) && !dialogue_open;
             camera.update(render::board_viewport(), observation, reset);
+            if let Some(focus) = session.dialogue().and_then(|line| line.focus) {
+                briefing_scroll = camera.scroll_briefing(focus, get_frame_time(), speed.scroll, art.animation_rate());
+                if !briefing_scroll { art.briefing_highlight = Some(focus.hex); }
+            }
             if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
             if !reset && !input_blocked {
                 if is_mouse_button_pressed(MouseButton::Left)
@@ -666,10 +665,22 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             },
             |art| {
                 draw_controls(art, &visible_prompt, visible_turn_label);
-                session.dialogue().filter(|_| !art.walk.active())
+                session.dialogue().filter(|_| !briefing_scroll && !art.walk.active())
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
         );
+        if save {
+            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
+                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
+                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
+                    Ok(()) => format!("Saved {name}"),
+                    Err(e) => format!("Save failed: {e}"),
+                });
+            }
+            next_frame().await;
+            continue;
+        }
         if unit_list && let Some(view) = session.observation() {
             if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
                 selection.select_own(at, view);

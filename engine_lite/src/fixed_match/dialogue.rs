@@ -1,5 +1,6 @@
 //! Side-filtered campaign dialogue for the desktop player.
 use super::FixedMatch;
+use crate::hex::Hex;
 use crate::{scenario_sides::bool_attribute, visibility::HexVisibility, wml::Node};
 
 #[derive(Clone, Debug)]
@@ -10,6 +11,7 @@ pub enum Presentation {
 
 #[derive(Clone, Debug)]
 pub struct DialogueLine {
+    pub focus: Option<DialogueFocus>,
     pub text: String,
     pub caption: Option<String>,
     pub image: Option<String>,
@@ -22,8 +24,22 @@ pub struct DialogueLine {
     pub second_mirror: bool,
 }
 
+/// A visible subject of the tutorial briefing. Normal speakers only scroll when offscreen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialogueFocus {
+    pub hex: Hex,
+    pub only_if_offscreen: bool,
+}
+
+#[derive(Clone, Debug)]
+enum Subject {
+    Unit(String),
+    Tile(Hex),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Message {
+    focus: Option<(Subject, bool)>,
     speaker: String,
     sides: Option<Vec<usize>>,
     line: DialogueLine,
@@ -32,7 +48,21 @@ pub(crate) struct Message {
 impl Message {
     pub(crate) fn read(cfg: &Node) -> Option<Self> {
         // Options, text input and conditional dialogue require interactive WML.
-        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(k, v)|
+        let focus = match cfg.children.as_slice() {
+            [] => None,
+            [(tag, target)] if tag == "rustnoth_tutorial_focus" => {
+                let subject = if let Some(id) = target.attribute("id") {
+                    Subject::Unit(id.into())
+                } else {
+                    let x = target.attribute("x")?.parse().ok()?;
+                    let y = target.attribute("y")?.parse().ok()?;
+                    Subject::Tile(Hex::from_wml(x, y)?)
+                };
+                Some((subject, bool_attribute(target, "only_if_offscreen", false)))
+            }
+            _ => return None,
+        };
+        if cfg.attributes.iter().any(|(k, v)|
             v.text.contains('$') && !(k == "image" && v.text == "$unit.profile" && cfg.attribute("speaker") == Some("narrator")))
             || cfg.attributes.keys().any(|k| !matches!(k.as_str(),
                 "message" | "speaker" | "side_for" | "caption" | "image" | "image_pos" |
@@ -51,7 +81,8 @@ impl Message {
             None => None,
             _ => return None,
         };
-        Some(Self { speaker: speaker.to_owned(), sides, line: DialogueLine {
+        Some(Self { speaker: speaker.to_owned(), sides, focus, line: DialogueLine {
+            focus: None,
             text: text.to_owned(), caption: cfg.attribute("caption").map(str::to_owned),
             image, speaker_type: None, speaker_side: None, portrait_right, mirror: bool_attribute(cfg, "mirror", false),
             second_image: cfg.attribute("second_image").map(str::to_owned),
@@ -111,7 +142,32 @@ impl FixedMatch<'_> {
                     || (self.effective_vision(*side).at(position) == Some(HexVisibility::Visible)
                     && self.unit_visible_on_known_hex(*side, position)))
         }).collect::<Vec<_>>();
-        if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
+        let focus = message.focus.and_then(|(subject, only_if_offscreen)| {
+            let (hex, owner) = match subject {
+                Subject::Unit(id) => self.scenario.board.units().find(|(_, u)| u.id.as_ref() == Some(&id))
+                    .map(|(pos, u)| (pos, Some(u.side)))?,
+                Subject::Tile(hex) => (hex, None),
+            };
+            Some((DialogueFocus { hex, only_if_offscreen }, owner))
+        });
+        let Some((focus, owner)) = focus else {
+            if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
+            return;
+        };
+        // An authored camera move must not disclose the position of a concealed unit.
+        let (shown, hidden): (Vec<_>, Vec<_>) = audience.into_iter().partition(|side| {
+            let visibility = self.effective_vision(*side).at(focus.hex);
+            match owner {
+                Some(owner) => owner == *side || visibility == Some(HexVisibility::Visible)
+                    && self.unit_visible_on_known_hex(*side, focus.hex),
+                None => matches!(visibility, Some(HexVisibility::Visible | HexVisibility::Fogged)),
+            }
+        });
+        if !hidden.is_empty() { self.presentation.push((hidden, Presentation::Dialogue(line.clone()))); }
+        if !shown.is_empty() {
+            line.focus = Some(focus);
+            self.presentation.push((shown, Presentation::Dialogue(line)));
+        }
     }
 
     /// Consume the last command's presentation queue for the local human view.
