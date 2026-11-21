@@ -183,7 +183,7 @@ mod tests {
             [unit]\nid=Delfador\ntype=Elder Mage\nx,y=3,2\n[/unit]\n[/side]\n\
             [event]\nname=prestart\n[disallow_end_turn]\nreason=Finish moving first\n[/disallow_end_turn]\n[/event]\n\
             [event]\nname=start\n{intro}\n[/event]\n\
-            [event]\nid=check_undo\nname=moveto\n[if]\n[then]\n[print]\ntext=Use <b>u</b> to undo.\n[/print]\n[/then]\n[/if]\n[/event]\n\
+            [event]\nid=check_undo\nname=moveto\n[if]\n[then]\n[print]\ntext=\"Use <b>u</b> to undo.\"\n[/print]\n[/then]\n[/if]\n[/event]\n\
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
             [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[disallow_end_turn]\nreason=Strike the dummy\n[/disallow_end_turn]\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
