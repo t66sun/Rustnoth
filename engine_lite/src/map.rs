@@ -64,7 +64,7 @@ impl ScenarioMap {
                     x: column as i32 - BORDER,
                     y: (rows - 1) as i32 - BORDER,
                 };
-                for id in parts {
+                for id in parts.filter(|id| !id.is_empty()) {
                     special_locations.entry(id.to_owned()).or_insert(hex);
                 }
                 terrain.push(code.into());

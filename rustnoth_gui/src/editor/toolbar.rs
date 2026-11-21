@@ -1,4 +1,5 @@
 use super::{Art, AssetCatalog, Command, EditableMap, History};
+use super::clipboard::SelectionState;
 use macroquad::prelude::*;
 
 #[derive(Default)]
@@ -24,7 +25,10 @@ fn buttons(width: f32, doc: &EditableMap, history: &History) -> impl Iterator<It
         (Close, "editor-close-map", 64.0, true),
         (Undo, "undo", undo_x, !history.undo.is_empty()),
         (Redo, "redo", undo_x + 31.0, !history.redo.is_empty()),
+        (ToggleHelp, "editor-help-text-shown", width - 318.0, true),
         (ToggleGrid, "togglegrid", width - 214.0, true),
+        (Coordinates, "editor-draw-coordinates", width - 245., true),
+        (TerrainCodes, "editor-draw-terrain-codes", width - 276., true),
     ]
     .into_iter()
     .filter(move |(cmd, ..)| *cmd != Close || !compact)
@@ -42,17 +46,24 @@ impl Toolbar {
     }
 
     pub(super) fn draw(
-        &mut self, width: f32, point: Vec2, modal: bool, show_grid: bool, doc: &EditableMap, history: &History,
-        assets: &AssetCatalog, art: &mut Art, tip: &mut Option<&'static str>,
+        &mut self, width: f32, point: Vec2, modal: bool, show_grid: bool, show_help: bool, labels: &super::hex_labels::Labels, doc: &EditableMap, history: &History,
+        assets: &AssetCatalog, art: &mut Art, tip: &mut Option<&'static str>, selection: SelectionState,
     ) -> Option<Command> {
-        let hover = buttons(width, doc, history)
+        let controls = || buttons(width, doc, history).chain(selection_buttons(width, selection));
+        let hover = controls()
             .find(|button| button.area.contains(point) && button.enabled && !modal)
             .map(|button| button.command);
         let action = self.activate(hover, is_mouse_button_pressed(MouseButton::Left),
             is_mouse_button_released(MouseButton::Left));
-        for button in buttons(width, doc, history) {
+        for button in controls() {
             let hot = hover == Some(button.command);
-            let selected = button.command == Command::ToggleGrid && show_grid;
+            let selected = match button.command {
+                Command::ToggleGrid => show_grid,
+                Command::Coordinates => labels.coordinates,
+                Command::TerrainCodes => labels.terrain,
+                Command::ToggleHelp => show_help,
+                _ => selection.selected(button.command),
+            };
             let suffix = if selected || hot && self.pressed == hover { "-pressed" }
                 else if hot { "-active" } else { "" };
             let frame_state = if hot && selected { "-active-pressed" } else { suffix };
@@ -69,6 +80,23 @@ impl Toolbar {
     }
 }
 
+fn selection_buttons(width: f32, state: SelectionState) -> impl Iterator<Item=Button> {
+    use Command::*;
+    let first = if width < 1024. { 179. } else { 210. };
+    [
+        (SelectAll, "editor-select-all", 0.),
+        (SelectNone, "editor-select-none", 31.),
+        (SelectInverse, "editor-select-inverse", 62.),
+        (FillSelection, "editor-selection-fill", 93.),
+        (Shuffle, "editor-selection-randomize", 124.),
+        (Cut, "editor-cut", 166.),
+        (Copy, "editor-copy", 197.),
+        (Paste, "editor-paste", 228.),
+    ].into_iter().map(move |(command,image,offset)| Button {
+        command, image, area: Rect::new(first + offset,31.,30.,30.), enabled: state.enabled(command),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,13 +110,15 @@ mod tests {
             buttons(width, doc, history).map(|b| (b.command, b.area.x as i32, b.enabled)).collect::<Vec<_>>();
         assert_eq!(slots(1200., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, false), (Command::Close, 64, true),
-            (Command::Undo, 137, false), (Command::Redo, 168, false), (Command::ToggleGrid, 986, true),
+            (Command::Undo, 137, false), (Command::Redo, 168, false), (Command::ToggleHelp, 882, true), (Command::ToggleGrid, 986, true),
+            (Command::Coordinates, 955, true), (Command::TerrainCodes, 924, true),
         ]);
         history.paint(&mut doc, Hex { x: 0, y: 0 }, "Ww");
         history.finish();
         assert_eq!(slots(800., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, true),
-            (Command::Undo, 106, true), (Command::Redo, 137, false), (Command::ToggleGrid, 586, true),
+            (Command::Undo, 106, true), (Command::Redo, 137, false), (Command::ToggleHelp, 482, true), (Command::ToggleGrid, 586, true),
+            (Command::Coordinates, 555, true), (Command::TerrainCodes, 524, true),
         ]);
         history.apply(&mut doc, true);
         assert!(buttons(1200., &doc, &history).any(|b| b.command == Command::Redo && b.enabled));
