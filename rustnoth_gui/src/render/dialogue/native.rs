@@ -36,8 +36,12 @@ impl Art {
         Self { root: root.to_owned(), pango: OnceCell::new(), cached: None }
     }
 
+    pub(in crate::render) fn renderer(&self) -> Option<&Text> {
+        self.pango.get_or_init(|| Text::load(&self.root, "Lato")).as_ref()
+    }
+
     pub(super) fn labels(&mut self, caption: &str, text: &str, width: u16, max_height: u16, page: usize) -> Option<Labels> {
-        let renderer = self.pango.get_or_init(|| Text::load(&self.root, "Lato")).as_ref()?;
+        let renderer = self.renderer()?;
         let viewport = (width, max_height);
         if let Some(entry) = &self.cached && entry.caption == caption && entry.text == text
             && entry.viewport == viewport && entry.page == page {
