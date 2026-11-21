@@ -130,10 +130,24 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let healing = healing::Exercises::read(scenario, attack, hero)?;
     let reasons = super::end_turn::Reasons::read(scenario, meet);
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
+    let mut lesson = Lesson::new(mentor_hex, hero, undo_prompt, healing, recruiting, reasons);
+    if let Some(prompt) = gender_command(start, hero, "print").and_then(|cmd| cmd.attribute("text")) {
+        lesson.select_prompt = prompt.into();
+    }
+    if let Some(select) = children(scenario, "event").find(|event| event.attribute("name") == Some("select")) {
+        if let Some(hint) = gender_command(select, hero, "hint_message") {
+            let mut line = dialogue(hint, hero);
+            put(&mut line, "speaker", "narrator");
+            lesson.selection_hint = Some(line);
+        }
+        if let Some(prompt) = gender_command(select, hero, "print").and_then(|cmd| cmd.attribute("text")) {
+            lesson.movement_prompt = prompt.into();
+        }
+    }
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero, undo_prompt, healing, recruiting, reasons))
+    Ok(lesson)
 }
 
 #[cfg(test)]
@@ -222,6 +236,9 @@ condition=lose
 [/objective]
 [/objectives]
 [/event]"#)).unwrap().children);
+            let instructions = gendered("hint_message", "Move Konrad", "Move Lisar");
+            let select = wml::parse(format!("name=select\n{instructions}")).unwrap();
+            scenario.children.push(("event".into(), select));
             let mut lesson = prepare(&mut scenario, hero).unwrap();
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
@@ -237,6 +254,13 @@ condition=lose
             assert_eq!(goals.victory, ["Destroy a fierce enemy"]);
             assert_eq!(goals.defeat, ["Get yourself killed"]);
             session.acknowledge_objectives();
+            let before = session.history().to_vec();
+            assert!(lesson.select_student(&mut session));
+            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "Move Konrad" } else { "Move Lisar" });
+            session.dismiss_dialogue();
+            assert_eq!(session.history(), before, "undo replays only scenario-generated dialogue");
+            assert!(!lesson.select_student(&mut session));
+            assert!(session.dialogue().is_none());
             assert!(session.legal_actions().contains(&Action::EndTurn));
             assert!(!session.legal_actions().iter().any(|action| matches!(action, Action::Recruit { .. })));
             lesson.restrict(&mut session);
@@ -262,7 +286,7 @@ condition=lose
             assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(intermediate));
             assert!(!lesson.show_undo_prompt);
             assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(origin));
-            assert_eq!(session.history(), &[rustnoth_gui::save_replay::Event::Dismiss]);
+            assert_eq!(session.history(), before);
             assert_eq!(session.observation(), initial.observation());
             let movement = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to: dst, .. } if *dst == to)).unwrap().clone();
             session.apply(movement).unwrap();
