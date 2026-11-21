@@ -58,19 +58,13 @@ impl Lesson {
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn draw_prompt(&self, selected: bool, font: Option<&Font>) {
-        let prompt: &str = match self.step {
+    pub(super) fn prompt(&self, selected: bool) -> Option<&str> {
+        Some(match self.step {
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
             Step::Attack => "Attack the quintain",
             Step::Complete => "Opening exercises complete",
-        };
-        let view = render::board_viewport();
-        let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
-        let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
-        let y = view.y + view.height - 24.0;
-        dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
-        dialog::text(font, &prompt, x, y, 18, WHITE);
+        })
     }
 
     pub(super) fn restrict(&self, session: &mut Session<'_>) {
@@ -87,6 +81,15 @@ impl Lesson {
         self.step = match self.step { Step::Approach => Step::Attack, Step::Attack | Step::Complete => Step::Complete };
         self.restrict(session);
     }
+}
+
+pub(super) fn draw_prompt(prompt: &str, font: Option<&Font>) {
+    let view = render::board_viewport();
+    let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
+    let x = view.x + (view.width - measure_text(&prompt, font, 18, 1.0).width) * 0.5;
+    let y = view.y + view.height - 24.0;
+    dialog::text(font, &prompt, x + 1.0, y + 1.0, 18, BLACK);
+    dialog::text(font, &prompt, x, y, 18, WHITE);
 }
 
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {

@@ -314,6 +314,11 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
+    // Combat plays after the action is committed. Keep the controls the viewer
+    // last saw until the final strike or a skip returns to the updated board.
+    let end_label = locale.game("End Turn");
+    let mut visible_turn_label = None;
+    let mut visible_prompt = String::new();
     session.enable_combat_playback();
     loop {
         let now = (get_time() * 1000.0) as u64;
@@ -555,12 +560,37 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
+        let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>| {
+            if !prompt.is_empty() {
+                tutorial::draw_prompt(prompt, art.font.as_ref());
+            }
+            if let Some(label) = turn
+                && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
+                let highlighted = bounds.contains(Vec2::from(mouse_position()))
+                    || label == end_label && end_turn::modifier_down() && is_key_down(KeyCode::Space);
+                render::draw_turn_button(bounds, highlighted, art, label);
+            }
+            top_menu.draw(&top_art, art.font.as_ref(), &commands);
+        };
         if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
-            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets).await;
+            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
+                |art| draw_controls(art, &visible_prompt, visible_turn_label)).await;
         }
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
+        visible_turn_label = if session.legal_actions().contains(&Action::EndTurn) {
+            Some(end_label)
+        } else if campaign && session.next_scenario().is_some() {
+            Some("Continue")
+        } else {
+            None
+        };
+        visible_prompt.clear();
+        if session.dialogue().is_none() && let Some(prompt) = data.lesson.as_ref()
+            .and_then(|lesson| lesson.prompt(selection.unit().is_some())) {
+            visible_prompt.push_str(prompt);
+        }
         let last_page = render::draw(
             session.state(),
             session.observation(),
@@ -577,17 +607,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
             |art| {
-                if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
-                    lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
-                }
-                if session.legal_actions().contains(&Action::EndTurn) && let Some(bounds) = button {
-                    let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);
-                    render::draw_turn_button(bounds, highlighted, art, locale.game("End Turn"));
-                } else if campaign && session.next_scenario().is_some()
-                    && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
-                    render::draw_turn_button(bounds, bounds.contains(pointer), art, "Continue");
-                }
-                top_menu.draw(&top_art, art.font.as_ref(), &commands);
+                draw_controls(art, &visible_prompt, visible_turn_label);
                 session.dialogue().filter(|_| !art.walk.active())
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
