@@ -1,4 +1,5 @@
 mod frame;
+mod surface;
 pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::{save::save_preview, skirmish_preview};
@@ -40,7 +41,6 @@ mod reach;
 mod hover;
 mod footsteps;
 
-const SELECTED: Color = Color::from_rgba(255, 239, 170, 255);
 const BACKGROUND: Color = Color::from_rgba(19, 22, 18, 255);
 const PANEL: Color = Color::from_rgba(34, 39, 31, 255);
 const BORDER: Color = Color::from_rgba(105, 100, 76, 255);
@@ -91,14 +91,15 @@ impl GridArt {
         Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
     }
 
-    pub(crate) fn draw(&self, center: Vec2, size: f32) {
+    pub(crate) fn draw(&self, center: Vec2, size: f32, clip: Option<Viewport>) {
         for grid in self.0.iter().flatten() {
-            draw_centered(grid, center, size);
+            draw_centered(grid, center, size, clip);
         }
     }
 }
 
 pub struct BoardArt {
+    surface: surface::Surface,
     frame: FrameArt,
     minimap: minimap::Art,
     lighting: lighting::Lighting,
@@ -198,6 +199,7 @@ impl BoardArt {
                 .ok()
         };
         Ok(Self {
+            surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
@@ -366,13 +368,15 @@ pub fn menu_area() -> Rect {
     BattlefieldFrame::new(screen_width(), screen_height()).menu()
 }
 
-pub fn draw(
+pub fn draw<T>(
     state: MatchState,
     observation: Option<&Observation>,
     layout: Option<&BoardLayout>,
     art: &mut BoardArt,
     movement: MovementView<'_>,
-) {
+    overlay: impl FnOnce(&mut BoardArt) -> T,
+) -> T {
+    art.surface.begin();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
@@ -415,9 +419,12 @@ pub fn draw(
             }
         }
     }
+    let result = overlay(art);
+    art.surface.present();
+    result
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport) {
     let now = (get_time() * 1000.0) as u64;
     let size = layout.tile_size();
     for tile in &view.tiles {
@@ -428,35 +435,36 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let layers = &art.terrain[&tile.terrain];
         let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
         if let Some(base) = ground.or_else(|| layers.first()) {
-            draw_centered(base, center, size);
-        } else {
+            draw_centered(base, center, size, Some(viewport));
+        } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
             draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
         }
         if flag_frame.is_some() {
-            art.transitions.draw(tile.position, center, size);
+            art.transitions.draw(tile.position, center, size, viewport);
         }
         for overlay in layers.iter().skip(1) {
-            draw_centered(overlay, center, size);
+            draw_centered(overlay, center, size, Some(viewport));
         }
         }
         if flag_frame.is_some() {
-            art.rules.draw(tile.position, center, size, false, tod, now);
+            art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
             if art.show_grid {
                 if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                art.grid.draw(center, size);
+                art.grid.draw(center, size, Some(viewport));
             }
         }
         if let Some(owner) = tile.village_owner {
             if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
             if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
-                draw_centered(flag, center, size);
+                draw_centered(flag, center, size, Some(viewport));
                 continue;
             }
             let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
+            let marker = center + vec2(0.27, -0.26) * size;
+            let radius = (size * 0.055).max(min_marker);
+            if !visible_rect(viewport, marker - Vec2::splat(radius), Vec2::splat(2. * radius)) { continue; }
             draw_circle(
-                center.x + size * 0.27,
-                center.y - size * 0.26,
-                (size * 0.055).max(min_marker),
+                marker.x, marker.y, radius,
                 side_color(art.team_colors.as_ref(), owner),
             );
         }
@@ -469,7 +477,7 @@ pub fn minimap_point(view: &Observation, pointer: Vec2) -> Option<[f32; 2]> {
     minimap::Geometry::new(view.width, view.height, frame.minimap)?.world_point(pointer)
 }
 
-fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
+fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
     let size = layout.tile_size();
     for &(hex, ref cover) in &art.cover {
         let [x, y] = layout.tile_origin(hex);
@@ -480,8 +488,8 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
             Cover::Shroud => art.shroud.as_ref(),
         };
         if let Some(texture) = texture {
-            draw_centered(texture, center, size);
-        } else {
+            draw_centered(texture, center, size, Some(viewport));
+        } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
             let color = match cover {
                 Cover::Fog => Color::from_rgba(70, 91, 111, 165),
                 Cover::Shroud => BLACK,
@@ -514,21 +522,22 @@ impl BoardArt {
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
+    let viewport = board_viewport();
     let border_period = movement.global_time.map_or("", |t| t.id.as_str());
     for hex in border::ring(view.width, view.height) {
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
-        art.rules.draw(hex, center, size, false, border_period, now);
-        art.rules.draw(hex, center, size, true, border_period, now);
+        art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
+        art.rules.draw(hex, center, size, true, border_period, now, Some(viewport));
     }
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
-    draw_terrain(view, layout, art, Some((frame, global_color)), period);
+    draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport);
     for (position, texture, use_time_color) in &art.map_items {
         if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
         let [x, y] = layout.tile_origin(*position);
-        draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size);
+        draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
     }
     art.lighting.flat([0; 3]);
     let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
@@ -538,7 +547,6 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }).collect();
     let pointer: Vec2 = mouse_position().into();
     let target = movement.menu.and_then(|menu| menu.target).or_else(|| {
-        let viewport = board_viewport();
         (pointer.x >= viewport.x && pointer.x < viewport.x + viewport.width
             && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
             .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
@@ -547,12 +555,12 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         && let Some(reachable) = reach::reachable(movement.selected, movement.actions, target) {
         for tile in view.tiles.iter().filter(|tile| !reachable.contains(&tile.position)) {
             let [x, y] = layout.tile_origin(tile.position);
-            draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size);
+            draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
     }
-    if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route); }
+    if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route, viewport); }
     let (pointer_x, pointer_y) = mouse_position();
-    let hover_art = art.hover.focus(view, layout, board_viewport(), pointer_x, pointer_y);
+    let hover_art = art.hover.focus(view, layout, viewport, pointer_x, pointer_y);
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
     let origin = |at: Hex| walking.filter(|p| p.unit == Some(at)).map_or_else(
@@ -564,7 +572,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             let selected = movement.selected == Some(unit.position);
             let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
             if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
-                for texture in halves.iter().flatten() { draw_centered(texture, center, size); }
+                for texture in halves.iter().flatten() { draw_centered(texture, center, size, Some(viewport)); }
             }
         }
         let base = art
@@ -590,8 +598,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, layout));
         let (at, attack_frame) = posed.unwrap_or((center, None));
         if let Some((texture, flipped)) = attack_frame.or(walking_frame).or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
-            draw_centered_flipped(texture, at, size, flipped);
-        } else {
+            draw_centered_flipped(texture, at, size, flipped, Some(viewport));
+        } else if visible_rect(viewport, center - Vec2::splat(size * 0.23), Vec2::splat(size * 0.46)) {
             draw_circle(center.x, center.y, size * 0.23, marker);
         }
     }
@@ -604,7 +612,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let sprite = art.moving.get(id).and_then(|s| s.get(side)).and_then(|s| s.frame(direction, terrain, pose.elapsed))
             .or_else(|| art.units.get(id)?.get(side)?.as_ref().map(|t| (t, standing::west(direction))));
         if let Some((tex, flipped)) = sprite {
-            draw_centered_flipped(tex, pose.origin(layout) + Vec2::splat(size * 0.5), size, flipped);
+            draw_centered_flipped(tex, pose.origin(layout) + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
         }
     }
 
@@ -618,7 +626,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position));
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit.position);
-            art.unit_status.draw(unit, style, origin, size, width, orb, highlighted);
+            art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
         }
         let icons = [
             art.poisoned.as_ref().filter(|_| unit.poisoned),
@@ -631,6 +639,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         for (index, icon) in icons.into_iter().flatten().enumerate() {
             let slot = index as f32 + 0.5 - count as f32 * 0.5;
             let center = vec2(x + size * 0.5 + slot * spacing, y + size * 0.81);
+            if !visible_rect(viewport, center - Vec2::splat(spacing * 0.5), Vec2::splat(spacing)) { continue; }
             let original = vec2(icon.width(), icon.height());
             let dimensions = original * (spacing * 0.80 / original.x.max(original.y));
             let top = center - dimensions * 0.5;
@@ -644,11 +653,11 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     for tile in &view.tiles {
         let [x, y] = layout.tile_origin(tile.position);
         art.lighting.terrain(tile.position, x, y, size);
-        art.rules.draw(tile.position, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now);
+        art.rules.draw(tile.position, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now, Some(viewport));
     }
     art.lighting.flat(global_color);
-    draw_cover(layout, art);
-    art.fog_edges.draw(layout);
+    draw_cover(layout, art, viewport);
+    art.fog_edges.draw(layout, viewport);
     art.lighting.flat([0; 3]);
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
@@ -675,17 +684,28 @@ mod ellipse_tests {
     }
 }
 
-fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32) {
-    draw_centered_flipped(texture, center, hex_size, false);
+fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32, clip: Option<Viewport>) {
+    draw_centered_flipped(texture, center, hex_size, false, clip);
 }
 
-fn draw_centered_flipped(texture: &Texture2D, center: Vec2, hex_size: f32, flip_x: bool) {
-    let scale = hex_size / ART_HEX_SIZE;
-    let size = vec2(texture.width(), texture.height()) * scale;
+fn visible_rect(view: Viewport, top: Vec2, size: Vec2) -> bool {
+    view.width > 0.0 && view.height > 0.0
+        && top.x < view.x + view.width && top.y < view.y + view.height
+        && top.x + size.x > view.x && top.y + size.y > view.y
+}
+
+fn sprite_rect(center: Vec2, source: Vec2, hex_size: f32, clip: Option<Viewport>) -> Option<Rect> {
+    let size = source * (hex_size / ART_HEX_SIZE);
     let top = center - size / 2.0;
-    draw_texture_ex(texture, top.x, top.y, WHITE, DrawTextureParams {
+    clip.is_none_or(|view| visible_rect(view, top, size))
+        .then_some(Rect::new(top.x, top.y, size.x, size.y))
+}
+
+fn draw_centered_flipped(texture: &Texture2D, center: Vec2, hex_size: f32, flip_x: bool, clip: Option<Viewport>) {
+    let Some(rect) = sprite_rect(center, texture.size(), hex_size, clip) else { return };
+    draw_texture_ex(texture, rect.x, rect.y, WHITE, DrawTextureParams {
         flip_x,
-        dest_size: Some(size),
+        dest_size: Some(rect.size()),
         ..DrawTextureParams::default()
     });
 }
@@ -711,6 +731,20 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battlefield_submits_only_sprites_overlapping_the_view_at_current_zoom() {
+        let area = Viewport { x: 10.0, y: 27.0, width: 120.0, height: 80.0 };
+        let view = Some(area);
+        let hex = Vec2::splat(72.0);
+        assert_eq!(sprite_rect(vec2(-26.0, 60.0), hex, 72.0, view), None);
+        assert_eq!(sprite_rect(vec2(-26.0, 60.0), vec2(144.0, 72.0), 72.0, view),
+                   Some(Rect::new(-98.0, 24.0, 144.0, 72.0)));
+        assert_eq!(sprite_rect(vec2(130.0, 143.0), hex, 72.0, view), None);
+        assert!(sprite_rect(vec2(130.0, 142.5), hex * 2.0, 36.0, view).is_some());
+        assert_eq!(sprite_rect(vec2(70.0, 70.0), hex, 72.0, Some(Viewport { width: 0.0, ..area })), None);
+        assert!(sprite_rect(vec2(220.0, 200.0), hex, 72.0, None).is_some());
+    }
 
     #[test]
     fn village_flag_cycles_through_four_original_frames_every_600ms() {

@@ -15,7 +15,7 @@ use crate::{BoardData, dialog::ListAction, read_file, play_board};
 
 pub(super) struct Browser {
     campaign: wml::Node,
-    maps: PathBuf,
+    maps: Option<PathBuf>,
     core: Vec<u8>,
     root: PathBuf,
     seed: u32,
@@ -32,17 +32,17 @@ impl Browser {
         if campaign::scenarios(&campaign).next().is_none() {
             return Err("campaign contains no scenarios with an ID".into());
         }
-        Ok(Self { campaign, maps, core, root, seed, installed: Default::default(), mode: None, modifications: Vec::new() })
+        Ok(Self { campaign, maps: Some(maps), core, root, seed, installed: Default::default(), mode: None, modifications: Vec::new() })
     }
 
     pub(super) fn installed(file: &Path, folders: &Path, core: Vec<u8>, root: PathBuf, seed: u32, extras: wml::Node) -> Result<Self, Box<dyn Error>> {
         let (mut campaign, installed) = installed::catalog(wml::parse(read_file(file)?)?, folders)?;
         campaign.children.extend(extras.children);
-        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed, mode: None, modifications: Vec::new() })
+        Ok(Self { campaign, maps: Some(PathBuf::new()), core, root, seed, installed, mode: None, modifications: Vec::new() })
     }
 
-    fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
-        let mut selected = campaign::select(&self.campaign, id, |file| fs::read_to_string(self.maps.join(file)))?;
+    pub(super) fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
+        let mut selected = campaign::select(&self.campaign, id, |file| self.read_map(file))?;
         if let Some(mode) = self.mode { mode.classify(&mut selected); }
         for (_, scenario) in selected.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
             modifications::apply(scenario, &self.modifications)?;
@@ -50,7 +50,49 @@ impl Browser {
         }
         let mut source = Vec::new();
         wml_emit::write_config(&mut source, &selected)?;
-        BoardData::from_source(&source, &self.core, self.maps.clone(), self.root.clone(), self.seed)
+        BoardData::from_source(&source, &self.core, self.maps.clone().unwrap_or_default(), self.root.clone(), self.seed)
+    }
+
+    fn read_map(&self, file: &str) -> std::io::Result<String> {
+        let directory = self.maps.as_ref().ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::NotFound, format!("Campaign map {file} is missing from this save")))?;
+        fs::read_to_string(directory.join(file))
+    }
+
+    pub(super) fn save_route(&self, file: &Path) -> std::io::Result<()> {
+        let mut source = self.campaign.clone();
+        if let Some(mode) = self.mode { mode.classify(&mut source); }
+        for (_, scenario) in source.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
+            if scenario.attribute("map_data").is_some_and(|data| !data.is_empty()) { continue; }
+            if let Some(name) = scenario.attribute("map_file").filter(|s| !s.is_empty()) {
+                match self.read_map(name) {
+                    Ok(map) => {
+                        rustnoth_gui::save_replay::set(scenario, "map_data", map);
+                        scenario.attributes.remove("map_file");
+                    }
+                    // A missing map only blocks the branch of the campaign which uses it.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        let mut archive = wml::Node::default();
+        archive.children.push(("campaign_document".into(), source));
+        archive.children.extend(self.modifications.iter().cloned().map(|node| ("modification".into(), node)));
+        let mut output = std::io::BufWriter::new(fs::File::create(file)?);
+        wml_emit::write_config(&mut output, &archive)?;
+        std::io::Write::flush(&mut output)
+    }
+
+    pub(super) fn load_route(file: &Path, board: &BoardData) -> Result<Self, Box<dyn Error>> {
+        let archive = wml::parse(read_file(file)?)?;
+        let mut children = archive.children.into_iter();
+        let campaign = children.next().filter(|(tag, _)| tag == "campaign_document")
+            .ok_or("Missing saved campaign document")?.1;
+        let modifications = children.map(|(tag, node)| (tag == "modification").then_some(node)
+            .ok_or("Invalid saved campaign modification")).collect::<Result<_, _>>()?;
+        Ok(Self { campaign, maps: None, core: board.core.clone(), root: board.wesnoth_root.clone(),
+            seed: board.seed, installed: Default::default(), mode: None, modifications })
     }
 
     async fn play_installed(&self, entry: &installed::Campaign, id: &str, selector: &mut selector::Selector<'_>) -> Result<(), Box<dyn Error>> {
@@ -74,12 +116,16 @@ impl Browser {
         game.play_from(id.into()).await
     }
 
-    async fn play_from(&self, mut id: String) -> Result<(), Box<dyn Error>> {
+    async fn play_from(&self, id: String) -> Result<(), Box<dyn Error>> {
         let mut route = CampaignCarryover::default();
+        let board = self.board(&id, &mut route.gold)?;
+        self.play_route(board, route, Players::Campaign).await
+    }
+
+    pub(super) async fn play_route(&self, mut board: BoardData, mut route: CampaignCarryover, players: Players) -> Result<(), Box<dyn Error>> {
         loop {
-            let board = self.board(&id, &mut route.gold)?;
-            let Some(next) = play_board(board, Players::Campaign, Some(&mut route)).await? else { return Ok(()) };
-            id = next;
+            let Some(next) = play_board(board, players, Some((self, &mut route))).await? else { return Ok(()) };
+            board = self.board(&next, &mut route.gold)?;
             next_frame().await;
         }
     }

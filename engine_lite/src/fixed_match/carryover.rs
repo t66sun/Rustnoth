@@ -17,9 +17,17 @@ pub struct CampaignCarryover {
 }
 
 impl CampaignCarryover {
-    /// The incoming gold is already baked into the selected scenario's WML.
+    /// Matched gold is already baked into the selected scenario's WML. Save
+    /// unclaimed treasuries for sides that rejoin the route in a later scenario.
     pub fn replay_roster(&self) -> Node {
         let mut roster = Node::default();
+        for (id, (amount, add)) in &self.gold.0 {
+            let mut treasury = Node::default();
+            treasury.set_literal("save_id", id);
+            treasury.set_literal("amount", amount);
+            treasury.set_literal("add", add);
+            roster.children.push(("treasury".into(), treasury));
+        }
         for (id, units) in &self.units {
             let mut side = Node::default();
             side.set_literal("save_id", id);
@@ -32,6 +40,11 @@ impl CampaignCarryover {
     pub fn from_replay_roster(roster: &Node) -> Option<Self> {
         let mut route = Self::default();
         for (tag, side) in &roster.children {
+            if tag == "treasury" {
+                route.gold.0.insert(side.attribute("save_id")?.into(),
+                    (side.attribute("amount")?.parse().ok()?, side.attribute("add")?.parse().ok()?));
+                continue;
+            }
             if tag != "side" { return None; }
             let id = side.attribute("save_id")?;
             let mut units = Vec::new();
