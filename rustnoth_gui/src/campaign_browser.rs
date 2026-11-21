@@ -104,7 +104,7 @@ impl Browser {
         let (root, selected) = (self.root.clone(), entry.clone());
         let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
         while !worker.is_finished() {
-            selector.draw(Some("Loading campaign…"));
+            selector.draw(Some("Loading campaignâ€¦"));
             set_default_camera();
             next_frame().await;
         }
@@ -119,6 +119,16 @@ impl Browser {
     async fn play_from(&self, id: String) -> Result<(), Box<dyn Error>> {
         let mut route = CampaignCarryover::default();
         let board = self.board(&id, &mut route.gold)?;
+        self.play_route(board, route, Players::Campaign).await
+    }
+
+    pub(super) async fn play_tutorial(mut self, hero: crate::tutorial::Hero, mode: CombatMode, modifications: &[wml::Node]) -> Result<(), Box<dyn Error>> {
+        self.mode = Some(mode);
+        self.modifications = modifications.to_vec();
+        let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
+        let mut route = CampaignCarryover::default();
+        let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
+        board.lesson = Some(lesson);
         self.play_route(board, route, Players::Campaign).await
     }
 
@@ -155,7 +165,7 @@ impl Browser {
                         next_frame().await;
                         self.play_from(id.to_owned()).await
                     };
-                    error = result.err().map(|cause| format!("{id} — {cause}"));
+                    error = result.err().map(|cause| format!("{id} â€” {cause}"));
                     while macroquad::prelude::get_char_pressed().is_some() {}
                 }
                 ListAction::Back => return Ok(()),

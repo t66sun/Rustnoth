@@ -326,6 +326,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     // Combat plays after the action is committed. Keep the controls the viewer
     // last saw until the final strike or a skip returns to the updated board.
     let end_label = locale.game("End Turn").to_owned();
+    let end_scenario = locale.game("End Scenario").to_owned();
     let mut visible_turn_label = None;
     let mut visible_prompt = String::new();
     session.enable_combat_playback();
@@ -337,12 +338,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             && let Some(turn) = turn_notice::new_turn(session.state(), !session.legal_actions().is_empty(), notified) {
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
-            let message = locale.game("It is now $name|’s turn").replace("$name|", name);
+            let message = locale.game("It is now $name|â€™s turn").replace("$name|", name);
             turn_notice::show(&data.wesnoth_root, art.font.as_ref(), &message).await;
             continue;
-        }
-        if !walking && !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
-            return Ok(None);
         }
         let mut commands = map_menus::available(
             session.has_authored_objectives(),
@@ -627,7 +625,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
             Some(end_label.as_str())
         } else if campaign && session.next_scenario().is_some() {
-            Some("Continue")
+            Some(if data.lesson.is_some() { end_scenario.as_str() } else { "Continue" })
         } else {
             None
         };
@@ -713,7 +711,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 session.history(), None, None, Some(saved_game::CampaignSave::Replay(roster))));
             if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
-        if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
+        if !end_report_shown && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
             end_report_shown = true;
             if scenario_report::show(&data.wesnoth_root,&session,campaign).await {
                 if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
