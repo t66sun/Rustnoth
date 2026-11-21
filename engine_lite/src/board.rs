@@ -42,6 +42,7 @@ pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
 #[derive(Debug)]
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
+    pub(crate) biased_combat: bool,
     units: BTreeMap<Hex, UnitState<'rules>>,
     units_created: u64,
     recall: BTreeMap<usize, Vec<UnitState<'rules>>>,
@@ -230,6 +231,7 @@ impl<'rules> Battlefield<'rules> {
     ) -> Result<Self, BoardError> {
         let mut board = Self {
             map,
+            biased_combat: false,
             units: BTreeMap::new(),
             units_created: 0,
             recall: BTreeMap::new(),

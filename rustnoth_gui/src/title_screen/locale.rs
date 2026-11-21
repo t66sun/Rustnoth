@@ -224,32 +224,26 @@ impl Locale {
         Ok(locale)
     }
 
+    fn localized_file(&self, root: &Path, dir: &str, file: &str) -> Option<String> {
+        // Wesnoth's translators can name several resource directories in priority order.
+        let key = "language code for localized resources^en_US";
+        let language = self.interface.text(key);
+        let language = language.split_once('^').map_or(language, |(_, id)| id);
+        language.split(',').map(str::trim).chain(std::iter::once("en_US"))
+            .filter(|id| !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"_@-".contains(&c)))
+            .map(|id| format!("{dir}/l10n/{id}/{file}"))
+            .find(|path| root.join(path).is_file())
+    }
+
     pub fn logo(&self, root: &Path) -> String {
-        if self
-            .effective
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b))
-        {
-            for id in candidates(&self.effective) {
-                let name = format!("images/misc/l10n/{id}/logo.png");
-                if root.join(&name).is_file() {
-                    return name;
-                }
-            }
-        }
-        "images/misc/logo.png".into()
+        self.localized_file(root, "images/misc", "logo.png")
+            .unwrap_or_else(|| "images/misc/logo.png".into())
     }
 
     pub fn title_map(&self, root: &Path) -> (String, Option<String>) {
         let maps = "data/core/images/maps";
         let base = format!("{maps}/titlescreen.webp");
-        if !self.effective.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@-".contains(&b)) {
-            return (base, None);
-        }
-        let names = candidates(&self.effective);
-        let localized = |file: &str| names.iter()
-            .map(|id| format!("{maps}/l10n/{id}/{file}"))
-            .find(|path| root.join(path).is_file());
+        let localized = |file: &str| self.localized_file(root, maps, file);
         if let Some(replacement) = localized("titlescreen.webp") {
             return (replacement, None);
         }
@@ -301,7 +295,8 @@ mod tests {
         fs::write(root.join("images/misc/l10n/zh_CN/logo.png"), []).unwrap();
         assert_eq!(saved(&root).unwrap(), "");
         save(&root, "zh_CN").unwrap();
-        let active = Locale::load(&root, saved(&root).unwrap()).unwrap();
+        let mut active = Locale::load(&root, saved(&root).unwrap()).unwrap();
+        active.interface.0.insert("language code for localized resources^en_US".into(), "zh_CN,zh".into());
         assert_eq!(active.effective, "zh_CN");
         assert_eq!(active.language_name(&languages), "简体中文 (Jiăntĭ Zhōngwén)");
         assert_eq!(Locale::load(&root, "en_US".into()).unwrap().language_name(&languages), "English (US)");
@@ -320,6 +315,8 @@ mod tests {
         fs::write(root.join(&replacement), []).unwrap();
         assert_eq!(active.title_map(&root), (replacement, None));
         assert_eq!(Locale::load(&root, "en_US".into()).unwrap().title_map(&root), (original, None));
+        fs::create_dir_all(root.join("images/misc/l10n/en")).unwrap();
+        fs::write(root.join("images/misc/l10n/en/logo.png"), []).unwrap();
         save(&root, "en_US").unwrap();
         assert_eq!(
             Locale::load(&root, saved(&root).unwrap())
