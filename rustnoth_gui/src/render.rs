@@ -1,5 +1,6 @@
 mod frame;
 mod surface;
+mod tutorial_print;
 pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::{save::save_preview, skirmish_preview};
@@ -140,6 +141,8 @@ pub struct BoardArt {
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
     tutorial_hint: tutorial_hint::Art,
+    #[cfg(windows)]
+    tutorial_print: tutorial_print::Art,
 }
 
 impl BoardArt {
@@ -239,6 +242,8 @@ impl BoardArt {
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
             tutorial_hint: tutorial_hint::Art::new(wesnoth_root),
+            #[cfg(windows)]
+            tutorial_print: tutorial_print::Art::default(),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
             font,

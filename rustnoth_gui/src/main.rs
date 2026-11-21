@@ -604,7 +604,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>| {
             if let Some(lesson) = &data.lesson { lesson.draw_labels(art, camera.layout()); }
             if !prompt.is_empty() {
-                tutorial::draw_prompt(prompt, art.font.as_ref());
+                art.draw_tutorial_print(prompt, &data.wesnoth_root);
             }
             if let Some(label) = turn
                 && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
