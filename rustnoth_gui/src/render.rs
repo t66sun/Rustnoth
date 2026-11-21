@@ -504,7 +504,8 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
 }
 
 impl BoardArt {
-    pub(crate) fn draw_keep_label(&self, layout: &BoardLayout, hex: Hex, label: &str, highlight: bool) {
+    pub(crate) fn draw_map_label(&self, layout: &BoardLayout, hex: Hex, label: &str, highlight: bool, visible_in_fog: bool) {
+        if self.cover.iter().any(|(at, cover)| *at == hex && (*cover == Cover::Shroud || !visible_in_fog)) { return; }
         let view = board_viewport();
         let [x, y] = layout.tile_origin(hex);
         let size = layout.tile_size();

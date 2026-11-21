@@ -92,9 +92,12 @@ impl Lesson {
     }
 
     pub(super) fn draw_labels(&self, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
-        if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird)
-            && let Some(layout) = layout {
-            art.draw_keep_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep);
+        let Some(layout) = layout else { return };
+        for (hex, text, in_fog) in self.healing.markers() {
+            art.draw_map_label(layout, hex, text, false, in_fog);
+        }
+        if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird) {
+            art.draw_map_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep, true);
         }
     }
 
@@ -178,6 +181,7 @@ impl Lesson {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
             }
             MatchState::Playing(turn) if turn.round == 2 && self.step == Step::WaitSecond => {
+                self.healing.marked = true;
                 healing::say(&self.healing.second_turn, session, None);
                 self.step = Step::ToVillage;
             }
