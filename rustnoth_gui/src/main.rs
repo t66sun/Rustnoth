@@ -354,7 +354,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             commands.insert(0, map_menus::Command::UnitList);
         }
         if data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
-        if data.lesson.as_ref().and_then(|lesson| lesson.undo_from(&session)).is_some() {
+        if session.can_undo_tutorial_move() || data.lesson.as_ref().and_then(|lesson| lesson.undo_from(&session)).is_some() {
             commands.push(map_menus::Command::Undo);
         }
         let auto_objectives = !walking && session.has_objective_notice();
@@ -379,10 +379,21 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
             Some(map_menus::Command::Undo) => {
-                if let Some(lesson) = &mut data.lesson && let Some(from) = lesson.undo(&mut session, || {
-                    let game = data.scenario.start_with_controllers(data.seed, |name| fs::read_to_string(data.directory.join(name)), None, players == Players::Campaign)?;
+                let restart = || -> Result<_, Box<dyn Error>> {
+                    let mut route = opening_roster.as_ref()
+                        .and_then(engine_lite::fixed_match::carryover::CampaignCarryover::from_replay_roster);
+                    let game = data.scenario.start_with_controllers(data.seed, |name| match &saved_map {
+                        Some(map) => Ok(map.clone()),
+                        None => fs::read_to_string(data.directory.join(name)),
+                    }, route.as_mut(), players == Players::Campaign)?;
                     Ok(Session::with_players(game, players))
-                })? {
+                };
+                let from = if let Some(lesson) = &mut data.lesson {
+                    lesson.undo(&mut session, restart)?
+                } else {
+                    session.undo_tutorial_move(restart)?
+                };
+                if let Some(from) = from {
                     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
                     session.enable_combat_playback();
                     selection.clear();

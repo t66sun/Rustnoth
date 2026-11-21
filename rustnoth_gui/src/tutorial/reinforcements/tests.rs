@@ -119,6 +119,8 @@ text=Forgot the troops.
 [disallow_end_turn]
 reason=Still need recruits.
 [/disallow_end_turn]
+[allow_undo]
+[/allow_undo]
 [/then]
 [else]
 [message]
@@ -140,6 +142,58 @@ text=End your turn.
 text=Recruit or recall.
 [/print]
 [/on_undo]
+[/event]
+[event]
+name=moveto
+first_time_only=no
+[filter]
+id=student
+x=1-40
+y=1-20
+[not]
+x=1,6
+y=2,2
+[/not]
+[/filter]
+[filter_condition]
+[variable]
+name=turn_number
+numerical_equals=1
+[/variable]
+[/filter_condition]
+[if]
+[not]
+[have_unit]
+side=1
+race=elf
+count=5
+[/have_unit]
+[/not]
+[then]
+[print]
+text=Return to recruit.
+[/print]
+[allow_undo]
+[/allow_undo]
+[on_undo]
+[print]
+text=Recruit or recall.
+[/print]
+[/on_undo]
+[/then]
+[else]
+[print]
+text=Return to capture.
+[/print]
+[allow_undo]
+[/allow_undo]
+[on_undo]
+[print]
+text=Capture a village.
+[/print]
+[/on_undo]
+[/else]
+[/if]
 [/event]"#).unwrap();
     let start = scenario.children.iter_mut().find(|(_, e)| e.attribute("name") == Some("start")).unwrap();
     briefing::project(&mut start.1, Hero::Konrad);
@@ -205,13 +259,57 @@ fn galdrad_counts_placed_recruits_and_recalls_before_allowing_the_first_turn_to_
     assert_eq!(session.tutorial_end_turn_denial().unwrap().attribute("reason"), Some("Still need a village."));
     assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
 
+    let restart = || Ok(Session::with_players(bundle.start(8, |_| unreachable!())?, Players::Campaign));
+    let mut before = restart().unwrap();
+    for command in session.history() { command.apply(&mut before).unwrap(); }
+    session.apply(Action::Move { from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 1 } }).unwrap();
+    assert_eq!(session.tutorial_print().unwrap().attribute("text"), Some("Return to capture."));
+    assert_eq!(session.undo_tutorial_move(restart).unwrap(), Some(Hex { x: 0, y: 0 }));
+    assert_eq!(session.observation(), before.observation());
+    assert_eq!(session.tutorial_print().unwrap().attribute("text"), Some("Capture a village."));
+
     session.apply(capture).unwrap();
     assert_eq!(session.dialogue().unwrap().text, "Village income.");
     session.dismiss_dialogue();
     assert_eq!(session.tutorial_hint(), "Income and upkeep.");
     assert_eq!(session.tutorial_print().unwrap().attribute("text"), Some("End your turn."));
+    assert!(!session.can_undo_tutorial_move(), "successful capture is outside the undo instruction");
     assert!(session.tutorial_end_turn_denial().is_none());
     assert!(session.legal_actions().contains(&Action::EndTurn));
     session.apply(Action::EndTurn).unwrap();
     assert!(session.tutorial_print().is_none());
+}
+
+#[test]
+fn undo_rewinds_only_the_last_wrong_move_and_runs_its_own_print_handler() {
+    use rustnoth_gui::save_replay::Event;
+    let bundle = game();
+    let restart = || Ok(Session::with_players(bundle.start(8, |_| unreachable!())?, Players::Campaign));
+    let mut game = restart().unwrap();
+    let keep = Hex { x: 0, y: 0 };
+    let first = Hex { x: 1, y: 0 };
+    let second = Hex { x: 2, y: 0 };
+    let before = restart().unwrap();
+    game.apply(Action::Move { from: keep, to: first }).unwrap();
+    assert_eq!(game.tutorial_print().unwrap().attribute("text"), Some("Return to recruit."));
+    let mut after_first = restart().unwrap();
+    after_first.apply(Action::Move { from: keep, to: first }).unwrap();
+    game.apply(Action::Move { from: first, to: second }).unwrap();
+    assert_eq!(game.undo_tutorial_move(restart).unwrap(), Some(first));
+    assert_eq!(game.observation(), after_first.observation());
+    assert_eq!(game.tutorial_print().unwrap().attribute("text"), Some("Recruit or recall."));
+    let mut loaded = restart().unwrap();
+    for command in game.history() {
+        Event::decode(&command.encode()).unwrap().apply(&mut loaded).unwrap();
+    }
+    assert_eq!(loaded.tutorial_print(), game.tutorial_print());
+    assert_eq!(loaded.undo_tutorial_move(restart).unwrap(), Some(keep));
+    assert_eq!(loaded.observation(), before.observation());
+    assert!(!loaded.can_undo_tutorial_move());
+
+    loaded.apply(Action::Move { from: keep, to: Hex { x: 0, y: 1 } }).unwrap();
+    assert_eq!(loaded.tutorial_print().unwrap().attribute("text"), Some("Forgot the troops."));
+    assert_eq!(loaded.undo_tutorial_move(restart).unwrap(), Some(keep));
+    assert_eq!(loaded.observation(), before.observation(), "early capture restores village ownership and movement");
+    assert_eq!(loaded.tutorial_end_turn_denial().unwrap().attribute("reason"), Some("Recruit and capture."));
 }

@@ -17,6 +17,10 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
             Some("recruit") => project_event(event, hero, "rustnoth_tutorial_explained_healers"),
             Some("recruit,recall") => project_event(event, hero, "rustnoth_tutorial_filled_castle"),
             Some("capture") if children(event, "on_undo").next().is_some() => project_event(event, hero, ""),
+            Some("moveto") if children(event, "filter_condition").flat_map(|cfg| children(cfg, "variable"))
+                .any(|var| var.attribute("name") == Some("turn_number") && var.attribute("numerical_equals") == Some("1"))
+                && children(event, "filter").any(|filter| filter.attribute("id") == Some("student")
+                    && children(filter, "not").next().is_some()) => project_event(event, hero, ""),
             _ => {}
         }
     }
@@ -42,7 +46,7 @@ fn project_event(event: &mut Node, hero: Hero, seen: &str) {
             _ => body.children.push((tag, cfg)),
         }
     }
-    controls(&mut body);
+    controls(&mut body, None);
     briefing::project(&mut body, hero);
     if let Some(mut guard) = condition {
         for (tag, cfg) in &mut guard.children {
@@ -63,7 +67,10 @@ fn project_event(event: &mut Node, hero: Hero, seen: &str) {
     }
 }
 
-fn controls(body: &mut Node) {
+fn controls(body: &mut Node, inherited_undo: Option<&Node>) {
+    let undo = children(body, "on_undo").flat_map(|on_undo| children(on_undo, "print"))
+        .filter(|label| label.attribute("text").is_some_and(|s| !s.is_empty())).last().cloned();
+    let undo = undo.as_ref().or(inherited_undo);
     for (tag, mut cfg) in std::mem::take(&mut body.children) {
         match tag.as_str() {
             "if" => {
@@ -78,13 +85,18 @@ fn controls(body: &mut Node) {
                     }
                 }
                 for (tag, branch) in &mut cfg.children {
-                    if matches!(tag.as_str(), "then" | "else") { controls(branch); }
+                    if matches!(tag.as_str(), "then" | "else") { controls(branch, undo); }
                 }
                 body.children.push((tag, cfg));
             }
             "allow_end_turn" | "disallow_end_turn" => body.children.push((format!("rustnoth_tutorial_{tag}"), cfg)),
             // The turn-end print is cleared by the first-turn handler above.
-            "event" | "allow_undo" | "on_undo" => {}
+            "allow_undo" => {
+                if let Some(label) = undo {
+                    body.children.push(("rustnoth_tutorial_undo".into(), label.clone()));
+                }
+            }
+            "event" | "on_undo" => {}
             _ => body.children.push((tag, cfg)),
         }
     }
