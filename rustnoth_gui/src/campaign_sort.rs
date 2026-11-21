@@ -1,4 +1,4 @@
-use super::{Art, Entry, GOLD, fill};
+use super::{Art, Entry, fill};
 use macroquad::prelude::*;
 use std::cmp::Ordering;
 
@@ -85,8 +85,7 @@ pub(super) fn header(art: &mut Art, field: Field, rect: Rect, order: Order, poin
     let alpha = if rect.contains(pointer) { 76 } else if active { 25 } else { 0 };
     fill(rect, Color::from_rgba(255,255,255,alpha));
     let label = art.locale.ui(match field { Field::Name => "Name", Field::Timeline => "Timeline" });
-    let size = measure_text(label, art.font.as_ref(), 15, 1.);
-    art.label(label, (rect.center().x - size.width / 2.).floor(), rect.center().y + 5., 15, GOLD);
+    art.typography.draw(label, super::Caption::Header, rect, art.font.as_ref());
     if active && let Some(icon) = art.get("buttons/sliders/slider_arrow_blue.png") {
         let reversed = order == Order::Descending(field);
         draw_texture_ex(&icon, rect.right() - 15., rect.y + 10., WHITE,
