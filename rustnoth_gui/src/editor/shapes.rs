@@ -117,6 +117,7 @@ pub(super) fn paint(doc: &mut EditableMap, history: &mut History, footprint: &[H
             history.paint(doc, at, &code);
         }
     }
+    history.finish_brush_step();
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ fn buttons(width: f32, doc: &EditableMap, history: &History) -> impl Iterator<It
         (Open, "editor-map-load", 2.0, true),
         (Save, "editor-map-save", 33.0, doc.dirty()),
         (Close, "editor-close-map", 64.0, true),
+        (PartialUndo, "editor-partial-undo", undo_x - 31.0, !history.undo.is_empty()),
         (Undo, "undo", undo_x, !history.undo.is_empty()),
         (Redo, "redo", undo_x + 31.0, !history.redo.is_empty()),
         (ToggleGrid, "togglegrid", width - 214.0, true),
@@ -82,12 +83,14 @@ mod tests {
             buttons(width, doc, history).map(|b| (b.command, b.area.x as i32, b.enabled)).collect::<Vec<_>>();
         assert_eq!(slots(1200., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, false), (Command::Close, 64, true),
+            (Command::PartialUndo, 106, false),
             (Command::Undo, 137, false), (Command::Redo, 168, false), (Command::ToggleGrid, 986, true),
         ]);
         history.paint(&mut doc, Hex { x: 0, y: 0 }, "Ww");
         history.finish();
         assert_eq!(slots(800., &doc, &history), [
             (Command::Open, 2, true), (Command::Save, 33, true),
+            (Command::PartialUndo, 75, true),
             (Command::Undo, 106, true), (Command::Redo, 137, false), (Command::ToggleGrid, 586, true),
         ]);
         history.apply(&mut doc, true);
