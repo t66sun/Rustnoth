@@ -79,7 +79,6 @@ impl Lesson {
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
-    #[cfg(test)]
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
     pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
