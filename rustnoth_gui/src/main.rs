@@ -318,9 +318,6 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             turn_notice::show(&data.wesnoth_root, art.font.as_ref(), &message).await;
             continue;
         }
-        if !walking && !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
-            return Ok(None);
-        }
         let mut commands = map_menus::available(
             session.objectives().is_some(),
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
@@ -600,7 +597,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         } else if campaign && session.next_scenario().is_some()
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
-            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
+            let caption = if data.lesson.is_some() { locale.game("End Scenario") } else { "Continue" };
+            render::draw_turn_button(bounds, bounds.contains(pointer), &art, caption);
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
         if let Some(prompt) = end_prompt {
@@ -634,7 +632,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 session.history(), None, None, Some(&roster)));
             if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
-        if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
+        if !end_report_shown && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
             end_report_shown = true;
             if scenario_report::show(&data.wesnoth_root,&session,campaign).await {
                 if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }

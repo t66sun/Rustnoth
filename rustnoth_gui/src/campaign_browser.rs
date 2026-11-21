@@ -74,13 +74,26 @@ impl Browser {
         game.play_from(id.into()).await
     }
 
-    async fn play_from(&self, mut id: String) -> Result<(), Box<dyn Error>> {
+    async fn play_from(&self, id: String) -> Result<(), Box<dyn Error>> {
         let mut route = CampaignCarryover::default();
+        let board = self.board(&id, &mut route.gold)?;
+        self.play_route(board, route, Players::Campaign).await
+    }
+
+    pub(super) async fn play_tutorial(mut self, hero: crate::tutorial::Hero, mode: CombatMode, modifications: &[wml::Node]) -> Result<(), Box<dyn Error>> {
+        self.mode = Some(mode);
+        self.modifications = modifications.to_vec();
+        let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
+        let mut route = CampaignCarryover::default();
+        let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
+        board.lesson = Some(lesson);
+        self.play_route(board, route, Players::Campaign).await
+    }
+
+    pub(super) async fn play_route(&self, mut board: BoardData, mut route: CampaignCarryover, players: Players) -> Result<(), Box<dyn Error>> {
         loop {
-            let board = self.board(&id, &mut route.gold)?;
-            let Some(next) = play_board(board, Players::Campaign, Some(&mut route)).await? else { return Ok(()) };
-            id = next;
-            next_frame().await;
+            let Some(next) = play_board(board, players, Some(&mut route)).await? else { return Ok(()) };
+            board = self.board(&next, &mut route.gold)?;
         }
     }
 
