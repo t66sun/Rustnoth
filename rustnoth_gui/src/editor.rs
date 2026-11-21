@@ -180,6 +180,7 @@ enum Command {
     Open,
     Save,
     SaveAs,
+    SaveAll,
     Revert,
     Close,
     Exit,
@@ -210,6 +211,7 @@ impl Command {
             Self::Open => "Open Map…",
             Self::Save => "Save Map",
             Self::SaveAs => "Save Map As…",
+            Self::SaveAll => "Save All Maps",
             Self::Revert => "Revert Map",
             Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
@@ -453,7 +455,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         let names = if chrome.menu == Some(menubar::Menu::Window) { documents.titles() } else { Vec::new() };
         let current = &mut documents.list[documents.current];
         let can_revert = current.can_revert();
-        let documents::Document { map: doc, history, camera, path, locations } = current;
+        let documents::Document { map: doc, history, camera, locations, .. } = current;
         if rebuild {
             region.clear();
             view = render::map_observation(doc.map());
@@ -710,6 +712,8 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         if ctrl && is_key_pressed(KeyCode::S) {
             command = Some(if shift { Command::SaveAs } else { Command::Save });
         }
+        if !ctrl && !shift && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt))
+            && is_key_pressed(KeyCode::S) { command = Some(Command::SaveAll); }
         if ctrl && is_key_pressed(KeyCode::Z) {
             command = Some(if shift { Command::Redo } else { Command::PartialUndo });
         }
@@ -798,24 +802,30 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     rebuild |= history.apply(doc, cmd == Command::Undo);
                     status.clear();
                 }
-                Command::Save | Command::SaveAs => {
-                    let bytes = doc.text();
-                    let name = path.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str()).unwrap_or("Untitled");
-                    let existing = path.clone();
-                    let name = name.to_owned();
-                    let other_open = documents.list.iter().enumerate().filter(|(i, _)| *i != documents.current)
-                        .filter_map(|(_, item)| item.path.clone()).collect::<Vec<_>>();
-                    match files::save(&folder, root, existing.as_deref(), cmd == Command::SaveAs,
-                        &other_open, &form, &name, &bytes).await {
-                        Ok(Some(saved)) => {
-                            let current = &mut documents.list[documents.current];
-                            current.path = Some(fs::canonicalize(&saved)?);
-                            current.map = EditableMap::parse(bytes)?;
-                            status = format!("Saved {}", saved.display());
+                Command::Save | Command::SaveAs | Command::SaveAll => {
+                    let targets = documents.save_targets(cmd == Command::SaveAll);
+                    let mut saved = Vec::new();
+                    let mut errors = Vec::new();
+                    for index in targets {
+                        let record = &documents.list[index];
+                        let bytes = record.map.text();
+                        let other_paths = documents.list.iter().enumerate().filter(|(i, _)| *i != index)
+                            .filter_map(|(_, item)| item.path.clone()).collect::<Vec<_>>();
+                        let result = files::save(&folder, root, record.path.as_deref(), cmd == Command::SaveAs,
+                            &other_paths, &form, record.name(), &bytes).await;
+                        match result {
+                            Ok(Some(path)) => {
+                                let document = &mut documents.list[index];
+                                document.path = Some(fs::canonicalize(&path)?);
+                                document.map = EditableMap::parse(bytes)?;
+                                saved.push(path.display().to_string());
+                            }
+                            Ok(None) => {}
+                            Err(error) => errors.push(format!("{}: {error}", record.name())),
                         }
-                        Err(e) => status = e.to_string(),
-                        _ => {}
                     }
+                    if !errors.is_empty() { status = errors.join("\n"); }
+                    else if !saved.is_empty() { status = format!("Saved {}", saved.join(", ")); }
                 }
                 Command::Revert => {
                     if can_revert && files::confirm(&form).await {
