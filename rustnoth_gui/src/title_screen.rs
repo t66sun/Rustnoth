@@ -5,6 +5,7 @@ use engine_lite::wml;
 use macroquad::prelude::*;
 
 mod preferences;
+mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
@@ -68,20 +69,6 @@ fn menu(campaign: bool) -> &'static [Command] {
     else { &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit] }
 }
 
-fn shortcut(key: KeyCode, modified: bool, available: &[Command]) -> Option<Command> {
-    if modified { return None; }
-    let action = match key {
-        KeyCode::C => Command::Campaigns,
-        KeyCode::M => Command::Multiplayer,
-        KeyCode::A => Command::Addons,
-        KeyCode::E => Command::Editor,
-        KeyCode::Space => Command::Credits,
-        KeyCode::L => return Some(Command::Language),
-        _ => return None,
-    };
-    available.contains(&action).then_some(action)
-}
-
 fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize {
     match current {
         Some(index) if backward => (index + count - 1) % count,
@@ -93,6 +80,7 @@ fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize
 
 impl TitleScreen {
     pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
+        let mut bindings = hotkeys::Bindings::load(&self.root)?;
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
         let tip_source = fs::read_to_string(self.root.join("data/tips.cfg"))?;
@@ -138,16 +126,10 @@ impl TitleScreen {
             set_default_camera();
 
             let command = if is_key_pressed(KeyCode::Escape) { Some(Command::Quit) }
-                else if is_key_pressed(KeyCode::F1) { Some(Command::Help) }
-                else if is_key_pressed(KeyCode::Left) { Some(Command::Previous) }
-                else if is_key_pressed(KeyCode::Right) { Some(Command::Next) }
                 else if is_key_pressed(KeyCode::Enter) {
                     Some(buttons[focus.unwrap_or(0)].0)
                 } else {
-                    let modified = [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftAlt, KeyCode::RightAlt,
-                        KeyCode::LeftSuper, KeyCode::RightSuper, KeyCode::LeftShift, KeyCode::RightShift]
-                        .into_iter().any(is_key_down);
-                    get_last_key_pressed().and_then(|key| shortcut(key, modified, actions))
+                    hotkeys::pressed().and_then(|key| bindings.shortcut(&key, actions))
                         .or_else(|| click.map(|index| buttons[index].0))
                 };
             match command {
@@ -208,7 +190,7 @@ impl TitleScreen {
                 }
                 Some(Command::Preferences) => {
                     next_frame().await;
-                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, |w, h| {
+                    let result = preferences::show(&self.root, &art, &mut fullscreen, &mut windowed_size, &mut bindings, |w, h| {
                         art.draw_background(w, h);
                         let (body, source) = &pages.entries[tip];
                         for (command, bounds) in art.draw_panels(w, h, actions, body, source, &pages) {
@@ -604,13 +586,18 @@ mod tests {
 
     #[test]
     fn original_title_hotkeys_open_only_available_entries_without_modifiers() {
+        let source = [("c", "title_screen__campaign"), ("m", "title_screen__multiplayer"),
+            ("a", "title_screen__addons"), ("e", "title_screen__editor"), ("space", "title_screen__credits"),
+            ("l", "changelanguage")].map(|(key,id)| format!("[hotkey]\nkey={key}\ncommand={id}\n[/hotkey]")).join("\n");
+        let bindings = hotkeys::Bindings::native(&source, PathBuf::new());
         for (key, action) in [(KeyCode::C, Command::Campaigns), (KeyCode::M, Command::Multiplayer),
             (KeyCode::A, Command::Addons), (KeyCode::E, Command::Editor),
             (KeyCode::Space, Command::Credits), (KeyCode::L, Command::Language)] {
-            assert_eq!(shortcut(key, false, menu(true)), Some(action));
-            assert_eq!(shortcut(key, true, menu(true)), None);
+            let key = hotkeys::key_name(key).unwrap();
+            assert_eq!(bindings.shortcut(&key, menu(true)), Some(action));
+            assert_eq!(bindings.shortcut(&format!("Alt+{key}"), menu(true)), None);
         }
-        assert_eq!(shortcut(KeyCode::C, false, menu(false)), None);
+        assert_eq!(bindings.shortcut("C", menu(false)), None);
     }
 
     #[test]
