@@ -279,7 +279,7 @@ impl<'data> FixedMatch<'data> {
                 }
                 BoardChange::Resume(action, position) => {
                     let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
-                    self.scenario.events.resume(&action, position, &self.scenario.board, &mut state);
+                    self.scenario.events.resume(&action, position, &self.scenario.board, &self.village_owners, &mut state);
                     for next in state.board_changes.into_iter().rev() { pending.push_front(next); }
                     continue;
                 }

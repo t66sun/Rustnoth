@@ -43,7 +43,39 @@ enum EventAction {
     Board(BoardChange),
     Item(ItemChange),
     Variable(ScalarChange),
-    If { tests: Vec<Comparison>, units: Vec<(HaveUnit, bool)>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
+    If { tests: Vec<Comparison>, board_tests: Vec<BoardTest>, on_match: Vec<EventAction>, otherwise: Vec<EventAction> },
+}
+
+#[derive(Clone, Copy)]
+struct EventBoard<'a, 'rules> {
+    units: &'a crate::board::Battlefield<'rules>,
+    villages: &'a BTreeMap<Hex, usize>,
+}
+
+#[derive(Clone, Debug)]
+enum BoardTest {
+    Unit(HaveUnit, bool),
+    LocationNotOwned { hex: Hex, side: usize },
+}
+
+impl BoardTest {
+    // A single map coordinate with an excluded owner, as used by Battle Training II.
+    fn location(cfg: &Node) -> Option<Self> {
+        if cfg.attributes.len() != 2 { return None; }
+        let hex = Hex::from_wml(cfg.attribute("x")?.parse().ok()?, cfg.attribute("y")?.parse().ok()?)?;
+        let [(tag, owner)] = cfg.children.as_slice() else { return None };
+        if tag != "not" || !owner.children.is_empty() || owner.attributes.len() != 1 { return None; }
+        let side = owner.attribute("owner_side")?.parse().ok()?;
+        (side > 0).then_some(Self::LocationNotOwned { hex, side })
+    }
+
+    fn matches(&self, board: EventBoard<'_, '_>, sides: usize) -> bool {
+        match self {
+            Self::Unit(test, expected) => test.matches(board.units, sides) == *expected,
+            Self::LocationNotOwned { hex, side } =>
+                board.units.map().is_playable(*hex) && board.villages.get(hex) != Some(side),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -336,9 +368,9 @@ impl EventAction {
     }
 
     fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
-        primary: Option<Hex>, board: Option<&crate::board::Battlefield<'_>>, active_side: usize) {
+        primary: Option<Hex>, board: Option<EventBoard<'_, '_>>, active_side: usize) {
         if !matches!(self, Self::Board(_)) && (!state.board_changes.is_empty()
-            || matches!(self, Self::If { units, .. } if !units.is_empty() && board.is_none())) {
+            || matches!(self, Self::If { board_tests, .. } if !board_tests.is_empty() && board.is_none())) {
             state.board_changes.push(BoardChange::Resume(PendingAction(Box::new(self.clone())), primary));
             return;
         }
@@ -347,9 +379,9 @@ impl EventAction {
                 change.apply(variables);
                 return;
             }
-            Self::If { tests, units, on_match, otherwise } => {
+            Self::If { tests, board_tests, on_match, otherwise } => {
                 let matched = tests.iter().all(|test| test.matches(variables))
-                    && units.iter().all(|(test, expected)| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()) == *expected);
+                    && board_tests.iter().all(|test| test.matches(board.expect("board conditions resume on the referee"), state.sides.len()));
                 let branch = if matched { on_match } else { otherwise };
                 for change in branch { change.apply(state, items, variables, primary, board, active_side); }
                 return;
@@ -428,18 +460,19 @@ fn read_actions<'a>(
             "if" => {
                 if !cfg.attributes.is_empty() { return None; }
                 let mut tests = Vec::new();
-                let mut units = Vec::new();
+                let mut board_tests = Vec::new();
                 let mut on_match = Vec::new();
                 let mut otherwise = Vec::new();
                 let mut has_branch = false;
                 for (tag, child) in &cfg.children {
                     match tag.as_str() {
                         "variable" => tests.push(Comparison::read(child)?),
-                        "have_unit" => units.push((HaveUnit::read(child)?, true)),
+                        "have_unit" => board_tests.push(BoardTest::Unit(HaveUnit::read(child)?, true)),
+                        "have_location" => board_tests.push(BoardTest::location(child)?),
                         "not" if child.attributes.is_empty() => {
                             let [(predicate, unit)] = child.children.as_slice() else { return None };
                             if predicate != "have_unit" { return None; }
-                            units.push((HaveUnit::read(unit)?, false));
+                            board_tests.push(BoardTest::Unit(HaveUnit::read(unit)?, false));
                         }
                         "then" | "else" if child.attributes.is_empty() => {
                             has_branch = true;
@@ -449,8 +482,8 @@ fn read_actions<'a>(
                         _ => return None,
                     }
                 }
-                if (tests.is_empty() && units.is_empty()) || !has_branch { return None; }
-                EventAction::If { tests, units, on_match, otherwise }
+                if (tests.is_empty() && board_tests.is_empty()) || !has_branch { return None; }
+                EventAction::If { tests, board_tests, on_match, otherwise }
             }
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
@@ -673,7 +706,9 @@ impl ScenarioEvents {
         }
     }
 
-    pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, board: &crate::board::Battlefield<'_>, state: &mut EventState<'_>) {
+    pub(crate) fn resume(&mut self, action: &PendingAction, primary: Option<Hex>, units: &crate::board::Battlefield<'_>,
+        villages: &BTreeMap<Hex, usize>, state: &mut EventState<'_>) {
+        let board = EventBoard { units, villages };
         action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board), self.active_side);
     }
 
