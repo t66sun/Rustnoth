@@ -1,5 +1,6 @@
 //! Rustnoth's per-user window mode, shared by every desktop launch path.
 use std::{env, fs, io, path::{Path, PathBuf}};
+pub(crate) mod speed;
 
 pub(super) fn config_directory() -> io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -57,6 +58,10 @@ pub fn load() -> io::Result<bool> { WINDOW.read(&config_directory()?) }
 pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory()?, fullscreen) }
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
+
+const EDITOR_HELP: Setting = Setting { file: "editor-help-text-shown", off: "off", on: "on" };
+pub fn editor_help() -> io::Result<bool> { EDITOR_HELP.read_or(&config_directory()?, true) }
+pub fn save_editor_help(enabled: bool) -> io::Result<()> { EDITOR_HELP.write(&config_directory()?, enabled) }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MiniLayer { Terrain, Units, Villages, TeamColors, TerrainImages }
@@ -117,6 +122,10 @@ mod tests {
         assert!(GRID.read(&dir).unwrap());
         assert!(!WINDOW.read(&dir).unwrap());
         fs::remove_file(dir.join("map-grid")).unwrap();
+        assert!(EDITOR_HELP.read_or(&dir, true).unwrap());
+        EDITOR_HELP.write(&dir, false).unwrap();
+        assert!(!EDITOR_HELP.read_or(&dir, true).unwrap());
+        fs::remove_file(dir.join(EDITOR_HELP.file)).unwrap();
         fs::remove_file(dir.join("window-mode")).unwrap();
         fs::remove_dir(dir).unwrap();
     }

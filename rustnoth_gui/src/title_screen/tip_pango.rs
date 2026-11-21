@@ -178,6 +178,10 @@ impl Text {
         self.rasterize(width, height, [215; 3])
     }
 
+    pub(crate) fn text_width(&self, text: &str, size: u16) -> u16 {
+        self.prepare(text, size, None, 0, false).0
+    }
+
     pub(crate) fn button(&self, text: &str, size: u16, color: [u8; 3]) -> macroquad::texture::Image {
         let (width, height) = self.prepare(text, size, None, 0, false);
         self.rasterize(width, height, color)

@@ -33,10 +33,14 @@ impl Footer {
         })
     }
 
-    pub fn draw(&self, art: &Art, rect: Rect, focused: bool, pressed: bool) {
+    pub fn draw_icon(&self, rect: Rect, focused: bool, pressed: bool) {
         let state = if pressed { 2 } else { usize::from(focused) };
         image(rect, &self.frames[state]);
         image(rect, &self.icons[state]);
+    }
+
+    pub fn draw(&self, art: &Art, rect: Rect, focused: bool, pressed: bool) {
+        self.draw_icon(rect, focused, pressed);
         let label = version_label(&art.locale, WESNOTH_VERSION);
         dialog::text(art.font.as_ref(), &label, rect.right() + 5., rect.y + 18., 16, WHITE);
     }
