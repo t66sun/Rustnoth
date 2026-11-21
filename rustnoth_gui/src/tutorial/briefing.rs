@@ -75,8 +75,8 @@ message=Welcome back!
 [/message]
 [message]
 speaker=student
-message=Ho, Galdrad!
-female_message=female^Greetings, Galdrad!
+message="Ho, Galdrad!"
+female_message="female^Greetings, Galdrad!"
 [/message]
 [if]
 [have_unit]
@@ -86,13 +86,13 @@ gender=male
 [then]
 [message]
 speaker=Galdrad
-message=This is no game, Konrad!
+message="This is no game, Konrad!"
 [/message]
 [/then]
 [else]
 [message]
 speaker=Galdrad
-message=female^This is no game, Li’sar!
+message="female^This is no game, Li’sar!"
 [/message]
 [/else]
 [/if]
@@ -104,7 +104,7 @@ highlight=yes
 speaker=Galdrad
 scroll=no
 highlight=no
-message=The more likely attack, then, is across the bridge.
+message="The more likely attack, then, is across the bridge."
 [/message]
 [if]
 [have_unit]
@@ -133,7 +133,7 @@ search_recall_list=yes
 [else]
 [message]
 speaker=Galdrad
-message=Unfortunately, none of your troops survived your training.
+message="Unfortunately, none of your troops survived your training."
 [/message]
 [/else]
 [/if]
