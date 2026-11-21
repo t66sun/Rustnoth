@@ -38,13 +38,26 @@ impl Players {
     }
 }
 
+struct PendingLine {
+    line: engine_lite::fixed_match::dialogue::DialogueLine,
+    record_dismissal: bool,
+    hint_after: Option<String>,
+}
+
+impl From<engine_lite::fixed_match::dialogue::DialogueLine> for PendingLine {
+    fn from(line: engine_lite::fixed_match::dialogue::DialogueLine) -> Self {
+        Self { line, record_dismissal: true, hint_after: None }
+    }
+}
+
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
-    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
+    dialogue: std::collections::VecDeque<PendingLine>,
+    tutorial_hint: String,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -62,7 +75,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None,
+            economy: None, tutorial_hint: String::new(),
             animate_combat: false, live_attack_seed: None, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -77,7 +90,7 @@ impl<'rules> Session<'rules> {
         self.computer_action = None;
         self.legal_actions.clear();
         match self.game.decision() {
-            Some((view, actions)) => {
+            Some((view, mut actions)) => {
                 match self.players.controller(&self.game, view.side) {
                     SideController::Human => {
                         self.observation = Some(view);
@@ -85,6 +98,9 @@ impl<'rules> Session<'rules> {
                     }
                     controller => {
                         self.computer_action = Some(if controller == SideController::Ai {
+                            if self.players == Players::Campaign {
+                                self.game.restrict_guardian_moves(&view, &mut actions);
+                            }
                             computer_choice(&view, &actions)
                         } else {
                             Action::EndTurn
@@ -102,12 +118,12 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer));
+            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter().map(PendingLine::from));
         }
     }
 
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
-        self.dialogue.front()
+        self.dialogue.front().map(|pending| &pending.line)
     }
 
     pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
@@ -119,13 +135,35 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
+        if let Some(pending) = self.dialogue.pop_front() {
+            if pending.record_dismissal { self.history.push(crate::save_replay::Event::Dismiss); }
+            if let Some(hint) = pending.hint_after { self.tutorial_hint = hint; }
+        }
     }
+
+    /// Battle Training's hint_message Lua action replaces an unlimited floating label.
+    pub fn set_tutorial_hint(&mut self, cfg: &engine_lite::wml::Node) {
+        let text = match cfg.attribute("message") {
+            Some(body) if !matches!(cfg.attribute("remove"), Some("yes" | "true" | "on" | "1")) =>
+                match cfg.attribute("caption").filter(|caption| !caption.is_empty()) {
+                    Some(caption) => format!("<b><big>{caption}</big></b>\n{body}"),
+                    None => body.to_owned(),
+                },
+            _ => String::new(),
+        };
+        if let Some(pending) = self.dialogue.back_mut() { pending.hint_after = Some(text); }
+        else { self.tutorial_hint = text; }
+    }
+
+    pub fn tutorial_hint(&self) -> &str { &self.tutorial_hint }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
-            self.dialogue.extend(self.game.take_dialogue(view.side));
+            // These local instructions are produced by the UI. Replaying a move or
+            // undoing it only regenerates the referee's own scenario messages.
+            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter()
+                .map(|line| PendingLine { line, record_dismissal: false, hint_after: None }));
         }
     }
 
@@ -240,6 +278,27 @@ impl<'rules> Session<'rules> {
         self.game.objectives_for(self.observation.as_ref()?.side)
     }
 
+    pub fn has_objective_notice(&self) -> bool {
+        self.dialogue.is_empty() && !self.legal_actions.is_empty()
+            && self.observation.as_ref().is_some_and(|view| self.game.objectives_changed(view.side))
+    }
+
+    pub fn has_authored_objectives(&self) -> bool {
+        self.observation.as_ref().is_some_and(|view| self.game.has_authored_objectives(view.side))
+    }
+
+    pub fn evaluate_objectives(&self) -> Option<engine_lite::scenario_sides::ScenarioObjectives> {
+        self.game.evaluate_objectives_for(self.observation.as_ref()?.side)
+    }
+
+    pub fn acknowledge_objectives(&mut self) -> bool {
+        if !self.has_objective_notice() { return false; }
+        let side = self.observation.as_ref().expect("pending objectives have a viewer").side;
+        self.game.acknowledge_objectives(side);
+        self.history.push(crate::save_replay::Event::ObjectivesSeen);
+        true
+    }
+
     pub fn map_item_images(&self) -> Vec<(Hex, &str)> {
         self.observation.as_ref().map(|view| self.game.map_item_images(view.side)).unwrap_or_default()
     }
@@ -341,8 +400,83 @@ mod tests {
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
 
     #[test]
+    fn campaign_guardians_hold_their_ground_until_they_can_strike() {
+        let level = r#"
+[terrain_type]
+id=flat
+string=Gg
+[/terrain_type]
+[units]
+[movetype]
+name=foot
+[movement_costs]
+flat=1
+[/movement_costs]
+[/movetype]
+[unit_type]
+id=Quintain
+movement_type=foot
+movement=1
+hitpoints=58
+[attack]
+range=melee
+damage=3
+number=5
+[/attack]
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Quintain
+controller=human
+[/side]
+[side]
+controller=ai
+no_leader=yes
+defeat_condition=never
+fog=FOG
+[/side]
+[event]
+name=start
+[unit]
+side=2
+x,y=START,1
+type=Quintain
+ai_special=ROLE
+[/unit]
+[/event]
+[/scenario]"#;
+        let enemy = Hex::from_wml(1, 1).unwrap();
+        for (role, start, fog, expected) in [
+            ("guardian", 6, "no", Action::EndTurn),
+            ("guardian", 6, "yes", Action::EndTurn),
+            ("", 6, "no", Action::Move { from: Hex::from_wml(6, 1).unwrap(), to: Hex::from_wml(5, 1).unwrap() }),
+            ("guardian", 3, "no", Action::Move { from: Hex::from_wml(3, 1).unwrap(), to: Hex::from_wml(2, 1).unwrap() }),
+            ("guardian", 2, "no", Action::Attack(AttackChoice { from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0 })),
+        ] {
+            let cfg = level.replace("START", &start.to_string()).replace("ROLE", role).replace("FOG", fog);
+            let bundle = Bundle::parse(cfg.as_bytes()).unwrap();
+            let mut session = Session::with_players(bundle.start_with_controllers(4, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
+            session.apply(Action::EndTurn).unwrap();
+            if fog == "yes" {
+                assert!(session.game.observation_for(2).unwrap().units.iter().all(|unit| unit.side == 2));
+            }
+            assert_eq!(session.computer_action.as_ref(), Some(&expected));
+            if role == "guardian" && start == 3 {
+                session.play_computer_action().unwrap();
+                assert_eq!(session.computer_action, Some(Action::Attack(AttackChoice {
+                    from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0,
+                })));
+            }
+        }
+    }
+
+    #[test]
     fn campaign_ai_takes_its_turn_while_each_local_player_sees_only_their_own_view() {
-        // The first side has no explicit controller, the last side has no controller at all.
+        // The first side defaults to AI. The last side is explicitly empty.
         let bundle = Bundle::parse(br#"[units]
 [unit_type]
 id=Guard
@@ -390,7 +524,7 @@ message=Human orders
 [/message]
 [/event]
 [/scenario]"#).unwrap();
-        let mut session = Session::with_players(bundle.start(1, |_| unreachable!()).unwrap(), Players::Campaign);
+        let mut session = Session::with_players(bundle.start_with_controllers(1, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
         let view = session.observation().unwrap();
         assert_eq!((view.side, view.gold), (2, Some(22)));
         assert_eq!(session.dialogue().unwrap().text, "Human orders");
@@ -407,8 +541,80 @@ message=Human orders
         assert_eq!(session.observation().unwrap().side, 2);
         assert!(session.legal_actions().is_empty());
         assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
-        assert!(session.play_computer_action().unwrap());
         assert_eq!(session.state(), MatchState::Playing(engine_lite::turn::Turn { round: 2, side: 1 }));
+    }
+
+    #[test]
+    fn campaign_controller_changes_reassign_input_and_view_during_play_and_replay() {
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=0
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+controller=human
+type=Guard
+[/side]
+[side]
+controller=null
+type=Guard
+fog=yes
+[/side]
+[event]
+name=side 1 turn 1
+[modify_side]
+side=1
+controller=ai
+hidden=no
+[/modify_side]
+[modify_side]
+side=2
+controller=human
+gold=23
+[/modify_side]
+[/event]
+[event]
+name=side 2 turn 1
+[modify_side]
+side=2
+controller=null
+[/modify_side]
+[/event]
+[event]
+name=side 1 turn 2
+[modify_side]
+side=1
+controller=human
+[/modify_side]
+[modify_side]
+side=2
+controller=null
+[/modify_side]
+[/event]
+[/scenario]"#).unwrap();
+        let start = || Session::with_players(bundle.start_with_controllers(17, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
+        let mut live = start();
+        let view = live.observation().unwrap();
+        assert_eq!((view.side, view.gold), (2, Some(23)));
+        assert!(live.legal_actions().is_empty());
+        assert!(live.play_computer_action().unwrap());
+        assert_eq!(live.observation().unwrap().side, 2);
+        // A currently playing side cannot be changed to null.
+        assert!(live.legal_actions().contains(&Action::EndTurn));
+        live.apply(Action::EndTurn).unwrap();
+        assert_eq!(live.observation().unwrap().side, 1);
+        assert_eq!(live.game.side_controllers().collect::<Vec<_>>(), [SideController::Human, SideController::Empty]);
+        let mut replay = start();
+        for event in live.history() { event.apply(&mut replay).unwrap(); }
+        assert_eq!(replay.state(), live.state());
+        assert_eq!(replay.observation(), live.observation());
+        assert_eq!(replay.legal_actions(), live.legal_actions());
     }
 
     #[test]
@@ -508,6 +714,92 @@ message=Nightfall
         assert_eq!(computer_choice(&view, &[scout.clone(), recruit.clone(), Action::EndTurn]), recruit);
         assert_eq!(computer_choice(&view, &[scout.clone(), Action::EndTurn]), scout);
         assert_eq!(computer_choice(&view, &[Action::EndTurn]), Action::EndTurn);
+    }
+
+    #[test]
+    fn objectives_wait_for_dialogue_and_their_human_side_and_stay_read_on_reload() {
+        use crate::save_replay::Event;
+        let source = br#"[units]
+[unit_type]
+id=Scout
+hitpoints=20
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Scout
+controller=human
+[/side]
+[side]
+type=Scout
+controller=ai
+[/side]
+[event]
+name=prestart
+[objectives]
+side=0
+silent=yes
+[objective]
+condition=win
+description=Investigate the river fort
+[/objective]
+[/objectives]
+[/event]
+[event]
+name=start
+[message]
+speaker=narrator
+message=The South Guard has fallen.
+[/message]
+[/event]
+[event]
+name=side 2 turn
+[show_objectives]
+side=1
+[/show_objectives]
+[/event]
+[event]
+name=side 1 turn 3
+[show_objectives]
+side=1
+[/show_objectives]
+[objectives]
+side=1
+silent=yes
+[objective]
+condition=win
+description=Guard the citadel
+[/objective]
+[/objectives]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let start = || Session::with_players(bundle.start(17, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        let mut live = start();
+        assert!(live.dialogue().is_some());
+        assert!(!live.acknowledge_objectives());
+        live.dismiss_dialogue();
+        assert!(live.has_objective_notice());
+        assert!(live.acknowledge_objectives());
+        assert!(!live.acknowledge_objectives());
+        live.apply(Action::EndTurn).unwrap();
+        assert!(!live.has_objective_notice());
+        while live.play_computer_action().unwrap() {}
+        assert!(live.has_objective_notice());
+        let mut resumed = start();
+        for event in live.history() { Event::decode(&event.encode()).unwrap().apply(&mut resumed).unwrap(); }
+        assert!(resumed.has_objective_notice());
+        assert!(live.acknowledge_objectives());
+        live.history().last().unwrap().apply(&mut resumed).unwrap();
+        assert!(!resumed.has_objective_notice());
+        assert_eq!(live.history(), resumed.history());
+        live.apply(Action::EndTurn).unwrap();
+        while live.play_computer_action().unwrap() {}
+        assert_eq!(live.objectives().unwrap().victory, ["Guard the citadel"]);
+        assert!(!live.has_objective_notice());
     }
 
     #[test]

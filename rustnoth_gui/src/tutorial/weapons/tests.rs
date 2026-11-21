@@ -10,7 +10,7 @@ pub(in crate::tutorial) fn turn_four() -> String {
     let sword = feedback("sword", "strong", "[filter]\ntype=Elvish Fighter\n[/filter]");
     let bow = feedback("bow", "dextrous", "");
     format!("[event]\nname=turn 4\n[filter_condition]\n[have_unit]\nid=Quintain\n[/have_unit]\n[/filter_condition]\n\
-        [message]\nspeaker=narrator\nmessage=Send your fighters, Konrad\nfemale_message=female^Send your fighters, Lisar\n[/message]\n\
+        [message]\nspeaker=narrator\nmessage=\"Send your fighters, Konrad\"\nfemale_message=\"female^Send your fighters, Lisar\"\n[/message]\n\
         [hint_message]\ncaption=Traits\nmessage=Examine the recruits\n[/hint_message]\n[print]\ntext=Attack the quintain\n[/print]\n\
         [event]\nname=select\n[filter]\nid=student\n[/filter]\n[message]\nspeaker=narrator\nmessage=Use the fighters first\n[/message]\n[/event]\n\
         {sword}\n{bow}\n[/event]")

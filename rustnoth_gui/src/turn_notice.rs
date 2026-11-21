@@ -18,24 +18,33 @@ pub(super) fn new_turn(state: MatchState, can_play: bool, previous: Option<Turn>
 }
 
 pub(super) async fn show(root: &Path, font: Option<&Font>, message: &str) {
-    let skin = dialog::Skin::load(root);
     let blindfold = Texture2D::from_rgba8(1, 1, &[0, 0, 0, 255]);
+    show_on(root, font, message, &blindfold).await;
+}
+
+pub(super) async fn over_board(root: &Path, font: Option<&Font>, message: &str) {
+    let background = Texture2D::from_image(&get_screen_data());
+    show_on(root, font, message, &background).await;
+}
+
+async fn show_on(root: &Path, font: Option<&Font>, message: &str, background: &Texture2D) {
+    let skin = dialog::Skin::load(root);
     let width = (measure_text(message, font, 17, 1.).width.ceil() + 30.).clamp(80., 800.);
     let lines = title_screen::wrap(message, font, width - 30.);
     let height = 30. + lines.len() as f32 * 22.;
+    let mut opening = true;
     loop {
-        let (panel, _) = skin.frame("", width, height, &blindfold);
+        let (panel, _) = skin.frame("", width, height, background);
         for (row, line) in lines.iter().enumerate() {
             dialog::text(font, line, panel.x + 15., panel.y + 32. + row as f32 * 22.,
                 17, Color::from_rgba(215, 215, 215, 255));
         }
         set_default_camera();
+        let dismiss = !opening && (is_mouse_button_pressed(MouseButton::Left) || is_key_pressed(KeyCode::Enter)
+            || is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Escape));
+        opening = false;
         next_frame().await;
-        if is_mouse_button_released(MouseButton::Left) || is_key_pressed(KeyCode::Enter)
-            || is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Escape) {
-            next_frame().await;
-            break;
-        }
+        if dismiss { break; }
     }
 }
 

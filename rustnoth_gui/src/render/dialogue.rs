@@ -213,7 +213,7 @@ pub fn draw_dialogue(line: &DialogueLine, assets: &AssetCatalog, art: &mut Board
 }
 
 // The desktop font draws plain text. Keep the contents of stock Pango spans and emphasis.
-fn plain_text(source: &str) -> String {
+pub(super) fn plain_text(source: &str) -> String {
     let mut rest = source;
     let mut text = String::new();
     while let Some((before, after)) = rest.split_once('<') {
@@ -230,7 +230,7 @@ fn plain_text(source: &str) -> String {
     text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
-fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
     let mut result = Vec::new();
     for paragraph in text.split('\n') {
         let mut line = String::new();
