@@ -53,7 +53,7 @@ impl Menubar {
     }
 
     pub fn draw(&self, open: &mut Option<Menu>, point: Vec2, assets: &AssetCatalog,
-            art: &mut Art, font: Option<&Font>, name: &str) -> Option<Command> {
+            art: &mut Art, font: Option<&Font>, names: &[String]) -> Option<Command> {
         let click = is_mouse_button_pressed(MouseButton::Left);
         let mut triggered = false;
         for (menu, label) in HEADERS {
@@ -84,16 +84,19 @@ impl Menubar {
         let menu = (*open)?;
         let mut result = None;
         let entries = menu.entries();
-        let count = if menu == Window { 1 } else { entries.len() };
+        let count = if menu == Window { names.len() } else { entries.len() };
         for row in 0..count {
             let area = Rect::new(menu.bounds().x, 22. + row as f32 * 27., 192., 27.);
             let hot = area.contains(point);
             let color = if hot { Color::from_rgba(44,65,71,255) } else { Color::from_rgba(31,32,35,255) };
             draw_rectangle(area.x, area.y, area.w, area.h, color);
-            let cmd = entries.get(row).copied();
-            let label = match cmd { Some(action) => action.label(), None => name };
+            let (cmd, label) = if menu == Window {
+                (Command::Switch(row), names[row].as_str())
+            } else {
+                (entries[row], entries[row].label())
+            };
             dialog::text(font, label, area.x + 9., area.y + 19., 16, WHITE);
-            if hot && click && !triggered { result = cmd; }
+            if hot && click && !triggered { result = Some(cmd); }
         }
         if click && !triggered { *open = None; }
         result
