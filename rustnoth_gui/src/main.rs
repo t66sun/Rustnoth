@@ -247,17 +247,26 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     fs::read(path).map_err(|error| format!("could not read {} ({error})", path.display()).into())
 }
 
-async fn show_board(data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
+async fn show_board(mut data: BoardData, players: Players) -> Result<(), Box<dyn Error>> {
+    if let Some(checkpoint) = data.restore.as_mut()
+        && !checkpoint.watch_replay
+        && let Some(browser) = checkpoint.campaign.take()
+    {
+        let route = checkpoint.replay_roster.take().ok_or("Missing incoming campaign roster")?;
+        return browser.play_route(data, route, players).await;
+    }
     play_board(data, players, None).await.map(|_| ())
 }
 
-async fn play_board(mut data: BoardData, players: Players, mut carryover: Option<&mut engine_lite::fixed_match::carryover::CampaignCarryover>) -> Result<Option<String>, Box<dyn Error>> {
-    let campaign = carryover.is_some();
+async fn play_board(mut data: BoardData, players: Players, journey: Option<(&campaign_browser::Browser, &mut engine_lite::fixed_match::carryover::CampaignCarryover)>) -> Result<Option<String>, Box<dyn Error>> {
+    let (browser, mut carryover) = journey.unzip();
+    let campaign = browser.is_some();
     let mut restore = data.restore.take();
     let mut replay_route = restore.as_mut().and_then(|slot| slot.replay_roster.take());
-    let mut opening_roster = if campaign && display_preferences::save_replays()? {
-        carryover.as_deref().map(|route| route.replay_roster())
-    } else { None };
+    // Starting the scenario consumes its incoming veterans. Keep the opening state
+    // for manual saves even when the player has disabled automatic victory replays.
+    let opening_roster = carryover.as_deref().map(|route| route.replay_roster());
+    let mut save_victory_replay = campaign && display_preferences::save_replays()?;
     let mut saved_map = None;
     let game = data.scenario.start_campaign(data.seed, |name| {
         let map = match &restore {
@@ -329,7 +338,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         if session.observation().is_some_and(|view| view.units.iter().any(|unit| unit.side == view.side)) {
             commands.insert(0, map_menus::Command::UnitList);
         }
-        if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
+        if data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
         let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = walking || dialogue_open || top.handled;
         if !input_blocked && is_key_pressed(KeyCode::G)
@@ -372,11 +381,12 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
             _ => {}
         }
-        if !campaign && data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
+        if data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
             next_frame().await;
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(
-                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),None)) {
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
+                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
                     Ok(()) => format!("Saved {name}"),
                     Err(e) => format!("Save failed: {e}"),
                 });
@@ -445,7 +455,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
-        if let Some(id) = next && opening_roster.is_none() && (is_key_pressed(KeyCode::Enter)
+        if let Some(id) = next && !save_victory_replay && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
@@ -607,10 +617,11 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             }
         }
         if session.dialogue().is_none() && !matches!(session.state(), engine_lite::fixed_match::MatchState::Playing(_))
-            && let Some(roster) = opening_roster.take() && session.save_victory_replay() {
+            && std::mem::take(&mut save_victory_replay) && session.save_victory_replay()
+            && let Some(roster) = opening_roster.as_ref() {
             let result = saved_game::directory().and_then(|base| saved_game::save(
                 &base, &format!("{} replay",data.title), &data, players, saved_map.as_deref(),
-                session.history(), None, None, Some(&roster)));
+                session.history(), None, None, Some(saved_game::CampaignSave::Replay(roster))));
             if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
         if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
