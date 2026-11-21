@@ -581,8 +581,11 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
         );
-        if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
-            lesson.draw_prompt(selection.unit().is_some(), &art, camera.layout());
+        if let Some(lesson) = &data.lesson {
+            lesson.draw_labels(&art, camera.layout());
+            if session.dialogue().is_none() {
+                lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+            }
         }
         if session.legal_actions().contains(&Action::EndTurn)
             && let Some(bounds) = button

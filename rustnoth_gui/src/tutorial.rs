@@ -63,12 +63,17 @@ impl Lesson {
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn draw_prompt(&self, selected: bool, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
-        let font = art.font.as_ref();
-        if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird)
-            && let Some(layout) = layout {
-            art.draw_keep_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep);
+    pub(super) fn draw_labels(&self, art: &render::BoardArt, layout: Option<&rustnoth_gui::layout::BoardLayout>) {
+        let Some(layout) = layout else { return };
+        for (hex, text, in_fog) in self.healing.markers() {
+            art.draw_map_label(layout, hex, text, false, in_fog);
         }
+        if matches!(self.step, Step::ToKeep | Step::Recruit | Step::EndThird) {
+            art.draw_map_label(layout, self.recruiting.keep, &self.recruiting.label, self.step == Step::ToKeep, true);
+        }
+    }
+
+    pub(super) fn draw_prompt(&self, selected: bool, font: Option<&Font>) {
         let prompt: &str = match self.step {
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
@@ -142,6 +147,7 @@ impl Lesson {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
             }
             MatchState::Playing(turn) if turn.round == 2 && self.step == Step::WaitSecond => {
+                self.healing.marked = true;
                 healing::say(&self.healing.second_turn, session, None);
                 self.step = Step::ToVillage;
             }
