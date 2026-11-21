@@ -151,20 +151,38 @@ fn groups(cfg: &Node, installed: &Node, brushes: &[Brush]) -> Vec<Group> {
 
 pub(super) struct Art {
     cache: HashMap<String, Option<Texture2D>>,
+    terrain_icons: HashMap<String, Option<Texture2D>>,
 }
 
 impl Art {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
+            terrain_icons: HashMap::new(),
         }
     }
     pub fn image(&mut self, assets: &AssetCatalog, key: &str, rect: Rect) {
         self.tinted(assets, key, rect, WHITE);
     }
 
-    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
-        let image = self.cache.entry(key.into()).or_insert_with(|| {
+    fn terrain_icon(&mut self, assets: &AssetCatalog, key: &str, pos: Vec2) {
+        // The 38px tristate button contains a 36px nearest-sampled terrain image.
+        // Prepare it once so half-pixel ties are independent of GPU interpolation.
+        let icon = self.terrain_icons.entry(key.to_owned()).or_insert_with(|| {
+            let path = assets.resolve_image(Path::new(key))?;
+            let source = crate::artwork::rgba(&std::fs::read(path).ok()?).ok()?;
+            let pixels = image::imageops::resize(&source, 36, 36, image::imageops::Nearest);
+            let texture = Texture2D::from_rgba8(36, 36, pixels.as_raw());
+            texture.set_filter(FilterMode::Nearest);
+            Some(texture)
+        });
+        if let Some(texture) = icon {
+            draw_texture(texture, pos.x, pos.y, WHITE);
+        }
+    }
+
+    fn texture(&mut self, assets: &AssetCatalog, key: &str) -> Option<&Texture2D> {
+        self.cache.entry(key.into()).or_insert_with(|| {
             if let Some(name) = key.strip_suffix("~GS()") {
                 let path = assets.resolve_image(Path::new(name))?;
                 let mut image = crate::artwork::image(&std::fs::read(path).ok()?).ok()?;
@@ -179,8 +197,28 @@ impl Art {
                 .resolve_image(Path::new(key))
                 .filter(|p| p.is_file())
                 .and_then(|path| render::load_texture(&path, None))
-        });
-        if let Some(image) = image {
+        }).as_ref()
+    }
+
+    // Classic theme panels repeat their original bitmap and clip the last tile.
+    pub fn panel(&mut self, assets: &AssetCatalog, key: &str, rect: Rect) {
+        let Some(image) = self.texture(assets, key) else { return };
+        let mut y = rect.y;
+        while y < rect.bottom() {
+            let mut x = rect.x;
+            while x < rect.right() {
+                let source = Rect::new(0., 0., image.width().min(rect.right() - x),
+                    image.height().min(rect.bottom() - y));
+                draw_texture_ex(image, x, y, WHITE,
+                    DrawTextureParams { source: Some(source), dest_size: Some(source.size()), ..Default::default() });
+                x += image.width();
+            }
+            y += image.height();
+        }
+    }
+
+    pub fn tinted(&mut self, assets: &AssetCatalog, key: &str, rect: Rect, tint: Color) {
+        if let Some(image) = self.texture(assets, key) {
             draw_texture_ex(
                 image,
                 rect.x,
@@ -234,16 +272,16 @@ impl Palette {
         ]
     }
 
-    fn tile(&self, i: usize, bounds: Rect, art: &mut Art, assets: &AssetCatalog) {
+    fn tile(&self, i: usize, pos: Vec2, art: &mut Art, assets: &AssetCatalog) {
         let b = &self.brushes[i];
         if let Some(base) = b
             .base
             .as_ref()
             .and_then(|base| self.brushes.iter().find(|x| &x.code == base))
         {
-            art.image(assets, &base.image, bounds);
+            art.terrain_icon(assets, &base.image, pos);
         }
-        art.image(assets, &b.image, bounds);
+        art.terrain_icon(assets, &b.image, pos);
     }
 
     pub fn sample(&mut self, code: &str, foreground: bool) {
@@ -300,12 +338,9 @@ impl Palette {
             let rect = Rect::new(bounds.x + x, bounds.y, size, size);
             let hot = rect.contains(point);
             let suffix = if hot && enabled { "-active" } else { "" };
-            art.image(assets, &format!("buttons/button_square/button_square_{size:.0}{suffix}.png"), rect);
-            art.image(assets, &format!("{icon}.png"), rect);
-            if !enabled {
-                draw_rectangle(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0,
-                    Color::new(0.15, 0.15, 0.15, 0.60));
-            }
+            let effect = if enabled { "" } else { "~GS()" };
+            art.image(assets, &format!("buttons/button_square/button_square_{size:.0}{suffix}.png{effect}"), rect);
+            art.image(assets, &format!("{icon}.png{effect}"), rect);
             if hot && click && enabled {
                 match i {
                     0 => self.menu_start = if self.menu_start.is_none() { Some(self.selected_group) } else { None },
@@ -315,8 +350,8 @@ impl Palette {
                 }
             }
         }
-        art.image(assets, "themes/editor/classic/palette_top.png", Rect::new(bounds.x, top, bounds.w, 45.0));
-        art.image(assets, "themes/editor/classic/palette.png", Rect::new(bounds.x, top + 45.0, bounds.w, (bounds.bottom() - top - 45.0).max(0.0)));
+        art.panel(assets, "themes/editor/classic/palette_top.png", Rect::new(bounds.x, top, bounds.w, 45.0));
+        art.panel(assets, "themes/editor/classic/palette.png", Rect::new(bounds.x, top + 45.0, bounds.w, (bounds.bottom() - top - 45.0).max(0.0)));
 
         if let Some(start) = self.menu_start {
             let rows = (((bounds.bottom() - library_y) / 24.0).floor() as usize).max(1);
@@ -366,7 +401,7 @@ impl Palette {
             let active = if hot || !selected.is_empty() { "-active" } else { "" };
             let prefix = "buttons/button_selectable/button_selectable_38_";
             art.image(assets, &format!("{prefix}base{active}.png"), r);
-            self.tile(i, Rect::new(r.x + 1.0, r.y + 1.0, 36.0, 36.0), art, assets);
+            self.tile(i, vec2(r.x + 1.0, r.y + 1.0), art, assets);
             if !selected.is_empty() {
                 let border = if hot { "active-pressed" } else { "pressed" };
                 art.image(assets, &format!("{prefix}border-{border}-{selected}.png"), r);

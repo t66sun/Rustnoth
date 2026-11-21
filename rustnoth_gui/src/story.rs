@@ -5,7 +5,7 @@ use engine_lite::wml::Node;
 use macroquad::prelude::*;
 use rustnoth_gui::assets::AssetCatalog;
 
-use crate::{dialog, render};
+use crate::{artwork::{self, scaled::Artwork}, dialog, render};
 
 pub(super) struct Part {
     pub(super) title: String,
@@ -90,11 +90,15 @@ impl Layer {
     }
 
     fn area(&self, original: Vec2, screen: Vec2) -> Rect {
-        let width = if self.scale_y && self.aspect { (original.x * screen.y / original.y).min(screen.x) }
-            else if self.scale_x { screen.x } else { original.x };
-        let height = if self.scale_x && self.aspect { (original.y * screen.x / original.x).min(screen.y) }
-            else if self.scale_y { screen.y } else { original.y };
-        Rect::new(((screen.x - width) / 2.).max(0.), ((screen.y - height) / 2.).max(0.), width, height)
+        let (sw, sh) = (screen.x as i64, screen.y as i64);
+        let (ow, oh) = (original.x as i64, original.y as i64);
+        let width = if self.scale_y && self.aspect { (ow * sh / oh).min(sw) }
+            else if self.scale_x { sw } else { ow };
+        let height = if self.scale_x && self.aspect { (oh * sw / ow).min(sh) }
+            else if self.scale_y { sh } else { oh };
+        // The WFL canvas divides each side separately when centering a layer.
+        Rect::new((sw / 2 - width / 2).max(0) as f32, (sh / 2 - height / 2).max(0) as f32,
+                  width as f32, height as f32)
     }
 }
 
@@ -149,22 +153,22 @@ fn lines(font: Option<&Font>, text: &str, width: f32) -> Vec<String> {
     lines
 }
 
-fn draw_art(part: &Part, textures: &HashMap<&str, Option<Texture2D>>, screen: Vec2) {
+fn draw_art(part: &Part, layers: &HashMap<&str, Option<Artwork>>,
+            markers: &HashMap<&str, Option<Texture2D>>, screen: Vec2) {
     let mut origin = Vec2::ZERO;
     let mut scale = Vec2::ONE;
     for (index, layer) in part.layers.iter().enumerate() {
-        let Some(Some(image)) = textures.get(layer.file.as_str()) else { continue };
-        let size = vec2(image.width(), image.height());
+        let Some(Some(image)) = layers.get(layer.file.as_str()) else { continue };
+        let size = image.size();
         let rect = layer.area(size, screen);
         if index == 0 || layer.base {
             origin = rect.point();
             scale = rect.size() / size;
         }
-        draw_texture_ex(image, rect.x, rect.y, WHITE,
-            DrawTextureParams { dest_size: Some(rect.size()), ..Default::default() });
+        image.draw(rect, screen);
     }
     for marker in &part.markers {
-        let Some(Some(image)) = textures.get(marker.file.as_str()) else { continue };
+        let Some(Some(image)) = markers.get(marker.file.as_str()) else { continue };
         let mut size = vec2(image.width(), image.height());
         if marker.resize { size *= scale; }
         let mut at = origin + marker.position * scale;
@@ -217,9 +221,17 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
     let renderer = crate::title_screen::tip_pango::Text::load(root, "Lato");
     let mut index = 0;
     while let Some(part) = parts.get(index) {
-        let mut textures = HashMap::new();
-        for file in part.layers.iter().map(|layer| &layer.file).chain(part.markers.iter().map(|m| &m.file)) {
-            textures.entry(file.as_str()).or_insert_with(|| assets.resolve_image(Path::new(file))
+        let mut layers = HashMap::new();
+        for layer in &part.layers {
+            layers.entry(layer.file.as_str()).or_insert_with(|| {
+                let path = assets.resolve_image(Path::new(&layer.file))?;
+                let bytes = std::fs::read(path).ok()?;
+                artwork::rgba(&bytes).ok().map(Artwork::new)
+            });
+        }
+        let mut markers = HashMap::new();
+        for file in part.markers.iter().map(|m| &m.file) {
+            markers.entry(file.as_str()).or_insert_with(|| assets.resolve_image(Path::new(file))
                 .and_then(|path| render::load_texture(&path, None)));
         }
         let mut first = 0;
@@ -233,7 +245,7 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
             let mouse = vec2(mx, my) / scale;
             set_camera(&dialog::setup_camera(screen.x, screen.y));
             clear_background(BLACK);
-            draw_art(part, &textures, screen);
+            draw_art(part, &layers, &markers, screen);
             if !part.title.is_empty() {
                 dialog::text(font, &dialog::fit(font, part.title.clone(), screen.x - 40.0, 26),
                     20.0, 46.0, 26, WHITE);
@@ -297,6 +309,13 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn south_guard_opening_uses_the_integer_story_canvas_rectangle() {
+        let config = engine_lite::wml::parse("background=story/fall.webp").unwrap();
+        let layer = Layer::read(&config, true).unwrap();
+        assert_eq!(layer.area(vec2(1024.,385.),vec2(1200.,820.)), Rect::new(0.,185.,1200.,451.));
+    }
 
     #[test]
     fn narrative_keeps_the_authored_pango_span_color() {
