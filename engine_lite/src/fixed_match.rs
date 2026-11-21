@@ -395,6 +395,26 @@ impl<'data> FixedMatch<'data> {
         Some(observation)
     }
 
+    /// The default campaign AI moves guardians only as part of an attack this turn.
+    /// Candidate destinations and enemy positions come from the active side's view.
+    pub fn restrict_guardian_moves(&self, view: &Observation, actions: &mut Vec<Action>) {
+        let guardians: BTreeMap<_, _> = view.units.iter()
+            .filter(|unit| unit.side == view.side)
+            .filter_map(|unit| self.scenario.board.unit_at(unit.position)
+                .filter(|actor| actor.side == view.side && actor.guardian)
+                .map(|actor| (unit.position, actor)))
+            .collect();
+        if guardians.is_empty() { return; }
+        actions.retain(|action| {
+            let Action::Move { from, to } = action else { return true };
+            let Some(guard) = guardians.get(from) else { return true };
+            guard.attacks_left() > 0 && view.units.iter().any(|enemy| {
+                !enemy.petrified && !view.allied_sides.contains(&enemy.side)
+                    && guard.unit_type.attacks.iter().any(|weapon| within_range(weapon, to.distance(enemy.position) as i64))
+            })
+        });
+    }
+
     /// The active side's observation and actions, without referee state.
     pub fn decision(&self) -> Option<(Observation, Vec<Action>)> {
         let MatchState::Playing(turn) = self.state else {

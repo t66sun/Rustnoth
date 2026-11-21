@@ -77,7 +77,7 @@ impl<'rules> Session<'rules> {
         self.computer_action = None;
         self.legal_actions.clear();
         match self.game.decision() {
-            Some((view, actions)) => {
+            Some((view, mut actions)) => {
                 match self.players.controller(&self.game, view.side) {
                     SideController::Human => {
                         self.observation = Some(view);
@@ -85,6 +85,9 @@ impl<'rules> Session<'rules> {
                     }
                     controller => {
                         self.computer_action = Some(if controller == SideController::Ai {
+                            if self.players == Players::Campaign {
+                                self.game.restrict_guardian_moves(&view, &mut actions);
+                            }
                             computer_choice(&view, &actions)
                         } else {
                             Action::EndTurn
@@ -332,6 +335,81 @@ fn computer_choice(view: &Observation, actions: &[Action]) -> Action {
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn campaign_guardians_hold_their_ground_until_they_can_strike() {
+        let level = r#"
+[terrain_type]
+id=flat
+string=Gg
+[/terrain_type]
+[units]
+[movetype]
+name=foot
+[movement_costs]
+flat=1
+[/movement_costs]
+[/movetype]
+[unit_type]
+id=Quintain
+movement_type=foot
+movement=1
+hitpoints=58
+[attack]
+range=melee
+damage=3
+number=5
+[/attack]
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Quintain
+controller=human
+[/side]
+[side]
+controller=ai
+no_leader=yes
+defeat_condition=never
+fog=FOG
+[/side]
+[event]
+name=start
+[unit]
+side=2
+x,y=START,1
+type=Quintain
+ai_special=ROLE
+[/unit]
+[/event]
+[/scenario]"#;
+        let enemy = Hex::from_wml(1, 1).unwrap();
+        for (role, start, fog, expected) in [
+            ("guardian", 6, "no", Action::EndTurn),
+            ("guardian", 6, "yes", Action::EndTurn),
+            ("", 6, "no", Action::Move { from: Hex::from_wml(6, 1).unwrap(), to: Hex::from_wml(5, 1).unwrap() }),
+            ("guardian", 3, "no", Action::Move { from: Hex::from_wml(3, 1).unwrap(), to: Hex::from_wml(2, 1).unwrap() }),
+            ("guardian", 2, "no", Action::Attack(AttackChoice { from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0 })),
+        ] {
+            let cfg = level.replace("START", &start.to_string()).replace("ROLE", role).replace("FOG", fog);
+            let bundle = Bundle::parse(cfg.as_bytes()).unwrap();
+            let mut session = Session::with_players(bundle.start_with_controllers(4, |_| unreachable!(), None, true).unwrap(), Players::Campaign);
+            session.apply(Action::EndTurn).unwrap();
+            if fog == "yes" {
+                assert!(session.game.observation_for(2).unwrap().units.iter().all(|unit| unit.side == 2));
+            }
+            assert_eq!(session.computer_action.as_ref(), Some(&expected));
+            if role == "guardian" && start == 3 {
+                session.play_computer_action().unwrap();
+                assert_eq!(session.computer_action, Some(Action::Attack(AttackChoice {
+                    from: Hex::from_wml(2, 1).unwrap(), to: enemy, weapon: 0,
+                })));
+            }
+        }
+    }
 
     #[test]
     fn campaign_ai_takes_its_turn_while_each_local_player_sees_only_their_own_view() {
