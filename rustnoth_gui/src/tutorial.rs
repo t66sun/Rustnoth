@@ -12,6 +12,7 @@ mod healing;
 mod recruiting;
 mod weapons;
 mod ending;
+mod second;
 pub(super) use ending::prepare_campaign;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
