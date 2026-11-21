@@ -2,9 +2,9 @@ use std::error::Error;
 
 use engine_lite::{hex::{Direction, Hex}, wml::Node};
 
-use super::{Hero, Lesson, put};
+use super::{Hero, Lesson, healing, put};
 
-fn children<'a>(node: &'a Node, tag: &'a str) -> impl Iterator<Item = &'a Node> {
+pub(super) fn children<'a>(node: &'a Node, tag: &'a str) -> impl Iterator<Item = &'a Node> {
     node.children.iter().filter(move |(name, _)| name == tag).map(|(_, child)| child)
 }
 
@@ -24,7 +24,7 @@ fn position(cfg: &mut Node, hex: Hex) {
     put(cfg, "y", &y.to_string());
 }
 
-fn gender_command<'a>(event: &'a Node, hero: Hero, tag: &'a str) -> Option<&'a Node> {
+pub(super) fn gender_command<'a>(event: &'a Node, hero: Hero, tag: &'a str) -> Option<&'a Node> {
     children(event, "if")
         .filter(|condition| children(condition, "have_unit").any(|filter| filter.attribute("id") == Some("student")
             && filter.attribute("gender") == Some("male")))
@@ -32,7 +32,7 @@ fn gender_command<'a>(event: &'a Node, hero: Hero, tag: &'a str) -> Option<&'a N
         .find_map(|branch| children(branch, tag).next())
 }
 
-fn dialogue(source: &Node, hero: Hero) -> Node {
+pub(super) fn dialogue(source: &Node, hero: Hero) -> Node {
     let mut line = source.clone();
     if let Some(female) = line.attributes.remove("female_message") && hero == Hero::Lisar {
         put(&mut line, "message", female.text.strip_prefix("female^").unwrap_or(&female.text));
@@ -103,23 +103,30 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let mut finish = node(&[("name", "attack_end")]);
     finish.children.push(("filter".into(), node(&[("id", "student")])));
     finish.children.push(("filter_second".into(), node(&[("id", "Quintain")])));
-    for line in children(attack, "message").take(2) {
-        finish.children.push(("message".into(), dialogue(line, hero)));
+    // Both native paths move Delfador to the same lookout before the quintain's turn.
+    if let Some(movement) = children(attack, "if").flat_map(|condition| children(condition, "then"))
+        .flat_map(|branch| children(branch, "move_unit")).find(|cfg| cfg.attribute("id") == Some("Delfador")) {
+        let mut relocated = mentor.clone();
+        put(&mut relocated, "side", mentor_side);
+        put(&mut relocated, "x", movement.attribute("to_x").ok_or("tutorial lookout is missing x")?);
+        put(&mut relocated, "y", movement.attribute("to_y").ok_or("tutorial lookout is missing y")?);
+        put(&mut relocated, "facing", "nw");
+        finish.children.push(("kill".into(), node(&[("id", "Delfador")])));
+        finish.children.push(("unit".into(), relocated));
     }
-    finish.children.push(("message".into(), node(&[("speaker", "narrator"), ("caption", "Battle Training"),
-        ("message", "Opening exercises complete. You moved your hero next to Delfador and attacked the quintain.")])));
     events.push(("event".into(), finish));
+    let healing = healing::Exercises::read(scenario, attack, hero)?;
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero))
+    Ok(Lesson::new(mentor_hex, hero, healing))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_lite::{fixed_match::Action, scenario_bundle::Bundle, wml, wml_emit};
-    use rustnoth_gui::session::Session;
+    use rustnoth_gui::session::{Players, Session};
 
     fn gendered(tag: &str, male: &str, female: &str) -> String {
         format!("[if]\n[have_unit]\nid=student\ngender=male\n[/have_unit]\n\
@@ -130,22 +137,31 @@ mod tests {
     fn opening() -> Node {
         let intro = gendered("message", "Welcome Konrad", "Welcome Lisar");
         let hint = gendered("hint_message", "Attack with Konrad", "Attack with Lisar");
+        let villages = "[if]\n[have_unit]\nid=student\ngender=male\n[/have_unit]\n\
+            [then]\n[print]\ntext=Move Konrad to a village\n[/print]\n[/then]\n\
+            [else]\n[print]\ntext=Move Lisar to a village\n[/print]\n[/else]\n[/if]";
         wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
-            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Gg,Gg,Gg,Gg,Gg,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
+            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Gg,Gg,Gg,Gg,Xv\nXv,1 Gg,Gg,Gg,Gg,Gg,Xv\nXv,Gg,Gg,Gg,Gg,Vh,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
             [side]\nside=1\ncontroller=human\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
-            [side]\nside=3\nno_leader=yes\nteam_name=player\n\
+            [side]\nside=3\ncontroller=null\nno_leader=yes\nteam_name=player\n\
             [unit]\nid=Delfador\ntype=Elder Mage\nx,y=3,2\n[/unit]\n[/side]\n\
             [event]\nname=start\n{intro}\n[/event]\n\
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
             [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
-            [message]\nspeaker=student\nmessage=It fights back!\n[/message]\n[/event]")).unwrap()
+            [message]\nspeaker=student\nmessage=It fights back!\n[/message]\n\
+            [message]\nspeaker=Delfador\nmessage=$student_hp to $($student_hp-15)\n[/message]\n\
+            [hint_message]\nmessage=Finish your turn\n[/hint_message]\n[print]\ntext=End your turn\n[/print]\n[/event]\n\
+            [event]\nname=turn 2\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
+            [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
+            [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n[/event]")).unwrap()
     }
 
     #[test]
-    fn both_heroes_move_beside_the_mentor_summon_the_dummy_and_finish_by_attacking_it() {
+    fn both_heroes_face_the_quintain_and_heal_on_their_next_turn() {
         let mut units = String::from("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+            [terrain_type]\nstring=Vh\ngives_income=yes\nheals=8\nmvt_alias=Gg\n[/terrain_type]\n\
             [units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n");
         for id in ["Fighter", "Fighteress", "Elder Mage", "Quintain"] {
             units.push_str(&format!("[unit_type]\nid={id}\nhitpoints=32\nmovement=6\nmovement_type=foot\n\
@@ -165,7 +181,7 @@ mod tests {
             let mut bytes = Vec::new();
             wml_emit::write_config(&mut bytes, &document).unwrap();
             let bundle = Bundle::parse_with_core(&bytes, units.as_bytes()).unwrap();
-            let mut session = Session::new(bundle.start(9, |_| unreachable!()).unwrap());
+            let mut session = Session::with_players(bundle.start(9, |_| unreachable!()).unwrap(), Players::Campaign);
             assert_eq!(session.dialogue().unwrap().text, introduction);
             session.dismiss_dialogue();
             assert!(session.legal_actions().contains(&Action::EndTurn));
@@ -185,7 +201,38 @@ mod tests {
             lesson.advance(&mut session);
             assert_eq!(session.dialogue().unwrap().text, "It fights back!");
             session.dismiss_dialogue();
-            assert!(session.dialogue().unwrap().text.contains("Opening exercises complete"));
+            let hp = healing::student_hp(&session).unwrap();
+            assert_eq!(session.dialogue().unwrap().text, format!("{hp} to {}", hp - 15));
+            session.dismiss_dialogue();
+            assert_eq!(session.dialogue().unwrap().text, "Finish your turn");
+            session.dismiss_dialogue();
+            assert_eq!(session.legal_actions(), &[Action::EndTurn]);
+            let next_turn = |lesson: &mut Lesson, session: &mut Session<'_>| {
+                session.apply(Action::EndTurn).unwrap();
+                lesson.advance(session);
+                for _ in 0..12 {
+                    if !session.play_computer_action().unwrap() { return; }
+                    lesson.after_computer(session);
+                }
+                panic!("Tutorial never returned control to the student");
+            };
+            next_turn(&mut lesson, &mut session);
+            let hp = healing::student_hp(&session).unwrap();
+            assert_eq!(session.dialogue().unwrap().text, match hero {
+                Hero::Konrad => format!("I have {hp} left"), Hero::Lisar => format!("I retain {hp}")
+            });
+            session.dismiss_dialogue();
+            assert!(!session.legal_actions().is_empty());
+            assert!(session.legal_actions().iter().all(|a| matches!(a, Action::Move {to,..} if lesson.healing.villages.contains(to))));
+            session.apply(session.legal_actions()[0].clone()).unwrap();
+            lesson.advance(&mut session);
+            assert_eq!(session.dialogue().unwrap().text, "You captured the village");
+            session.dismiss_dialogue();
+            assert_eq!(session.legal_actions(), &[Action::EndTurn]);
+            next_turn(&mut lesson, &mut session);
+            let recovered = healing::student_hp(&session).unwrap() - lesson.before_healing.unwrap();
+            assert_eq!(session.dialogue().unwrap().text, format!("Healed {recovered}"));
+            assert!((0..=8).contains(&recovered));
             assert!(lesson.finished());
         }
     }
