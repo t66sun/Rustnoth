@@ -40,6 +40,24 @@ pub(super) fn dialogue(source: &Node, hero: Hero) -> Node {
     line
 }
 
+// The installed MODIFY_UNIT macro stores its filter, then writes this_item.moves
+// before unstoring the unit. Keep the original side-turn event and its selector.
+fn first_enemy_refresh(scenario: &Node) -> Option<Node> {
+    let name = "side 2 turn 1 refresh";
+    let event = children(scenario, "event").find(|e| e.attribute("name") == Some(name))?;
+    let store = children(event, "store_unit").next()?;
+    let filter = children(store, "filter").next()?;
+    let variable = store.attribute("variable")?;
+    let update = children(event, "foreach").find(|step| step.attribute("array") == Some(variable))?;
+    let body = children(update, "do").next()?;
+    let assignment = children(body, "set_variable").find(|cfg| cfg.attribute("name") == Some("this_item.moves"))?;
+    let mut command = node(&[("moves", assignment.attribute("value")?)]);
+    command.children.push(("filter".into(), filter.clone()));
+    let mut refresh = node(&[("name", name)]);
+    refresh.children.push(("modify_unit".into(), command));
+    Some(refresh)
+}
+
 /// Project just the opening exercises into commands the Rust referee can execute.
 /// In particular the original Lua character selection, adjacent-unit filter and MOVE_UNIT
 /// macro must be resolved before handing the scenario to the fixed-match event reader.
@@ -115,6 +133,9 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
         finish.children.push(("unit".into(), relocated));
     }
     events.push(("event".into(), finish));
+    if let Some(refresh) = first_enemy_refresh(scenario) {
+        events.push(("event".into(), refresh));
+    }
     let healing = healing::Exercises::read(scenario, attack, hero)?;
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
@@ -156,6 +177,66 @@ mod tests {
             [event]\nname=turn 2\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
             [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
             [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n[/event]")).unwrap()
+    }
+
+    #[test]
+    fn quintain_can_attack_but_cannot_move_on_its_first_refresh() {
+        let mut tutorial = opening();
+        tutorial.children.extend(wml::parse(r#"
+[event]
+name=side 2 turn 1 refresh
+[print]
+text=""
+[/print]
+[store_unit]
+variable=MODIFY_UNIT_store
+kill=yes
+[filter]
+id=Quintain
+[/filter]
+[/store_unit]
+[foreach]
+array=MODIFY_UNIT_store
+[do]
+[set_variable]
+name=this_item.moves
+value=0
+[/set_variable]
+[unstore_unit]
+variable=this_item
+find_vacant=no
+[/unstore_unit]
+[/do]
+[/foreach]
+[clear_variable]
+name=MODIFY_UNIT_store
+[/clear_variable]
+[/event]"#).unwrap().children);
+        prepare(&mut tutorial, Hero::Konrad).unwrap();
+        let refresh = children(&tutorial, "event").find(|e| e.attribute("name") == Some("side 2 turn 1 refresh")).unwrap();
+        let mut scenario = wml::parse("[units]\n[unit_type]\nid=Dummy\nhitpoints=30\nmovement=5\n\
+            [attack]\nname=flail\nrange=melee\ntype=impact\ndamage=1\nnumber=1\n[/attack]\n[/unit_type]\n[/units]\n\
+            [scenario]\nmap_data=\"Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,2 Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv\"\n\
+            [side]\ntype=Dummy\n[/side]\n[side]\nid=Quintain\ntype=Dummy\n\
+            [unit]\nid=reserve\ntype=Dummy\nx,y=4,1\n[/unit]\n[/side]\n[/scenario]").unwrap();
+        scenario.children.iter_mut().find(|(tag, _)| tag == "scenario").unwrap().1
+            .children.push(("event".into(), refresh.clone()));
+        let mut bytes = Vec::new();
+        wml_emit::write_config(&mut bytes, &scenario).unwrap();
+        let bundle = Bundle::parse(&bytes).unwrap();
+        let mut game = bundle.start(9, |_| unreachable!()).unwrap();
+        let dummy = Hex::from_wml(2, 1).unwrap();
+        let reserve = Hex::from_wml(4, 1).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let (view, legal) = game.decision().unwrap();
+        assert_eq!(view.units.iter().find(|u| u.position == dummy).unwrap().moves_left, Some(0));
+        assert_eq!(view.units.iter().find(|u| u.position == reserve).unwrap().moves_left, Some(5));
+        assert!(!legal.iter().any(|a| matches!(a, Action::Move { from, .. } if *from == dummy)));
+        assert!(legal.iter().any(|a| matches!(a, Action::Attack(c) if c.from == dummy)));
+        game.step(Action::EndTurn).unwrap();
+        game.step(Action::EndTurn).unwrap();
+        let (view, _) = game.decision().unwrap();
+        assert_eq!(view.units.iter().find(|u| u.position == dummy).unwrap().moves_left, Some(5));
     }
 
     #[test]
