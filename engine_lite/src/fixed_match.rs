@@ -41,6 +41,7 @@ mod retaliation;
 pub mod attack_preview;
 pub mod combat_display;
 pub mod move_preview;
+pub mod enemy_moves;
 pub mod unit_report;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
