@@ -44,7 +44,7 @@ async fn confirm_choice(dialog: &Dialog, title: &str, cancel: &str, accept: &str
     }
 }
 
-async fn prompt(dialog: &Dialog, title: &str, default: &str, accept: &str) -> Option<String> {
+pub(super) async fn prompt(dialog: &Dialog, title: &str, default: &str, accept: &str) -> Option<String> {
     let mut value = default.to_owned();
     let mut replace = !value.is_empty();
     next_frame().await;

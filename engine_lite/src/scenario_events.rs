@@ -7,7 +7,7 @@ pub(crate) mod kill;
 mod items;
 mod have_unit;
 use have_unit::HaveUnit;
-mod variables;
+pub(crate) mod variables;
 mod time_areas;
 pub(crate) use time_areas::TimeAreaChange;
 mod personal_recruits;
@@ -57,7 +57,7 @@ pub(crate) enum BoardChange {
     Kill(kill::KillAction, Option<Hex>),
     Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
-    EndLevel { victory: bool, report: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
+    EndLevel { victory: bool, report: bool, replay_save: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
     PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
@@ -396,6 +396,7 @@ fn read_actions<'a>(
             "endlevel" => EventAction::Board(BoardChange::EndLevel {
                 victory: endlevel::player_victory(cfg, scenario)?,
                 report: crate::scenario_sides::bool_attribute(cfg, "carryover_report", true),
+                replay_save: crate::scenario_sides::bool_attribute(cfg, "replay_save", true),
                 next_scenario: cfg.attribute("next_scenario").map(str::to_owned),
                 gold: crate::fixed_match::carryover::GoldOverride::endlevel(cfg, side_count),
             }),
@@ -540,9 +541,18 @@ pub(crate) struct ScenarioEvents {
 
 impl ScenarioEvents {
     pub(crate) fn read(scenario: &Node, side_count: usize) -> Self {
+        Self::from_events(scenario, side_count, scenario.children.iter()
+            .filter(|(tag, _)| tag == "event").map(|(_, event)| event))
+    }
+
+    pub(crate) fn accepts_event(scenario: &Node, side_count: usize, event: &Node) -> bool {
+        !Self::from_events(scenario, side_count, [event]).handlers.is_empty()
+    }
+
+    fn from_events<'a>(scenario: &Node, side_count: usize, events: impl IntoIterator<Item=&'a Node>) -> Self {
         let mut handlers = Vec::new();
         let mut ids = BTreeSet::new();
-        for (_, event) in scenario.children.iter().filter(|(tag, _)| tag == "event") {
+        for event in events {
             if let Some(id) = event.attribute("id").filter(|id| !id.is_empty())
                 && !ids.insert(id)
             {

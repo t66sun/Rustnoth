@@ -3,6 +3,7 @@ use std::{fs, io, path::{Path, PathBuf}};
 
 pub(super) struct Document {
     pub map: EditableMap,
+    pub locations: super::locations::Locations,
     pub history: History,
     pub camera: BoardCamera,
     pub path: Option<PathBuf>,
@@ -14,6 +15,7 @@ impl Document {
     pub fn revert(&mut self) -> io::Result<()> {
         let path = self.path.as_ref().ok_or(io::ErrorKind::NotFound)?;
         let map = read_map(path)?;
+        self.locations = super::locations::Locations::new(&map);
         self.map = map;
         self.history = History::default();
         self.camera = BoardCamera::default();
@@ -21,7 +23,12 @@ impl Document {
     }
 
     fn blank() -> Self {
-        Self { map: new_map(), history: History::default(), camera: BoardCamera::default(), path: None }
+        Self::new(new_map(), None)
+    }
+
+    fn new(map: EditableMap, path: Option<PathBuf>) -> Self {
+        Self { locations: super::locations::Locations::new(&map), map,
+            history: History::default(), camera: BoardCamera::default(), path }
     }
 
     pub fn name(&self) -> &str {
@@ -47,8 +54,8 @@ impl Default for Documents {
 }
 
 impl Documents {
-    pub fn new_map(&mut self) {
-        self.list.push(Document::blank());
+    pub fn new_map(&mut self, map: EditableMap) {
+        self.list.push(Document::new(map, None));
         self.current = self.list.len() - 1;
     }
 
@@ -59,7 +66,7 @@ impl Documents {
             return Ok(());
         }
         let map = read_map(&path)?;
-        self.list.push(Document { map, path: Some(path), history: History::default(), camera: BoardCamera::default() });
+        self.list.push(Document::new(map, Some(path)));
         self.current = self.list.len() - 1;
         Ok(())
     }
@@ -113,7 +120,7 @@ mod tests {
         let original = &mut docs.list[0];
         original.history.paint(&mut original.map, hex, "Ww");
         original.history.finish();
-        docs.new_map();
+        docs.new_map(new_map());
         assert_eq!(docs.titles(), ["Untitled *", "✓ Untitled"]);
         assert_eq!(docs.save_targets(true), 0..2);
         assert_eq!(docs.save_targets(false), 1..2);

@@ -123,14 +123,28 @@ impl<'rules> Session<'rules> {
 
     /// Apply at most one computer command per desktop frame.
     pub fn play_computer_action(&mut self) -> Result<bool, MatchError> {
+        self.play_computer_recording_walk(None)
+    }
+
+    pub fn play_computer_recording_walk(&mut self, display: Option<&mut Option<engine_lite::fixed_match::walk::VisibleWalk>>)
+        -> Result<bool, MatchError> {
         let seed = self.live_seed(self.computer_action.as_ref());
-        self.play_computer_with_seed(seed)
+        self.play_computer_display(seed, display)
     }
 
     pub(crate) fn play_computer_with_seed(&mut self, seed: Option<u32>) -> Result<bool, MatchError> {
+        self.play_computer_display(seed, None)
+    }
+
+    fn play_computer_display(&mut self, seed: Option<u32>,
+        display: Option<&mut Option<engine_lite::fixed_match::walk::VisibleWalk>>) -> Result<bool, MatchError> {
         if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
-        match self.commit(action.clone(), None, seed) {
+        let result = match (&action, display, &self.observation) {
+            (Action::Move { from, to }, Some(walk), Some(view)) if seed.is_none() => self.game.move_for_viewer(*from, *to, view.side, walk),
+            _ => self.commit(action.clone(), None, seed),
+        };
+        match result {
             Ok(_) => {}
             // A castle hex offered through fog can turn out to be occupied.
             Err(MatchError::InvalidRecruit) if matches!(action, Action::Recruit { .. }) => {
@@ -156,6 +170,7 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
+    pub fn save_victory_replay(&self) -> bool { self.game.save_victory_replay() }
 
     pub fn retained_gold(&self) -> Option<i64> {
         self.game.retained_gold(self.observation.as_ref()?.side)
