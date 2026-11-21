@@ -9,7 +9,9 @@ pub(crate) fn prepare_campaign(campaign: &mut Node, hero: Hero) -> Result<Lesson
     let lesson = opening::prepare(first, hero)?;
     let second = scenario(campaign, &next)?;
     set_second_hero(second, hero)?;
+    super::second::prepare(second, hero);
     super::briefing::prepare(second, hero);
+    super::reinforcements::prepare(second, hero);
     Ok(lesson)
 }
 
@@ -50,9 +52,7 @@ pub(super) fn append_events(scenario: &Node, hero: Hero, events: &mut Vec<(Strin
                 "endlevel" => {
                     result.children.push((tag.clone(), cfg.clone()));
                     if name == "enemies defeated" && let Some(hint) = victory_hint {
-                        let mut line = dialogue(hint, hero);
-                        put(&mut line, "speaker", "narrator");
-                        result.children.push(("message".into(), line));
+                        result.children.push(("rustnoth_tutorial_hint".into(), hint.clone()));
                     }
                 }
                 _ => {}
@@ -66,6 +66,7 @@ pub(super) fn append_events(scenario: &Node, hero: Hero, events: &mut Vec<(Strin
 mod tests {
     use super::*;
     use engine_lite::{fixed_match::{Action, MatchState, carryover::CampaignCarryover}, scenario_bundle::Bundle, wml, wml_emit};
+    use rustnoth_gui::session::{Players, Session};
 
     const CORE: &str = "[units]\n[unit_type]\nid=Fighter\nhitpoints=24\n[/unit_type]\n\
         [unit_type]\nid=Fighteress\nhitpoints=24\n[/unit_type]\n[/units]";
@@ -89,7 +90,7 @@ mod tests {
                 set_second_hero(&mut first, hero).unwrap();
                 put(&mut first, "victory_when_enemies_defeated", "no");
                 put(&mut first, "next_scenario", "2_Tutorial");
-                let script = wml::parse("[event]\nname=enemies defeated\n[message]\nspeaker=student\nmessage=Onwards, Konrad\nfemale_message=female^Onwards, Li’sar\n[/message]\n\
+                let script = wml::parse("[event]\nname=enemies defeated\n[message]\nspeaker=student\nmessage=\"Onwards, Konrad\"\nfemale_message=\"female^Onwards, Li’sar\"\n[/message]\n\
                     [endlevel]\nresult=victory\ncarryover_report=no\ncarryover_percentage=0\ncarryover_add=yes\n[/endlevel]\n[/event]\n\
                     [event]\nname=victory\n[hint_message]\ncaption=Victory\nmessage=Click End Scenario\n[/hint_message]\n[/event]\n\
                     [event]\nname=last_breath\n[filter]\nid=student\n[/filter]\n[message]\nspeaker=unit\nmessage=Too much for me\n[/message]\n[/event]\n\
@@ -98,20 +99,27 @@ mod tests {
                 first.children.push(("event".into(), wml::parse(format!("name=side 1 turn end\n[kill]\nid={victim}\nfire_event=yes\n[/kill]")).unwrap()));
                 let first = board(first);
                 let mut route = CampaignCarryover::default();
-                let mut game = first.start_campaign(7, |_| unreachable!(), Some(&mut route)).unwrap();
-                assert!(game.next_scenario_after_victory().is_none());
-                game.step(Action::EndTurn).unwrap();
-                let lines = game.take_dialogue(1).into_iter().map(|line| line.text).collect::<Vec<_>>();
+                let game = first.start_campaign(7, |_| unreachable!(), Some(&mut route)).unwrap();
+                let mut session = Session::with_players(game, Players::Campaign);
+                assert!(session.next_scenario().is_none());
+                session.apply(Action::EndTurn).unwrap();
+                assert!(session.tutorial_hint().is_empty());
                 if victim == "student" {
-                    assert_eq!(game.state(), MatchState::CampaignDefeat);
-                    assert!(game.next_scenario_after_victory().is_none());
-                    assert_eq!(lines, ["Too much for me"]);
+                    assert_eq!(session.state(), MatchState::CampaignDefeat);
+                    assert!(session.next_scenario().is_none());
+                    assert_eq!(session.dialogue().unwrap().text, "Too much for me");
+                    session.dismiss_dialogue();
+                    assert!(session.dialogue().is_none());
+                    assert!(session.tutorial_hint().is_empty());
                 } else {
-                    assert_eq!(game.state(), MatchState::CampaignVictory);
-                    assert_eq!(game.next_scenario_after_victory(), Some("2_Tutorial"));
-                    assert_eq!(lines, [format!("Onwards, {}", hero.name()), "Click End Scenario".into()]);
-                    assert!(!game.show_end_report());
-                    game.store_campaign_survivors(&mut route);
+                    assert_eq!(session.state(), MatchState::CampaignVictory);
+                    assert_eq!(session.dialogue().unwrap().text, format!("Onwards, {}", hero.name()));
+                    session.dismiss_dialogue();
+                    assert!(session.dialogue().is_none(), "linger needs no extra dialogue click");
+                    assert_eq!(session.tutorial_hint(), "<b><big>Victory</big></b>\nClick End Scenario");
+                    assert_eq!(session.next_scenario(), Some("2_Tutorial"));
+                    assert!(!session.show_end_report());
+                    session.store_campaign_survivors(&mut route);
                     let mut second = base.clone();
                     set_second_hero(&mut second, hero).unwrap();
                     let student = second.children.iter_mut().find(|(_, cfg)| cfg.attribute("id") == Some("student")).unwrap();
@@ -119,7 +127,9 @@ mod tests {
                     route.gold.transfer_to(&mut second);
                     let second = board(second);
                     let game = second.start_campaign(7, |_| unreachable!(), Some(&mut route)).unwrap();
-                    let view = game.observation_for(1).unwrap();
+                    let session = Session::with_players(game, Players::Campaign);
+                    assert!(session.tutorial_hint().is_empty());
+                    let view = session.observation().unwrap();
                     let leader = view.units.iter().find(|u| u.side == 1 && u.can_recruit).unwrap();
                     assert_eq!(leader.type_id, if hero == Hero::Lisar { "Fighteress" } else { "Fighter" });
                     assert_eq!(leader.experience, 7);

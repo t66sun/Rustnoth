@@ -82,6 +82,7 @@ api! {
         fn pango_cairo_context_set_resolution(Handle, f64);
         fn pango_cairo_context_set_font_options(Handle, Handle);
         fn pango_cairo_show_layout(Handle, Handle);
+        fn pango_cairo_layout_path(Handle, Handle);
     }
     cairo = "libcairo-2.dll" {
         fn cairo_font_options_create() -> Handle;
@@ -93,6 +94,9 @@ api! {
         fn cairo_surface_flush(Handle);
         fn cairo_create(Handle) -> Handle;
         fn cairo_set_source_rgba(Handle, f64, f64, f64, f64);
+        fn cairo_set_line_join(Handle, i32);
+        fn cairo_set_line_width(Handle, f64);
+        fn cairo_stroke(Handle);
         fn cairo_destroy(Handle);
     }
 }
@@ -197,12 +201,27 @@ impl Text {
         self.rasterize(width, height, [215; 3])
     }
 
+    pub(crate) fn fitted_label(&self, text: &str, size: u16, limit: u16, markup: bool, color: [u8; 3]) -> Option<macroquad::texture::Image> {
+        let (width, height) = self.prepare(text, size, Some(limit), 0, markup);
+        // Keep long objectives scrollable without requiring an oversized GPU texture.
+        (height <= 2048).then(|| self.rasterize(width, height, color))
+    }
+
     pub(crate) fn tutorial_hint(&self, markup: &str, limit: u16) -> macroquad::texture::Image {
         let (width, height) = self.prepare(markup, 18, Some(limit), 0, true);
         self.rasterize(width, height, [255; 3])
     }
 
+    pub(crate) fn tutorial_print(&self, text: &str, width: u16) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, 18, Some(width), 0, true);
+        self.rasterize_label(width, height, [255; 3], true)
+    }
+
     fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {
+        self.rasterize_label(width, height, color, false)
+    }
+
+    fn rasterize_label(&self, width: u16, height: u16, color: [u8; 3], outline: bool) -> macroquad::texture::Image {
         let mut bytes = vec![0; usize::from(width) * usize::from(height) * 4];
         unsafe {
             let api = &self.api;
@@ -210,6 +229,13 @@ impl Text {
             let surface = (api.cairo_image_surface_create_for_data)(bytes.as_mut_ptr(), 0,
                 i32::from(width), i32::from(height), i32::from(width)*4);
             let ctx = (api.cairo_create)(surface);
+            if outline {
+                (api.pango_cairo_layout_path)(ctx, self.layout);
+                (api.cairo_set_source_rgba)(ctx, 0., 0., 0., 1.);
+                (api.cairo_set_line_join)(ctx, 1); // CAIRO_LINE_JOIN_ROUND
+                (api.cairo_set_line_width)(ctx, 3.);
+                (api.cairo_stroke)(ctx);
+            }
             let [r, g, b] = color.map(|c| f64::from(c) / 255.);
             (api.cairo_set_source_rgba)(ctx, r, g, b, 1.);
             (api.pango_cairo_show_layout)(ctx, self.layout);

@@ -8,7 +8,7 @@ mod hex_labels;
 mod clipboard;
 mod fill;
 mod help_label;
-mod minimap_buttons;
+use crate::minimap_buttons;
 mod palette;
 mod toolbar;
 mod shapes;
@@ -294,9 +294,10 @@ fn draw_terrain(
                         front,
                         "",
                         ms,
+                        None,
                     );
                     if !front && let Some(grid) = grid {
-                        grid.draw(center, size);
+                        grid.draw(center, size, None);
                     }
                     if front && history.selected.contains(&hex) {
                         art.image(assets, "editor/selection-overlay.png", Rect::new(left, top, size, size));
@@ -429,7 +430,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut mini = EditorMinimap::new(root);
     let mut reports = terrain_report::Reports::new(root);
     let mut villages = village_report::Villages::new(root);
-    let mut mini_buttons = minimap_buttons::Buttons::default();
+    let mut mini_buttons = minimap_buttons::Buttons::load(root);
     let mut rebuild = true;
     let mut clipboard = clipboard::Clipboard::default();
     let mut transform_buttons = clipboard::TransformButtons::default();
@@ -640,8 +641,11 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
         reports.draw(w, h, at, doc, &palette, &assets, form.font.as_ref());
-        if let Err(error) = mini_buttons.draw(mini_frame, point, !modal, camera,
-            &mut mini, &mut art, &assets, &mut chrome.tip) {
+        let zoom = camera.layout().map_or(72., |layout| layout.tile_size());
+        if let Some(tip) = mini_buttons.draw(mini_frame, (!modal).then_some(point), zoom, mini.layers) {
+            chrome.tip = Some(tip);
+        }
+        if !modal && let Err(error) = mini_buttons.input(mini_frame, point, camera, &mut mini) {
             status = error.to_string();
         }
         let mini_rect = Rect::new(mini_area.x, mini_area.y, mini_area.width, mini_area.height);

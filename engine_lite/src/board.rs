@@ -64,6 +64,7 @@ pub struct UnitState<'rules> {
     immunities: CombatImmunities,
     pub poisoned: bool,
     pub petrified: bool,
+    pub(crate) guardian: bool,
     unpetrifiable: bool,
     unhealable: bool,
     pub(crate) unplagueable: bool,
@@ -208,6 +209,7 @@ impl<'rules> Battlefield<'rules> {
             immunities: CombatImmunities::default(),
             poisoned: false,
             petrified: false,
+            guardian: false,
             unpetrifiable: false,
             unhealable: false,
             unplagueable: false,
@@ -270,6 +272,7 @@ impl<'rules> Battlefield<'rules> {
             immunities,
             poisoned,
             petrified,
+            guardian,
             unpetrifiable,
             unhealable,
             unplagueable,
@@ -308,6 +311,7 @@ impl<'rules> Battlefield<'rules> {
             immunities: traits.as_ref().map_or(immunities, |t| immunities.with_traits(&t.stats)),
             poisoned,
             petrified,
+            guardian,
             unpetrifiable,
             unhealable,
             unplagueable,
@@ -337,7 +341,7 @@ impl<'rules> Battlefield<'rules> {
 
     /// Place an event reinforcement, or store it for recall if the map has no vacancy.
     pub(crate) fn place_event_unit(&mut self, mut unit: AuthoredStartingUnit) -> Result<Option<Hex>, BoardError> {
-        let destination = unit.position.and_then(|requested| self.event_vacancy(requested));
+        let destination = unit.position.and_then(|requested| self.event_vacancy(requested, None, |_| true));
         if let Some(index) = unit.id.as_ref().and_then(|id|
             self.recall_roster(unit.side).iter().position(|u| u.id.as_ref() == Some(id))
         ) {
@@ -355,25 +359,56 @@ impl<'rules> Battlefield<'rules> {
         Ok(destination)
     }
 
-    fn event_vacancy(&self, requested: Hex) -> Option<Hex> {
+    /// move_unit.lua extracts the unit, finds a passable vacancy, and places it
+    /// with its HP, movement, and attacks intact. It does not capture a village.
+    pub(crate) fn move_event_unit(&mut self, id: &str, requested: Hex,
+        passable: impl Fn(&UnitType, &str) -> bool) -> Result<(), BoardError> {
+        let Some((&from, unit)) = self.units.iter().find(|(_, unit)| unit.id.as_deref() == Some(id)) else { return Ok(()) };
+        if from == requested { return Ok(()); }
+        let to = self.event_vacancy(requested, Some(from), |terrain| passable(unit.unit_type, terrain))
+            .ok_or(BoardError::NoEventVacancy(requested))?;
+        let facing = match from.x.cmp(&to.x) {
+            std::cmp::Ordering::Less => Some(Direction::SouthEast),
+            std::cmp::Ordering::Greater => Some(Direction::SouthWest),
+            std::cmp::Ordering::Equal => unit.facing,
+        };
+        self.finish_walk(from, to, unit.moves_left as u32, facing);
+        Ok(())
+    }
+
+    fn event_vacancy(&self, requested: Hex, extracted: Option<Hex>, passable: impl Fn(&str) -> bool) -> Option<Hex> {
         if !self.map.is_playable(requested) { return None; }
-        if !self.units.contains_key(&requested) { return Some(requested); }
-        // find_vacant_tile checks each ring in x/y order, stopping before distance 50.
         let mut frontier = BTreeSet::from([requested]);
         let mut seen = frontier.clone();
-        for _ in 1..50 {
-            frontier = frontier.iter().flat_map(|hex| hex.neighbors())
-                .filter(|&hex| self.map.is_playable(hex) && seen.insert(hex)).collect();
-            if frontier.is_empty() { break; }
-            if let Some(vacant) = frontier.iter().copied().find(|hex| !self.units.contains_key(hex)) {
-                return Some(vacant);
+        // Native find_vacant_tile checks each ring in x/y order. It traverses
+        // impassable terrain within ten hexes of the requested destination.
+        for distance in 0..50 {
+            let mut next = BTreeSet::new();
+            for hex in frontier {
+                let accessible = self.map.terrain_at(hex).is_some_and(&passable);
+                if accessible && (Some(hex) == extracted || !self.units.contains_key(&hex)) { return Some(hex); }
+                if accessible || distance <= 10 {
+                    next.extend(hex.neighbors().filter(|&at| self.map.is_playable(at) && seen.insert(at)));
+                }
             }
+            frontier = next;
+            if frontier.is_empty() { break; }
         }
         None
     }
 
     pub(crate) fn change_personal_recruits(&mut self, change: &crate::scenario_events::PersonalRecruits) {
         for (&position, unit) in &mut self.units { change.apply(position, unit); }
+    }
+
+    pub(crate) fn set_unit_moves(&mut self, filter: &crate::scenario_events::UnitFilter, moves: i32) {
+        let on_map = self.units.iter_mut().map(|(&hex, unit)| (Some(hex), unit));
+        let reserves = self.recall.values_mut().flatten().map(|unit| (None, unit));
+        for (position, unit) in on_map.chain(reserves) {
+            if filter.matches_fields(position, unit.side, unit.id.as_deref(), &unit.unit_type.id) {
+                unit.moves_left = moves.max(0);
+            }
+        }
     }
 
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
@@ -566,6 +601,7 @@ impl<'rules> Battlefield<'rules> {
             immunities: traits.as_ref().map_or_else(CombatImmunities::default, |t| CombatImmunities::default().with_traits(&t.stats)),
             poisoned: false,
             petrified: false,
+            guardian: false,
             unpetrifiable: false,
             unhealable: false,
             experience: 0,
@@ -917,6 +953,7 @@ fn scaled_experience(base: i32, modifier: i32) -> i32 {
 #[derive(Debug, PartialEq, Eq)]
 pub enum BoardError {
     OutsideMap(Hex),
+    NoEventVacancy(Hex),
     Occupied(Hex),
     UnknownUnitType { position: Hex, type_id: String },
     UnknownRecallType { side: usize, type_id: String },
@@ -926,6 +963,7 @@ impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutsideMap(hex) => write!(f, "placement hex {hex:?} is outside the playable map"),
+            Self::NoEventVacancy(hex) => write!(f, "no passable vacancy near the scripted destination {hex:?}"),
             Self::Occupied(hex) => write!(f, "placement hex {hex:?} already has a unit"),
             Self::UnknownUnitType { position, type_id } => {
                 write!(f, "unknown unit type {type_id:?} at placement hex {position:?}")
@@ -1083,6 +1121,7 @@ mod tests {
             immunities: CombatImmunities::default(),
             poisoned: false,
             petrified: false,
+            guardian: false,
             unpetrifiable: false,
             unhealable: false,
             unplagueable: false,
