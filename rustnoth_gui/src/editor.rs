@@ -2,6 +2,7 @@
 mod files;
 mod fill;
 mod palette;
+mod toolbar;
 
 use crate::{
     camera::BoardCamera,
@@ -108,11 +109,12 @@ impl History {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Command {
     New,
     Open,
     Save,
+    Close,
     Exit,
     Undo,
     Redo,
@@ -125,6 +127,7 @@ impl Command {
             Self::New => "New Map",
             Self::Open => "Open Map…",
             Self::Save => "Save Map As…",
+            Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
@@ -254,6 +257,7 @@ fn text_button(
 struct Chrome {
     menu: Option<bool>,
     tip: Option<&'static str>,
+    toolbar: toolbar::Toolbar,
 }
 
 impl Chrome {
@@ -267,6 +271,8 @@ impl Chrome {
         art: &mut Art,
         font: Option<&Font>,
         name: &str,
+        doc: &EditableMap,
+        history: &History,
     ) -> Option<Command> {
         self.tip = None;
         let click = is_mouse_button_pressed(MouseButton::Left);
@@ -280,8 +286,10 @@ impl Chrome {
         art.image(
             assets,
             "themes/editor/classic/toolbar.png",
-            Rect::new(0.0, 27.0, w - side, 40.0),
+            Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
+        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+            Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
         art.image(
             assets,
             "themes/editor/classic/menubar_rightside.png",
@@ -307,31 +315,13 @@ impl Chrome {
                 triggered = true;
             }
         }
-        let mut result = None;
-        for (i, (key, cmd)) in [
-            ("editor-map-load_30", Command::Open),
-            ("editor-map-save_30", Command::Save),
-            ("undo_30", Command::Undo),
-            ("redo_30", Command::Redo),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let r = Rect::new(7.0 + i as f32 * 34.0, 31.0, 30.0, 30.0);
-            art.image(assets, "buttons/button_square/button_square_30.png", r);
-            art.image(assets, &format!("icons/action/{key}.png"), r);
-            if r.contains(point) {
-                self.tip = Some(cmd.label());
-                if click && self.menu.is_none() {
-                    result = Some(cmd);
-                }
-            }
-        }
+        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), doc, history,
+            assets, art, &mut self.tip);
         let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
         dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
         if let Some(file) = self.menu {
             let commands: &[Command] = if file {
-                &[Command::New, Command::Open, Command::Save, Command::Exit]
+                &[Command::New, Command::Open, Command::Save, Command::Close, Command::Exit]
             } else {
                 &[Command::Undo, Command::Redo, Command::FillSelection]
             };
@@ -410,6 +400,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut chrome = Chrome {
         menu: None,
         tip: None,
+        toolbar: Default::default(),
     };
     let mut name = "Untitled".to_string();
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
@@ -566,6 +557,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             &mut art,
             form.font.as_ref(),
             &title,
+            &doc,
+            &history,
         );
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
@@ -670,9 +663,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 Command::FillSelection => {
                     rebuild |= history.fill_selected(&mut doc, &palette.brushes[palette.bg]);
                 }
-                Command::New | Command::Open => {
+                Command::New | Command::Close | Command::Open => {
                     let incoming: Result<Option<(EditableMap, String)>, Box<dyn Error>> =
-                        if cmd == Command::New {
+                        if cmd != Command::Open {
                             Ok(Some((new_map(), "Untitled".into())))
                         } else {
                             async {
@@ -696,6 +689,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     match incoming {
                         Ok(Some((next, label))) => {
                             if !doc.dirty() || files::confirm(&form).await {
+                                if cmd == Command::Close { tool = Tool::Paint; }
                                 doc = next;
                                 name = label;
                                 history = History::default();
