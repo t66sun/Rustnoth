@@ -71,6 +71,7 @@ fn main() -> ExitCode {
             Err(err) => { eprintln!("{err}"); ExitCode::FAILURE }
         };
     }
+    let (window_width, window_height) = desktop::window::initial_size();
     let launch = match Launch::from_args(&args) {
         Ok(data) => data,
         Err(error) => {
@@ -85,15 +86,15 @@ fn main() -> ExitCode {
     let configuration = Conf {
         fullscreen,
         window_title: format!("Rustnoth - {}", launch.title()),
-        window_width: 1200,
-        window_height: 820,
+        window_width,
+        window_height,
         window_resizable: true,
         ..Conf::default()
     };
     Window::from_config(sprite_batches(configuration), async move {
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
-            Launch::Title(title) => title.run(fullscreen).await,
+            Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
             Launch::Campaign(browser) => browser.run().await,
             Launch::Board(data) => show_board(data, Players::HotSeat).await,
             Launch::Skirmish(setup) => setup.run().await,
