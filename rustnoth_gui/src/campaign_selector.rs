@@ -11,8 +11,7 @@ mod sort;
 mod layout;
 #[path = "campaign_backdrop.rs"]
 mod backdrop;
-#[path = "campaign_scroll.rs"]
-mod scrolling;
+use crate::list_scroll as scrolling;
 #[path = "campaign_text.rs"]
 mod campaign_text;
 use campaign_text::{Caption, Typography};
@@ -234,7 +233,7 @@ impl<'a> Selector<'a> {
         let body = Rect::new(list.x, top, list.w - 15.0, list.bottom() - top);
         let bar = Rect::new(body.right(), body.y, 15.0, body.h);
         if reveal || step != 0 || key(KeyCode::Home) || key(KeyCode::End) {
-            self.scroll.reveal(self.cursor, row_h, body.h);
+            self.scroll.reveal(self.cursor as f32 * row_h, row_h, body.h);
         }
         let content = row_h * rows.len() as f32;
         self.scroll.update(bar, content, pointer, click, !modal && is_mouse_button_down(MouseButton::Left),
