@@ -32,8 +32,10 @@ mod saved_game;
 mod save_dialog;
 mod unit_list;
 mod scenario_report;
+mod screenshot;
 mod title_screen;
 mod tutorial;
+mod artwork;
 
 const USAGE: &str = "rustnoth_gui [--wesnoth-root <directory>]\n\
 rustnoth_gui <bundle.cfg> <core.cfg> <seed> [--wesnoth-root <directory>]\n\
@@ -86,6 +88,7 @@ fn main() -> ExitCode {
         ..Conf::default()
     };
     Window::from_config(configuration, async move {
+        macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen).await,
             Launch::Campaign(browser) => browser.run().await,
