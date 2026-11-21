@@ -6,6 +6,7 @@ mod palette;
 mod toolbar;
 mod shapes;
 mod terrain_report;
+mod village_report;
 
 use crate::{
     camera::BoardCamera,
@@ -408,6 +409,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
     let mut reports = terrain_report::Reports::new(root);
+    let mut villages = village_report::Villages::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
     let mut camera = BoardCamera::default();
@@ -433,6 +435,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             region.clear();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
+            villages.update(&view, &assets);
             add_minimap_border(&mut view, &doc);
             mini.load(&view, &assets);
             rebuild = false;
@@ -585,6 +588,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             &doc,
             &history,
         );
+        villages.draw(w, &mut art, &assets, form.font.as_ref());
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
