@@ -310,8 +310,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let now = (get_time() * 1000.0) as u64;
         let walking = art.walk.advance(now, is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Space));
         let dialogue_open = !walking && session.dialogue().is_some();
-        if notify_turn && !walking && !dialogue_open && !session.legal_actions().is_empty()
-            && let Some(turn) = turn_notice::new_turn(session.state(), players, notified) {
+        if notify_turn && !walking && !dialogue_open
+            && let Some(turn) = turn_notice::new_turn(session.state(), !session.legal_actions().is_empty(), notified) {
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
             let message = locale.game("It is now $name|’s turn").replace("$name|", name);
