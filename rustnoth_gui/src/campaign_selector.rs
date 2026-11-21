@@ -21,6 +21,15 @@ use engine_lite::wml::Node;
 use macroquad::prelude::*;
 use crate::dialog::{fit, setup_camera, text, ListAction};
 use crate::title_screen::locale::{self, Locale};
+use crate::title_screen::button_canvas::{self, State};
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Footer { Play, Cancel }
+
+fn footer_input(pressed: &mut Option<Footer>, hover: Option<Footer>, down: bool, up: bool) -> Option<Footer> {
+    if down { *pressed = hover; }
+    if up && pressed.take() == hover { hover } else { None }
+}
 
 const GOLD: Color = Color::from_rgba(186, 172, 125, 255);
 const LABEL: Color = Color::from_rgba(221, 221, 221, 255);
@@ -106,6 +115,7 @@ pub(super) struct Selector<'a> {
     editing: bool,
     description_offset: usize,
     last_click: Option<(usize, f64)>,
+    footer_press: Option<Footer>,
     art: Art,
     difficulty_menu: difficulty::Menu<'a>,
     combat_menu: combat::Menu,
@@ -122,6 +132,7 @@ impl<'a> Selector<'a> {
         let editing = !campaigns.is_empty();
         let mod_menu = mods::Menu::new(campaign, &mut language, root);
         Ok(Self {
+            footer_press: None,
             ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, scroll: Default::default(),
             query: String::new(), editing, description_offset: 0, last_click: None,
@@ -163,7 +174,7 @@ impl<'a> Selector<'a> {
         let modal = self.difficulty_menu.is_open() || self.combat_menu.is_open() || self.mod_menu.is_open();
         let key = |code| !modal && is_key_pressed(code);
         let click = !modal && is_mouse_button_pressed(MouseButton::Left);
-        if key(KeyCode::Escape) || (click && cancel.contains(pointer)) { return ListAction::Back; }
+        if key(KeyCode::Escape) { return ListAction::Back; }
         if !self.campaigns_only && !self.campaigns.is_empty() && (click && toggle.contains(pointer) || key(KeyCode::Tab)) {
             self.show_levels = !self.show_levels;
             self.editing = false;
@@ -239,8 +250,14 @@ impl<'a> Selector<'a> {
         self.scroll.update(bar, content, pointer, click, !modal && is_mouse_button_down(MouseButton::Left),
             if list.contains(pointer) { wheel } else { 0. });
         let row_click = click && body.contains(pointer);
+        let hover = if modal { None }
+            else if cancel.contains(pointer) { Some(Footer::Cancel) }
+            else if play.contains(pointer) && !rows.is_empty() { Some(Footer::Play) }
+            else { None };
+        let released = footer_input(&mut self.footer_press, hover, click, is_mouse_button_released(MouseButton::Left));
+        if released == Some(Footer::Cancel) { return ListAction::Back; }
         let mut confirmed = key(KeyCode::Enter) || (!self.editing && key(KeyCode::Space))
-            || click && play.contains(pointer);
+            || released == Some(Footer::Play);
         if row_click {
             let index = ((pointer.y-top+self.scroll.offset)/row_h) as usize;
             if index < rows.len() {
@@ -341,8 +358,13 @@ impl<'a> Selector<'a> {
             let message = fit(self.art.font.as_ref(), message.into(), play.x-left-8.0, 15);
             self.art.label(&message, left, bottom+24.0, 15, Color::from_rgba(255,180,146,255));
         }
-        self.art.button(play, "game^Play", pointer);
-        self.art.button(cancel, "Cancel", pointer);
+        for (which, rect, label) in [(Footer::Play, play, "game^Play"), (Footer::Cancel, cancel, "Cancel")] {
+            let state = if which == Footer::Play && entry.is_none() { State::Disabled }
+                else if hover != Some(which) { State::Enabled }
+                else if self.footer_press == hover { State::Pressed }
+                else { State::Focused };
+            self.art.footer_button(rect, label, state);
+        }
         if self.campaigns_only {
             self.difficulty_menu.select(entry.and_then(|e| e.descriptor), &mut self.art.locale, &self.art.roots[0]);
             let box_width = (window.w * 0.233).floor();
@@ -502,6 +524,21 @@ impl Art {
         fill(rect, Color::from_rgba(38,47,60,255));
         if let Some(image_asset) = self.get(asset) { image(&image_asset, rect); }
         let style = if label == "game^Play" { Caption::Play } else { Caption::Button };
+        self.button_caption(rect, label, style);
+    }
+    fn footer_button(&mut self, rect: Rect, label: &str, state: State) {
+        let asset = match state {
+            State::Enabled => "buttons/button_normal/background.png",
+            State::Focused => "buttons/button_normal/background-active.png",
+            State::Pressed => "buttons/button_normal/background-pressed.png",
+            State::Disabled => "buttons/button_normal/background.png~GS()",
+        };
+        if let Some(texture) = self.get(asset) { button_canvas::draw(rect, &texture, state); }
+        let caption = if state == State::Disabled { Caption::DisabledPlay }
+            else if label == "game^Play" { Caption::Play } else { Caption::Button };
+        self.button_caption(rect, label, caption);
+    }
+    fn button_caption(&self, rect: Rect, label: &str, style: Caption) {
         let label = self.locale.ui(label);
         let label = label.split_once('^').map_or(label, |(_, display)| display);
         self.typography.draw(label, style, rect, self.font.as_ref());
@@ -516,6 +553,18 @@ fn relative(path: &Path) -> bool {
 mod tests {
     use super::*;
     use engine_lite::{campaign, wml};
+    #[test]
+    fn a_footer_click_requires_press_and_release_on_the_same_enabled_button() {
+        let mut press = None;
+        assert_eq!(footer_input(&mut press, Some(Footer::Play), true, false), None);
+        assert_eq!(press, Some(Footer::Play));
+        assert_eq!(footer_input(&mut press, Some(Footer::Cancel), false, true), None);
+        assert_eq!(press, None);
+        assert_eq!(footer_input(&mut press, Some(Footer::Cancel), true, false), None);
+        assert_eq!(footer_input(&mut press, Some(Footer::Cancel), false, true), Some(Footer::Cancel));
+        assert_eq!(footer_input(&mut press, None, true, false), None);
+        assert_eq!(footer_input(&mut press, Some(Footer::Play), false, true), None);
+    }
     #[test]
     fn campaign_filter_matches_every_word_across_translations_and_keeps_the_selected_entry() {
         let node = wml::parse("name=The South Guard\ndescription=Deoran rides south\nabbrev=TSG").unwrap();
