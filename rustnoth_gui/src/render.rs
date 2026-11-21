@@ -495,6 +495,21 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt) {
     }
 }
 
+impl BoardArt {
+    pub(crate) fn draw_keep_label(&self, layout: &BoardLayout, hex: Hex, label: &str, highlight: bool) {
+        let view = board_viewport();
+        let [x, y] = layout.tile_origin(hex);
+        let size = layout.tile_size();
+        if x < view.x || y < view.y || x + size > view.x + view.width || y + size > view.y + view.height { return; }
+        if highlight { self.hover.draw_empty_hex(hex, layout); }
+        let font = self.font.as_ref();
+        let left = x + (size - measure_text(label, font, 14, 1.).width) * 0.5;
+        let baseline = y + size * 0.8;
+        crate::dialog::text(font, label, left + 1., baseline + 1., 14, BLACK);
+        crate::dialog::text(font, label, left, baseline, 14, WHITE);
+    }
+}
+
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
