@@ -10,3 +10,4 @@ engine_lite = { path = "../engine_lite" }
 macroquad = { version = "=0.4.16", default-features = false }
 # Original unit portraits are WebP. Enable the decoder in Macroquad's image crate.
 image = { version = "0.24", default-features = false, features = ["webp"] }
+libc = "0.2"
