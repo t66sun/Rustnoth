@@ -23,6 +23,7 @@ struct Captions {
     factor: Label,
     values: [Label; FACTORS.len()],
     skip_ai: Label,
+    turn_dialog: Label,
     accelerated: Label,
     save_replays: Label,
     fullscreen: Label,
@@ -43,6 +44,7 @@ impl Captions {
             factor: label("Acceleration factor:", 15, text),
             values: FACTORS.map(|n| Label::new(art, font, &n.to_string(), 15, text)),
             skip_ai: label("Skip AI moves", 15, gold),
+            turn_dialog: label("Turn dialog", 15, gold),
             accelerated: label("Accelerated speed", 15, gold),
             save_replays: label("Save replays at the end of scenarios", 15, gold),
             fullscreen: label("Full screen", 15, gold),
@@ -82,14 +84,14 @@ pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
 enum Page { General, Hotkeys, Display }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control { GeneralTab, HotkeysTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, SaveReplays, Fullscreen, Grid,
+enum Control { GeneralTab, HotkeysTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, TurnDialog, SaveReplays, Fullscreen, Grid,
     HotkeyFilter, HotkeyList, HotkeyAdd, HotkeyClear, HotkeyDefaults, About, Close }
 
 impl Page {
     fn controls(self) -> &'static [Control] {
         use Control::*;
         match self {
-            Self::General => &[GeneralTab, HotkeysTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, SaveReplays, About, Close],
+            Self::General => &[GeneralTab, HotkeysTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, TurnDialog, SaveReplays, About, Close],
             Self::Display => &[GeneralTab, HotkeysTab, DisplayTab, Fullscreen, Grid, About, Close],
             Self::Hotkeys => &[GeneralTab, HotkeysTab, DisplayTab, HotkeyFilter, HotkeyList,
                 HotkeyAdd, HotkeyClear, HotkeyDefaults, About, Close],
@@ -132,6 +134,7 @@ impl Layout {
             }
             SkipAi => self.rect(217., 93., 557., 19.),
             Accelerated => self.rect(217., 122., 557., 19.),
+            TurnDialog => self.rect(217., 246., 557., 19.),
             SaveReplays => self.rect(217., 373., 557., 19.),
             Factor => self.rect(242., 176., 533., 22.),
             Fullscreen => self.rect(217., 118., 557., 19.),
@@ -248,6 +251,7 @@ pub(super) async fn show(
     let mut saved_speed = speed;
     let mut grid = display_preferences::grid()?;
     let mut skip_ai = display_preferences::skip_ai_moves()?;
+    let mut turn_dialog = display_preferences::turn_dialog()?;
     let mut save_replays = display_preferences::save_replays()?;
     let mut page = Page::General;
     let mut focus = GeneralTab;
@@ -297,6 +301,7 @@ pub(super) async fn show(
             Some(DisplayTab) => { page = Page::Display; Ok(()) }
             Some(Accelerated) => { speed.accelerated = !speed.accelerated; Ok(()) }
             Some(SkipAi) => display_preferences::save_skip_ai_moves(!skip_ai).map(|()| skip_ai = !skip_ai),
+            Some(TurnDialog) => display_preferences::set_turn_dialog(!turn_dialog).map(|()| turn_dialog = !turn_dialog),
             Some(SaveReplays) => display_preferences::set_save_replays(!save_replays).map(|()| save_replays = !save_replays),
             Some(Grid) => display_preferences::save_grid(!grid).map(|()| grid = !grid),
             Some(Fullscreen) => display_preferences::save(!*fullscreen).map(|()| {
@@ -328,6 +333,7 @@ pub(super) async fn show(
             Page::General => {
                 captions.scroll.draw(vec2(window.x + 217., caption_y(layout.control(Scroll), captions.scroll.size.y)));
                 skin.check(layout.control(SkipAi), &captions.skip_ai, skip_ai, highlight == Some(SkipAi));
+                skin.check(layout.control(TurnDialog), &captions.turn_dialog, turn_dialog, highlight == Some(TurnDialog));
                 skin.check(layout.control(SaveReplays), &captions.save_replays,
                     save_replays, highlight == Some(SaveReplays));
                 skin.check(layout.control(Accelerated), &captions.accelerated, speed.accelerated, highlight == Some(Accelerated));

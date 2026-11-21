@@ -19,6 +19,7 @@ struct Setting { file: &'static str, off: &'static str, on: &'static str }
 const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
 const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
 const SKIP_AI: Setting = Setting { file: "skip-ai-moves", off: "off", on: "on" };
+const TURN_DIALOG: Setting = Setting { file: "turn-dialog", off: "off", on: "on" };
 const SAVE_REPLAYS: Setting = Setting { file: "save-replays", off: "off", on: "on" };
 
 #[derive(Clone, Copy)]
@@ -61,6 +62,8 @@ pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
 pub fn skip_ai_moves() -> io::Result<bool> { SKIP_AI.read(&config_directory()?) }
+pub fn turn_dialog() -> io::Result<bool> { TURN_DIALOG.read(&config_directory()?) }
+pub fn set_turn_dialog(on: bool) -> io::Result<()> { TURN_DIALOG.write(&config_directory()?, on) }
 pub fn save_replays() -> io::Result<bool> { SAVE_REPLAYS.read_or(&config_directory()?, true) }
 pub fn set_save_replays(enabled: bool) -> io::Result<()> { SAVE_REPLAYS.write(&config_directory()?, enabled) }
 pub fn save_skip_ai_moves(enabled: bool) -> io::Result<()> { SKIP_AI.write(&config_directory()?, enabled) }

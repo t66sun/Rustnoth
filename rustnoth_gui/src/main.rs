@@ -23,6 +23,7 @@ mod editor;
 mod dialog;
 mod display_preferences;
 mod end_turn;
+mod turn_notice;
 mod menu;
 mod recruit_dialog;
 mod map_menus;
@@ -202,6 +203,7 @@ struct BoardData {
     scenario: Bundle,
     story: Vec<story::Part>,
     skip_turn_confirmation: Vec<bool>,
+    turn_names: Vec<String>,
     assets: AssetCatalog,
     title: String,
     directory: PathBuf,
@@ -231,6 +233,7 @@ impl BoardData {
             lesson: None,
             story,
             skip_turn_confirmation,
+            turn_names: turn_notice::names(config),
             assets,
             title,
             directory,
@@ -297,6 +300,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let mut confirmed_recruit = None;
     let mut confirmed_end_turn = false;
     let turn_confirmation = end_turn::Mode::load(&preference_dir)?;
+    let notify_turn = display_preferences::turn_dialog()?;
+    let mut notified = None;
     let mut end_report_shown = false;
     let top_art = map_menus::Art::new(&data.wesnoth_root);
     let mut top_menu = map_menus::State::default();
@@ -305,6 +310,14 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let now = (get_time() * 1000.0) as u64;
         let walking = art.walk.advance(now, is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Space));
         let dialogue_open = !walking && session.dialogue().is_some();
+        if notify_turn && !walking && !dialogue_open && !session.legal_actions().is_empty()
+            && let Some(turn) = turn_notice::new_turn(session.state(), players, notified) {
+            notified = Some(turn);
+            let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
+            let message = locale.game("It is now $name|’s turn").replace("$name|", name);
+            turn_notice::show(&data.wesnoth_root, art.font.as_ref(), &message).await;
+            continue;
+        }
         if !walking && !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
             return Ok(None);
         }
