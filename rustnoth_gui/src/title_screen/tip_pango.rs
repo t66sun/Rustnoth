@@ -187,6 +187,11 @@ impl Text {
         self.rasterize(width, height, color)
     }
 
+    pub(crate) fn hex_report(&self, text: &str) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, 13, None, 1, false);
+        self.rasterize(width, height, [221; 3])
+    }
+
     pub(crate) fn paragraph(&self, text: &str, width: u16, alignment: i32) -> macroquad::texture::Image {
         let (_, height) = self.prepare(text, 17, Some(width), alignment, true);
         self.rasterize(width, height, [215; 3])

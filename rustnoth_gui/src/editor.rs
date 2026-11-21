@@ -3,6 +3,7 @@ mod files;
 mod documents;
 mod menubar;
 mod locations;
+mod hex_labels;
 mod fill;
 mod help_label;
 mod minimap_buttons;
@@ -141,6 +142,8 @@ enum Command {
     Refresh,
     ToggleHelp,
     Switch(usize),
+    Coordinates,
+    TerrainCodes,
 }
 
 impl Command {
@@ -158,6 +161,8 @@ impl Command {
             Self::Switch(_) => "Switch Map",
             Self::Refresh => "Refresh Display",
             Self::ToggleHelp => "Show Tool Information",
+            Self::Coordinates => "Show Coordinates",
+            Self::TerrainCodes => "Show Terrain Codes",
         }
     }
 }
@@ -186,6 +191,8 @@ fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observa
 
 fn draw_terrain(
     rules: &EditorTerrain,
+    labels: &mut hex_labels::Labels,
+    font: Option<&Font>,
     grid: Option<&render::GridArt>,
     view: &Observation,
     layout: &BoardLayout,
@@ -198,6 +205,7 @@ fn draw_terrain(
     assets: &AssetCatalog,
 ) {
     let ms = (get_time() * 1000.0) as u64;
+    labels.begin();
     let size = layout.tile_size();
     let [origin_x, origin_y] = layout.tile_origin(Hex { x: 0, y: 0 });
     let lo_x = (((area.x - origin_x - size) / (size * 0.75)).floor() as i32).max(-1);
@@ -227,6 +235,10 @@ fn draw_terrain(
                     }
                     if front && region.contains(hex) {
                         art.image(assets, "editor/brush.png", Rect::new(left, top, size, size));
+                    }
+                    if front && (labels.coordinates || labels.terrain) && doc.map().is_playable(hex)
+                        && let Some(code) = doc.map().terrain_at(hex) {
+                        labels.draw(hex, code, center, font);
                     }
                 }
             }
@@ -259,6 +271,7 @@ fn draw_terrain(
 
 
 struct Chrome {
+    labels: hex_labels::Labels,
     show_grid: bool,
     menu: Option<menubar::Menu>,
     menubar: menubar::Menubar,
@@ -296,7 +309,7 @@ impl Chrome {
         art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
         art.panel(assets, "themes/classic/sidebar.png", sidebar);
-        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, doc, history,
+        let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, &self.labels, doc, history,
             assets, art, &mut self.tip);
         let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
         result
@@ -348,6 +361,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
     let mut chrome = Chrome {
+        labels: hex_labels::Labels::new(root)?,
         show_grid: crate::display_preferences::grid()?,
         show_help: crate::display_preferences::editor_help()?,
         menu: None,
@@ -484,6 +498,8 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         if let Some(layout) = camera.layout() {
             draw_terrain(
                 &rules,
+                &mut chrome.labels,
+                form.font.as_ref(),
                 chrome.show_grid.then_some(&grid),
                 &view,
                 layout,
@@ -587,6 +603,10 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             help_label.draw(&text, form.font.as_ref(), vec2(w, h), area.y, top_row);
         }
         set_default_camera();
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            if is_key_pressed(KeyCode::O) { command = Some(Command::Coordinates); }
+            if is_key_pressed(KeyCode::I) { command = Some(Command::TerrainCodes); }
+        }
         if ctrl && is_key_pressed(KeyCode::N) {
             command = Some(Command::New);
         }
@@ -620,7 +640,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             }
         }
         if let Some(cmd) = command {
-            if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp) {
+            if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp | Command::Coordinates | Command::TerrainCodes) {
                 drawing = None;
                 selecting = false;
                 last_selection = None;
@@ -634,6 +654,9 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                         Ok(()) => chrome.show_help = !chrome.show_help,
                         Err(error) => status = error.to_string(),
                     }
+                }
+                Command::Coordinates | Command::TerrainCodes => {
+                    if let Err(e) = chrome.labels.toggle(cmd) { status = e.to_string(); }
                 }
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
