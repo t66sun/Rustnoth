@@ -288,7 +288,6 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     }, replay_route.as_mut().or(carryover.as_deref_mut()), players == Players::Campaign)?;
     let mut session = Session::with_players(game, players);
     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
-    if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let speed = display_preferences::speed::Speed::load()?;
@@ -304,13 +303,18 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
             return Ok(None);
         }
-        for event in checkpoint.events { event.apply(&mut session)?; }
+        if let Some((lesson, hints)) = data.lesson.as_mut().zip(checkpoint.tutorial_hints) {
+            lesson.resume(&mut session, &checkpoint.events, hints)?;
+        } else {
+            for event in checkpoint.events { event.apply(&mut session)?; }
+        }
         if let Some(view) = session.observation() {
             if let Some(hex) = checkpoint.selected { selection.select_own(hex,view); }
             camera.update(render::board_viewport(),view,false);
             if let Some(focus) = checkpoint.camera { camera.restore(focus); }
         }
     } else {
+        if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
         story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref(), locale.ui("Skip")).await;
     }
     if let Some(observation) = session.observation() {
@@ -355,7 +359,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         if session.observation().is_some_and(|view| view.units.iter().any(|unit| unit.side == view.side)) {
             commands.insert(0, map_menus::Command::UnitList);
         }
-        if data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
+        commands.insert(0, map_menus::Command::Save);
         if session.can_undo_tutorial_move() || data.lesson.as_ref().and_then(|lesson| lesson.undo_from(&session)).is_some() {
             commands.push(map_menus::Command::Undo);
         }
@@ -368,7 +372,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             || !walking && !dialogue_open && !show_objectives && !top.handled && commands.contains(&map_menus::Command::UnitList)
                 && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
         let modal_input = walking || dialogue_open || top.handled || show_objectives || unit_list;
-        let save = data.lesson.is_none() && menu.is_none()
+        let save = menu.is_none()
             && (top.command == Some(map_menus::Command::Save) || !modal_input && save_dialog::save_pressed());
         let input_blocked = modal_input || save;
         if !input_blocked && is_key_pressed(KeyCode::G)
@@ -611,8 +615,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             match session.apply_recording_walk(action, advancement, Some(&mut walk)) {
                 Ok(_) => {
                     if let Some(lesson) = &mut data.lesson {
-                        if let Some((hint, from)) = weapon_hint.zip(reselect) { lesson.explain_weapon(hint, from, &mut session); }
-                        lesson.advance(&mut session);
+                        lesson.after_player(&mut session, weapon_hint);
                     }
                     message = None;
                     menu = None;
@@ -698,7 +701,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(
                     &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
-                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
+                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r,session.tutorial_hint())))) {
                     Ok(()) => format!("Saved {name}"),
                     Err(e) => format!("Save failed: {e}"),
                 });

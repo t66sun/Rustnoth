@@ -22,7 +22,7 @@ pub(super) struct Exercise {
     opening: Vec<Line>,
     pub prompt: String,
     pub prompting: bool,
-    select_student: Option<Line>,
+    pub(super) select_student: Option<Line>,
     feedback: Vec<Feedback>,
 }
 
