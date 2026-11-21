@@ -294,7 +294,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     let preference_dir = display_preferences::config_directory()?;
-    let locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
+    let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     if let Some(checkpoint) = restore {
         if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
@@ -485,8 +485,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
+        let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session));
+        let show_end = can_end || denial.is_some();
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
-        let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
+        let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some());
         if let Some(id) = next && !save_victory_replay && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
@@ -514,16 +516,26 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         });
         let mut end_prompt = None;
         let mut attack_dialog = None;
+        let mut denial_message = None;
         let requested = if std::mem::take(&mut confirmed_end_turn) {
             Some(Action::EndTurn)
         } else if let Some(action) = confirmed_action.take() {
             Some(action)
-        } else if !input_blocked && !computer_acted && can_end
+        } else if !input_blocked && !computer_acted && show_end
             && (end_turn::modifier_down() && is_key_pressed(KeyCode::Space)
                 || (clicked && button.is_some_and(|bounds| bounds.contains(pointer))))
         {
-            end_prompt = turn_confirmation.prompt(&session, &data.skip_turn_confirmation);
-            end_prompt.is_none().then_some(Action::EndTurn)
+            if let Some(command) = denial {
+                denial_message = Some(if command.attribute("reason").unwrap_or_default().is_empty() {
+                    locale.game("You cannot end your turn yet!").to_owned()
+                } else {
+                    locale.attribute(&data.wesnoth_root, command, "reason", "")
+                });
+                None
+            } else {
+                end_prompt = turn_confirmation.prompt(&session, &data.skip_turn_confirmation);
+                end_prompt.is_none().then_some(Action::EndTurn)
+            }
         } else if menu_action.is_some() {
             menu_action
         } else if clicked
@@ -597,7 +609,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
-        visible_turn_label = if session.legal_actions().contains(&Action::EndTurn) {
+        visible_turn_label = if session.legal_actions().contains(&Action::EndTurn)
+            || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
             Some(end_label)
         } else if campaign && session.next_scenario().is_some() {
             Some("Continue")
@@ -649,6 +662,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             confirmed_action = window.choose(choices, &data.assets, &art).await;
             if confirmed_action.is_none() { menu = None; }
             next_frame().await;
+            continue;
+        }
+        if let Some(reason) = denial_message {
+            turn_notice::over_board(&data.wesnoth_root, art.font.as_ref(), &reason).await;
             continue;
         }
         if let Some(prompt) = end_prompt {

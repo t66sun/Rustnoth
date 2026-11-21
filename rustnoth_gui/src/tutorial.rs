@@ -10,6 +10,7 @@ use crate::{BoardData, desktop, dialog, render, show_board};
 mod opening;
 mod healing;
 mod recruiting;
+mod end_turn;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -46,6 +47,7 @@ impl Hero {
 enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, Complete }
 
 pub(super) struct Lesson {
+    end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
     select_prompt: String,
@@ -58,8 +60,8 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise) -> Self {
-        Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons) -> Self {
+        Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, healing, recruiting, before_healing: None }
     }
 
