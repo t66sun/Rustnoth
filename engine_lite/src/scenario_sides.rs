@@ -76,6 +76,7 @@ pub struct SideConfig {
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
     pub(crate) controller: SideController,
+    pub(crate) objectives_changed: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -132,6 +133,7 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
         controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
+        objectives_changed: false,
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,

@@ -32,7 +32,7 @@ pub(crate) enum SideAction {
     },
     AllowRecruit(Vec<String>),
     SetRecruit(Vec<String>),
-    Objectives(crate::scenario_sides::ScenarioObjectives),
+    Objectives { content: crate::scenario_sides::ScenarioObjectives, notify: bool },
     DisallowRecruit(Option<Vec<String>>),
 }
 
@@ -50,6 +50,7 @@ pub(crate) struct PendingAction(Box<EventAction>);
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
     Dialogue(crate::fixed_match::dialogue::Message),
     CaptureVillage(VillageCapture),
@@ -241,20 +242,27 @@ impl EventAction {
             let code = code.trim_end_matches('^').to_owned();
             return Some(Self::Board(BoardChange::Terrain { locations, code, layer, fallback }));
         }
-        if tag == "objectives" {
+        if tag == "objectives" || tag == "show_objectives" {
+            if tag == "show_objectives" && (cfg.attributes.keys().any(|k| k != "side") || !cfg.children.is_empty()) {
+                return None;
+            }
             // Unknown side filters must not publish private objectives to other sides.
             if cfg.attributes.keys().any(|key| !matches!(key.as_str(), "side" | "silent" | "summary" |
                 "victory_string" | "defeat_string" | "notes_string" | "note" | "gold_carryover_string" |
                 "bullet" | "delayed_variable_substitution"))
                 || cfg.children.iter().any(|(tag, _)| !matches!(tag.as_str(), "objective" | "note" | "gold_carryover"))
             { return None; }
-            let action = SideAction::Objectives(crate::scenario_sides::ScenarioObjectives::read(cfg));
-            let mut command = Self::side_action(cfg, side_count, action)?;
+            let mut sides = Self::side_indices(cfg, side_count)?;
             // objectives.lua uses the global list when the side filter matches no side (including side=0).
-            if let Self::Sides { sides, .. } = &mut command && sides.is_empty() {
-                sides.extend(0..side_count);
-            }
-            return Some(command);
+            if sides.is_empty() { sides.extend(0..side_count); }
+            return Some(if tag == "show_objectives" {
+                Self::Board(BoardChange::ShowObjectives(sides))
+            } else {
+                Self::Sides { sides, action: SideAction::Objectives {
+                    content: crate::scenario_sides::ScenarioObjectives::read(cfg),
+                    notify: !crate::scenario_sides::bool_attribute(cfg, "silent", false),
+                }}
+            });
         }
         if tag == "modify_side" {
             if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
@@ -292,6 +300,10 @@ impl EventAction {
     }
 
     fn side_action(cfg: &Node, side_count: usize, action: SideAction) -> Option<Self> {
+        Some(Self::Sides { sides: Self::side_indices(cfg, side_count)?, action })
+    }
+
+    fn side_indices(cfg: &Node, side_count: usize) -> Option<Vec<usize>> {
         let mut sides: Vec<_> = (0..side_count).collect();
         if let Some(selector) = cfg.attribute("side") {
             let mut ranges = Vec::new();
@@ -301,7 +313,7 @@ impl EventAction {
             }
             sides.retain(|index| ranges.iter().any(|r| r.contains(&(index + 1))));
         }
-        Some(Self::Sides { sides, action })
+        Some(sides)
     }
 
     fn apply(&self, state: &mut EventState<'_>, items: &mut MapItems, variables: &mut Scalars,
@@ -347,7 +359,10 @@ impl SideAction {
         let funds = &mut state.gold;
         for &index in sides {
             match self {
-                SideAction::Objectives(objectives) => teams[index].objectives.clone_from(objectives),
+                SideAction::Objectives { content, notify } => {
+                    teams[index].objectives.clone_from(content);
+                    teams[index].objectives_changed = *notify;
+                }
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
                 SideAction::Modify { controller, gold, income, village_gold, village_support } => {
                     let side = &mut teams[index];
