@@ -1,5 +1,6 @@
 //! Title-screen browser for the installed Wesnoth 1.18.8 achievement groups.
 mod catalog;
+pub(crate) mod tutorial_progress;
 pub(super) mod icons;
 
 use super::{Art, centered, dialog, image, load_texture, preferences::tiled, wrap};
@@ -63,7 +64,9 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
     let worker = std::thread::spawn(move || -> io::Result<Vec<Group>> {
         let bytes = crate::desktop::achievements(&installed)?;
         let config = engine_lite::wml::parse(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        catalog::groups(&config, &catalog::read_profile()?, &installed, &language)
+        let native = catalog::read_profile()?;
+        let local = tutorial_progress::read(&crate::display_preferences::config_directory()?)?;
+        catalog::groups(&config, &native, local, &installed, &language)
     });
     while !worker.is_finished() {
         behind(screen_width(), screen_height());
