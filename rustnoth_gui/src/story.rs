@@ -10,6 +10,7 @@ use crate::{dialog, render};
 pub(super) struct Part {
     pub(super) title: String,
     pub(super) text: String,
+    markup: String,
     placement: Placement,
     layers: Vec<Layer>,
     markers: Vec<Marker>,
@@ -120,11 +121,12 @@ pub(super) fn read(scenario: &Node, name: &str) -> Vec<Part> {
             let title = if flag(node, "show_title", node.attribute("title").is_some()) {
                 plain_text(literal(node, "title").unwrap_or(name))
             } else { String::new() };
-            let text = literal(node, "story").unwrap_or_default().to_owned();
+            let markup = literal(node, "story").unwrap_or_default().to_owned();
+            let text = plain_text(&markup);
             if !text.is_empty() || !layers.is_empty() || !markers.is_empty() || !title.is_empty() {
                 let placement = match node.attribute("text_layout") { Some("top") => Placement::Top,
                     Some("middle") => Placement::Middle, _ => Placement::Bottom };
-                parts.push(Part { title, text, placement, layers, markers });
+                parts.push(Part { title, text, markup, placement, layers, markers });
             }
         }
     }
@@ -244,12 +246,12 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
             if previous_width != width {
                 #[cfg(windows)]
                 if let Some(renderer) = &renderer && !part.text.is_empty() {
-                    let img = renderer.paragraph(&part.text, width as u16, 0);
+                    let img = renderer.paragraph(&part.markup, width as u16, 0);
                     let texture = Texture2D::from_image(&img);
                     texture.set_filter(FilterMode::Nearest);
                     block = Some(texture);
                 }
-                if block.is_none() { wrapped = lines(font, &plain_text(&part.text), width); }
+                if block.is_none() { wrapped = lines(font, &part.text, width); }
                 previous_width = width;
             }
             let count = ((panel.h - 40.) / 27.).floor().max(1.) as usize;
@@ -299,7 +301,9 @@ mod tests {
     #[test]
     fn narrative_keeps_the_authored_pango_span_color() {
         let scene = engine_lite::wml::parse("[story]\n[part]\nstory=\"<span color='#baac7d'>The king</span>\"\n[/part]\n[/story]").unwrap();
-        assert_eq!(read(&scene, "")[0].text, "<span color='#baac7d'>The king</span>");
+        let parts = read(&scene, "");
+        assert_eq!(parts[0].markup, "<span color='#baac7d'>The king</span>");
+        assert_eq!(parts[0].text, "The king");
     }
 
     #[test]
