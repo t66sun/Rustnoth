@@ -1,5 +1,6 @@
 //! Rustnoth's per-user window mode, shared by every desktop launch path.
 use std::{env, fs, io, path::{Path, PathBuf}};
+pub(crate) mod speed;
 
 pub(super) fn config_directory() -> io::Result<PathBuf> {
     #[cfg(target_os = "windows")]

@@ -115,6 +115,7 @@ pub struct BoardArt {
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
     pub(crate) walk: walking::Walk,
+    speed: crate::display_preferences::speed::Speed,
     ellipse_colors: Option<TeamColors>,
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
@@ -139,6 +140,10 @@ pub struct BoardArt {
 }
 
 impl BoardArt {
+    fn animation_rate(&self) -> f32 {
+        self.speed.animation_rate(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
+    }
+
     pub fn start_walk(&mut self, route: Vec<Hex>, view: &Observation, assets: &AssetCatalog) {
         if route.len() < 2 { return; }
         let Some(unit) = view.units.iter().find(|u| Some(&u.position) == route.last() && u.side == view.side) else { return; };
@@ -149,10 +154,10 @@ impl BoardArt {
                 load_texture(&path, palette)
             })
         });
-        self.walk.start(route, (get_time() * 1000.0) as u64);
+        self.walk.start(route, (get_time() * 1000.0) as u64, self.animation_rate());
     }
 
-    pub fn new(wesnoth_root: &Path) -> Result<Self, macroquad::Error> {
+    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -195,6 +200,7 @@ impl BoardArt {
             combat_pose: None,
             moving: HashMap::new(),
             walk: walking::Walk::default(),
+            speed,
             ellipse_colors: palette(TeamColors::parse_ellipses),
             ellipses: HashMap::new(),
             flag_dir: wesnoth_root.join("data/core/images/flags"),
