@@ -3,6 +3,8 @@ mod selector;
 pub(crate) use selector::combat::Mode as CombatMode;
 #[path = "installed_campaigns.rs"]
 mod installed;
+#[path = "campaign_modifications.rs"]
+pub(crate) mod modifications;
 use std::{error::Error, fs, path::{Path, PathBuf}};
 
 use engine_lite::{campaign, fixed_match::carryover::{CampaignCarryover, CampaignGold}, wml, wml_emit};
@@ -19,6 +21,7 @@ pub(super) struct Browser {
     seed: u32,
     installed: std::collections::HashMap<String, installed::Campaign>,
     mode: Option<CombatMode>,
+    modifications: Vec<wml::Node>,
 }
 
 impl Browser {
@@ -29,18 +32,20 @@ impl Browser {
         if campaign::scenarios(&campaign).next().is_none() {
             return Err("campaign contains no scenarios with an ID".into());
         }
-        Ok(Self { campaign, maps, core, root, seed, installed: Default::default(), mode: None })
+        Ok(Self { campaign, maps, core, root, seed, installed: Default::default(), mode: None, modifications: Vec::new() })
     }
 
-    pub(super) fn installed(file: &Path, folders: &Path, core: Vec<u8>, root: PathBuf, seed: u32) -> Result<Self, Box<dyn Error>> {
-        let (campaign, installed) = installed::catalog(wml::parse(read_file(file)?)?, folders)?;
-        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed, mode: None })
+    pub(super) fn installed(file: &Path, folders: &Path, core: Vec<u8>, root: PathBuf, seed: u32, extras: wml::Node) -> Result<Self, Box<dyn Error>> {
+        let (mut campaign, installed) = installed::catalog(wml::parse(read_file(file)?)?, folders)?;
+        campaign.children.extend(extras.children);
+        Ok(Self { campaign, maps: PathBuf::new(), core, root, seed, installed, mode: None, modifications: Vec::new() })
     }
 
     fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
         let mut selected = campaign::select(&self.campaign, id, |file| fs::read_to_string(self.maps.join(file)))?;
         if let Some(mode) = self.mode { mode.classify(&mut selected); }
         for (_, scenario) in selected.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
+            modifications::apply(scenario, &self.modifications)?;
             gold.transfer_to(scenario);
         }
         let mut source = Vec::new();
@@ -53,6 +58,7 @@ impl Browser {
             .map(|(_, cfg)| cfg).ok_or("Missing campaign descriptor")?;
         let Some(difficulty) = selector.difficulty(descriptor).await else { return Ok(()) };
         let mode = selector.combat_mode();
+        let modifications = selector.modifications();
         let (root, selected) = (self.root.clone(), entry.clone());
         let worker = std::thread::spawn(move || crate::desktop::prepare_campaign(&root, &selected.folder, &selected.define, &difficulty));
         while !worker.is_finished() {
@@ -64,6 +70,7 @@ impl Browser {
         let maps = self.root.join("data/campaigns").join(&entry.folder).join("maps");
         let mut game = Self::load(&file, maps, self.core.clone(), self.root.clone(), self.seed)?;
         game.mode = Some(mode);
+        game.modifications = modifications;
         game.play_from(id.into()).await
     }
 
@@ -81,18 +88,20 @@ impl Browser {
         let scenarios: Vec<_> = campaign::scenarios(&self.campaign).collect();
         let mut selector = selector::Selector::new(&self.root, &self.campaign, &scenarios)?;
         selector.campaigns_only = !self.installed.is_empty();
+        if selector.campaigns_only { selector.restore_modifications()?; }
 
         let mut error: Option<String> = None;
         loop {
             let action = selector.draw(error.as_deref());
             set_default_camera();
+            if !matches!(action, ListAction::Idle) { selector.remember_modifications()?; }
             match action {
                 ListAction::Choose(index) => {
                     let (id, _) = scenarios[index];
                     let result = if let Some(entry) = self.installed.get(id) {
                         if id == crate::tutorial::FIRST_SCENARIO {
                             next_frame().await;
-                            crate::tutorial::run(&self.root, &self.core, self.seed, selector.combat_mode()).await
+                            crate::tutorial::run(&self.root, &self.core, self.seed, selector.combat_mode(), &selector.modifications()).await
                         } else {
                             self.play_installed(entry, id, &mut selector).await
                         }
@@ -137,6 +146,7 @@ mod tests {
         fs::write(maps.join("river.map"), "Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Vh,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv").unwrap();
         let mut browser = Browser::load(&file, maps, b"[terrain_type]\nstring=Vh\ngives_income=yes\n[/terrain_type]\n[units]\n[/units]".to_vec(), root.clone(), 9).unwrap();
         browser.mode = Some(CombatMode::Predictable);
+        browser.modifications.push(wml::parse("[modification]\nid=grant\n[event]\nname=prestart\n[gold]\nside=2\namount=4\n[/gold]\n[/event]\n[/modification]").unwrap().children.remove(0).1);
         assert_eq!(campaign::scenarios(&browser.campaign).collect::<Vec<_>>(),
             [("first", ""), ("second", "River Crossing"), ("third", "The Harbor")]);
         let mut route = CampaignCarryover::default();
@@ -148,6 +158,7 @@ mod tests {
         assert_eq!(board.story[0].text, "Winter & snow.");
         assert_eq!(board.story[1].title, "River Crossing");
         let game = board.scenario.start(board.seed, |_| unreachable!("selected map was embedded")).unwrap();
+        assert_eq!(game.audit_snapshot().gold[1], 1004);
         let view = game.observation_for(1).unwrap();
         assert!(view.units.iter().any(|u| u.position == Hex { x: 0, y: 0 } && u.hitpoints == 19));
         let mut session = rustnoth_gui::session::Session::new(game);
@@ -166,7 +177,8 @@ mod tests {
         assert_eq!(veterans, [(9, 19), (2, 19)]);
         // 104 gold + three turns at 7 (one unowned village + base and side income).
         // Half of 125 rounds to 63, added to 20 before the 2-gold prestart grant.
-        assert_eq!(next.observation_for(2).unwrap().gold, Some(85));
+        // The selected modification grants side two another four gold on each map.
+        assert_eq!(next.observation_for(2).unwrap().gold, Some(89));
         assert_eq!(next.observation_for(1).unwrap().gold, Some(5));
         next.step(engine_lite::fixed_match::Action::EndTurn).unwrap();
         assert_eq!(next.recall_info("scout").unwrap().cost, 11);
