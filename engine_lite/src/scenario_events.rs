@@ -54,7 +54,11 @@ pub(crate) enum BoardChange {
     SetObjectives { sides: Vec<usize>, definition: objectives::Definition, notify: bool },
     ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
+    SetUnitMoves { filter: UnitFilter, moves: i32 },
     Dialogue(crate::fixed_match::dialogue::Message),
+    TutorialHint(Node),
+    TutorialPrint(Node),
+    TutorialEndTurn(Option<Node>),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
     PersonalRecruits(PersonalRecruits),
@@ -183,6 +187,13 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "modify_unit" {
+            let [(tag, filter)] = cfg.children.as_slice() else { return None };
+            if tag != "filter" || cfg.attributes.len() != 1 { return None; }
+            if ["x", "y"].iter().any(|key| filter.attribute(key) == Some("recall")) { return None; }
+            let moves: i32 = cfg.attribute("moves")?.trim().parse().ok()?;
+            return Some(Self::Board(BoardChange::SetUnitMoves { filter: UnitFilter::read(filter)?, moves }));
+        }
         if tag == "heal_unit" {
             return crate::board::HealUnit::read(cfg).map(|heal| Self::Board(BoardChange::HealUnit(heal)));
         }
@@ -398,7 +409,13 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "rustnoth_tutorial_print" => EventAction::Board(BoardChange::TutorialPrint(cfg.clone())),
+            "rustnoth_tutorial_disallow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(Some(cfg.clone()))),
+            "rustnoth_tutorial_allow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(None)),
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
+            "rustnoth_tutorial_hint" if cfg.children.is_empty() && cfg.attributes.iter().all(|(key, value)|
+                    matches!(key.as_str(), "caption" | "message" | "remove") && !value.text.contains('$')) =>
+                EventAction::Board(BoardChange::TutorialHint(cfg.clone())),
             "if" => {
                 if !cfg.attributes.is_empty() { return None; }
                 let mut tests = Vec::new();
@@ -485,7 +502,7 @@ impl UnitFilter {
         self.matches_fields(Some(unit.position), unit.side, unit.id.as_deref(), unit.type_id)
     }
 
-    fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
+    pub(crate) fn matches_fields(&self, position: Option<Hex>, side: usize, id: Option<&str>, type_id: &str) -> bool {
         (self.locations.is_empty() || position.and_then(Hex::to_wml).is_some_and(|(x, y)|
             self.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))))
             && (self.sides.is_empty() || self.sides.contains(&side))

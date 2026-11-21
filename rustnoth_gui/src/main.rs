@@ -295,6 +295,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     let preference_dir = display_preferences::config_directory()?;
     let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
+    if let Some(lesson) = &mut data.lesson {
+        lesson.localize_attack_instructions(&data.wesnoth_root, &mut locale);
+    }
     if let Some(checkpoint) = restore {
         if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
@@ -326,6 +329,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     // Combat plays after the action is committed. Keep the controls the viewer
     // last saw until the final strike or a skip returns to the updated board.
     let end_label = locale.game("End Turn").to_owned();
+    let end_scenario = locale.game("End Scenario").to_owned();
     let mut visible_turn_label = None;
     let mut visible_prompt = String::new();
     session.enable_combat_playback();
@@ -340,9 +344,6 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             let message = locale.game("It is now $name|’s turn").replace("$name|", name);
             turn_notice::show(&data.wesnoth_root, art.font.as_ref(), &message).await;
             continue;
-        }
-        if !walking && !dialogue_open && data.lesson.as_ref().is_some_and(tutorial::Lesson::finished) {
-            return Ok(None);
         }
         let mut commands = map_menus::available(
             session.has_authored_objectives(),
@@ -475,7 +476,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
-        let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session));
+        let denial = data.lesson.as_ref().and_then(|lesson| lesson.end_turn_denial(&session))
+            .or_else(|| session.tutorial_end_turn_denial());
         let show_end = can_end || denial.is_some();
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
         let button = render::end_turn_button(screen_width(), screen_height(), show_end || next.is_some());
@@ -596,7 +598,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>| {
             if let Some(lesson) = &data.lesson { lesson.draw_labels(art, camera.layout()); }
             if !prompt.is_empty() {
-                tutorial::draw_prompt(prompt, art.font.as_ref());
+                art.draw_tutorial_print(prompt, &data.wesnoth_root);
             }
             if let Some(label) = turn
                 && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
@@ -614,10 +616,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
         visible_turn_label = if session.legal_actions().contains(&Action::EndTurn)
+            || session.tutorial_end_turn_denial().is_some()
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
             Some(end_label.as_str())
         } else if campaign && session.next_scenario().is_some() {
-            Some("Continue")
+            Some(if data.lesson.is_some() { end_scenario.as_str() } else { "Continue" })
         } else {
             None
         };
@@ -625,6 +628,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         if session.dialogue().is_none() && let Some(prompt) = data.lesson.as_ref()
             .and_then(|lesson| lesson.prompt(selection.unit().is_some())) {
             visible_prompt.push_str(prompt);
+        } else if session.dialogue().is_none() && let Some(print) = session.tutorial_print() {
+            visible_prompt = locale.attribute(&data.wesnoth_root, print, "text", "");
         }
         let last_page = render::draw(
             session.state(),
@@ -715,7 +720,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 session.history(), None, None, Some(saved_game::CampaignSave::Replay(roster))));
             if let Err(e) = result { replay_viewer::save_error(&data.wesnoth_root, &e).await; }
         }
-        if !end_report_shown && data.lesson.is_none() && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
+        if !end_report_shown && !dialogue_open && session.dialogue().is_none() && session.show_end_report() {
             end_report_shown = true;
             if scenario_report::show(&data.wesnoth_root,&session,campaign).await {
                 if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
