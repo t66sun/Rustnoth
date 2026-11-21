@@ -125,10 +125,10 @@ impl Transitions {
         }
     }
 
-    pub(super) fn draw(&self, hex: Hex, center: Vec2, size: f32) {
+    pub(super) fn draw(&self, hex: Hex, center: Vec2, size: f32, viewport: super::Viewport) {
         if let Some(edges) = self.tiles.get(&hex) {
             for texture in edges.iter().filter_map(|edge| self.textures[edge].as_ref()) {
-                super::draw_centered(texture, center, size);
+                super::draw_centered(texture, center, size, Some(viewport));
             }
         }
     }

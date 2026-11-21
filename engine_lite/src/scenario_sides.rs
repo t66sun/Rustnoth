@@ -22,28 +22,35 @@ pub(crate) enum DefeatCondition {
 /// Literal scenario objectives shown by the desktop client.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScenarioObjectives {
+    pub summary: String,
     pub victory: Vec<String>,
     pub defeat: Vec<String>,
 }
 
 impl ScenarioObjectives {
-    pub(crate) fn read(cfg: &Node) -> Self {
-        let mut result = Self::default();
-        for (_, objective) in cfg.children.iter().filter(|(tag, _)| tag == "objective") {
-            if objective.children.iter().any(|(tag, _)| tag == "show_if") { continue; }
-            let Some(description) = objective.attribute("description")
-                .filter(|text| !text.trim().is_empty() && !text.contains('$')) else { continue };
-            match objective.attribute("condition") {
-                Some("win") => result.victory.push(description.to_owned()),
-                Some("lose") => result.defeat.push(description.to_owned()),
-                _ => {}
-            }
-        }
-        result
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.victory.is_empty() && self.defeat.is_empty()
+        self.summary.is_empty() && self.victory.is_empty() && self.defeat.is_empty()
+    }
+}
+
+/// Single-player WML controllers. An omitted controller uses Wesnoth's AI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SideController {
+    Human,
+    Ai,
+    Empty,
+    Reserved,
+}
+
+impl SideController {
+    pub(crate) fn from_wml(value: &str) -> Option<Self> {
+        match value {
+            "human" => Some(Self::Human),
+            "ai" => Some(Self::Ai),
+            "null" => Some(Self::Empty),
+            "reserved" => Some(Self::Reserved),
+            _ => None,
+        }
     }
 }
 
@@ -54,7 +61,8 @@ pub struct SideConfig {
     pub side: usize,
     pub team_names: Vec<String>,
     pub(crate) objectives: ScenarioObjectives,
-    pub(crate) human: bool,
+    pub(crate) controller: SideController,
+    pub(crate) objectives_changed: bool,
     pub(crate) defeat_condition: DefeatCondition,
     pub fog: bool,
     pub shroud: bool,
@@ -110,7 +118,8 @@ fn read_side(side: usize, cfg: &Node) -> SideConfig {
         side,
         team_names: names(team_names).collect(),
         objectives: ScenarioObjectives::default(),
-        human: cfg.attribute("controller") == Some("human"),
+        controller: cfg.attribute("controller").and_then(SideController::from_wml).unwrap_or(SideController::Ai),
+        objectives_changed: false,
         defeat_condition: match cfg.attribute("defeat_condition") {
             Some("no_units_left") => DefeatCondition::NoUnitsLeft,
             Some("never") => DefeatCondition::Never,
