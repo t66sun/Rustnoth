@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod locations;
 mod fill;
 mod minimap_buttons;
 mod palette;
@@ -25,6 +26,7 @@ use std::{collections::{BTreeMap, HashSet}, error::Error, fs, path::Path};
 type Changes = BTreeMap<Hex, String>;
 
 enum Edit {
+    Location(engine_lite::map::editor::LocationEdit),
     Terrain(Changes),
     Selection(HashSet<Hex>),
 }
@@ -39,6 +41,12 @@ struct History {
 }
 
 impl History {
+    fn place(&mut self, doc: &mut EditableMap, id: &str, at: Option<Hex>) {
+        if let Some(undo) = doc.set_location(id, at) {
+            self.undo.push(Edit::Location(undo));
+            self.redo.clear();
+        }
+    }
     fn paint(&mut self, doc: &mut EditableMap, at: Hex, code: &str) {
         if let Some(old) = doc.paint_stored(at, code) {
             self.stroke.entry(at).or_insert(old);
@@ -91,6 +99,10 @@ impl History {
             return false;
         };
         match edit {
+            Edit::Location(edit) => {
+                to.push(Edit::Location(doc.restore_locations(edit)));
+                false
+            }
             Edit::Selection(delta) => {
                 for &hex in &delta {
                     if !self.selected.remove(&hex) { self.selected.insert(hex); }
@@ -226,13 +238,13 @@ fn draw_terrain(
             }
         }
     }
-    for (id, at) in doc.map().numbered_starts() {
+    for (id, at) in doc.locations() {
         let [x, y] = layout.tile_origin(at);
         let center = vec2(x + size * 0.5, y + size * 0.5);
-        draw_circle(center.x, center.y, 11.0, Color::from_rgba(22, 18, 13, 202));
-        let text = id.to_string();
+        let text = locations::label(id);
         let width = measure_text(&text, None, 17, 1.0).width;
-        draw_text(&text, center.x - width * 0.5, center.y + 5.0, 17.0, WHITE);
+        draw_text(&text, center.x + 1. - width * 0.5, center.y + 6., 17., BLACK);
+        draw_text(&text, center.x - width * 0.5, center.y + 5., 17., WHITE);
     }
 }
 
@@ -404,6 +416,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut shapes = shapes::Shapes::load(root, &cfg)?;
     let mut art = Art::new();
     let mut doc = new_map();
+    let mut locations = locations::Locations::new(&doc);
     let mut view = render::map_observation(doc.map());
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
@@ -478,7 +491,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             last_selection = None;
         }
         if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
-            && !is_key_down(KeyCode::RightAlt) && tool != Tool::Fill {
+            && !is_key_down(KeyCode::RightAlt) && matches!(tool, Tool::Paint | Tool::Select) {
             shapes.keys();
         }
         let at = if area.contains(p) {
@@ -489,7 +502,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         let footprint = at.filter(|_| !modal && (tool == Tool::Paint || tool == Tool::Select && !shift))
             .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
-        if tool == Tool::Select && !modal {
+        if tool == Tool::Location && !modal {
+            locations.input(at, ctrl, &mut doc, &mut history, &mut camera);
+        } else if tool == Tool::Select && !modal {
             if let Some(hex) = at {
                 selecting |= is_mouse_button_pressed(MouseButton::Left);
                 let same_brush = last_selection.is_some_and(|(prior, remove, wand)| {
@@ -562,6 +577,11 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 let [x, y] = layout.tile_origin(hex);
                 let rect = Rect::new(x, y, layout.tile_size(), layout.tile_size());
                 art.image(&assets, "misc/hover-hex.png", rect);
+                if tool == Tool::Location && !modal {
+                    let padding = rect.w / 12.;
+                    art.image(&assets, "icons/action/editor-tool-starting-position_60.png",
+                        Rect::new(x + padding, y + padding, rect.w - 2. * padding, rect.h - 2. * padding));
+                }
                 if tool == Tool::Select && !modal {
                     let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
                     art.tinted(&assets, icon, rect, Color::from_rgba(255, 255, 255, 196));
@@ -606,15 +626,32 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
                     else { Rect::new(w - sidebar, 304., sidebar, 155.) };
         tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
-        shapes.panel(tools, compact, tool != Tool::Fill && !modal, point, &mut art, &assets, &mut chrome.tip);
+        shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal, point, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
-        palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
+        if tool == Tool::Location {
+            let panel_pointer = if modal { vec2(-1., -1.) } else { point };
+            if let Some(action) = locations.panel(panel, compact, panel_pointer, &assets, &mut art, form.font.as_ref()) {
+                match action {
+                    locations::Action::Add => {
+                        if let Some(id) = files::prompt(&form, "New Location Identifier", "", "OK").await {
+                            if !locations.add(&id) { status = "Invalid location id".into(); }
+                        }
+                    }
+                    locations::Action::Delete => history.place(&mut doc, locations.selected(), None),
+                    locations::Action::GoTo => locations.go_to(&doc, &mut camera),
+                }
+            }
+        } else {
+            palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
+        }
         let font = form.font.as_ref();
         let lines = if let Some(tip) = chrome.tip {
             vec![tip.to_owned()]
         } else if !status.is_empty() {
             vec![status.clone()]
+        } else if tool == Tool::Location {
+            vec!["Left-click to place or clear a location | Ctrl + click to select | Right-click to clear".into()]
         } else if tool == Tool::Select {
             vec!["Drag to select · Ctrl to deselect · Shift for matching terrain · Shift+F to fill".into()]
         } else {
@@ -740,6 +777,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                             if !doc.dirty() || files::confirm(&form).await {
                                 if cmd == Command::Close { tool = Tool::Paint; }
                                 doc = next;
+                                locations = locations::Locations::new(&doc);
                                 name = label;
                                 history = History::default();
                                 camera = BoardCamera::default();
