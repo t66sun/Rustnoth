@@ -57,6 +57,7 @@ pub(crate) enum BoardChange {
     Dialogue(crate::fixed_match::dialogue::Message),
     TutorialHint(Node),
     TutorialPrint(Node),
+    TutorialUndoPrint(crate::wml::Value),
     TutorialEndTurn(Option<Node>),
     CaptureVillage(VillageCapture),
     TimeArea(TimeAreaChange),
@@ -402,6 +403,7 @@ fn read_actions<'a>(
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
             "rustnoth_tutorial_print" => EventAction::Board(BoardChange::TutorialPrint(cfg.clone())),
+            "rustnoth_tutorial_undo" => EventAction::Board(BoardChange::TutorialUndoPrint(cfg.attributes.get("text")?.clone())),
             "rustnoth_tutorial_disallow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(Some(cfg.clone()))),
             "rustnoth_tutorial_allow_end_turn" => EventAction::Board(BoardChange::TutorialEndTurn(None)),
             "set_variable" | "clear_variable" => EventAction::Variable(ScalarChange::read(tag, cfg)?),
@@ -464,6 +466,7 @@ fn presentation_only(tag: &str, cfg: &Node) -> bool {
 #[derive(Clone, Debug)]
 pub(crate) struct UnitFilter {
     locations: Vec<WmlRectangle>,
+    excluded: Vec<Self>,
     sides: Vec<usize>,
     ids: Vec<String>,
     types: Vec<String>,
@@ -471,7 +474,7 @@ pub(crate) struct UnitFilter {
 
 impl UnitFilter {
     pub(crate) fn read(cfg: &Node) -> Option<Self> {
-        if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+        if cfg.attributes.iter().any(|(key, value)| {
             !matches!(key.as_str(), "x" | "y" | "side" | "id" | "type")
                 || !value.translations.is_empty() || value.text.contains('$')
         }) {
@@ -482,8 +485,12 @@ impl UnitFilter {
         let x = cfg.attribute("x").unwrap_or_default();
         let y = cfg.attribute("y").unwrap_or_default();
         let locations = coordinate_ranges(x, y, i32::MAX, i32::MAX);
+        let excluded = cfg.children.iter().map(|(tag, child)| {
+            if tag == "not" { Self::read(child) } else { None }
+        }).collect::<Option<_>>()?;
         Some(Self {
             locations,
+            excluded,
             sides: values("side").map(str::parse).collect::<Result<_, _>>().ok()?,
             ids: values("id").map(str::to_owned).collect(),
             types: values("type").map(str::to_owned).collect(),
@@ -500,6 +507,7 @@ impl UnitFilter {
             && (self.sides.is_empty() || self.sides.contains(&side))
             && (self.ids.is_empty() || id.is_some_and(|id| self.ids.iter().any(|expected| expected == id)))
             && (self.types.is_empty() || self.types.iter().any(|id| id == type_id))
+            && !self.excluded.iter().any(|filter| filter.matches_fields(position, side, id, type_id))
     }
 }
 

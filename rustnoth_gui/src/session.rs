@@ -53,6 +53,7 @@ pub struct Session<'rules> {
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
     dialogue: std::collections::VecDeque<PendingLine>,
     tutorial_hint: String,
+    tutorial_undo: Option<(usize, Hex, engine_lite::wml::Value)>,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -70,7 +71,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None, tutorial_hint: String::new(),
+            economy: None, tutorial_hint: String::new(), tutorial_undo: None,
             animate_combat: false, live_attack_seed: None, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -171,6 +172,27 @@ impl<'rules> Session<'rules> {
 
     pub fn tutorial_print(&self) -> Option<&engine_lite::wml::Node> { self.game.tutorial_print() }
 
+    pub fn can_undo_tutorial_move(&self) -> bool { self.tutorial_undo.is_some() }
+
+    pub fn undo_tutorial_move(&mut self, restart: impl FnOnce() -> Result<Self, Box<dyn std::error::Error>>)
+        -> Result<Option<Hex>, Box<dyn std::error::Error>> {
+        let Some((prefix, from, text)) = &self.tutorial_undo else { return Ok(None) };
+        let mut restored = restart()?;
+        for command in &self.history[..*prefix] { command.apply(&mut restored)?; }
+        // Consecutive wrong moves can leave a different prompt at this point in the replay.
+        if restored.tutorial_print().and_then(|p| p.attributes.get("text")) != Some(text) {
+            restored.restore_tutorial_print(text);
+        }
+        let from = *from;
+        *self = restored;
+        Ok(Some(from))
+    }
+
+    pub(crate) fn restore_tutorial_print(&mut self, text: &engine_lite::wml::Value) {
+        self.game.restore_tutorial_print(text.clone());
+        self.history.push(crate::save_replay::Event::TutorialUndoPrint(text.clone()));
+    }
+
     pub fn tutorial_end_turn_denial(&self) -> Option<&engine_lite::wml::Node> {
         self.game.tutorial_end_turn_denial()
     }
@@ -257,6 +279,8 @@ impl<'rules> Session<'rules> {
             self.computer_action = Some(Action::EndTurn);
         }
         self.history.push(crate::save_replay::Event::Computer(seed));
+        self.tutorial_undo = None;
+        let _ = self.game.take_tutorial_undo_print();
         Ok(true)
     }
 
@@ -381,6 +405,10 @@ impl<'rules> Session<'rules> {
         let state = match (action.clone(), trace) {
             (Action::Move { from, to }, Some(trace)) => self.game.move_with_trace(from, to, trace)?,
             (action, _) => self.commit(action, attacker, seed)?,
+        };
+        self.tutorial_undo = match (&action, self.game.take_tutorial_undo_print()) {
+            (Action::Move { from, .. }, Some(text)) => Some((self.history.len(), *from, text)),
+            _ => None,
         };
         self.history.push(crate::save_replay::Event::Player(action, attacker.map(str::to_owned), seed));
         self.refresh();

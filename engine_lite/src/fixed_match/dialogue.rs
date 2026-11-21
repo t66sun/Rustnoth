@@ -63,6 +63,16 @@ impl Message {
 impl FixedMatch<'_> {
     pub fn tutorial_print(&self) -> Option<&Node> { self.tutorial_print.as_ref() }
 
+    pub fn take_tutorial_undo_print(&mut self) -> Option<crate::wml::Value> {
+        self.tutorial_undo_print.take()
+    }
+
+    pub fn restore_tutorial_print(&mut self, text: crate::wml::Value) {
+        let mut print = Node::default();
+        print.attributes.insert("text".into(), text);
+        self.tutorial_print = Some(print);
+    }
+
     pub fn tutorial_end_turn_denial(&self) -> Option<&Node> { self.tutorial_end_turn_denial.as_ref() }
 
     /// Show a prepared WML message using the ordinary speaker and audience checks.
