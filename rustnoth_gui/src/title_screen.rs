@@ -413,6 +413,11 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
+        let button = |name: &str| -> Result<Texture2D, Box<dyn Error>> {
+            let texture = texture(name)?;
+            texture.set_filter(FilterMode::Nearest);
+            Ok(texture)
+        };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
@@ -431,9 +436,9 @@ impl Art {
                 &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
-            buttons: [texture("images/buttons/button_normal/background.png")?,
-                texture("images/buttons/button_normal/background-active.png")?,
-                texture("images/buttons/button_normal/background-pressed.png")?],
+            buttons: [button("images/buttons/button_normal/background.png")?,
+                button("images/buttons/button_normal/background-active.png")?,
+                button("images/buttons/button_normal/background-pressed.png")?],
             font, italic,
         })
     }
