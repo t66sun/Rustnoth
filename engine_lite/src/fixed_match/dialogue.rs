@@ -38,7 +38,7 @@ impl Message {
                 "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice"))
         { return None; }
         let speaker = cfg.attribute("speaker")?;
-        if matches!(speaker, "" | "unit" | "second_unit") { return None; }
+        if speaker.is_empty() { return None; }
         let text = cfg.attribute("message")?.trim();
         if text.is_empty() { return None; }
         let sides = cfg.attribute("side_for").map(|s| s.split(',').map(|n| n.trim().parse())
@@ -62,16 +62,19 @@ impl Message {
 impl FixedMatch<'_> {
     /// Show a prepared WML message using the ordinary speaker and audience checks.
     pub fn present_message(&mut self, config: &Node) {
-        if let Some(message) = Message::read(config) { self.queue_dialogue(message); }
+        if let Some(message) = Message::read(config) { self.queue_dialogue(message, [None; 2]); }
     }
 
-    pub(super) fn queue_dialogue(&mut self, message: Message) {
+    pub(super) fn queue_dialogue(&mut self, message: Message, event_units: [Option<u64>; 2]) {
         let mut line = message.line;
         let speaker = if message.speaker == "narrator" {
             None
         } else {
-            let Some((position, unit)) = self.scenario.board.units()
-                .find(|(_, unit)| unit.id.as_deref() == Some(message.speaker.as_str())) else { return };
+            let Some((position, unit)) = self.scenario.board.units().find(|(_, unit)| match message.speaker.as_str() {
+                "unit" => Some(unit.serial) == event_units[0],
+                "second_unit" => Some(unit.serial) == event_units[1],
+                id => unit.id.as_deref() == Some(id),
+            }) else { return };
             line.caption = line.caption.or_else(|| unit.display_name.clone().filter(|name| !name.is_empty()));
             if line.image.is_none() && line.second_image.as_deref().unwrap_or("").is_empty() {
                 line.image = unit.portrait.clone();
