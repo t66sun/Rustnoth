@@ -1,13 +1,15 @@
 //! The opening movement and attack exercises of the installed Battle Training campaign.
-use std::{error::Error, fs, path::Path};
+use std::{error::Error, path::Path};
 
 use engine_lite::{fixed_match::Action, hex::Hex, wml::{self, Node}};
 use macroquad::prelude::*;
-use rustnoth_gui::{save_replay::Event, session::Session, team_colors::TeamColors};
+use rustnoth_gui::{save_replay::Event, session::Session};
 
 use crate::{desktop, dialog, render};
 
 mod opening;
+mod introduction;
+pub(super) use introduction::choose as choose_on_map;
 mod healing;
 mod recruiting;
 mod end_turn;
@@ -58,7 +60,7 @@ pub(super) struct Lesson {
     end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
-    attack_hint: Node,
+    attack_instructions: [healing::Line; 2],
     select_prompt: String,
     movement_prompt: String,
     undo_prompt: String,
@@ -72,13 +74,26 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, attack_hint: Node, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
-        Self { attack_hint, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
+        Self { attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
-    #[cfg(test)]
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+        for line in &mut self.attack_instructions {
+            let cfg = match line {
+                healing::Line::Message(cfg) | healing::Line::Hint(cfg) => cfg,
+            };
+            for key in ["message", "caption"] {
+                if cfg.attributes.contains_key(key) {
+                    let text = locale.attribute(root, cfg, key, "");
+                    put(cfg, key, &text);
+                }
+            }
+        }
+    }
 
     pub(super) fn selected(&mut self, at: Hex, session: &mut Session<'_>) {
         self.weapons.selected(at, session);
@@ -148,7 +163,7 @@ impl Lesson {
         self.step = match self.step {
             Step::Approach => {
                 if matches!(session.history().last(), Some(Event::Player(Action::Move { to, .. }, _, _)) if to.distance(self.mentor) == 1) {
-                    session.set_tutorial_hint(&self.attack_hint);
+                    healing::say(&self.attack_instructions, session, None);
                     Step::Attack
                 } else {
                     self.show_undo_prompt = !session.legal_actions().iter().any(|action|
@@ -248,7 +263,6 @@ impl Lesson {
 
 pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campaign_browser::CombatMode, modifications: &[Node]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
-    let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
     let installed = root.to_owned();
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
     loop {
@@ -261,51 +275,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let file = worker.join().map_err(|_| "Tutorial preparation stopped")??;
     let maps = root.join(desktop::TUTORIAL).join("maps");
     let browser = crate::campaign_browser::Browser::load(&file, maps, core.to_vec(), root.to_owned(), seed)?;
-    browser.play_tutorial(hero, mode, modifications).await
-}
-
-async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<Hero>, Box<dyn Error>> {
-    let images = root.join(desktop::TUTORIAL).join("images/units");
-    let colors = TeamColors::parse(&fs::read(root.join("data/core/team-colors.cfg"))?)?;
-    let sprites = [
-        render::load_texture(&images.join("konrad-fighter.png"), None).ok_or("missing Konrad tutorial sprite")?,
-        render::load_texture(&images.join("human-princess.png"), Some((&colors, 1))).ok_or("missing Li’sar tutorial sprite")?,
-    ];
-    let heroes = [Hero::Konrad, Hero::Lisar];
-    let mut focus = 0;
-    let mut pressed = None;
-    let mut previous_pointer = mouse_position();
-    loop {
-        let frame = form.begin(246.0);
-        let panel = frame.panel;
-        let font = form.font.as_ref();
-        let center = panel.x + panel.w * 0.5;
-        dialog::text(font, "Select Character", panel.x + 22.0, panel.y + 34.0, 24, dialog::GOLD);
-        dialog::text(font, "Who do you want to play as?", panel.x + 22.0, panel.y + 70.0, 18, dialog::PALE);
-        let buttons = [Rect::new(center - 141.0, panel.y + 173.0, 132.0, 40.0),
-            Rect::new(center + 9.0, panel.y + 173.0, 132.0, 40.0)];
-        let hovered = buttons.iter().position(|b| b.contains(frame.mouse));
-        if previous_pointer != mouse_position() {
-            if let Some(index) = hovered { focus = index; }
-            previous_pointer = mouse_position();
-        }
-        if [KeyCode::Left, KeyCode::Right, KeyCode::Tab].into_iter().any(is_key_pressed) { focus = 1 - focus; }
-        if frame.clicked { pressed = hovered; }
-        let clicked = if is_mouse_button_released(MouseButton::Left) { pressed.take().filter(|i| Some(*i) == hovered) } else { None };
-        for (index, bounds) in buttons.into_iter().enumerate() {
-            let cx = bounds.x + bounds.w * 0.5;
-            draw_texture(&sprites[index], cx - sprites[index].width() * 0.5, bounds.y - sprites[index].height(), WHITE);
-            dialog::button(bounds, hovered == Some(index), index == focus);
-            let label = heroes[index].name();
-            let width = measure_text(label, font, 18, 1.0).width;
-            dialog::text(font, label, cx - width * 0.5, bounds.y + 26.0, 18, dialog::PALE);
-        }
-        set_default_camera();
-        if is_key_pressed(KeyCode::Escape) { return Ok(None); }
-        if frame.confirm { return Ok(Some(heroes[focus])); }
-        if let Some(index) = clicked { return Ok(Some(heroes[index])); }
-        next_frame().await;
-    }
+    browser.play_tutorial(mode, modifications).await
 }
 
 #[test]

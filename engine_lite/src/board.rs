@@ -401,6 +401,16 @@ impl<'rules> Battlefield<'rules> {
         for (&position, unit) in &mut self.units { change.apply(position, unit); }
     }
 
+    pub(crate) fn set_unit_moves(&mut self, filter: &crate::scenario_events::UnitFilter, moves: i32) {
+        let on_map = self.units.iter_mut().map(|(&hex, unit)| (Some(hex), unit));
+        let reserves = self.recall.values_mut().flatten().map(|unit| (None, unit));
+        for (position, unit) in on_map.chain(reserves) {
+            if filter.matches_fields(position, unit.side, unit.id.as_deref(), &unit.unit_type.id) {
+                unit.moves_left = moves.max(0);
+            }
+        }
+    }
+
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
         self.map.replace_terrain(hex, code);
     }
