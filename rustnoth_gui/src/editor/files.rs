@@ -7,6 +7,10 @@ use std::{
 };
 
 pub(super) async fn confirm(dialog: &Dialog) -> bool {
+    confirm_choice(dialog, "Discard unsaved map changes?", "Keep editing", "Discard changes").await
+}
+
+async fn confirm_choice(dialog: &Dialog, title: &str, cancel: &str, accept: &str) -> bool {
     next_frame().await;
     let mut picker = ListPosition::default();
     loop {
@@ -16,14 +20,14 @@ pub(super) async fn confirm(dialog: &Dialog) -> bool {
             &mut picker,
             2,
             None,
-            "Discard unsaved map changes?",
+            title,
             None,
             |index| {
                 (
                     if index == 0 {
-                        "Keep editing"
+                        cancel
                     } else {
-                        "Discard changes"
+                        accept
                     }
                     .into(),
                     None,
@@ -183,15 +187,35 @@ pub(super) async fn open(
 
 pub(super) async fn save(
     folder: &Path,
+    installation: &Path,
+    current: Option<&Path>,
+    save_as: bool,
+    other_open: &[std::path::PathBuf],
     dialog: &Dialog,
     proposed: &str,
     data: &str,
 ) -> io::Result<Option<PathBuf>> {
+    if !save_as && let Some(path) = current {
+        let installation = fs::canonicalize(installation)?;
+        if !path.starts_with(installation) {
+            write_map(path, data)?;
+            return Ok(Some(path.to_owned()));
+        }
+    }
     let Some(name) = prompt(dialog, "Save Map As", proposed, "Save").await else {
         return Ok(None);
     };
     let path = destination(folder, &name)?;
     fs::create_dir_all(folder)?;
+    if path.exists() {
+        let existing = path.canonicalize()?;
+        if other_open.contains(&existing) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "This map is open in another editor window."));
+        }
+        if !confirm_choice(dialog, "Overwrite the existing map?", "Cancel", "Overwrite").await { return Ok(None); }
+        write_map(&path, data)?;
+        return Ok(Some(path));
+    }
     let mut file = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -202,6 +226,28 @@ pub(super) async fn save(
         return Err(error);
     }
     Ok(Some(path))
+}
+
+fn write_map(path: &Path, data: &str) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let folder = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let (pending, mut file) = loop {
+        let id = WRITES.fetch_add(1, Ordering::Relaxed);
+        let pending = folder.join(format!(".rustnoth-map-{}-{id}.tmp", std::process::id()));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&pending) {
+            Ok(file) => break (pending, file),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let result = file.write_all(data.as_bytes()).and_then(|_| file.flush());
+    drop(file);
+    if let Err(e) = result.and_then(|_| fs::rename(&pending, path)) {
+        let _ = fs::remove_file(&pending);
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn destination(folder: &Path, name: &str) -> io::Result<PathBuf> {
@@ -227,6 +273,18 @@ fn destination(folder: &Path, name: &str) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saving_a_named_map_replaces_the_existing_contents() {
+        let dir = std::env::temp_dir().join(format!("rustnoth-map-save-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("My Map.map");
+        fs::write(&path, "Gg, Gg\n").unwrap();
+        write_map(&path, "Ke, Ff\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Ke, Ff\n");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
+    }
     #[test]
     fn map_copies_can_only_be_named_inside_the_editor_folder() {
         let folder = Path::new("maps");

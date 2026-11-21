@@ -119,6 +119,7 @@ enum Command {
     New,
     Open,
     Save,
+    SaveAs,
     Close,
     Exit,
     Undo,
@@ -134,7 +135,8 @@ impl Command {
         match self {
             Self::New => "New Map",
             Self::Open => "Open Map…",
-            Self::Save => "Save Map As…",
+            Self::Save => "Save Map",
+            Self::SaveAs => "Save Map As…",
             Self::Close => "Close Map",
             Self::Exit => "Quit to Title Screen",
             Self::Undo => "Undo",
@@ -565,7 +567,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             command = Some(Command::Open);
         }
         if ctrl && is_key_pressed(KeyCode::S) {
-            command = Some(Command::Save);
+            command = Some(if shift { Command::SaveAs } else { Command::Save });
         }
         if ctrl && is_key_pressed(KeyCode::Z) {
             command = Some(if shift { Command::Redo } else { Command::Undo });
@@ -615,13 +617,19 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     rebuild |= history.apply(doc, cmd == Command::Undo);
                     status.clear();
                 }
-                Command::Save => {
+                Command::Save | Command::SaveAs => {
                     let bytes = doc.text();
                     let name = path.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str()).unwrap_or("Untitled");
-                    match files::save(&folder, &form, name, &bytes).await {
+                    let existing = path.clone();
+                    let name = name.to_owned();
+                    let other_open = documents.list.iter().enumerate().filter(|(i, _)| *i != documents.current)
+                        .filter_map(|(_, item)| item.path.clone()).collect::<Vec<_>>();
+                    match files::save(&folder, root, existing.as_deref(), cmd == Command::SaveAs,
+                        &other_open, &form, &name, &bytes).await {
                         Ok(Some(saved)) => {
-                            *path = Some(fs::canonicalize(&saved)?);
-                            *doc = EditableMap::parse(bytes)?;
+                            let current = &mut documents.list[documents.current];
+                            current.path = Some(fs::canonicalize(&saved)?);
+                            current.map = EditableMap::parse(bytes)?;
                             status = format!("Saved {}", saved.display());
                         }
                         Err(e) => status = e.to_string(),
