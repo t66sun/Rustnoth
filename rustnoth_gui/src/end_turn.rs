@@ -44,7 +44,7 @@ impl Mode {
 }
 
 fn acted_this_turn(history: &[Event]) -> bool {
-    let last_action = history.iter().rev().find(|event| !matches!(event, Event::Dismiss));
+    let last_action = history.iter().rev().find(|event| matches!(event, Event::Computer(_) | Event::Player(..)));
     matches!(last_action, Some(Event::Player(action, ..)) if *action != Action::EndTurn)
 }
 

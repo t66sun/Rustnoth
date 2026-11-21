@@ -8,9 +8,10 @@ use rustnoth_gui::{save_replay::Event, session::{Players, Session}, team_colors:
 use crate::{BoardData, desktop, dialog, render, show_board};
 
 mod opening;
+mod healing;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
-const SCOPE: &str = "Opening exercises: movement and attacking";
+const SCOPE: &str = "Movement, attacking and village healing";
 
 pub(super) fn insert_entry(catalog: &mut Node, source: &str) -> Result<(), Box<dyn Error>> {
     // The stock campaign descriptor precedes the define which includes its scenarios and Lua.
@@ -41,7 +42,7 @@ impl Hero {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step { Approach, Attack, Complete }
+enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, Complete }
 
 pub(super) struct Lesson {
     step: Step,
@@ -50,12 +51,14 @@ pub(super) struct Lesson {
     movement_prompt: String,
     undo_prompt: String,
     show_undo_prompt: bool,
+    healing: healing::Exercises,
+    before_healing: Option<i32>,
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, undo_prompt: String) -> Self {
+    fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, healing, before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
@@ -66,7 +69,9 @@ impl Lesson {
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
             Step::Attack => "Attack the quintain",
-            Step::Complete => "Opening exercises complete",
+            Step::EndFirst | Step::EndSecond => &self.healing.end_prompt,
+            Step::ToVillage => &self.healing.village_prompt,
+            Step::WaitSecond | Step::WaitThird | Step::Complete => return,
         };
         let view = render::board_viewport();
         let prompt = dialog::fit(font, prompt.into(), (view.width - 8.0).max(1.0), 18);
@@ -80,6 +85,8 @@ impl Lesson {
         session.retain_actions(|action| match (self.step, action) {
             (Step::Approach, Action::Move { .. }) => true,
             (Step::Attack, Action::Attack(attack)) => attack.to == self.mentor,
+            (Step::EndFirst | Step::EndSecond, Action::EndTurn) => true,
+            (Step::ToVillage, Action::Move { to, .. }) => self.healing.villages.contains(to),
             _ => false,
         });
     }
@@ -95,8 +102,41 @@ impl Lesson {
                     Step::Approach
                 }
             }
-            Step::Attack | Step::Complete => Step::Complete,
+            Step::Attack => {
+                healing::say(&self.healing.after_attack, session, None);
+                Step::EndFirst
+            }
+            Step::EndFirst => Step::WaitSecond,
+            Step::ToVillage => {
+                healing::say(&self.healing.capture, session, None);
+                Step::EndSecond
+            }
+            Step::EndSecond => {
+                self.before_healing = healing::student_hp(session);
+                Step::WaitThird
+            }
+            other => other,
         };
+        self.after_computer(session);
+    }
+
+    pub(super) fn after_computer(&mut self, session: &mut Session<'_>) {
+        use engine_lite::fixed_match::MatchState;
+        match session.state() {
+            MatchState::Playing(turn) if turn.side != 1 => {
+                if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
+            }
+            MatchState::Playing(turn) if turn.round == 2 && self.step == Step::WaitSecond => {
+                healing::say(&self.healing.second_turn, session, None);
+                self.step = Step::ToVillage;
+            }
+            MatchState::Playing(turn) if turn.round == 3 && self.step == Step::WaitThird => {
+                healing::say(&self.healing.healed, session, self.before_healing);
+                self.step = Step::Complete;
+            }
+            MatchState::Playing(_) => {}
+            _ => self.step = Step::Complete,
+        }
         self.restrict(session);
     }
 
@@ -131,11 +171,12 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     let Some(hero) = choose_character(root, &form).await? else { return Ok(()) };
     let installed = root.to_owned();
     let worker = std::thread::spawn(move || desktop::prepare_tutorial(&installed));
-    while !worker.is_finished() {
+    loop {
         let frame = form.begin(110.0);
         dialog::text(form.font.as_ref(), "Loading Battle Training…", frame.panel.x + 24.0, frame.panel.y + 60.0, 20, dialog::PALE);
         set_default_camera();
         next_frame().await;
+        if worker.is_finished() { break; }
     }
     let file = worker.join().map_err(|_| "Tutorial preparation stopped")??;
     let definition = wml::parse(fs::read(file)?)?;
@@ -149,8 +190,7 @@ pub(super) async fn run(root: &Path, core: &[u8], seed: u32, mode: crate::campai
     wml_emit::write_config(&mut bytes, &selected)?;
     let mut board = BoardData::from_source(&bytes, core, maps, root.to_owned(), seed)?;
     board.lesson = Some(lesson);
-    next_frame().await;
-    show_board(board, Players::HotSeat).await
+    show_board(board, Players::Campaign).await
 }
 
 async fn choose_character(root: &Path, form: &dialog::Dialog) -> Result<Option<Hero>, Box<dyn Error>> {

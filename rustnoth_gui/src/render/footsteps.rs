@@ -100,10 +100,11 @@ impl Art {
         }
     }
 
-    pub(super) fn draw_steps(&self, layout: &BoardLayout, route: &MovePreview) {
+    pub(super) fn draw_steps(&self, layout: &BoardLayout, route: &MovePreview, viewport: super::Viewport) {
         for (index, &(at, cost)) in route.steps.iter().enumerate() {
             let speed = (cost as usize).min(self.speeds.len()).checked_sub(1);
             let [x, y] = layout.tile_origin(at);
+            if !super::visible_rect(viewport, vec2(x, y), Vec2::splat(layout.tile_size())) { continue; }
             for print in halves(&route.steps, index).into_iter().flatten() {
                 let (texture, reverse) = match print {
                     Print::Foot {

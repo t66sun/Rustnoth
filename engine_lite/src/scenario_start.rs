@@ -21,6 +21,7 @@ pub struct ScenarioStart<'rules> {
     pub(crate) next_scenario: Option<String>,
     pub(crate) treasuries: Vec<crate::fixed_match::carryover::Treasury>,
     pub sides: Vec<SideConfig>,
+    pub(crate) skip_null_controllers: bool,
     pub schedule: TimeSchedule,
     pub start_round: i32,
     pub last_round: Option<i32>,
@@ -51,6 +52,7 @@ pub fn load<'rules>(
         treasuries: scenario.children.iter().filter(|(tag, _)| tag == "side")
             .map(|(_, side)| crate::fixed_match::carryover::Treasury::read(scenario, side)).collect(),
         sides,
+        skip_null_controllers: false,
         schedule,
         start_round: integer(scenario, "turn_at").unwrap_or(1),
         last_round: integer(scenario, "turns").filter(|&turns| turns != -1),
