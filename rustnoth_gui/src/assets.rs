@@ -16,6 +16,7 @@ pub struct AssetCatalog {
     units: BTreeMap<String, UnitAssets>,
     terrain: BTreeMap<String, Option<PathBuf>>,
     terrain_names: BTreeMap<String, String>,
+    unit_heights: BTreeMap<String, i32>,
     minimap_symbols: BTreeMap<String, PathBuf>,
     aliases: Option<engine_lite::terrain_aliases::TerrainAliases>,
     color_ranges: BTreeMap<String, [u8; 3]>,
@@ -24,6 +25,7 @@ pub struct AssetCatalog {
 
 #[derive(Debug)]
 struct UnitAssets {
+    flying: bool,
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
     dialogue_profile: Option<String>,
@@ -191,6 +193,17 @@ impl AssetCatalog {
         self.resolve_image(self.units.get(id)?.weapons.get(index)?.1.as_deref()?)
     }
 
+    /// Elevation of a sprite above its hex at the original 72-pixel zoom.
+    pub fn unit_elevation(&self, code: &str, unit: &str) -> i32 {
+        let height = if self.terrain.contains_key(code) {
+            self.unit_heights.get(code)
+        } else {
+            code.find('^').and_then(|split| self.unit_heights.get(&code[split..])
+                .or_else(|| self.unit_heights.get(&code[..split])))
+        }.copied().unwrap_or(0);
+        if height < 0 && self.units.get(unit).is_some_and(|u| u.flying) { 0 } else { height }
+    }
+
     /// Name of the highlighted tile as displayed in the terrain report.
     pub fn terrain_name(&self, code: &str) -> Option<&str> {
         self.terrain_names.get(code).or_else(|| {
@@ -265,6 +278,9 @@ impl AssetCatalog {
                     let Some(code) = node.attribute("string").filter(|code| !code.is_empty()) else {
                         continue;
                     };
+                    if let Some(height) = node.attribute("unit_height_adjust").and_then(|v| v.parse().ok()) {
+                        self.unit_heights.entry(code.to_owned()).or_insert(height);
+                    }
                     if let Some(symbol) = node.attribute("symbol_image").and_then(image_filename) {
                         let mut path = Path::new("terrain").join(symbol);
                         if path.extension().is_none() { path.set_extension("png"); }
@@ -281,6 +297,9 @@ impl AssetCatalog {
                     });
                 }
                 "units" => {
+                    let flying: BTreeSet<_> = node.children.iter()
+                        .filter(|(tag, kind)| tag == "movetype" && matches!(kind.attribute("flying"), Some("yes" | "true" | "1")))
+                        .filter_map(|(_, kind)| kind.attribute("name")).collect();
                     let races: BTreeMap<_, _> = node.children.iter().filter(|(tag, _)| tag == "race")
                         .filter_map(|(_, race)| {
                             let label = |name| display_name(race, name).map(|s| s.rsplit('^').next().unwrap_or(s));
@@ -295,6 +314,7 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
+                            flying: unit.attribute("movement_type").is_some_and(|name| flying.contains(name)),
                             combat: unit.children.iter().filter(|(tag, _)| matches!(tag.as_str(), "attack_anim" | "defend"))
                                 .cloned().collect(),
                             moving: unit.children.iter().filter(|(tag, _)| tag == "movement_anim")
@@ -367,6 +387,42 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_elevates_the_unit_and_only_explicit_overlays_replace_the_base_height() {
+        let core = br#"
+[terrain_type]
+string=Kh
+unit_height_adjust=20
+[/terrain_type]
+[terrain_type]
+string=^Vh
+[/terrain_type]
+[terrain_type]
+string=^Flat
+unit_height_adjust=0
+[/terrain_type]
+[terrain_type]
+string=Ds
+unit_height_adjust=-4
+[/terrain_type]
+[units]
+[movetype]
+name=winged
+flying=yes
+[/movetype]
+[unit_type]
+id=Bat
+movement_type=winged
+[/unit_type]
+[/units]"#;
+        let art = AssetCatalog::parse(Path::new("wesnoth"), core, b"").unwrap();
+        assert_eq!(art.unit_elevation("Kh", "Fighter"), 20);
+        assert_eq!(art.unit_elevation("Kh^Vh", "Fighter"), 20);
+        assert_eq!(art.unit_elevation("Kh^Flat", "Fighter"), 0);
+        assert_eq!(art.unit_elevation("Ds", "Fighter"), -4);
+        assert_eq!(art.unit_elevation("Ds", "Bat"), 0);
+    }
 
     #[test]
     fn minimap_flat_terrain_uses_the_representative_color_of_its_alias() {
