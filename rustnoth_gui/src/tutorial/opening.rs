@@ -118,10 +118,13 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let healing = healing::Exercises::read(scenario, attack, hero)?;
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     let weapons = weapons::Exercise::read(scenario, hero)?;
+    let advice = super::advice::Advice::project(scenario, hero, &mut events);
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero, healing, recruiting, weapons))
+    let mut lesson = Lesson::new(mentor_hex, hero, healing, recruiting, weapons);
+    lesson.advice = advice;
+    Ok(lesson)
 }
 
 #[cfg(test)]

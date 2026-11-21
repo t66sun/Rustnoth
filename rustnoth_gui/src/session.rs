@@ -38,13 +38,25 @@ impl Players {
     }
 }
 
+struct PendingLine {
+    line: engine_lite::fixed_match::dialogue::DialogueLine,
+    hint_after: Option<String>,
+}
+
+impl From<engine_lite::fixed_match::dialogue::DialogueLine> for PendingLine {
+    fn from(line: engine_lite::fixed_match::dialogue::DialogueLine) -> Self {
+        Self { line, hint_after: None }
+    }
+}
+
 /// Current human view and the next command for a computer-controlled side.
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
     live_attack_seed: Option<fn() -> u32>,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
-    dialogue: std::collections::VecDeque<engine_lite::fixed_match::dialogue::DialogueLine>,
+    dialogue: std::collections::VecDeque<PendingLine>,
+    tutorial_hint: String,
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
@@ -62,7 +74,7 @@ impl<'rules> Session<'rules> {
 
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
-            economy: None,
+            economy: None, tutorial_hint: String::new(),
             animate_combat: false, live_attack_seed: None, last_combat: None,
             hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -102,12 +114,12 @@ impl<'rules> Session<'rules> {
         }
         self.economy = self.observation.as_ref().and_then(|view| self.game.economy_for(view));
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
-            self.dialogue.extend(self.game.take_dialogue(viewer));
+            self.dialogue.extend(self.game.take_dialogue(viewer).into_iter().map(PendingLine::from));
         }
     }
 
     pub fn dialogue(&self) -> Option<&engine_lite::fixed_match::dialogue::DialogueLine> {
-        self.dialogue.front()
+        self.dialogue.front().map(|pending| &pending.line)
     }
 
     pub fn economy(&self) -> Option<engine_lite::income::EconomyReport> { self.economy }
@@ -119,13 +131,32 @@ impl<'rules> Session<'rules> {
     }
 
     pub fn dismiss_dialogue(&mut self) {
-        if self.dialogue.pop_front().is_some() { self.history.push(crate::save_replay::Event::Dismiss); }
+        if let Some(pending) = self.dialogue.pop_front() {
+            self.history.push(crate::save_replay::Event::Dismiss);
+            if let Some(hint) = pending.hint_after { self.tutorial_hint = hint; }
+        }
     }
+
+    /// Battle Training's hint_message Lua action replaces an unlimited floating label.
+    pub fn set_tutorial_hint(&mut self, cfg: &engine_lite::wml::Node) {
+        let text = match cfg.attribute("message") {
+            Some(body) if !matches!(cfg.attribute("remove"), Some("yes" | "true" | "on" | "1")) =>
+                match cfg.attribute("caption").filter(|caption| !caption.is_empty()) {
+                    Some(caption) => format!("<b><big>{caption}</big></b>\n{body}"),
+                    None => body.to_owned(),
+                },
+            _ => String::new(),
+        };
+        if let Some(pending) = self.dialogue.back_mut() { pending.hint_after = Some(text); }
+        else { self.tutorial_hint = text; }
+    }
+
+    pub fn tutorial_hint(&self) -> &str { &self.tutorial_hint }
 
     pub fn present_message(&mut self, config: &engine_lite::wml::Node) {
         if let Some(view) = &self.observation {
             self.game.present_message(config);
-            self.dialogue.extend(self.game.take_dialogue(view.side));
+            self.dialogue.extend(self.game.take_dialogue(view.side).into_iter().map(PendingLine::from));
         }
     }
 

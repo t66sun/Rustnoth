@@ -24,6 +24,7 @@ use crate::menu::Menu;
 pub mod objectives;
 pub mod attack_dialog;
 mod dialogue;
+mod tutorial_hint;
 pub use dialogue::draw_dialogue;
 mod transitions;
 mod unit_status;
@@ -137,6 +138,7 @@ pub struct BoardArt {
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
+    tutorial_hint: tutorial_hint::Art,
 }
 
 impl BoardArt {
@@ -234,6 +236,7 @@ impl BoardArt {
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             cover: Vec::new(),
             team_colors: palette(TeamColors::parse),
+            tutorial_hint: tutorial_hint::Art::new(wesnoth_root),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
             font,
@@ -380,6 +383,7 @@ pub fn draw(
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, state, observation, layout, art, &movement);
+    art.tutorial_hint.draw(movement.session.tutorial_hint(), frame.map, art.dialogue_font.as_ref());
     if let Some(menu) = movement.menu {
         let area = menu_area();
         label(&art.font, menu.title(), area.x, area.y - 13.0, 18, TEXT);
