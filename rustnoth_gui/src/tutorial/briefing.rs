@@ -1,14 +1,18 @@
-//! Project Part II's welcome from the installed campaign, keeping recall checks in the referee.
+//! Project the installed Part II briefings, keeping recall checks in the referee.
 use super::{Hero, opening::children};
 use engine_lite::wml::Node;
 
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
-    let Some((_, start)) = scenario.children.iter_mut().find(|(tag, event)|
-        tag == "event" && event.attribute("name") == Some("start")
-            && children(event, "hint_message").next().is_some()
-            && children(event, "if").flat_map(|cfg| children(cfg, "have_unit"))
-                .any(|filter| filter.attribute("search_recall_list") == Some("yes"))) else { return };
-    project(start, hero);
+    for (tag, event) in &mut scenario.children {
+        if tag != "event" || children(event, "hint_message").next().is_none() { continue; }
+        let briefing = match event.attribute("name") {
+            Some("start") => children(event, "if").flat_map(|cfg| children(cfg, "have_unit"))
+                .any(|filter| filter.attribute("search_recall_list") == Some("yes")),
+            Some("turn 2") => true,
+            _ => false,
+        };
+        if briefing { project(event, hero); }
+    }
 }
 
 fn project(commands: &mut Node, hero: Hero) {
@@ -187,6 +191,82 @@ amount=5
         let kind = if hero == Hero::Konrad { "Fighter" } else { "Fighteress" };
         wml::parse(format!("{MAP}\n[side]\nid=student\ntype={kind}\nname={}\ncontroller=human\nsave_id=human_player\ngold=120\n{extra}\n[/side]\n\
             [side]\nid=Thrag\ntype=Hero\n[/side]\n{events}", hero.name())).unwrap()
+    }
+
+    #[test]
+    fn second_round_strategy_shows_the_guard_then_leaves_the_long_distance_hint_on_the_board() {
+        use engine_lite::{fixed_match::dialogue::DialogueFocus, hex::Hex};
+        let strategy = r#"
+[event]
+name=turn 2
+[if]
+    [have_unit]
+        id=student
+        gender=male
+    [/have_unit]
+    [then]
+        [message]
+            speaker=Galdrad
+            message="Young man, let us discuss strategy."
+        [/message]
+    [/then]
+    [else]
+        [message]
+            speaker=Galdrad
+            message="Young lady, let us discuss strategy."
+        [/message]
+    [/else]
+[/if]
+[scroll_to_unit]
+    id=Dumbo
+    highlight=yes
+[/scroll_to_unit]
+[message]
+    speaker=Galdrad
+    highlight=no
+    scroll=no
+    message=Archers can engage this grunt with little risk.
+[/message]
+[hint_message]
+    caption=Long-distance Movement
+    message=Order a unit to move for multiple turns.
+[/hint_message]
+[message]
+    speaker=student
+    message=I will stay by my keep.
+    female_message=female^I will recruit here.
+[/message]
+[/event]"#;
+        for hero in [Hero::Konrad, Hero::Lisar] {
+            let mut second = scenario(hero, "[unit]\nid=Galdrad\ntype=Champion\nx,y=2,1\n[/unit]", strategy);
+            let enemy = second.children.iter_mut().find(|(tag, team)|
+                tag == "side" && team.attribute("id") == Some("Thrag")).unwrap();
+            super::super::put(&mut enemy.1, "id", "Dumbo");
+            prepare(&mut second, hero);
+            let scenario = board(second);
+            let mut game = scenario.start(7, |_| unreachable!()).unwrap();
+            assert!(game.take_presentation(1).is_empty());
+            game.step(Action::EndTurn).unwrap();
+            assert!(game.take_presentation(1).is_empty());
+            game.step(Action::EndTurn).unwrap();
+            let mut session = Session::with_players(game, Players::Campaign);
+            let greeting = if hero == Hero::Konrad { "Young man" } else { "Young lady" };
+            assert_eq!(session.dialogue().unwrap().text, format!("{greeting}, let us discuss strategy."));
+            session.dismiss_dialogue();
+            let line = session.dialogue().unwrap();
+            assert_eq!(line.text, "Archers can engage this grunt with little risk.");
+            assert_eq!(line.focus, Some(DialogueFocus { hex: Hex::from_wml(3, 1).unwrap(), only_if_offscreen: false }));
+            assert!(session.tutorial_hint().is_empty());
+            session.dismiss_dialogue();
+            let hint = "<b><big>Long-distance Movement</big></b>\nOrder a unit to move for multiple turns.";
+            assert_eq!(session.tutorial_hint(), hint);
+            assert_eq!(session.dialogue().unwrap().text, if hero == Hero::Konrad { "I will stay by my keep." } else { "I will recruit here." });
+            session.dismiss_dialogue();
+            assert!(session.dialogue().is_none());
+            assert_eq!(session.tutorial_hint(), hint);
+            assert!(session.legal_actions().contains(&Action::EndTurn));
+            session.apply(Action::EndTurn).unwrap();
+        }
     }
 
     #[test]
