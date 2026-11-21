@@ -49,6 +49,7 @@ pub(super) struct Lesson {
     mentor: Hex,
     select_prompt: String,
     movement_prompt: String,
+    selection_hint: Option<Node>,
     healing: healing::Exercises,
     before_healing: Option<i32>,
 }
@@ -56,10 +57,18 @@ pub(super) struct Lesson {
 impl Lesson {
     fn new(mentor: Hex, hero: Hero, healing: healing::Exercises) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), healing, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), selection_hint: None, healing, before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
+
+    pub(super) fn select_student(&mut self, session: &mut Session<'_>) -> bool {
+        if self.step == Step::Approach && let Some(line) = self.selection_hint.take() {
+            session.present_message(&line);
+            return true;
+        }
+        false
+    }
 
     pub(super) fn draw_prompt(&self, selected: bool, font: Option<&Font>) {
         let prompt: &str = match self.step {
