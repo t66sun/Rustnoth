@@ -54,11 +54,11 @@ impl Preview {
     pub(super) fn read(root: &Path, slot: &Slot) -> Result<Self, Box<dyn Error>> {
         let (data, players) = saved_game::load(slot, root)?;
         let restore = data.restore.as_ref().ok_or("Missing save record")?;
-        let replay = restore.replay_roster.is_some();
+        let replay = restore.is_replay();
         let mut roster = restore.replay_roster.as_ref().and_then(|r| CampaignCarryover::from_replay_roster(&r.replay_roster()));
-        let game = data.scenario.start_campaign(data.seed, |_| {
+        let game = data.scenario.start_with_controllers(data.seed, |_| {
             restore.map.clone().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Saved scenario is missing its external map"))
-        }, roster.as_mut())?;
+        }, roster.as_mut(), players == Players::Campaign)?;
         let mut session = Session::with_players(game, players);
         if !replay {
             for event in &restore.events { event.apply(&mut session)?; }

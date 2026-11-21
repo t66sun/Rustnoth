@@ -467,6 +467,7 @@ pub(crate) async fn show(
                     assets,
                     menu: None,
                 },
+                |_| (),
             );
             next_frame().await;
         }
