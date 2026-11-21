@@ -11,7 +11,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
     project(start, hero);
 }
 
-fn project(commands: &mut Node, hero: Hero) {
+pub(super) fn project(commands: &mut Node, hero: Hero) {
     for (tag, mut cfg) in std::mem::take(&mut commands.children) {
         match tag.as_str() {
             "if" if children(&cfg, "have_unit").any(|unit| unit.attribute("id") == Some("student")
@@ -51,7 +51,7 @@ fn project(commands: &mut Node, hero: Hero) {
             }
             // This action is defined in tutorial Lua. Only project the installed briefing's hint.
             "hint_message" => commands.children.push(("rustnoth_tutorial_hint".into(), cfg)),
-            "print" => {}
+            "print" => commands.children.push(("rustnoth_tutorial_print".into(), cfg)),
             _ => commands.children.push((tag, cfg)),
         }
     }
