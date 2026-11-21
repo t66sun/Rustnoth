@@ -50,9 +50,19 @@ impl FixedMatch<'_> {
             slot.as_mut().map(|fight| &mut fight.blows)
         });
         let sides = &self.scenario.sides;
+        // Native attack_end runs before combat XP is paid to the survivors.
+        let prior_experience = self.scenario.board.unit_at(from).expect("validated attacker").experience;
         let result = self.scenario.board.resolve_started_attack(attack,
             |first, second| sides[first - 1].is_enemy(&sides[second - 1]), &mut self.rng, display)?;
         self.fire_units_event("attack_end", from, Some(to))?;
+        if let Some(lesson) = &mut self.scenario.events.wounded
+            && let (Some(attacker), Some(defender)) = (self.scenario.board.unit_at(from), self.scenario.board.unit_at(to))
+        {
+            let lines = lesson.after_attack(attacker, defender, prior_experience);
+            for line in lines {
+                self.queue_dialogue(line, [Some(attacker_id), Some(defender_id)]);
+            }
+        }
         for (victim, killer, serial, killer_serial, hp, killer_hp, strike) in [
             (to, from, defender_id, attacker_id, result.defender_hitpoints, result.attacker_hitpoints, Some(weapon)),
             (from, to, attacker_id, defender_id, result.attacker_hitpoints, result.defender_hitpoints, retaliation),
