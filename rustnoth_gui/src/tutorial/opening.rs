@@ -60,6 +60,10 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let start = children(scenario, "event").find(|event| event.attribute("name") == Some("start"))
         .ok_or("missing opening tutorial dialogue")?;
     let welcome = gender_command(start, hero, "message").ok_or("missing hero introduction")?;
+    let undo_prompt = children(scenario, "event").find(|event| event.attribute("id") == Some("check_undo"))
+        .into_iter().flat_map(|event| children(event, "if")).flat_map(|condition| children(condition, "then"))
+        .flat_map(|branch| children(branch, "print")).find_map(|print| print.attribute("text"))
+        .ok_or("missing tutorial undo instructions")?.replace("<b>", "").replace("</b>", "");
     let mut intro = node(&[("name", "start")]);
     intro.children.push(("message".into(), dialogue(welcome, hero)));
 
@@ -112,7 +116,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");
-    Ok(Lesson::new(mentor_hex, hero))
+    Ok(Lesson::new(mentor_hex, hero, undo_prompt))
 }
 
 #[cfg(test)]
@@ -131,12 +135,13 @@ mod tests {
         let intro = gendered("message", "Welcome Konrad", "Welcome Lisar");
         let hint = gendered("hint_message", "Attack with Konrad", "Attack with Lisar");
         wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
-            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Gg,Gg,Gg,Gg,Gg,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
+            map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Gg,Gg,Gg,Gg,Gg,Gg,Gg^Vh,Xv\nXv,Gg,Gg,Gg,Gg,Gg,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
             [side]\nside=1\ncontroller=human\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
             [side]\nside=3\nno_leader=yes\nteam_name=player\n\
             [unit]\nid=Delfador\ntype=Elder Mage\nx,y=3,2\n[/unit]\n[/side]\n\
             [event]\nname=start\n{intro}\n[/event]\n\
+            [event]\nid=check_undo\nname=moveto\n[if]\n[then]\n[print]\ntext=Use <b>u</b> to undo.\n[/print]\n[/then]\n[/if]\n[/event]\n\
             [event]\nname=moveto\n[filter]\n[filter_adjacent]\nid=Delfador\n[/filter_adjacent]\n[/filter]\n\
             [unit]\nid=Quintain\ntype=Quintain\nside=2\nx,y=3,2\n[/unit]\n{hint}\n[/event]\n\
             [event]\nname=attack_end\n[filter]\nid=student\n[/filter]\n\
@@ -146,6 +151,7 @@ mod tests {
     #[test]
     fn both_heroes_move_beside_the_mentor_summon_the_dummy_and_finish_by_attacking_it() {
         let mut units = String::from("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
+            [terrain_type]\nid=village\nstring=Gg^Vh\naliasof=Gg\ngives_income=yes\n[/terrain_type]\n\
             [units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n");
         for id in ["Fighter", "Fighteress", "Elder Mage", "Quintain"] {
             units.push_str(&format!("[unit_type]\nid={id}\nhitpoints=32\nmovement=6\nmovement_type=foot\n\
@@ -170,12 +176,35 @@ mod tests {
             session.dismiss_dialogue();
             assert!(session.legal_actions().contains(&Action::EndTurn));
             lesson.restrict(&mut session);
-            assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { to, .. } if to.distance(center) == 1)));
+            assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
+            let restart = || -> Result<Session<'_>, Box<dyn Error>> { Ok(Session::new(bundle.start(9, |_| unreachable!())?)) };
+            let initial = restart().unwrap();
+            let origin = session.observation().unwrap().units.iter().find(|u| u.side == 1).unwrap().position;
+            let intermediate = Hex::from_wml(4, 3).unwrap();
+            let village = Hex::from_wml(7, 2).unwrap();
+            assert_eq!(lesson.undo_from(&session), None);
+            for (from, to, warning) in [(origin, intermediate, false), (intermediate, village, true)] {
+                let movement = Action::Move { from, to };
+                assert!(session.legal_actions().contains(&movement));
+                session.apply(movement).unwrap();
+                lesson.advance(&mut session);
+                assert!(session.dialogue().is_none());
+                assert_eq!(lesson.undo_from(&session), Some(from));
+                assert_eq!(lesson.show_undo_prompt, warning);
+            }
+            assert_eq!(lesson.undo_prompt, "Use u to undo.");
+            assert_eq!(session.observation().unwrap().tiles.iter().find(|t| t.position == village).unwrap().village_owner, Some(1));
+            assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(intermediate));
+            assert!(!lesson.show_undo_prompt);
+            assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(origin));
+            assert_eq!(session.history(), &[rustnoth_gui::save_replay::Event::Dismiss]);
+            assert_eq!(session.observation(), initial.observation());
             let movement = session.legal_actions().iter().find(|action| matches!(action, Action::Move { to: dst, .. } if *dst == to)).unwrap().clone();
             session.apply(movement).unwrap();
             lesson.advance(&mut session);
             assert_eq!(session.dialogue().unwrap().text, hint);
             session.dismiss_dialogue();
+            assert_eq!(lesson.undo_from(&session), None);
             let view = session.observation().unwrap();
             let mentor = view.units.iter().find(|u| u.type_id == "Elder Mage").unwrap();
             assert_eq!(mentor.position, if to == ne { center.neighbor(Direction::SouthEast).unwrap() } else { ne });

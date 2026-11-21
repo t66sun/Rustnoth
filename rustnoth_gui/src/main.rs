@@ -330,6 +330,9 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             commands.insert(0, map_menus::Command::UnitList);
         }
         if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
+        if data.lesson.as_ref().and_then(|lesson| lesson.undo_from(&session)).is_some() {
+            commands.push(map_menus::Command::Undo);
+        }
         let top = if walking || dialogue_open { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let input_blocked = walking || dialogue_open || top.handled;
         if !input_blocked && is_key_pressed(KeyCode::G)
@@ -353,6 +356,22 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         }
         match top.command {
             Some(map_menus::Command::Quit) => return Ok(None),
+            Some(map_menus::Command::Undo) => {
+                if let Some(lesson) = &mut data.lesson && let Some(from) = lesson.undo(&mut session, || {
+                    let game = data.scenario.start(data.seed, |name| fs::read_to_string(data.directory.join(name)))?;
+                    Ok(Session::with_players(game, players))
+                })? {
+                    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
+                    session.enable_combat_playback();
+                    selection.clear();
+                    if let Some(view) = session.observation() {
+                        selection.select_own(from, view);
+                        art.load(view, &data.assets, session.map_item_images());
+                    }
+                    menu = None;
+                    message = None;
+                }
+            }
             Some(map_menus::Command::NextUnit) => {
                 if let Some(view) = session.observation() && let Some(hex) = map_menus::next_unit(view, selection.unit()) {
                     selection.select_own(hex, view);

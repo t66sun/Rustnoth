@@ -3,7 +3,7 @@ use std::{error::Error, fs, path::Path};
 
 use engine_lite::{campaign, fixed_match::Action, hex::Hex, wml::{self, Node}, wml_emit};
 use macroquad::prelude::*;
-use rustnoth_gui::{session::{Players, Session}, team_colors::TeamColors};
+use rustnoth_gui::{save_replay::Event, session::{Players, Session}, team_colors::TeamColors};
 
 use crate::{BoardData, desktop, dialog, render, show_board};
 
@@ -48,18 +48,21 @@ pub(super) struct Lesson {
     mentor: Hex,
     select_prompt: String,
     movement_prompt: String,
+    undo_prompt: String,
+    show_undo_prompt: bool,
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero) -> Self {
+    fn new(mentor: Hex, hero: Hero, undo_prompt: String) -> Self {
         Self { step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()) }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
     pub(super) fn draw_prompt(&self, selected: bool, font: Option<&Font>) {
         let prompt: &str = match self.step {
+            Step::Approach if self.show_undo_prompt => &self.undo_prompt,
             Step::Approach if !selected => &self.select_prompt,
             Step::Approach => &self.movement_prompt,
             Step::Attack => "Attack the quintain",
@@ -74,18 +77,52 @@ impl Lesson {
     }
 
     pub(super) fn restrict(&self, session: &mut Session<'_>) {
-        // Wrong destinations would require the native undo action. Offer reachable goal hexes
-        // on the first move so the learner can always finish on the current turn.
         session.retain_actions(|action| match (self.step, action) {
-            (Step::Approach, Action::Move { to, .. }) => to.distance(self.mentor) == 1,
+            (Step::Approach, Action::Move { .. }) => true,
             (Step::Attack, Action::Attack(attack)) => attack.to == self.mentor,
             _ => false,
         });
     }
 
     pub(super) fn advance(&mut self, session: &mut Session<'_>) {
-        self.step = match self.step { Step::Approach => Step::Attack, Step::Attack | Step::Complete => Step::Complete };
+        self.step = match self.step {
+            Step::Approach => {
+                if matches!(session.history().last(), Some(Event::Player(Action::Move { to, .. }, _, _)) if to.distance(self.mentor) == 1) {
+                    Step::Attack
+                } else {
+                    self.show_undo_prompt = !session.legal_actions().iter().any(|action|
+                        matches!(action, Action::Move { to, .. } if to.distance(self.mentor) == 1));
+                    Step::Approach
+                }
+            }
+            Step::Attack | Step::Complete => Step::Complete,
+        };
         self.restrict(session);
+    }
+
+    pub(super) fn undo_from(&self, session: &Session<'_>) -> Option<Hex> {
+        if self.step == Step::Approach && session.dialogue().is_none()
+            && let Some(Event::Player(Action::Move { from, .. }, _, _)) = session.history().last() {
+            Some(*from)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn undo<'rules>(&mut self, session: &mut Session<'rules>,
+        restart: impl FnOnce() -> Result<Session<'rules>, Box<dyn Error>>,
+    ) -> Result<Option<Hex>, Box<dyn Error>> {
+        let Some(from) = self.undo_from(session) else { return Ok(None) };
+        // The opening exercise precedes combat. Replay its accepted prefix so village
+        // ownership, movement points and event state all come from the same referee.
+        let mut restored = restart()?;
+        for event in &session.history()[..session.history().len() - 1] {
+            event.apply(&mut restored)?;
+        }
+        self.restrict(&mut restored);
+        *session = restored;
+        self.show_undo_prompt = false;
+        Ok(Some(from))
     }
 }
 
