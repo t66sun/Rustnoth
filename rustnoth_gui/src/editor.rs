@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod hex_labels;
 mod fill;
 mod minimap_buttons;
 mod palette;
@@ -123,6 +124,8 @@ enum Command {
     Redo,
     FillSelection,
     ToggleGrid,
+    Coordinates,
+    TerrainCodes,
 }
 
 impl Command {
@@ -137,6 +140,8 @@ impl Command {
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
             Self::ToggleGrid => "Toggle Grid",
+            Self::Coordinates => "Show Coordinates",
+            Self::TerrainCodes => "Show Terrain Codes",
         }
     }
 }
@@ -165,6 +170,8 @@ fn update_editor_camera(camera: &mut BoardCamera, area: Viewport, view: &Observa
 
 fn draw_terrain(
     rules: &EditorTerrain,
+    labels: &mut hex_labels::Labels,
+    font: Option<&Font>,
     grid: Option<&render::GridArt>,
     view: &Observation,
     layout: &BoardLayout,
@@ -177,6 +184,7 @@ fn draw_terrain(
     assets: &AssetCatalog,
 ) {
     let ms = (get_time() * 1000.0) as u64;
+    labels.begin();
     let size = layout.tile_size();
     let [origin_x, origin_y] = layout.tile_origin(Hex { x: 0, y: 0 });
     let lo_x = (((area.x - origin_x - size) / (size * 0.75)).floor() as i32).max(-1);
@@ -206,6 +214,10 @@ fn draw_terrain(
                     }
                     if front && region.contains(hex) {
                         art.image(assets, "editor/brush.png", Rect::new(left, top, size, size));
+                    }
+                    if front && (labels.coordinates || labels.terrain) && doc.map().is_playable(hex)
+                        && let Some(code) = doc.map().terrain_at(hex) {
+                        labels.draw(hex, code, center, font);
                     }
                 }
             }
@@ -265,6 +277,7 @@ fn text_button(
 }
 
 struct Chrome {
+    labels: hex_labels::Labels,
     show_grid: bool,
     menu: Option<bool>,
     tip: Option<&'static str>,
@@ -326,7 +339,7 @@ impl Chrome {
                 triggered = true;
             }
         }
-        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
+        let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, &self.labels, doc, history,
             assets, art, &mut self.tip);
         let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
         dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
@@ -413,6 +426,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut camera = BoardCamera::default();
     let mut history = History::default();
     let mut chrome = Chrome {
+        labels: hex_labels::Labels::new(root)?,
         show_grid: crate::display_preferences::grid()?,
         menu: None,
         tip: None,
@@ -543,6 +557,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if let Some(layout) = camera.layout() {
             draw_terrain(
                 &rules,
+                &mut chrome.labels,
+                form.font.as_ref(),
                 chrome.show_grid.then_some(&grid),
                 &view,
                 layout,
@@ -637,6 +653,10 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             dialog::text(font, line, x, y + 5.0 + font_size as f32 + row as f32 * line_height, font_size, WHITE);
         }
         set_default_camera();
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            if is_key_pressed(KeyCode::O) { command = Some(Command::Coordinates); }
+            if is_key_pressed(KeyCode::I) { command = Some(Command::TerrainCodes); }
+        }
         if ctrl && is_key_pressed(KeyCode::N) {
             command = Some(Command::New);
         }
@@ -670,7 +690,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
         }
         if let Some(cmd) = command {
-            if cmd != Command::ToggleGrid {
+            if !matches!(cmd, Command::ToggleGrid | Command::Coordinates | Command::TerrainCodes) {
                 drawing = None;
                 selecting = false;
                 last_selection = None;
@@ -678,6 +698,9 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 rebuild |= history.finish();
             }
             match cmd {
+                Command::Coordinates | Command::TerrainCodes => {
+                    if let Err(e) = chrome.labels.toggle(cmd) { status = e.to_string(); }
+                }
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,

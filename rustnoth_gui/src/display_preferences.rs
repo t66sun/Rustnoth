@@ -18,6 +18,18 @@ struct Setting { file: &'static str, off: &'static str, on: &'static str }
 const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
 const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
 
+#[derive(Clone, Copy)]
+pub(crate) enum HexReport { Coordinates, Terrain }
+
+impl HexReport {
+    fn setting(self) -> Setting {
+        let file = match self { Self::Coordinates => "editor-draw-coordinates", Self::Terrain => "editor-draw-terrain-codes" };
+        Setting { file, off: "off", on: "on" }
+    }
+    pub fn load(self) -> io::Result<bool> { self.setting().read(&config_directory()?) }
+    pub fn save(self, value: bool) -> io::Result<()> { self.setting().write(&config_directory()?, value) }
+}
+
 impl Setting {
     fn read(&self, dir: &Path) -> io::Result<bool> {
         self.read_or(dir, false)
