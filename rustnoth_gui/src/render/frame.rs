@@ -64,7 +64,7 @@ pub(super) struct FrameArt {
     reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
-    status: [Texture; 9],
+    status: StatusBox,
 }
 
 impl FrameArt {
@@ -84,20 +84,29 @@ impl FrameArt {
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
-            status: [
-                "border-topleft", "border-top", "border-topright", "border-left", "background",
-                "border-right", "border-botleft", "border-bottom", "border-botright",
-            ].map(|name| theme(&format!("status_box/status_box-{name}.png"))),
+            status: StatusBox::load(root),
         }
     }
+}
 
-    fn status_box(&self, bounds: Rect, scale: f32) {
+pub(crate) struct StatusBox([Texture; 9]);
+
+impl StatusBox {
+    pub(crate) fn load(root: &Path) -> Self {
+        let dir = root.join("data/core/images/themes/status_box");
+        Self([
+                "border-topleft", "border-top", "border-topright", "border-left", "background",
+                "border-right", "border-botleft", "border-bottom", "border-botright",
+            ].map(|name| load_texture(&dir.join(format!("status_box-{name}.png")), None)))
+    }
+
+    pub(crate) fn draw(&self, bounds: Rect, scale: f32) {
         let border = 3.0 * scale;
         let xs = [bounds.x, bounds.x + border, bounds.right() - border, bounds.right()];
         let ys = [bounds.y, bounds.y + border, bounds.bottom() - border, bounds.bottom()];
         for (row, ys) in ys.windows(2).enumerate() {
             for (col, xs) in xs.windows(2).enumerate() {
-                paint(&self.status[row * 3 + col], Rect::new(xs[0], ys[0], xs[1] - xs[0], ys[1] - ys[0]));
+                paint(&self.0[row * 3 + col], Rect::new(xs[0], ys[0], xs[1] - xs[0], ys[1] - ys[0]));
             }
         }
     }
@@ -166,8 +175,8 @@ pub fn draw(
         let (x, y) = mouse_position();
         let hovered = board.filter(|_| frame.map.contains([x, y])).and_then(|b| b.hex_at([x, y]));
         let position = hovered.or(movement.selected);
-        art.frame.status_box(rect(0.0, 0.0, 171.0, 21.0), s);
-        art.frame.status_box(rect(0.0, 19.0, 171.0, 21.0), s);
+        art.frame.status.draw(rect(0.0, 0.0, 171.0, 21.0), s);
+        art.frame.status.draw(rect(0.0, 19.0, 171.0, 21.0), s);
         if let Some(hex) = position {
             text_in(&art.font, &format!("{}, {}", hex.x + 1, hex.y + 1), rect(5.0, 2.0, 161.0, 17.0), 14, TEXT, false);
             if let Some(tile) = observation.and_then(|v| v.tiles.iter().find(|t| t.position == hex)) {
@@ -175,7 +184,7 @@ pub fn draw(
                 text_in(&art.font, terrain, rect(5.0, 21.0, 161.0, 17.0), 14, TEXT, false);
             }
         }
-        art.frame.status_box(rect(0.0, 43.0, 128.0, 42.0), s);
+        art.frame.status.draw(rect(0.0, 43.0, 128.0, 42.0), s);
         if let Some(period) = movement.global_time {
             let (name, image) = art.periods.get(period.id.as_str())
                 .map_or((period.id.as_str(), None), |(name, image)| (*name, image.as_ref()));
@@ -190,7 +199,7 @@ pub fn draw(
             text_in(&art.font, name, rect(130.0, 47.0, 40.0, 15.0), 12, TEXT, true);
             text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
-        art.frame.status_box(rect(0.0, 90.0, 78.0, 78.0), s);
+        art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
         if let Some(view) = observation
             && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
         {

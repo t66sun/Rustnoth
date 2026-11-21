@@ -1,4 +1,4 @@
-use super::{Art, Entry, GOLD, fill};
+use super::{Art, Entry, fill};
 use macroquad::prelude::*;
 use std::cmp::Ordering;
 
@@ -73,10 +73,11 @@ fn compare_names(a: &str, b: &str, _locale: &str) -> Ordering {
     a.to_lowercase().cmp(&b.to_lowercase())
 }
 
-pub(super) fn headers(list: Rect) -> [(Field, Rect); 2] {
-    let half = (list.w / 2.).floor();
-    [(Field::Name, Rect::new(list.x, list.y, half, 30.)),
-     (Field::Timeline, Rect::new(list.x + half, list.y, list.w - half, 30.))]
+pub(super) fn headers(list: Rect, measured: [f32; 2]) -> [(Field, Rect); 2] {
+    let [name, timeline] = measured.map(|w| w.max(30.));
+    let name = (name + ((list.w - name - timeline) / 2.).floor()).clamp(0., list.w);
+    [(Field::Name, Rect::new(list.x, list.y, name, 30.)),
+     (Field::Timeline, Rect::new(list.x + name, list.y, list.w - name, 30.))]
 }
 
 pub(super) fn header(art: &mut Art, field: Field, rect: Rect, order: Order, pointer: Vec2) {
@@ -84,8 +85,7 @@ pub(super) fn header(art: &mut Art, field: Field, rect: Rect, order: Order, poin
     let alpha = if rect.contains(pointer) { 76 } else if active { 25 } else { 0 };
     fill(rect, Color::from_rgba(255,255,255,alpha));
     let label = art.locale.ui(match field { Field::Name => "Name", Field::Timeline => "Timeline" });
-    let size = measure_text(label, art.font.as_ref(), 14, 1.);
-    art.label(label, (rect.center().x - size.width / 2.).floor(), rect.center().y + 5., 14, GOLD);
+    art.typography.draw(label, super::Caption::Header, rect, art.font.as_ref());
     if active && let Some(icon) = art.get("buttons/sliders/slider_arrow_blue.png") {
         let reversed = order == Order::Descending(field);
         draw_texture_ex(&icon, rect.right() - 15., rect.y + 10., WHITE,
@@ -98,10 +98,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn headers_share_spare_space_after_reserving_each_translated_caption() {
+        let list = Rect::new(100., 98., 302., 571.);
+        let [(_, name), (_, timeline)] = headers(list, [38., 58.]);
+        assert_eq!(name, Rect::new(100., 98., 141., 30.));
+        assert_eq!(timeline, Rect::new(241., 98., 161., 30.));
+    }
+
+    #[test]
     fn campaign_headers_cycle_from_ascending_to_descending_to_original_rank() {
         let campaigns = [("Zebra", "3 YW"), ("beta", "4 BW"), ("Alpha", "45 BW"),
             ("Gamma", ""), ("Echo", "8 AF"), ("delta", "60 BF")].map(|(name, year)| Entry {
-                name: name.into(), date: Date::read(Some(year)), scenario: 0,
+                name: name.into(), search_text: name.to_lowercase(), date: Date::read(Some(year)), scenario: 0,
                 description: String::new(), icon: None, image: None, background: None, descriptor: None,
             });
         let name = Order::Rank.toggle(Field::Name);

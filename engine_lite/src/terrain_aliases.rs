@@ -60,6 +60,7 @@ struct Definition {
     id: String,
     movement: Vec<String>,
     defense: Vec<String>,
+    vision: Vec<String>,
     features: TerrainFeatures,
     light: TerrainLight,
     default_base: Option<String>,
@@ -118,6 +119,7 @@ impl TerrainAliases {
                     id: terrain.attribute("id").unwrap_or_default().to_owned(),
                     movement: read_alias(terrain.attribute("mvt_alias"), shared, code),
                     defense: read_alias(terrain.attribute("def_alias"), shared, code),
+                    vision: read_alias(terrain.attribute("vision_alias"), terrain.attribute("mvt_alias").or(shared), code),
                     features: TerrainFeatures::from_wml(terrain),
                     light: TerrainLight::from_wml(terrain),
                     default_base: terrain.attribute("default_base").map(str::to_owned),
@@ -132,6 +134,24 @@ impl TerrainAliases {
         self.definitions
             .get(canonical_code(code))
             .map(|definition| definition.id.as_str())
+    }
+
+    /// Native terrain coloring uses the union of movement, defense and vision aliases.
+    pub fn underlying_ids(&self, code: &str) -> Vec<&str> {
+        let code = canonical_code(code);
+        let mut terms = self.terms(code, AliasKind::Movement);
+        terms.extend(self.terms(code, AliasKind::Defense));
+        if let Some(def) = self.definitions.get(code) {
+            terms.extend(alias_terms(&def.vision));
+        } else if let Some((base, overlay)) = self.layers(code) {
+            terms.extend(merge_aliases(&base.vision, &overlay.vision));
+        }
+        let mut codes: Vec<_> = terms.into_iter().filter_map(|term| match term {
+            AliasTerm::Terrain(code) => Some(code), _ => None,
+        }).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        codes.into_iter().filter_map(|c| self.terrain_id(c)).collect()
     }
 
     /// Returns the features of an exact terrain code or a known base and overlay.
