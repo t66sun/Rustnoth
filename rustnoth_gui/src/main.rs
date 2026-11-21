@@ -364,6 +364,17 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             commands.push(map_menus::Command::Undo);
         }
         if session.can_show_enemy_moves() { commands.push(map_menus::Command::ShowEnemyMoves); }
+        let hovered = camera.hex_at(top_menu.target_point(Vec2::from(mouse_position()).to_array()));
+        let described = session.observation().and_then(|view| {
+            map_menus::described_unit(hovered, selection.unit(), |at| view.units.iter().any(|u| u.position == at))
+        });
+        if let Some(at) = described.filter(|_| menu.is_none()) {
+            if data.lesson.is_some() && let Some(target) = hovered
+                && session.legal_actions().iter().any(|a| matches!(a, Action::Recruit { to, .. } if *to == target)) {
+                commands.push(map_menus::Command::RecruitAt(target));
+            }
+            commands.push(map_menus::Command::Describe(at));
+        }
         let auto_objectives = !walking && session.has_objective_notice();
         let top = if walking || dialogue_open || auto_objectives { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
         let show_objectives = auto_objectives || session.has_authored_objectives() && !walking && !dialogue_open
@@ -374,7 +385,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let modal_input = walking || dialogue_open || top.handled || show_objectives || unit_list;
         let save = menu.is_none()
             && (top.command == Some(map_menus::Command::Save) || !modal_input && save_dialog::save_pressed());
-        let input_blocked = modal_input || save;
+        let describe = match top.command {
+            Some(map_menus::Command::Describe(at)) => Some(at),
+            _ if !modal_input && !save && menu.is_none() && is_key_pressed(KeyCode::D)
+                && ![KeyCode::LeftAlt, KeyCode::RightAlt, KeyCode::LeftShift, KeyCode::RightShift,
+                    KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftSuper, KeyCode::RightSuper].into_iter().any(is_key_down) => described,
+            _ => None,
+        };
+        let input_blocked = modal_input || save || describe.is_some();
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -697,6 +715,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
         );
+        if let Some(at) = describe && let Some(view) = session.observation()
+            && let Some(unit) = view.units.iter().find(|u| u.position == at) {
+            if let Err(error) = title_screen::show_unit(&data, view, &unit.type_id, &mut locale).await {
+                message = Some(error.to_string());
+            }
+            next_frame().await;
+            continue;
+        }
         if save {
             if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
                 message = Some(match saved_game::directory().and_then(|base| saved_game::save(

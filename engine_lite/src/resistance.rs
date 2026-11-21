@@ -9,6 +9,10 @@ pub struct DamageTable {
 }
 
 impl DamageTable {
+    pub(crate) fn damage_types(&self) -> impl Iterator<Item = &str> {
+        self.percentages.keys().map(String::as_str)
+    }
+
     /// Reads the attributes of a preprocessed WML `[resistance]` tag.
     pub fn from_wml(table: &Node) -> Self {
         Self::from_wml_tables([table])
