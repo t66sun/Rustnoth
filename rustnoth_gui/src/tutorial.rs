@@ -13,6 +13,7 @@ mod recruiting;
 mod end_turn;
 mod weapons;
 mod practice;
+mod advice;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -60,13 +61,14 @@ pub(super) struct Lesson {
     healing: healing::Exercises,
     recruiting: recruiting::Exercise,
     weapons: weapons::Exercise,
+    advice: advice::Advice,
     before_healing: Option<i32>,
 }
 
 impl Lesson {
     fn new(mentor: Hex, hero: Hero, undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
         Self { end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
-            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, before_healing: None }
+            movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
@@ -183,6 +185,7 @@ impl Lesson {
         if practice::guardians_have_arrived(session) {
             self.step = Step::Practice;
         }
+        self.advice.begin_turn(session);
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }

@@ -203,6 +203,11 @@ impl Text {
         (height <= 2048).then(|| self.rasterize(width, height, color))
     }
 
+    pub(crate) fn tutorial_hint(&self, markup: &str, limit: u16) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(markup, 18, Some(limit), 0, true);
+        self.rasterize(width, height, [255; 3])
+    }
+
     fn rasterize(&self, width: u16, height: u16, color: [u8; 3]) -> macroquad::texture::Image {
         let mut bytes = vec![0; usize::from(width) * usize::from(height) * 4];
         unsafe {
