@@ -655,6 +655,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         } else if session.dialogue().is_none() && let Some(print) = session.tutorial_print() {
             visible_prompt = locale.attribute(&data.wesnoth_root, print, "text", "");
         }
+        art.linger_color = if art.walk.active() { None } else { session.linger_color(end_report_shown) };
         let last_page = render::draw(
             session.state(),
             session.observation(),
