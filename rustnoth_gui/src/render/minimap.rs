@@ -3,6 +3,7 @@ use super::{side_color, AssetCatalog, BoardLayout, Hex, MovementView, Observatio
 use image::{imageops, Pixel, Rgba, RgbaImage};
 use macroquad::prelude::*;
 use crate::display_preferences::{MiniLayer, MiniLayers};
+pub(crate) mod save;
 use std::{collections::{HashMap, HashSet}, path::Path};
 
 const SAMPLE: u32 = 24;
