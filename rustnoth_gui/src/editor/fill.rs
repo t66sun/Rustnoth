@@ -107,7 +107,7 @@ mod tests {
         assert!(!region.contains(Hex { x: 2, y: 0 }));
         assert!(!region.contains(Hex { x: 3, y: 0 }));
         let cfg = engine_lite::wml::parse("[terrain_type]\nstring=Hh\neditor_group=rough\nsymbol_image=hills\n[/terrain_type]").unwrap();
-        let brush = &Palette::new(&cfg).unwrap().brushes[0];
+        let brush = &Palette::new(&cfg, &Default::default()).unwrap().brushes[0];
         let mut history = History::default();
         assert!(region.paint(&mut doc, &mut history, seed, brush, true));
         assert_eq!(doc.text().matches("Hh^Fds").count(), 4);
