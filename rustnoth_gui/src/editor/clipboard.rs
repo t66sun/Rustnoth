@@ -1,6 +1,9 @@
 use super::{Command, EditableMap, Hex, History, Tool};
 use std::collections::HashSet;
 
+mod transforms;
+pub(super) use transforms::TransformButtons;
+
 #[derive(Default)]
 pub(super) struct Clipboard(Vec<(Hex, String)>);
 
@@ -13,14 +16,20 @@ impl Clipboard {
 
     pub fn copy(&mut self, doc: &EditableMap, selected: &HashSet<Hex>) {
         if selected.is_empty() { return; }
+        self.0 = selected.iter().filter_map(|&at| {
+            Some((at, doc.map().terrain_at(at)?.to_owned()))
+        }).collect();
+        self.center_by_mass();
+    }
+
+    fn center_by_mass(&mut self) {
+        if self.empty() { return; }
         // map_fragment averages the vector sum in offset coordinates, rounding toward zero.
-        let total = selected.iter().copied().fold(Hex { x: 0, y: 0 }, sum);
-        let count = selected.len() as i32;
+        let total = self.0.iter().map(|(at, _)| *at).fold(Hex { x: 0, y: 0 }, sum);
+        let count = self.0.len() as i32;
         let cx = total.x / count;
         let neg = Hex { x: -cx, y: -(total.y / count) - (cx & 1) };
-        self.0 = selected.iter().filter_map(|&at| {
-            Some((sum(at, neg), doc.map().terrain_at(at)?.to_owned()))
-        }).collect();
+        for (at, _) in &mut self.0 { *at = sum(*at, neg); }
     }
 
     pub fn translated(&self, at: Hex) -> impl Iterator<Item=(Hex, &str)> {

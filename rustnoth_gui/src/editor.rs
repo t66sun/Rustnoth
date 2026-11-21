@@ -423,6 +423,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
     let mut clipboard = clipboard::Clipboard::default();
+    let mut transform_buttons = clipboard::TransformButtons::default();
     let mut chrome = Chrome {
         labels: hex_labels::Labels::new(root)?,
         show_grid: crate::display_preferences::grid()?,
@@ -646,6 +647,8 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     else { Rect::new(w - sidebar, 304., sidebar, 155.) };
         tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip, !clipboard.empty());
         shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal, point, &mut art, &assets, &mut chrome.tip);
+        transform_buttons.draw(tools, compact, point, !modal && tool == Tool::Paste,
+            &mut clipboard, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         if tool == Tool::Location {
