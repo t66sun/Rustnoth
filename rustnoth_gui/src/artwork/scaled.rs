@@ -1,9 +1,9 @@
-//! Sample the title artwork at the pixel centers of the destination rectangle.
+//! Sample GUI canvas artwork at the pixel centers of the destination rectangle.
 use ::image::RgbaImage;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 
-pub(super) struct Artwork {
+pub(crate) struct Artwork {
     pixels: RgbaImage,
     cache: RefCell<Option<(u16, u16, Texture2D)>>,
 }
@@ -29,7 +29,9 @@ impl Artwork {
             *cache = Some((width, height, texture));
         }
         if let Some((_, _, texture)) = cache.as_ref() {
-            super::image(bounds, texture);
+            draw_texture_ex(texture, bounds.x, bounds.y, WHITE, DrawTextureParams {
+                dest_size: Some(bounds.size()), ..Default::default()
+            });
         }
     }
 }
