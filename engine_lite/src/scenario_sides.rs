@@ -27,21 +27,6 @@ pub struct ScenarioObjectives {
 }
 
 impl ScenarioObjectives {
-    pub(crate) fn read(cfg: &Node) -> Self {
-        let mut result = Self::default();
-        for (_, objective) in cfg.children.iter().filter(|(tag, _)| tag == "objective") {
-            if objective.children.iter().any(|(tag, _)| tag == "show_if") { continue; }
-            let Some(description) = objective.attribute("description")
-                .filter(|text| !text.trim().is_empty() && !text.contains('$')) else { continue };
-            match objective.attribute("condition") {
-                Some("win") => result.victory.push(description.to_owned()),
-                Some("lose") => result.defeat.push(description.to_owned()),
-                _ => {}
-            }
-        }
-        result
-    }
-
     pub fn is_empty(&self) -> bool {
         self.victory.is_empty() && self.defeat.is_empty()
     }

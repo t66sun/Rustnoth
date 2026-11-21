@@ -1,11 +1,12 @@
 //! Static campaign actions on scenario and turn events.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod endlevel;
 pub(crate) mod kill;
 mod items;
 mod have_unit;
+mod objectives;
 use have_unit::HaveUnit;
 pub(crate) mod variables;
 mod time_areas;
@@ -32,7 +33,6 @@ pub(crate) enum SideAction {
     },
     AllowRecruit(Vec<String>),
     SetRecruit(Vec<String>),
-    Objectives { content: crate::scenario_sides::ScenarioObjectives, notify: bool },
     DisallowRecruit(Option<Vec<String>>),
 }
 
@@ -50,6 +50,7 @@ pub(crate) struct PendingAction(Box<EventAction>);
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    SetObjectives { sides: Vec<usize>, definition: objectives::Definition, notify: bool },
     ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
     Dialogue(crate::fixed_match::dialogue::Message),
@@ -258,10 +259,10 @@ impl EventAction {
             return Some(if tag == "show_objectives" {
                 Self::Board(BoardChange::ShowObjectives(sides))
             } else {
-                Self::Sides { sides, action: SideAction::Objectives {
-                    content: crate::scenario_sides::ScenarioObjectives::read(cfg),
+                Self::Board(BoardChange::SetObjectives {
+                    sides, definition: objectives::Definition::read(cfg),
                     notify: !crate::scenario_sides::bool_attribute(cfg, "silent", false),
-                }}
+                })
             });
         }
         if tag == "modify_side" {
@@ -359,10 +360,6 @@ impl SideAction {
         let funds = &mut state.gold;
         for &index in sides {
             match self {
-                SideAction::Objectives { content, notify } => {
-                    teams[index].objectives.clone_from(content);
-                    teams[index].objectives_changed = *notify;
-                }
                 SideAction::Gold(amount) => funds[index] += i64::from(*amount),
                 SideAction::Modify { controller, gold, income, village_gold, village_support } => {
                     let side = &mut teams[index];
@@ -557,6 +554,7 @@ struct Handler {
 
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
+    objective_definitions: BTreeMap<usize, objectives::Definition>,
     handlers: Vec<Handler>,
     active_side: usize,
     variables: Scalars,
@@ -623,6 +621,7 @@ impl ScenarioEvents {
         handlers.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
         Self {
             handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
+            objective_definitions: BTreeMap::new(),
             active_side: 1,
             variables: variables::initial(scenario),
             items: MapItems::default(),
