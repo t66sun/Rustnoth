@@ -670,11 +670,12 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
     let (mx, my) = mouse_position();
     let hover = art.briefing_highlight.or_else(|| layout.hex_at([mx, my]));
+    let linger_side = art.linger_color.map(|_| movement.session.playing_side());
     for unit in &view.units {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
-            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position));
+            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit.position);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
