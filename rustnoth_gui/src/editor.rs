@@ -1,5 +1,6 @@
 //! Standalone terrain editor. Only the map opened by the editor is visible here.
 mod files;
+mod clipboard;
 mod fill;
 mod minimap_buttons;
 mod palette;
@@ -122,6 +123,13 @@ enum Command {
     Undo,
     Redo,
     FillSelection,
+    SelectAll,
+    SelectNone,
+    SelectInverse,
+    Shuffle,
+    Cut,
+    Copy,
+    Paste,
     ToggleGrid,
 }
 
@@ -136,6 +144,13 @@ impl Command {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
+            Self::SelectAll => "Select All",
+            Self::SelectNone => "Select None",
+            Self::SelectInverse => "Invert Selection",
+            Self::Shuffle => "Randomize Tiles in Selection",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
             Self::ToggleGrid => "Toggle Grid",
         }
     }
@@ -284,6 +299,7 @@ impl Chrome {
         name: &str,
         doc: &EditableMap,
         history: &History,
+        selection: clipboard::SelectionState,
     ) -> Option<Command> {
         self.tip = None;
         let click = is_mouse_button_pressed(MouseButton::Left);
@@ -327,7 +343,7 @@ impl Chrome {
             }
         }
         let mut result = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, doc, history,
-            assets, art, &mut self.tip);
+            assets, art, &mut self.tip, selection);
         let title = dialog::fit(font, name.into(), (w - side - 173.0).max(12.0), 16);
         dialog::text(font, &title, 165.0, 19.0, 16, dialog::PALE);
         if let Some(file) = self.menu {
@@ -412,6 +428,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
     let mut rebuild = true;
     let mut camera = BoardCamera::default();
     let mut history = History::default();
+    let mut clipboard = clipboard::Clipboard::default();
     let mut chrome = Chrome {
         show_grid: crate::display_preferences::grid()?,
         menu: None,
@@ -478,7 +495,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             last_selection = None;
         }
         if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
-            && !is_key_down(KeyCode::RightAlt) && tool != Tool::Fill {
+            && !is_key_down(KeyCode::RightAlt) && matches!(tool, Tool::Paint | Tool::Select) {
             shapes.keys();
         }
         let at = if area.contains(p) {
@@ -486,10 +503,19 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         } else {
             None
         };
-        let footprint = at.filter(|_| !modal && (tool == Tool::Paint || tool == Tool::Select && !shift))
-            .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
+        let footprint = match (at, tool) {
+            (Some(hex), Tool::Paste) if !modal => clipboard.translated(hex)
+                .map(|(dest, _)| dest).filter(|dest| doc.map().terrain_at(*dest).is_some()).collect(),
+            (Some(hex), Tool::Paint | Tool::Select) if !modal && (tool == Tool::Paint || !shift) =>
+                shapes.footprint(doc.map(), hex),
+            _ => Vec::new(),
+        };
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
-        if tool == Tool::Select && !modal {
+        if tool == Tool::Paste && !modal {
+            if let Some(hex) = at && is_mouse_button_pressed(MouseButton::Left) {
+                rebuild |= clipboard.paste(&mut doc, &mut history, hex);
+            }
+        } else if tool == Tool::Select && !modal {
             if let Some(hex) = at {
                 selecting |= is_mouse_button_pressed(MouseButton::Left);
                 let same_brush = last_selection.is_some_and(|(prior, remove, wand)| {
@@ -562,6 +588,12 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 let [x, y] = layout.tile_origin(hex);
                 let rect = Rect::new(x, y, layout.tile_size(), layout.tile_size());
                 art.image(&assets, "misc/hover-hex.png", rect);
+                if tool == Tool::Paste && !modal {
+                    let inset = layout.tile_size() / 12.0;
+                    let size = layout.tile_size() - inset * 2.;
+                    art.tinted(&assets, "icons/action/editor-paste_60.png",
+                        Rect::new(x + inset, y + inset, size, size), Color::from_rgba(255,255,255,196));
+                }
                 if tool == Tool::Select && !modal {
                     let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
                     art.tinted(&assets, icon, rect, Color::from_rgba(255, 255, 255, 196));
@@ -573,6 +605,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             name,
             if doc.dirty() { " *" } else { "" }
         );
+        let selection = clipboard::SelectionState::new(&doc, &history, tool, &clipboard);
         let mut command = chrome.draw(
             w,
             h,
@@ -584,6 +617,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             &title,
             &doc,
             &history,
+            selection,
         );
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
@@ -606,7 +640,8 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
                     else { Rect::new(w - sidebar, 304., sidebar, 155.) };
         tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
-        shapes.panel(tools, compact, tool != Tool::Fill && !modal, point, &mut art, &assets, &mut chrome.tip);
+        shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal,
+            point, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
@@ -655,12 +690,21 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
         if !modal && shift && !ctrl && is_key_pressed(KeyCode::F) {
             command = Some(Command::FillSelection);
         }
-        let grid_modifier = if cfg!(target_os = "macos") {
+        let shortcut_modifier = if cfg!(target_os = "macos") {
             is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
         } else {
             is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
         };
-        if !modal && grid_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
+        if !modal && shortcut_modifier && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            for (key, cmd) in [(KeyCode::A, Command::SelectAll), (KeyCode::I, Command::SelectInverse),
+                (KeyCode::X, Command::Cut), (KeyCode::C, Command::Copy), (KeyCode::V, Command::Paste)] {
+                if is_key_pressed(key) { command = Some(cmd); }
+            }
+        }
+        if !modal && shift && !ctrl && is_key_pressed(KeyCode::R) {
+            command = Some(Command::Shuffle);
+        }
+        if !modal && shortcut_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
             && !is_key_down(KeyCode::RightAlt) && is_key_pressed(KeyCode::G) {
             command = Some(Command::ToggleGrid);
         }
@@ -669,7 +713,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 command = Some(Command::Exit);
             }
         }
-        if let Some(cmd) = command {
+        if let Some(cmd) = command.filter(|&cmd| selection.enabled(cmd)) {
             if cmd != Command::ToggleGrid {
                 drawing = None;
                 selecting = false;
@@ -678,6 +722,16 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 rebuild |= history.finish();
             }
             match cmd {
+                Command::SelectAll | Command::SelectNone | Command::SelectInverse =>
+                    clipboard::select(&doc, &mut history, cmd),
+                Command::Copy | Command::Cut => {
+                    clipboard.copy(&doc, &history.selected);
+                    if cmd == Command::Cut {
+                        rebuild |= history.fill_selected(&mut doc, &palette.brushes[palette.bg]);
+                    }
+                }
+                Command::Paste => tool = Tool::Paste,
+                Command::Shuffle => rebuild |= clipboard::shuffle(&mut doc, &mut history),
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,

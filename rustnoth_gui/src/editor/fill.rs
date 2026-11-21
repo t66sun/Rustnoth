@@ -53,7 +53,7 @@ impl Region {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(super) enum Tool { Paint, Fill, Select }
+pub(super) enum Tool { Paint, Fill, Select, Paste }
 
 impl Tool {
     pub fn panel(self, bounds: Rect, compact: bool, point: Vec2, art: &mut Art, assets: &AssetCatalog,

@@ -1,4 +1,5 @@
 use super::{Art, AssetCatalog, Command, EditableMap, History};
+use super::clipboard::SelectionState;
 use macroquad::prelude::*;
 
 #[derive(Default)]
@@ -43,16 +44,17 @@ impl Toolbar {
 
     pub(super) fn draw(
         &mut self, width: f32, point: Vec2, modal: bool, show_grid: bool, doc: &EditableMap, history: &History,
-        assets: &AssetCatalog, art: &mut Art, tip: &mut Option<&'static str>,
+        assets: &AssetCatalog, art: &mut Art, tip: &mut Option<&'static str>, selection: SelectionState,
     ) -> Option<Command> {
-        let hover = buttons(width, doc, history)
+        let controls = || buttons(width, doc, history).chain(selection_buttons(width, selection));
+        let hover = controls()
             .find(|button| button.area.contains(point) && button.enabled && !modal)
             .map(|button| button.command);
         let action = self.activate(hover, is_mouse_button_pressed(MouseButton::Left),
             is_mouse_button_released(MouseButton::Left));
-        for button in buttons(width, doc, history) {
+        for button in controls() {
             let hot = hover == Some(button.command);
-            let selected = button.command == Command::ToggleGrid && show_grid;
+            let selected = button.command == Command::ToggleGrid && show_grid || selection.selected(button.command);
             let suffix = if selected || hot && self.pressed == hover { "-pressed" }
                 else if hot { "-active" } else { "" };
             let frame_state = if hot && selected { "-active-pressed" } else { suffix };
@@ -67,6 +69,23 @@ impl Toolbar {
         }
         action
     }
+}
+
+fn selection_buttons(width: f32, state: SelectionState) -> impl Iterator<Item=Button> {
+    use Command::*;
+    let first = if width < 1024. { 179. } else { 210. };
+    [
+        (SelectAll, "editor-select-all", 0.),
+        (SelectNone, "editor-select-none", 31.),
+        (SelectInverse, "editor-select-inverse", 62.),
+        (FillSelection, "editor-selection-fill", 93.),
+        (Shuffle, "editor-selection-randomize", 124.),
+        (Cut, "editor-cut", 166.),
+        (Copy, "editor-copy", 197.),
+        (Paste, "editor-paste", 228.),
+    ].into_iter().map(move |(command,image,offset)| Button {
+        command, image, area: Rect::new(first + offset,31.,30.,30.), enabled: state.enabled(command),
+    })
 }
 
 #[cfg(test)]
