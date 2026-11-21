@@ -602,10 +602,17 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
-    let origin = |at: Hex| walking.filter(|p| p.unit == Some(at)).map_or_else(
-        || Vec2::from_array(layout.tile_origin(at)), |p| p.origin(layout));
+    let raised = |at: Hex, kind: &str| {
+        let height = view.tiles.binary_search_by_key(&(at.y, at.x), |t| (t.position.y, t.position.x))
+            .ok().map_or(0, |i| movement.assets.unit_elevation(&view.tiles[i].terrain, kind));
+        Vec2::from_array(layout.tile_origin(at)) - vec2(0., (height as f32 * size / ART_HEX_SIZE).trunc())
+    };
+    let origin = |unit: &engine_lite::observation::ObservedUnit| {
+        let point = |at| raised(at, &unit.type_id);
+        walking.filter(|p| p.unit == Some(unit.position)).map_or_else(|| point(unit.position), |p| p.origin(point))
+    };
     for unit in &view.units {
-        let center = origin(unit.position) + Vec2::splat(size / 2.0);
+        let center = origin(unit) + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
             let selected = movement.selected == Some(unit.position)
@@ -635,7 +642,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 ).ok().map(|index| view.tiles[index].terrain.as_str());
                 sprites.frame(direction, terrain, now)
             });
-        let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, layout));
+        let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, |at| raised(at, &unit.type_id)));
         let (at, attack_frame) = posed.unwrap_or((center, None));
         if let Some((texture, flipped)) = attack_frame.or(walking_frame).or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
             draw_centered_flipped(texture, at, size, flipped, Some(viewport));
@@ -652,7 +659,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let sprite = art.moving.get(id).and_then(|s| s.get(side)).and_then(|s| s.frame(direction, terrain, pose.elapsed))
             .or_else(|| art.units.get(id)?.get(side)?.as_ref().map(|t| (t, standing::west(direction))));
         if let Some((tex, flipped)) = sprite {
-            draw_centered_flipped(tex, pose.origin(layout) + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
+            draw_centered_flipped(tex, pose.origin(|at| raised(at, id)) + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
         }
     }
 
@@ -666,7 +673,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
             let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
-            let origin = origin(unit.position);
+            let origin = origin(unit);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
         }
         let icons = [
@@ -675,7 +682,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             art.petrified.as_ref().filter(|_| unit.petrified),
         ];
         let count = icons.iter().flatten().count();
-        let [x, y] = origin(unit.position).to_array();
+        let [x, y] = origin(unit).to_array();
         let spacing = (size * 0.30).max(10.0).min(size * 0.37);
         for (index, icon) in icons.into_iter().flatten().enumerate() {
             let slot = index as f32 + 0.5 - count as f32 * 0.5;
@@ -702,7 +709,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat([0; 3]);
     if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
-    if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
+    if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref(), |at| {
+        let unit = view.units.iter().find(|u| u.position == at);
+        raised(at, unit.map_or("", |u| &u.type_id))
+    }); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {
         // LAYER_LINGER_OVERLAY is painted after unit bars, fog and shroud.

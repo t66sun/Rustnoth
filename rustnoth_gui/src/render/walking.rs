@@ -1,5 +1,5 @@
 //! Player-facing movement after the referee has resolved the walk.
-use super::{BoardLayout, Hex, Vec2};
+use super::{Hex, Vec2};
 use engine_lite::hex::Direction;
 
 const STEP_MS: u64 = 200;
@@ -70,9 +70,8 @@ impl Walk {
 }
 
 impl Pose {
-    pub(super) fn origin(&self, layout: &BoardLayout) -> Vec2 {
-        Vec2::from_array(layout.tile_origin(self.from))
-            .lerp(Vec2::from_array(layout.tile_origin(self.to)), self.fraction)
+    pub(super) fn origin(&self, point: impl Fn(Hex) -> Vec2) -> Vec2 {
+        point(self.from).lerp(point(self.to), self.fraction)
     }
 }
 
