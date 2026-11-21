@@ -4,7 +4,7 @@ use std::error::Error;
 use engine_lite::{fixed_match::Action, hex::Hex, wml::Node};
 use rustnoth_gui::session::Session;
 
-use super::{Hero, healing::lines, opening::children};
+use super::{Hero, healing::{Line, lines, say}, opening::children};
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -13,16 +13,16 @@ struct Feedback {
     fighter: Option<String>,
     weapon: String,
     trait_id: String,
-    with_trait: Vec<Node>,
-    otherwise: Vec<Node>,
+    with_trait: Vec<Line>,
+    otherwise: Vec<Line>,
 }
 
 pub(super) struct Exercise {
     target: String,
-    opening: Vec<Node>,
+    opening: Vec<Line>,
     pub prompt: String,
     pub prompting: bool,
-    select_student: Option<Node>,
+    select_student: Option<Line>,
     feedback: Vec<Feedback>,
 }
 
@@ -61,7 +61,7 @@ impl Exercise {
             return false;
         }
         self.prompting = true;
-        for message in &self.opening { session.present_message(message); }
+        say(&self.opening, session, None);
         true
     }
 
@@ -69,7 +69,7 @@ impl Exercise {
         if self.prompting && self.select_student.is_some()
             && session.unit_report(position, position).is_some_and(|r| r.id.as_deref() == Some("student"))
             && let Some(message) = self.select_student.take() {
-            session.present_message(&message);
+            message.show(session, None);
         }
     }
 
@@ -87,9 +87,7 @@ impl Exercise {
         let advice = self.feedback.remove(index);
         let has_trait = session.unit_report(from, from)
             .is_some_and(|report| report.trait_ids.contains(&advice.trait_id));
-        for line in if has_trait { &advice.with_trait } else { &advice.otherwise } {
-            session.present_message(line);
-        }
+        say(if has_trait { &advice.with_trait } else { &advice.otherwise }, session, None);
         self.prompting = false;
     }
 }
