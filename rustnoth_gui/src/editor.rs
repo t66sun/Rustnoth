@@ -277,24 +277,19 @@ impl Chrome {
         self.tip = None;
         let click = is_mouse_button_pressed(MouseButton::Left);
         let sidebar = Rect::new(w - side, 0.0, side, h);
-        art.image(assets, "themes/classic/sidebar.png", sidebar);
-        art.image(
+        art.panel(
             assets,
             "themes/classic/menubar.png",
-            Rect::new(0.0, 0.0, w - side, 27.0),
+            Rect::new(0.0, 0.0, w, 27.0),
         );
-        art.image(
+        art.panel(
             assets,
             "themes/editor/classic/toolbar.png",
             Rect::new(0.0, 27.0, w - side - 10.0, 41.0),
         );
-        art.image(assets, "themes/editor/classic/toolbar_rightside.png",
+        art.panel(assets, "themes/editor/classic/toolbar_rightside.png",
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
-        art.image(
-            assets,
-            "themes/editor/classic/menubar_rightside.png",
-            Rect::new(w - side, 0.0, side, 26.0),
-        );
+        art.panel(assets, "themes/classic/sidebar.png", sidebar);
         let mut triggered = false;
         for (index, label) in ["File", "Edit"].iter().enumerate() {
             let file = index == 0;
