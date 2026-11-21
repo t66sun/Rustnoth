@@ -72,7 +72,7 @@ fn caption<'a>(locale: &'a Locale, key: &'a str) -> &'a str {
     label.split_once('^').map_or(label, |(_, text)| text)
 }
 
-fn path_open(dir: &Path) -> std::io::Result<()> {
+pub(super) fn path_open(dir: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     let mut opener = std::process::Command::new("explorer.exe");
     #[cfg(target_os="macos")]

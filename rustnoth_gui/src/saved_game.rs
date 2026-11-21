@@ -17,6 +17,7 @@ use std::{
 };
 
 pub(super) struct Restore {
+    pub watch_replay: bool,
     pub replay_roster: Option<engine_lite::fixed_match::carryover::CampaignCarryover>,
     pub map: Option<String>,
     pub events: Vec<Event>,
@@ -173,6 +174,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         seed,
     )?;
     data.restore = Some(Restore {
+        watch_replay: false,
         replay_roster: match fs::read(dir.join("starting-roster.cfg")) {
             Ok(bytes) => Some(engine_lite::fixed_match::carryover::CampaignCarryover::from_replay_roster(
                 &wml::parse(bytes)?).ok_or("Invalid starting roster in campaign replay")?),

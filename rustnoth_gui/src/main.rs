@@ -264,7 +264,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
     let skip_ai = display_preferences::skip_ai_moves()?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     if let Some(checkpoint) = restore {
-        if replay_route.is_some() {
+        if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
             return Ok(None);
         }

@@ -153,10 +153,14 @@ pub(crate) fn skirmish_preview(root: &Path, assets: &AssetCatalog, map: &engine_
     }
     let view = Observation { width: map.width(), height: map.height(), side: 1, gold: None,
         allied_sides: vec![], tiles, units: vec![] };
+    observed_preview(root, assets, &view, size)
+}
+
+pub(crate) fn observed_preview(root: &Path, assets: &AssetCatalog, view: &Observation, size: f32) -> Option<Texture2D> {
     let geometry = Geometry::new(view.width, view.height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
     let mut art = Art::new(root);
-    art.load(&view, assets);
-    let pixels = raster(&view, &geometry, &art.symbols, None, &HashSet::new());
+    art.load(view, assets);
+    let pixels = raster(view, &geometry, &art.symbols, None, &HashSet::new());
     let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
     texture.set_filter(FilterMode::Nearest);
     Some(texture)

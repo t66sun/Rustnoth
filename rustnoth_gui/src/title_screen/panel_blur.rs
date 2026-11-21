@@ -20,7 +20,7 @@ pub(super) fn draw(cache: &RefCell<Option<Panels>>, regions: [Rect; 2], view: Ve
     if cache.as_ref().is_none_or(|old| old.layout != layout) {
         let frame = get_screen_data();
         let textures = regions.map(|region| {
-            let pixels = backdrop(&frame, view, region);
+            let pixels = backdrop(&frame, view, region, 1);
             let texture = Texture2D::from_image(&pixels);
             texture.set_filter(FilterMode::Nearest);
             texture
@@ -34,7 +34,7 @@ pub(super) fn draw(cache: &RefCell<Option<Panels>>, regions: [Rect; 2], view: Ve
     }
 }
 
-fn backdrop(frame: &Image, view: Vec2, region: Rect) -> Image {
+pub(super) fn backdrop(frame: &Image, view: Vec2, region: Rect, depth: usize) -> Image {
     let width = region.w.round().max(1.) as u16;
     let height = region.h.round().max(1.) as u16;
     let mut pixels = Image::gen_image_color(width, height, BLACK);
@@ -56,8 +56,8 @@ fn backdrop(frame: &Image, view: Vec2, region: Rect) -> Image {
         let src = prior.get_image_data();
         for (index, dst) in pixels.get_image_data_mut().iter_mut().enumerate() {
             let (pos, length, stride) = if vertical { (index / w, h, w) } else { (index % w, w, 1) };
-            let begin = index - if pos > 0 { stride } else { 0 };
-            let end = index + if pos + 1 < length { stride } else { 0 };
+            let begin = index - depth.min(pos) * stride;
+            let end = index + depth.min(length - pos - 1) * stride;
             let count = ((end - begin) / stride + 1) as u16;
             for channel in 0..3 {
                 let sum: u16 = (begin..=end).step_by(stride).map(|i| u16::from(src[i][channel])).sum();
@@ -78,7 +78,7 @@ mod tests {
         // Bottom-up framebuffer. The leftmost pixel of each row is outside the panel.
         let values = [255, 11, 7, 0, 255, 0, 2, 3];
         let frame = Image { width: 4, height: 2, bytes: values.into_iter().flat_map(|n| [n,n,n,99]).collect() };
-        let result = backdrop(&frame, vec2(4.,2.), Rect::new(1.,0.,3.,2.));
+        let result = backdrop(&frame, vec2(4.,2.), Rect::new(1.,0.,3.,2.), 1);
         assert_eq!(result.get_image_data(), &[[5,5,5,255],[3,3,3,255],[2,2,2,255],
             [5,5,5,255],[3,3,3,255],[2,2,2,255]]);
     }
