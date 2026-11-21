@@ -19,14 +19,19 @@ struct Setting { file: &'static str, off: &'static str, on: &'static str }
 const WINDOW: Setting = Setting { file: "window-mode", off: "windowed", on: "fullscreen" };
 const GRID: Setting = Setting { file: "map-grid", off: "off", on: "on" };
 const SKIP_AI: Setting = Setting { file: "skip-ai-moves", off: "off", on: "on" };
+const SAVE_REPLAYS: Setting = Setting { file: "save-replays", off: "off", on: "on" };
 
 impl Setting {
     fn read(&self, dir: &Path) -> io::Result<bool> {
+        self.read_or(dir, false)
+    }
+
+    fn read_or(&self, dir: &Path, default: bool) -> io::Result<bool> {
         match fs::read_to_string(dir.join(self.file)) {
             Ok(value) if value.trim() == self.on => Ok(true),
             Ok(value) if value.trim() == self.off => Ok(false),
             Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Unknown Rustnoth {}", self.file))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(default),
             Err(error) => Err(error),
         }
     }
@@ -44,6 +49,8 @@ pub fn save(fullscreen: bool) -> io::Result<()> { WINDOW.write(&config_directory
 pub fn grid() -> io::Result<bool> { GRID.read(&config_directory()?) }
 pub fn save_grid(enabled: bool) -> io::Result<()> { GRID.write(&config_directory()?, enabled) }
 pub fn skip_ai_moves() -> io::Result<bool> { SKIP_AI.read(&config_directory()?) }
+pub fn save_replays() -> io::Result<bool> { SAVE_REPLAYS.read_or(&config_directory()?, true) }
+pub fn set_save_replays(enabled: bool) -> io::Result<()> { SAVE_REPLAYS.write(&config_directory()?, enabled) }
 pub fn save_skip_ai_moves(enabled: bool) -> io::Result<()> { SKIP_AI.write(&config_directory()?, enabled) }
 
 #[cfg(test)]
@@ -63,6 +70,10 @@ mod tests {
         GRID.write(&dir, true).unwrap();
         assert!(GRID.read(&dir).unwrap());
         assert!(!SKIP_AI.read(&dir).unwrap());
+        assert!(SAVE_REPLAYS.read_or(&dir, true).unwrap());
+        SAVE_REPLAYS.write(&dir, false).unwrap();
+        assert!(!SAVE_REPLAYS.read_or(&dir, true).unwrap());
+        fs::remove_file(dir.join(SAVE_REPLAYS.file)).unwrap();
         SKIP_AI.write(&dir, true).unwrap();
         assert!(SKIP_AI.read(&dir).unwrap());
         fs::remove_file(dir.join("skip-ai-moves")).unwrap();

@@ -133,7 +133,7 @@ pub(crate) fn read_event_unit(unit: &Node, side_count: usize) -> Option<Authored
     Some(authored_unit(unit, side, type_id, Some(position), false, can_recruit))
 }
 
-fn authored_unit(
+pub(crate) fn authored_unit(
     unit: &Node, side: usize, type_id: &str, position: Option<Hex>, leader: bool, can_recruit: bool,
 ) -> AuthoredStartingUnit {
     let status = children_named(unit, "status").next();

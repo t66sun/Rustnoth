@@ -17,6 +17,33 @@ pub struct CampaignCarryover {
 }
 
 impl CampaignCarryover {
+    /// The incoming gold is already baked into the selected scenario's WML.
+    pub fn replay_roster(&self) -> Node {
+        let mut roster = Node::default();
+        for (id, units) in &self.units {
+            let mut side = Node::default();
+            side.set_literal("save_id", id);
+            side.children.extend(units.iter().map(|v| ("unit".into(), v.replay_config())));
+            roster.children.push(("side".into(), side));
+        }
+        roster
+    }
+
+    pub fn from_replay_roster(roster: &Node) -> Option<Self> {
+        let mut route = Self::default();
+        for (tag, side) in &roster.children {
+            if tag != "side" { return None; }
+            let id = side.attribute("save_id")?;
+            let mut units = Vec::new();
+            for (tag, unit) in &side.children {
+                if tag != "unit" { return None; }
+                units.push(Veteran::read_replay(unit)?);
+            }
+            route.units.insert(id.into(), units);
+        }
+        Some(route)
+    }
+
     pub(crate) fn restore_units(&self, scenario: &Node, board: &mut Battlefield<'_>) -> Result<BTreeSet<String>, BoardError> {
         let mut claimed = BTreeSet::new();
         for (index, (_, side)) in scenario.children.iter().filter(|(tag, _)| tag == "side").enumerate() {
