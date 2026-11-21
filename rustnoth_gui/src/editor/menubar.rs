@@ -15,7 +15,7 @@ impl Menu {
 
     fn entries(self) -> &'static [Command] {
         match self {
-            File => &[Command::New, Command::Open, Command::Save, Command::SaveAs, Command::Close, Command::Exit],
+            File => &[Command::New, Command::Open, Command::Revert, Command::Save, Command::SaveAs, Command::Close, Command::Exit],
             Map => &[Command::Refresh, Command::ToggleGrid, Command::FillSelection],
             _ => &[],
         }
@@ -53,7 +53,7 @@ impl Menubar {
     }
 
     pub fn draw(&self, open: &mut Option<Menu>, point: Vec2, assets: &AssetCatalog,
-            art: &mut Art, font: Option<&Font>, names: &[String]) -> Option<Command> {
+            art: &mut Art, font: Option<&Font>, names: &[String], can_revert: bool) -> Option<Command> {
         let click = is_mouse_button_pressed(MouseButton::Left);
         let mut triggered = false;
         for (menu, label) in HEADERS {
@@ -95,8 +95,9 @@ impl Menubar {
             } else {
                 (entries[row], entries[row].label())
             };
-            dialog::text(font, label, area.x + 9., area.y + 19., 16, WHITE);
-            if hot && click && !triggered { result = Some(cmd); }
+            let enabled = cmd != Command::Revert || can_revert;
+            dialog::text(font, label, area.x + 9., area.y + 19., 16, if enabled { WHITE } else { GRAY });
+            if enabled && hot && click && !triggered { result = Some(cmd); }
         }
         if click && !triggered { *open = None; }
         result
