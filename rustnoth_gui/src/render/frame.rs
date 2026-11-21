@@ -54,12 +54,20 @@ impl BattlefieldFrame {
     }
 }
 
+impl BoardArt {
+    pub(crate) fn minimap_input(&mut self, point: Vec2, camera: &mut crate::camera::BoardCamera) -> std::io::Result<bool> {
+        let frame = BattlefieldFrame::new(screen_width(), screen_height());
+        self.frame.minimap_buttons.input(frame.minimap_frame, point, camera, &mut self.minimap)
+    }
+}
+
 type Texture = Option<Texture2D>;
 
 pub(super) struct FrameArt {
     bar: Texture,
     sidebar: Texture,
     minimap: [Texture; 2],
+    minimap_buttons: crate::minimap_buttons::Buttons,
     buttons: [[Texture; 3]; 2],
     reports: [Texture; 5],
     side_flags: BTreeMap<usize, Texture>,
@@ -80,6 +88,7 @@ impl FrameArt {
             bar: theme("classic/menubar.png"),
             sidebar: theme("classic/sidebar.png"),
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
+            minimap_buttons: crate::minimap_buttons::Buttons::load(root),
             buttons: [buttons("large-button"), buttons("button_normal/button_H22")],
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root),
@@ -166,6 +175,8 @@ pub fn draw(
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
+        let zoom = board.map_or(72., |layout| layout.tile_size());
+        art.frame.minimap_buttons.draw(frame.minimap_frame, Some(Vec2::from(mouse_position())), zoom, art.minimap.layers);
     }
 
     if movement.menu.is_none() {

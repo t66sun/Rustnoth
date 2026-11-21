@@ -20,6 +20,7 @@ mod campaign_browser;
 mod list_scroll;
 mod desktop;
 mod editor;
+mod minimap_buttons;
 mod dialog;
 mod display_preferences;
 mod end_turn;
@@ -444,12 +445,17 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         }
         let (mouse_x, mouse_y) = mouse_position();
         let pointer = vec2(mouse_x, mouse_y);
+        let mut minimap_action = false;
         if let Some(observation) = session.observation() {
             let reset = is_key_pressed(KeyCode::Home);
             camera.update(render::board_viewport(), observation, reset);
             if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
             if !reset && !input_blocked {
-                if is_mouse_button_pressed(MouseButton::Left)
+                match art.minimap_input(pointer, &mut camera) {
+                    Ok(handled) => minimap_action = handled,
+                    Err(error) => { message = Some(error.to_string()); minimap_action = true; }
+                }
+                if !minimap_action && is_mouse_button_pressed(MouseButton::Left)
                     && let Some(point) = render::minimap_point(observation, pointer)
                 {
                     camera.center_world(point);
@@ -466,6 +472,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 camera.pan([horizontal as f32 * distance, vertical as f32 * distance]);
             }
         }
+        let input_blocked = input_blocked || minimap_action;
         let mut ai_walk = None;
         let computer_acted = !input_blocked
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
