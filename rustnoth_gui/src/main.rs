@@ -363,7 +363,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let unit_list = top.command == Some(map_menus::Command::UnitList)
             || !walking && !dialogue_open && !show_objectives && !top.handled && commands.contains(&map_menus::Command::UnitList)
                 && is_key_pressed(KeyCode::U) && (is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt));
-        let input_blocked = walking || dialogue_open || top.handled || show_objectives || unit_list;
+        let modal_input = walking || dialogue_open || top.handled || show_objectives || unit_list;
+        let save = data.lesson.is_none() && menu.is_none()
+            && (top.command == Some(map_menus::Command::Save) || !modal_input && save_dialog::save_pressed());
+        let input_blocked = modal_input || save;
         if !input_blocked && is_key_pressed(KeyCode::G)
             && (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
                 || cfg!(target_os = "macos") && (is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper))) {
@@ -412,19 +415,6 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 }
             }
             _ => {}
-        }
-        if data.lesson.is_none() && menu.is_none() && ((!input_blocked && save_dialog::save_pressed()) || top.command == Some(map_menus::Command::Save)) {
-            next_frame().await;
-            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
-                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
-                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
-                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
-                    Ok(()) => format!("Saved {name}"),
-                    Err(e) => format!("Save failed: {e}"),
-                });
-            }
-            next_frame().await;
-            continue;
         }
         if !input_blocked && is_key_pressed(KeyCode::Escape) {
             if menu.take().is_none() {
@@ -657,6 +647,18 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
         );
+        if save {
+            if let Some(name) = save_dialog::name(&data.wesnoth_root,&data.title).await {
+                message = Some(match saved_game::directory().and_then(|base| saved_game::save(
+                    &base,&name,&data,players,saved_map.as_deref(),session.history(),camera.checkpoint(),selection.unit(),
+                    browser.zip(opening_roster.as_ref()).map(|(b,r)| saved_game::CampaignSave::Checkpoint(b,r)))) {
+                    Ok(()) => format!("Saved {name}"),
+                    Err(e) => format!("Save failed: {e}"),
+                });
+            }
+            next_frame().await;
+            continue;
+        }
         if unit_list && let Some(view) = session.observation() {
             if let Some(at) = unit_list::show(&data, &session, view, selection.unit()).await {
                 selection.select_own(at, view);
