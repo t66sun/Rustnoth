@@ -2,7 +2,10 @@
 use super::{Hero, opening::children};
 use engine_lite::wml::Node;
 
+mod island_village;
+
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
+    island_village::prepare(scenario, hero);
     let mut zone = None;
     for (index, (tag, event)) in scenario.children.iter_mut().enumerate() {
         if tag != "event" || children(event, "hint_message").next().is_none() { continue; }
