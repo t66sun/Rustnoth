@@ -28,8 +28,8 @@ impl Default for Documents {
 }
 
 impl Documents {
-    pub fn new_map(&mut self) {
-        self.list.push(Document::blank());
+    pub fn new_map(&mut self, map: EditableMap) {
+        self.list.push(Document { map, path: None, camera: BoardCamera::default(), history: History::default() });
         self.current = self.list.len() - 1;
     }
 
@@ -72,7 +72,7 @@ mod tests {
         let original = &mut docs.list[0];
         original.history.paint(&mut original.map, hex, "Ww");
         original.history.finish();
-        docs.new_map();
+        docs.new_map(new_map());
         assert_eq!(docs.titles(), ["Untitled *", "✓ Untitled"]);
         assert_eq!(docs.list[1].map.map().terrain_at(hex), Some("Gg"));
         docs.close();
