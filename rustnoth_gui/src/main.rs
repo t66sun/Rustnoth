@@ -460,12 +460,13 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         }
         let can_end = session.legal_actions().contains(&Action::EndTurn);
         let next = if campaign && !input_blocked { session.next_scenario() } else { None };
-        let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some());
-        if let Some(id) = next && opening_roster.is_none() && (is_key_pressed(KeyCode::Enter)
+        let final_victory = campaign && session.final_victory_ready(end_report_shown);
+        let button = render::end_turn_button(screen_width(), screen_height(), can_end || next.is_some() || final_victory);
+        if !input_blocked && (next.is_some() || final_victory) && opening_roster.is_none() && (is_key_pressed(KeyCode::Enter)
             || clicked && button.is_some_and(|bounds| bounds.contains(pointer)))
         {
             if let Some(route) = carryover.as_deref_mut() { session.store_campaign_survivors(route); }
-            return Ok(Some(id.to_owned()));
+            return Ok(next.map(str::to_owned));
         }
         let menu_action = menu.as_mut().filter(|_| !input_blocked).and_then(|menu| {
             let area = render::menu_area();
@@ -600,10 +601,10 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         {
             let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);
             render::draw_turn_button(bounds, highlighted, &art, locale.game("End Turn"));
-        } else if campaign && session.next_scenario().is_some()
+        } else if campaign && (session.next_scenario().is_some() || final_victory)
             && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
         {
-            let caption = if data.lesson.is_some() { locale.game("End Scenario") } else { "Continue" };
+            let caption = if data.lesson.is_some() || final_victory { locale.game("End Scenario") } else { "Continue" };
             render::draw_turn_button(bounds, bounds.contains(pointer), &art, caption);
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
