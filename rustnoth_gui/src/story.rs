@@ -235,6 +235,7 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
                 .and_then(|path| render::load_texture(&path, None)));
         }
         let mut first = 0;
+        let mut blurred: Option<(Rect, Vec2, (f32, f32), Texture2D)> = None;
         let mut previous_width = 0.;
         let mut wrapped = Vec::new();
         let mut block: Option<Texture2D> = None;
@@ -251,6 +252,18 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, fon
                     20.0, 46.0, 26, WHITE);
             }
             let panel = part.placement.panel(screen, !part.title.is_empty());
+            let framebuffer = macroquad::miniquad::window::screen_size();
+            if blurred.as_ref().is_none_or(|(r, view, fb, _)| (*r, *view, *fb) != (panel, screen, framebuffer)) {
+                let pixels = crate::title_screen::panel_blur::backdrop(&get_screen_data(), screen, panel, 5);
+                let texture = Texture2D::from_image(&pixels);
+                texture.set_filter(FilterMode::Nearest);
+                blurred = Some((panel, screen, framebuffer, texture));
+            }
+            if let Some((_, _, _, texture)) = &blurred {
+                draw_texture_ex(texture, panel.x, panel.y, WHITE, DrawTextureParams {
+                    dest_size: Some(panel.size()), ..Default::default()
+                });
+            }
             skin.panel(panel, part.placement, !part.title.is_empty());
             // The controls use 112 pixels plus their 20px side borders. The label
             // uses another 20px each side, and 3px separating its scrollbar.

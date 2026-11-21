@@ -15,7 +15,7 @@ mod achievements;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
-mod panel_blur;
+pub(crate) mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
 use crate::artwork::scaled as scaled_art;
