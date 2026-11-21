@@ -11,6 +11,7 @@ mod languages;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 mod profile;
 mod panel_blur;
