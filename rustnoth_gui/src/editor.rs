@@ -4,6 +4,7 @@ mod documents;
 mod menubar;
 mod locations;
 mod hex_labels;
+mod clipboard;
 mod fill;
 mod help_label;
 mod minimap_buttons;
@@ -138,6 +139,13 @@ enum Command {
     Undo,
     Redo,
     FillSelection,
+    SelectAll,
+    SelectNone,
+    SelectInverse,
+    Shuffle,
+    Cut,
+    Copy,
+    Paste,
     ToggleGrid,
     Refresh,
     ToggleHelp,
@@ -157,6 +165,13 @@ impl Command {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::FillSelection => "Fill Selection",
+            Self::SelectAll => "Select All",
+            Self::SelectNone => "Select None",
+            Self::SelectInverse => "Invert Selection",
+            Self::Shuffle => "Randomize Tiles in Selection",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
             Self::ToggleGrid => "Toggle Grid",
             Self::Switch(_) => "Switch Map",
             Self::Refresh => "Refresh Display",
@@ -293,6 +308,7 @@ impl Chrome {
         names: &[String],
         doc: &EditableMap,
         history: &History,
+        selection: clipboard::SelectionState,
     ) -> Option<Command> {
         self.tip = None;
         let sidebar = Rect::new(w - side, 0.0, side, h);
@@ -310,7 +326,7 @@ impl Chrome {
             Rect::new(w - side - 10.0, 27.0, 10.0, 41.0));
         art.panel(assets, "themes/classic/sidebar.png", sidebar);
         let tool_action = self.toolbar.draw(w, point, self.menu.is_some(), self.show_grid, self.show_help, &self.labels, doc, history,
-            assets, art, &mut self.tip);
+            assets, art, &mut self.tip, selection);
         let result = self.menubar.draw(&mut self.menu, point, assets, art, font, names).or(tool_action);
         result
     }
@@ -360,6 +376,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut reports = terrain_report::Reports::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::default();
     let mut rebuild = true;
+    let mut clipboard = clipboard::Clipboard::default();
     let mut chrome = Chrome {
         labels: hex_labels::Labels::new(root)?,
         show_grid: crate::display_preferences::grid()?,
@@ -439,11 +456,20 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         } else {
             None
         };
-        let footprint = at.filter(|_| !modal && (tool == Tool::Paint || tool == Tool::Select && !shift))
-            .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
+        let footprint = match (at, tool) {
+            (Some(hex), Tool::Paste) if !modal => clipboard.translated(hex)
+                .map(|(dest, _)| dest).filter(|dest| doc.map().terrain_at(*dest).is_some()).collect(),
+            (Some(hex), Tool::Paint | Tool::Select) if !modal && (tool == Tool::Paint || !shift) =>
+                shapes.footprint(doc.map(), hex),
+            _ => Vec::new(),
+        };
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
         if tool == Tool::Location && !modal {
             locations.input(at, ctrl, doc, history, camera);
+        } else if tool == Tool::Paste && !modal {
+            if let Some(hex) = at && is_mouse_button_pressed(MouseButton::Left) {
+                rebuild |= clipboard.paste(doc, history, hex);
+            }
         } else if tool == Tool::Select && !modal {
             if let Some(hex) = at {
                 selecting |= is_mouse_button_pressed(MouseButton::Left);
@@ -523,6 +549,11 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     let padding = rect.w / 12.;
                     art.image(&assets, "icons/action/editor-tool-starting-position_60.png",
                         Rect::new(x + padding, y + padding, rect.w - 2. * padding, rect.h - 2. * padding));
+                } else if tool == Tool::Paste && !modal {
+                    let inset = layout.tile_size() / 12.0;
+                    let size = layout.tile_size() - inset * 2.;
+                    art.tinted(&assets, "icons/action/editor-paste_60.png",
+                        Rect::new(x + inset, y + inset, size, size), Color::from_rgba(255,255,255,196));
                 }
                 if tool == Tool::Select && !modal {
                     let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
@@ -530,6 +561,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 }
             }
         }
+        let selection = clipboard::SelectionState::new(doc, history, tool, &clipboard);
         let mut command = chrome.draw(
             w,
             h,
@@ -541,6 +573,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             &names,
             doc,
             history,
+            selection,
         );
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
@@ -562,7 +595,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         let compact = w < 1024.0 || h < 768.0;
         let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
                     else { Rect::new(w - sidebar, 304., sidebar, 155.) };
-        tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
+        tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip, !clipboard.empty());
         shapes.panel(tools, compact, matches!(tool, Tool::Paint | Tool::Select) && !modal, point, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
@@ -625,12 +658,21 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         if !modal && shift && !ctrl && is_key_pressed(KeyCode::F) {
             command = Some(Command::FillSelection);
         }
-        let grid_modifier = if cfg!(target_os = "macos") {
+        let shortcut_modifier = if cfg!(target_os = "macos") {
             is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
         } else {
             is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
         };
-        if !modal && grid_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
+        if !modal && shortcut_modifier && !shift && !is_key_down(KeyCode::LeftAlt) && !is_key_down(KeyCode::RightAlt) {
+            for (key, cmd) in [(KeyCode::A, Command::SelectAll), (KeyCode::I, Command::SelectInverse),
+                (KeyCode::X, Command::Cut), (KeyCode::C, Command::Copy), (KeyCode::V, Command::Paste)] {
+                if is_key_pressed(key) { command = Some(cmd); }
+            }
+        }
+        if !modal && shift && !ctrl && is_key_pressed(KeyCode::R) {
+            command = Some(Command::Shuffle);
+        }
+        if !modal && shortcut_modifier && !shift && !is_key_down(KeyCode::LeftAlt)
             && !is_key_down(KeyCode::RightAlt) && is_key_pressed(KeyCode::G) {
             command = Some(Command::ToggleGrid);
         }
@@ -639,7 +681,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 command = Some(Command::Exit);
             }
         }
-        if let Some(cmd) = command {
+        if let Some(cmd) = command.filter(|&cmd| selection.enabled(cmd)) {
             if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp | Command::Coordinates | Command::TerrainCodes) {
                 drawing = None;
                 selecting = false;
@@ -658,6 +700,16 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 Command::Coordinates | Command::TerrainCodes => {
                     if let Err(e) = chrome.labels.toggle(cmd) { status = e.to_string(); }
                 }
+                Command::SelectAll | Command::SelectNone | Command::SelectInverse =>
+                    clipboard::select(doc, history, cmd),
+                Command::Copy | Command::Cut => {
+                    clipboard.copy(doc, &history.selected);
+                    if cmd == Command::Cut {
+                        rebuild |= history.fill_selected(doc, &palette.brushes[palette.bg]);
+                    }
+                }
+                Command::Paste => tool = Tool::Paste,
+                Command::Shuffle => rebuild |= clipboard::shuffle(doc, history),
                 Command::ToggleGrid => {
                     match crate::display_preferences::save_grid(!chrome.show_grid) {
                         Ok(()) => chrome.show_grid = !chrome.show_grid,
