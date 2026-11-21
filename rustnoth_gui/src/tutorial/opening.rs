@@ -145,6 +145,9 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
             lesson.movement_prompt = prompt.into();
         }
     }
+    if let Some(event) = super::practice::death_event(scenario, hero) {
+        events.push(("event".into(), event));
+    }
     scenario.children.retain(|(tag, _)| tag != "event");
     scenario.children.extend(events);
     scenario.attributes.remove("next_scenario");

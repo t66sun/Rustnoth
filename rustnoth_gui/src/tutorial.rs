@@ -12,6 +12,7 @@ mod healing;
 mod recruiting;
 mod end_turn;
 mod weapons;
+mod practice;
 
 pub(super) const FIRST_SCENARIO: &str = "tutorial";
 const SCOPE: &str = "Movement, attacking, village healing and recruiting";
@@ -132,6 +133,9 @@ impl Lesson {
     }
 
     pub(super) fn advance(&mut self, session: &mut Session<'_>) {
+        if practice::guardians_have_arrived(session) {
+            self.step = Step::Practice;
+        }
         self.step = match self.step {
             Step::Approach => {
                 if matches!(session.history().last(), Some(Event::Player(Action::Move { to, .. }, _, _)) if to.distance(self.mentor) == 1) {
@@ -176,6 +180,9 @@ impl Lesson {
 
     pub(super) fn after_computer(&mut self, session: &mut Session<'_>) {
         use engine_lite::fixed_match::MatchState;
+        if practice::guardians_have_arrived(session) {
+            self.step = Step::Practice;
+        }
         match session.state() {
             MatchState::Playing(turn) if turn.side != 1 => {
                 if self.step == Step::WaitThird { self.before_healing = healing::student_hp(session); }
