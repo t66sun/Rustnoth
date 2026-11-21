@@ -36,6 +36,7 @@ pub struct UnitType {
     pub max_attacks: i32,
     /// HP restored to adjacent friendly units at the start of this unit's turn.
     pub adjacent_healing: i32,
+    pub(crate) has_heals: bool,
     pub(crate) cures_adjacent: bool,
     /// Base experience requirement before applying the scenario's XP modifier.
     pub experience: i32,
@@ -143,6 +144,8 @@ impl UnitType {
             vision: int("vision", -1),
             max_attacks: int("attacks", 1),
             adjacent_healing,
+            has_heals: unit.children.iter().any(|(tag, cfg)| tag == "abilities"
+                && cfg.children.iter().any(|(ability, _)| ability == "heals")),
             cures_adjacent,
             experience: int("experience", 500),
             cost: int("cost", 1),
