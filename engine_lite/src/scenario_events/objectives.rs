@@ -3,7 +3,10 @@ use super::{HaveUnit, ScenarioEvents, variables::{Comparison, Scalars}};
 use crate::{board::Battlefield, scenario_sides::{ScenarioObjectives, SideConfig}, wml::Node};
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Definition(Vec<Entry>);
+pub(crate) struct Definition {
+    summary: String,
+    entries: Vec<Entry>,
+}
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -77,12 +80,13 @@ impl Definition {
             };
             Some(Entry { victory, description, condition })
         }).collect();
-        Self(entries)
+        let summary = node.attribute("summary").filter(|text| !text.contains('$')).unwrap_or_default().to_owned();
+        Self { summary, entries }
     }
 
     fn evaluate(&self, board: &Battlefield<'_>, sides: usize, variables: &Scalars) -> ScenarioObjectives {
-        let mut text = ScenarioObjectives::default();
-        for entry in &self.0 {
+        let mut text = ScenarioObjectives { summary: self.summary.clone(), ..Default::default() };
+        for entry in &self.entries {
             if entry.condition.matches(board, sides, variables) {
                 let group = if entry.victory { &mut text.victory } else { &mut text.defeat };
                 group.push(entry.description.clone());

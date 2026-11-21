@@ -22,13 +22,14 @@ pub(crate) enum DefeatCondition {
 /// Literal scenario objectives shown by the desktop client.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScenarioObjectives {
+    pub summary: String,
     pub victory: Vec<String>,
     pub defeat: Vec<String>,
 }
 
 impl ScenarioObjectives {
     pub fn is_empty(&self) -> bool {
-        self.victory.is_empty() && self.defeat.is_empty()
+        self.summary.is_empty() && self.victory.is_empty() && self.defeat.is_empty()
     }
 }
 
