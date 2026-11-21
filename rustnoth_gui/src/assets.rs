@@ -17,6 +17,8 @@ pub struct AssetCatalog {
     terrain: BTreeMap<String, Option<PathBuf>>,
     terrain_names: BTreeMap<String, String>,
     minimap_symbols: BTreeMap<String, PathBuf>,
+    aliases: Option<engine_lite::terrain_aliases::TerrainAliases>,
+    color_ranges: BTreeMap<String, [u8; 3]>,
     villages: BTreeSet<String>,
 }
 
@@ -88,7 +90,7 @@ impl AssetCatalog {
             for (tag, node) in wml::parse(input)?.children {
                 match tag.as_str() {
                     "units" => units.children.extend(node.children),
-                    "terrain_type" => document.children.push((tag, node)),
+                    "terrain_type" | "color_range" => document.children.push((tag, node)),
                     "terrain_graphics" if !terrain_graphics => {},
                     "terrain_graphics" if is_core => core_graphics.push(node),
                     "terrain_graphics" => catalog.terrain_rules.push(node),
@@ -112,7 +114,12 @@ impl AssetCatalog {
         catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
         catalog.image_dirs.push(wesnoth_root.to_owned());
         catalog.fallback = wesnoth_root.join("data/core/images");
+        catalog.aliases = Some(engine_lite::terrain_aliases::TerrainAliases::from_wml(&document));
         catalog.read_definitions(&document);
+        if let Ok(bytes) = std::fs::read(wesnoth_root.join("data/core/team-colors.cfg"))
+            && let Ok(colors) = wml::parse(bytes) {
+            catalog.read_definitions(&colors);
+        }
         Ok(catalog)
     }
 
@@ -221,6 +228,17 @@ impl AssetCatalog {
         (paths, village)
     }
 
+    pub fn minimap_color(&self, code: &str) -> [u8;3] {
+        let Some(aliases) = &self.aliases else { return [0;3] };
+        let colors = aliases.underlying_ids(code).into_iter()
+            .filter_map(|id| self.color_ranges.get(id).copied());
+        colors.reduce(|a,b| std::array::from_fn(|i| {
+            let left = i16::from(a[i]);
+            (left - (left - i16::from(b[i])) / 2) as u8
+        })).or_else(|| aliases.terrain_id(code).and_then(|id| self.color_ranges.get(id).copied()))
+            .unwrap_or([0;3])
+    }
+
     pub fn resolve_image(&self, image: &Path) -> Option<PathBuf> {
         // Native terrain image lookup treats "../" as a reset to the image directory.
         let text = image.to_str()?;
@@ -233,6 +251,16 @@ impl AssetCatalog {
     fn read_definitions(&mut self, document: &Node) {
         for (tag, node) in &document.children {
             match tag.as_str() {
+                "color_range" => {
+                    if let (Some(id), Some(rgb)) = (node.attribute("id"), node.attribute("rgb")) {
+                        let mut values = rgb.split(',').map(str::trim);
+                        if let Some(first) = values.next()
+                            && let Ok(color) = u32::from_str_radix(values.nth(2).unwrap_or(first), 16) {
+                            let [_, r, g, b] = color.to_be_bytes();
+                            self.color_ranges.entry(id.into()).or_insert([r,g,b]);
+                        }
+                    }
+                }
                 "terrain_type" => {
                     let Some(code) = node.attribute("string").filter(|code| !code.is_empty()) else {
                         continue;
@@ -339,6 +367,15 @@ fn image_filename(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimap_flat_terrain_uses_the_representative_color_of_its_alias() {
+        let core = b"[color_range]\nid=flat\nrgb=89C236,D9FF62,023B02,73973F\n[/color_range]\n\
+            [terrain_type]\nstring=Gt\nid=flat\n[/terrain_type]\n\
+            [terrain_type]\nstring=Gg\nid=grassland\naliasof=Gt\n[/terrain_type]";
+        let catalog = AssetCatalog::parse(Path::new("wesnoth"), core, b"").unwrap();
+        assert_eq!(catalog.minimap_color("Gg"), [0x73, 0x97, 0x3f]);
+    }
 
     #[test]
     fn minimap_uses_symbol_art_and_identifies_neutral_village_overlays() {
