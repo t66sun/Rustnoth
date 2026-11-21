@@ -322,7 +322,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
             return Ok(None);
         }
         let mut commands = map_menus::available(
-            session.objectives().is_some(),
+            session.has_authored_objectives(),
             session.observation().and_then(|v| map_menus::next_unit(v, selection.unit())).is_some(),
             session.legal_actions(),
         );
@@ -332,7 +332,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         if !campaign && data.lesson.is_none() { commands.insert(0, map_menus::Command::Save); }
         let auto_objectives = !walking && session.has_objective_notice();
         let top = if walking || dialogue_open || auto_objectives { map_menus::Response {handled:false,command:None} } else { top_menu.input(&commands) };
-        let show_objectives = auto_objectives || session.objectives().is_some() && !walking && !dialogue_open
+        let show_objectives = auto_objectives || session.has_authored_objectives() && !walking && !dialogue_open
             && (top.command == Some(map_menus::Command::Objectives) || !top.handled && render::objectives::hotkey());
         let input_blocked = walking || dialogue_open || top.handled || show_objectives;
         if !input_blocked && is_key_pressed(KeyCode::G)
@@ -577,8 +577,8 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         }
         top_menu.draw(&top_art, art.font.as_ref(), &commands);
         if show_objectives {
-            let empty = Default::default();
-            render::objectives::show(session.objectives().unwrap_or(&empty), &data.title, &locale, &mut art, &data.wesnoth_root).await;
+            let contents = if auto_objectives { session.objectives().cloned() } else { session.evaluate_objectives() };
+            render::objectives::show(&contents.unwrap_or_default(), &data.title, &locale, &mut art, &data.wesnoth_root).await;
             session.acknowledge_objectives();
             continue;
         }

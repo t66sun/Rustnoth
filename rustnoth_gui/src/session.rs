@@ -201,6 +201,14 @@ impl<'rules> Session<'rules> {
             && self.observation.as_ref().is_some_and(|view| self.game.objectives_changed(view.side))
     }
 
+    pub fn has_authored_objectives(&self) -> bool {
+        self.observation.as_ref().is_some_and(|view| self.game.has_authored_objectives(view.side))
+    }
+
+    pub fn evaluate_objectives(&self) -> Option<engine_lite::scenario_sides::ScenarioObjectives> {
+        self.game.evaluate_objectives_for(self.observation.as_ref()?.side)
+    }
+
     pub fn acknowledge_objectives(&mut self) -> bool {
         if !self.has_objective_notice() { return false; }
         let side = self.observation.as_ref().expect("pending objectives have a viewer").side;
