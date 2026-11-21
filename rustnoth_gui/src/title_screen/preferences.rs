@@ -56,6 +56,12 @@ fn caption_y(row: Rect, height: f32) -> f32 {
     row.y + ((row.h - height) / 2.).floor().max(0.)
 }
 
+// GUI2 stretches the linked image widget to 72×72. Its canvas draws the
+// bitmap at (0, 0) within that widget, after the grid's five-pixel border.
+fn category_icon_origin(row: Rect) -> Vec2 {
+    row.point() + vec2(5., 5.)
+}
+
 pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
     let mut y = rect.y;
     while y < rect.bottom() {
@@ -147,9 +153,11 @@ struct WidgetArt {
 impl WidgetArt {
     fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
         let load = |name: &str| load_texture(root, &format!("images/{name}.png"));
+        let selected = load("dialogs/selection-background-fancy")?;
+        selected.set_filter(FilterMode::Nearest);
         Ok(Self {
             backdrop: load("dialogs/opaque-background")?,
-            selected: load("dialogs/selection-background-fancy")?,
+            selected,
             icons: TABS.iter().map(|(_, icon)| load(icon))
                 .collect::<Result<_, _>>()?,
             checks: [load("buttons/checkbox")?, load("buttons/checkbox-active")?,
@@ -185,8 +193,8 @@ impl WidgetArt {
                 draw_rectangle(r.x, r.y, 2., r.h, BORDER);
                 draw_rectangle(r.x, r.y + 1., 2., r.h - 2., Color::from_rgba(185, 158, 75, 255));
             }
-            draw_texture(icon, r.x + 5. + ((72. - icon.width()) * 0.5).floor(),
-                r.y + ((r.h - icon.height()) * 0.5).floor(), WHITE);
+            let at = category_icon_origin(r);
+            draw_texture(icon, at.x, at.y, WHITE);
             label.draw_cell(vec2(r.x + 87., caption_y(r, label.size.y)), r.w - 107.);
         }
     }
@@ -364,6 +372,12 @@ mod tests {
         assert_eq!(caption_y(layout.control(Control::Accelerated), 19.), 227.);
         assert_eq!(caption_y(layout.control(Control::SkipAi), 22.), 198.);
         assert_eq!(TABS[3], ("Sound", "icons/icon-music"));
+    }
+
+    #[test]
+    fn general_category_icon_uses_the_padded_widget_origin() {
+        let row = Layout::new(vec2(1200., 820.), 94.).tab(0);
+        assert_eq!(category_icon_origin(row), vec2(223., 162.));
     }
 
     #[test]
