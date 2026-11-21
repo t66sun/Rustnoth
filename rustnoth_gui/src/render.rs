@@ -382,8 +382,8 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w > 0.0 && bounds.h > 0.0).then_some(bounds)
 }
 
-pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str) {
-    frame::turn_button(art, bounds, highlighted, text);
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, enabled: bool, art: &mut BoardArt, text: &str) {
+    frame::turn_button(art, bounds, highlighted, enabled, text);
 }
 
 pub fn menu_area() -> Rect {

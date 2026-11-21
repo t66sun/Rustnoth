@@ -332,6 +332,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let end_label = locale.game("End Turn").to_owned();
     let end_scenario = locale.game("End Scenario").to_owned();
     let mut visible_turn_label = None;
+    let mut turn_enabled = true;
     let mut visible_prompt = String::new();
     session.enable_combat_playback();
     loop {
@@ -620,7 +621,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 Err(error) => { message = Some(error.to_string()); menu = None; }
             }
         }
-        let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>| {
+        let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>, enabled: bool| {
             if let Some(lesson) = &data.lesson { lesson.draw_labels(art, camera.layout()); }
             if !prompt.is_empty() {
                 art.draw_tutorial_print(prompt, &data.wesnoth_root);
@@ -629,17 +630,18 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
                 let highlighted = bounds.contains(Vec2::from(mouse_position()))
                     || label == end_label && end_turn::modifier_down() && is_key_down(KeyCode::Space);
-                render::draw_turn_button(bounds, highlighted, art, label);
+                render::draw_turn_button(bounds, highlighted, enabled, art, label);
             }
             top_menu.draw(&top_art, art.font.as_ref(), &commands);
         };
         if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
             render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
-                |art| draw_controls(art, &visible_prompt, visible_turn_label)).await;
+                |art| draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled)).await;
         }
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
+        turn_enabled = session.dialogue().is_none();
         visible_turn_label = if session.legal_actions().contains(&Action::EndTurn)
             || session.tutorial_end_turn_denial().is_some()
             || data.lesson.as_ref().is_some_and(|lesson| lesson.end_turn_denial(&session).is_some()) {
@@ -673,7 +675,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 menu: menu.as_ref().filter(|menu| attack_dialog.is_none() && !menu.offers_recruit()),
             },
             |art| {
-                draw_controls(art, &visible_prompt, visible_turn_label);
+                draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled);
                 session.dialogue().filter(|_| !briefing_scroll && !art.walk.active())
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
