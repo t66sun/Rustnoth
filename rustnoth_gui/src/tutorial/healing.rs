@@ -10,6 +10,9 @@ pub(super) struct Exercises {
     pub end_prompt: String,
     pub village_prompt: String,
     pub villages: Vec<Hex>,
+    village_label: String,
+    visible_in_fog: bool,
+    pub marked: bool,
     pub after_attack: Vec<Node>,
     pub second_turn: Vec<Node>,
     pub capture: Vec<Node>,
@@ -30,6 +33,11 @@ pub(super) fn lines(event: &Node, hero: Hero) -> Vec<Node> {
 }
 
 impl Exercises {
+    pub fn markers(&self) -> impl Iterator<Item = (Hex, &str, bool)> {
+        self.villages.iter().filter(|_| self.marked && !self.village_label.is_empty())
+            .map(|hex| (*hex, self.village_label.as_str(), self.visible_in_fog))
+    }
+
     pub fn read(scenario: &Node, attack: &Node, hero: Hero) -> Result<Self, Box<dyn Error>> {
         let event = |name: &str| children(scenario, "event").find(|event| event.attribute("name") == Some(name));
         let turn_two = event("turn 2").ok_or("missing tutorial healing lesson")?;
@@ -49,6 +57,9 @@ impl Exercises {
         if healed.is_empty() { return Err("missing post-healing message".into()); }
         Ok(Self {
             villages,
+            village_label: village.attribute("text").unwrap_or_default().into(),
+            visible_in_fog: !matches!(village.attribute("visible_in_fog"), Some("no" | "false" | "0")),
+            marked: false,
             end_prompt: children(attack, "print").find_map(|cfg| cfg.attribute("text").filter(|s| !s.is_empty()))
                 .ok_or("missing end turn instruction")?.into(),
             village_prompt: gender_command(turn_two, hero, "print").and_then(|cfg| cfg.attribute("text"))

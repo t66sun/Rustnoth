@@ -188,7 +188,7 @@ mod tests {
             [message]\nspeaker=Delfador\nmessage=$student_hp to $($student_hp-15)\n[/message]\n\
             [hint_message]\nmessage=Finish your turn\n[/hint_message]\n[print]\ntext=End your turn\n[/print]\n[/event]\n\
             [event]\nname=turn 2\n[disallow_end_turn]\nreason=Reach a village first\n[/disallow_end_turn]\n[message]\nspeaker=student\nmessage=I have $student_hp left\nfemale_message=female^I retain $student_hp\n[/message]\n\
-            [label]\nx=1,5\ny=1,3\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
+            [label]\nx=1,5\ny=1,3\ntext=Training village\nvisible_in_fog=yes\n[/label]\n{villages}\n[event]\nname=capture\n[hint_message]\nmessage=You captured the village\n[/hint_message]\n[/event]\n[/event]\n\
             [event]\nname=turn 3 refresh\n[message]\nspeaker=Delfador\nmessage=Healed $student_hp_heal_amount\n[/message]\n\
             [message]\nspeaker=student\nmessage=I will recruit elves\nfemale_message=female^I shall recruit elves\n[/message]\n\
             [label]\nx,y=1,2\ntext=Keep\n[/label]\n{keep_prompt}\n\
@@ -242,6 +242,7 @@ condition=lose
             let select = wml::parse(format!("name=select\n{instructions}")).unwrap();
             scenario.children.push(("event".into(), select));
             let mut lesson = prepare(&mut scenario, hero).unwrap();
+            assert!(lesson.healing.markers().next().is_none());
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
             let mut bytes = Vec::new();
@@ -324,6 +325,9 @@ condition=lose
             };
             next_turn(&mut lesson, &mut session);
             let hp = healing::student_hp(&session).unwrap();
+            let markers: Vec<_> = lesson.healing.markers().collect();
+            assert_eq!(markers, [(Hex::from_wml(1, 1).unwrap(), "Training village", true),
+                                 (Hex::from_wml(5, 3).unwrap(), "Training village", true)]);
             assert_eq!(session.dialogue().unwrap().text, match hero {
                 Hero::Konrad => format!("I have {hp} left"), Hero::Lisar => format!("I retain {hp}")
             });
