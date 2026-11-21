@@ -10,6 +10,7 @@ use crate::{artwork::{self, scaled::Artwork}, dialog, render};
 pub(super) struct Part {
     pub(super) title: String,
     pub(super) text: String,
+    markup: String,
     placement: Placement,
     layers: Vec<Layer>,
     markers: Vec<Marker>,
@@ -124,11 +125,12 @@ pub(super) fn read(scenario: &Node, name: &str) -> Vec<Part> {
             let title = if flag(node, "show_title", node.attribute("title").is_some()) {
                 plain_text(literal(node, "title").unwrap_or(name))
             } else { String::new() };
-            let text = plain_text(literal(node, "story").unwrap_or_default());
+            let markup = literal(node, "story").unwrap_or_default().to_owned();
+            let text = plain_text(&markup);
             if !text.is_empty() || !layers.is_empty() || !markers.is_empty() || !title.is_empty() {
                 let placement = match node.attribute("text_layout") { Some("top") => Placement::Top,
                     Some("middle") => Placement::Middle, _ => Placement::Bottom };
-                parts.push(Part { title, text, placement, layers, markers });
+                parts.push(Part { title, text, markup, placement, layers, markers });
             }
         }
     }
@@ -213,8 +215,10 @@ impl Skin {
     }
 }
 
-pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Font>) {
+pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, root: &Path, font: Option<&Font>) {
     let skin = Skin::load(assets);
+    #[cfg(windows)]
+    let renderer = crate::title_screen::tip_pango::Text::load(root, "Lato");
     let mut index = 0;
     while let Some(part) = parts.get(index) {
         let mut layers = HashMap::new();
@@ -233,6 +237,7 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
         let mut first = 0;
         let mut previous_width = 0.;
         let mut wrapped = Vec::new();
+        let mut block: Option<Texture2D> = None;
         loop {
             let scale = (screen_width() / 520.).min(screen_height() / 360.).clamp(0.01, 1.);
             let screen = vec2(screen_width(), screen_height()) / scale;
@@ -247,16 +252,33 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
             }
             let panel = part.placement.panel(screen, !part.title.is_empty());
             skin.panel(panel, part.placement, !part.title.is_empty());
-            let width = panel.w - 166.0;
+            // The controls use 112 pixels plus their 20px side borders. The label
+            // uses another 20px each side, and 3px separating its scrollbar.
+            let width = (panel.w - 195.).max(1.);
             if previous_width != width {
-                wrapped = lines(font, &part.text, width);
+                #[cfg(windows)]
+                if let Some(renderer) = &renderer && !part.text.is_empty() {
+                    let img = renderer.paragraph(&part.markup, width as u16, 0);
+                    let texture = Texture2D::from_image(&img);
+                    texture.set_filter(FilterMode::Nearest);
+                    block = Some(texture);
+                }
+                if block.is_none() { wrapped = lines(font, &part.text, width); }
                 previous_width = width;
             }
-            let count = ((panel.h - 46.0) / 25.0).floor().max(1.0) as usize;
-            first = first.min(wrapped.len().saturating_sub(1));
-            let shown = count.min(wrapped.len() - first);
-            for (row, line) in wrapped.iter().skip(first).take(count).enumerate() {
-                dialog::text(font, line, 20.0, panel.y + 43.0 + row as f32 * 25.0, 19, dialog::PALE);
+            let count = ((panel.h - 40.) / 27.).floor().max(1.) as usize;
+            let rows = block.as_ref().map_or(wrapped.len(), |t| (t.height()/27.).ceil() as usize);
+            first = first.min(rows.saturating_sub(1));
+            let shown = count.min(rows - first);
+            if let Some(tex) = &block {
+                let top = first as f32 * 27.;
+                let source = Rect::new(0.,top,tex.width(),(tex.height()-top).min(count as f32*27.));
+                draw_texture_ex(tex, 20., panel.y+20., WHITE,
+                    DrawTextureParams { source:Some(source), dest_size:Some(source.size()), ..Default::default() });
+            } else {
+                for (row, line) in wrapped.iter().skip(first).take(count).enumerate() {
+                    dialog::text(font, line, 20., panel.y + 38. + row as f32 * 27., 17, dialog::PALE);
+                }
             }
             let skip_rect = Rect::new(panel.right() - 116.0, panel.bottom() - 53.0, 96.0, 33.0);
             let prior = Rect::new(skip_rect.x, skip_rect.y - 67.0, 40.0, 56.0);
@@ -277,7 +299,7 @@ pub(super) async fn show(parts: &[Part], assets: &AssetCatalog, font: Option<&Fo
                 if first > 0 { first = first.saturating_sub(count); }
                 else if index > 0 { index -= 1; break; }
             } else if next {
-                if first + shown < wrapped.len() { first += shown; }
+                if first + shown < rows { first += shown; }
                 else { index += 1; break; }
             }
         }
@@ -293,6 +315,14 @@ mod tests {
         let config = engine_lite::wml::parse("background=story/fall.webp").unwrap();
         let layer = Layer::read(&config, true).unwrap();
         assert_eq!(layer.area(vec2(1024.,385.),vec2(1200.,820.)), Rect::new(0.,185.,1200.,451.));
+    }
+
+    #[test]
+    fn narrative_keeps_the_authored_pango_span_color() {
+        let scene = engine_lite::wml::parse("[story]\n[part]\nstory=\"<span color='#baac7d'>The king</span>\"\n[/part]\n[/story]").unwrap();
+        let parts = read(&scene, "");
+        assert_eq!(parts[0].markup, "<span color='#baac7d'>The king</span>");
+        assert_eq!(parts[0].text, "The king");
     }
 
     #[test]
