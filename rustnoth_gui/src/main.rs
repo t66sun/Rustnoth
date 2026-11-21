@@ -520,7 +520,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                                 global_time: session.global_time_of_day(),
                                 selected: selection.unit(), actions: session.legal_actions(), message: None,
                                 assets: &data.assets, menu: None,
-                            });
+                            }, |_| ());
                     }).await
                 } else { None };
                 if action.is_none() { menu = None; }
@@ -561,7 +561,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
         let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
             .filter(|_| !input_blocked && menu.is_none() && session.dialogue().is_none());
         session.track_hovered_move(hovered);
-        render::draw(
+        let last_page = render::draw(
             session.state(),
             session.observation(),
             camera.layout(),
@@ -576,21 +576,22 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 assets: &data.assets,
                 menu: menu.as_ref().filter(|menu| !menu.offers_recruit()),
             },
+            |art| {
+                if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
+                    lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
+                }
+                if session.legal_actions().contains(&Action::EndTurn) && let Some(bounds) = button {
+                    let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);
+                    render::draw_turn_button(bounds, highlighted, art, locale.game("End Turn"));
+                } else if campaign && session.next_scenario().is_some()
+                    && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true) {
+                    render::draw_turn_button(bounds, bounds.contains(pointer), art, "Continue");
+                }
+                top_menu.draw(&top_art, art.font.as_ref(), &commands);
+                session.dialogue().filter(|_| !art.walk.active())
+                    .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
+            },
         );
-        if let Some(lesson) = &data.lesson && session.dialogue().is_none() {
-            lesson.draw_prompt(selection.unit().is_some(), art.font.as_ref());
-        }
-        if session.legal_actions().contains(&Action::EndTurn)
-            && let Some(bounds) = button
-        {
-            let highlighted = bounds.contains(pointer) || end_turn::modifier_down() && is_key_down(KeyCode::Space);
-            render::draw_turn_button(bounds, highlighted, &art, locale.game("End Turn"));
-        } else if campaign && session.next_scenario().is_some()
-            && let Some(bounds) = render::end_turn_button(screen_width(), screen_height(), true)
-        {
-            render::draw_turn_button(bounds, bounds.contains(pointer), &art, "Continue");
-        }
-        top_menu.draw(&top_art, art.font.as_ref(), &commands);
         if let Some(prompt) = end_prompt {
             confirmed_end_turn = end_turn::confirm(&data.wesnoth_root, &locale, prompt).await;
             next_frame().await;
@@ -606,8 +607,7 @@ async fn play_board(mut data: BoardData, players: Players, mut carryover: Option
                 recruit_dialog::Result::Cancel => {}
             }
         }
-        if !art.walk.active() && let Some(line) = session.dialogue() {
-            let last_page = render::draw_dialogue(line, &data.assets, &mut art, dialogue_page);
+        if let Some(last_page) = last_page {
             if dialogue_open && (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
                 || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left))
             {
