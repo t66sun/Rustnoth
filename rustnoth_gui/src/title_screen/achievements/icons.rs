@@ -28,7 +28,7 @@ fn split(expression: &str, separator: char) -> Vec<&str> {
     parts
 }
 
-pub(in crate::title_screen) fn pixels(expression: &str, colors: &[u8], resolve: &impl Fn(&Path) -> Option<std::path::PathBuf>) -> Option<RgbaImage> {
+pub(crate) fn pixels(expression: &str, colors: &[u8], resolve: &impl Fn(&Path) -> Option<std::path::PathBuf>) -> Option<RgbaImage> {
     let mut terms = split(expression, '~').into_iter();
     let base = Path::new(terms.next()?.trim_matches('"'));
     let path = resolve(base)?;
@@ -37,6 +37,11 @@ pub(in crate::title_screen) fn pixels(expression: &str, colors: &[u8], resolve: 
         let (command, args) = term.split_once('(')?;
         let args = split(args.strip_suffix(')')?, ',');
         match (command, args.as_slice()) {
+            ("CROP", [x, y, w, h]) => {
+                let mut crop = RgbaImage::new(w.parse::<u16>().ok()?.into(), h.parse::<u16>().ok()?.into());
+                imageops::replace(&mut crop, &output, -i64::from(x.parse::<i32>().ok()?), -i64::from(y.parse::<i32>().ok()?));
+                output = crop;
+            }
             ("SCALE", [w, h]) => {
                 output = imageops::resize(&output, w.parse().ok()?, h.parse().ok()?, imageops::FilterType::Triangle);
             }
