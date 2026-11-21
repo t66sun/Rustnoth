@@ -15,6 +15,8 @@ mod addons;
 mod profile;
 mod panel_blur;
 mod panel_grid;
+mod button_canvas;
+mod scaled_art;
 mod tip_pages;
 #[cfg(windows)]
 mod tip_pango;
@@ -284,8 +286,8 @@ struct Art {
     locale: locale::Locale,
     language_icons: [Texture2D; 3],
     languages: Vec<locale::Language>,
-    background: Texture2D,
-    map: Texture2D,
+    background: scaled_art::Artwork,
+    map: scaled_art::Artwork,
     logo_shadow: Texture2D,
     logo: Texture2D,
     buttons: [Texture2D; 3],
@@ -333,15 +335,14 @@ fn load_texture(root: &Path, name: &str) -> Result<Texture2D, Box<dyn Error>> {
     Ok(texture)
 }
 
-fn localized_map(root: &Path, locale: &locale::Locale) -> Result<Texture2D, Box<dyn Error>> {
+fn localized_map(root: &Path, locale: &locale::Locale) -> Result<scaled_art::Artwork, Box<dyn Error>> {
     let (base, overlay) = locale.title_map(root);
-    let Some(overlay) = overlay else { return load_texture(root, &base) };
     let mut pixels = crate::artwork::rgba(&read_file(&root.join(base))?)?;
-    let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
-    ::image::imageops::overlay(&mut pixels, &names, 0, 0);
-    let texture = Texture2D::from_rgba8(pixels.width().try_into()?, pixels.height().try_into()?, pixels.as_raw());
-    texture.set_filter(FilterMode::Linear);
-    Ok(texture)
+    if let Some(overlay) = overlay {
+        let names = crate::artwork::rgba(&read_file(&root.join(overlay))?)?;
+        ::image::imageops::overlay(&mut pixels, &names, 0, 0);
+    }
+    Ok(scaled_art::Artwork::new(pixels))
 }
 
 fn load_font(root:&Path,name:&str)->Option<Font> {
@@ -363,7 +364,7 @@ fn title_fonts(root:&Path, id:&str)->(Option<Font>,Option<Font>) {
 }
 
 impl Art {
-    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:Texture2D) {
+    fn set_locale(&mut self,root:&Path,locale:locale::Locale,logo:Texture2D,map:scaled_art::Artwork) {
         *self.blurred_panels.get_mut() = None;
         self.map = map;
         self.logo = logo;
@@ -407,7 +408,8 @@ impl Art {
             languages: locale::list(root).unwrap_or_default(),
             locale, language_icons: [texture("images/icons/action/language_25.png")?,
                 texture("images/icons/action/language_25-active.png")?,texture("images/icons/action/language_25-pressed.png")?],
-            background: texture("data/core/images/maps/background.webp")?,
+            background: scaled_art::Artwork::new(crate::artwork::rgba(
+                &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
             buttons: [texture("images/buttons/button_normal/background.png")?,
@@ -420,8 +422,8 @@ impl Art {
     fn draw_background(&self, w: f32, h: f32) {
         clear_background(BLACK);
         let view = vec2(w, h);
-        image(Rect::new(0.0, 0.0, w, h), &self.background);
-        image(fit_map(view, self.map.size()), &self.map);
+        self.background.draw(Rect::new(0.0, 0.0, w, h), view);
+        self.map.draw(fit_map(view, self.map.size()), view);
         for texture in [&self.logo_shadow, &self.logo] {
             image(logo_bounds(w, texture.size()), texture);
         }
@@ -472,20 +474,8 @@ impl Art {
     }
 
     fn button_frame(&self, rect: Rect, focused: bool, pressed: bool) {
-        let Rect { x, y, w, h } = rect;
         let state = if pressed { 2 } else { usize::from(focused) };
-        let dark = Color::from_rgba(1, 10, 16, 255);
-        let light_gold = Color::from_rgba(162, 127, 68, 255);
-        let dark_gold = Color::from_rgba(114, 79, 46, 255);
-        let highlight = [Color::from_rgba(21, 79, 109, 255), Color::from_rgba(12, 108, 157, 255), dark][state];
-        draw_rectangle(x, y + 1.0, w - 1.0, h - 1.0, dark);
-        image(Rect::new(x + 2.0, y + 2.0, w - 4.0, h - 4.0), &self.buttons[state]);
-        draw_rectangle(x + 2.0, y, w - 3.0, 1.0, light_gold);
-        draw_rectangle(x + w - 1.0, y + 1.0, 1.0, h - 3.0, light_gold);
-        draw_rectangle(x + 1.0, y + 1.0, 1.0, h - 3.0, dark_gold);
-        draw_rectangle(x + 2.0, y + h - 2.0, w - 3.0, 1.0, dark_gold);
-        draw_rectangle(x + 3.0, y + 2.0, w - 5.0, 1.0, highlight);
-        draw_rectangle(x + w - 3.0, y + 2.0, 1.0, h - 5.0, highlight);
+        button_canvas::draw(rect, &self.buttons[state], state);
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
