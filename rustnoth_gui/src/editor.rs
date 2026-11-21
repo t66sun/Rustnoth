@@ -3,6 +3,7 @@ mod files;
 mod fill;
 mod palette;
 mod toolbar;
+mod shapes;
 
 use crate::{
     camera::BoardCamera,
@@ -388,7 +389,9 @@ fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
 pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> {
     let form = dialog::Dialog::new(root);
     let assets = AssetCatalog::parse(root, core, b"")?;
-    let mut palette = Palette::load(&wml::parse(core)?, root)?;
+    let cfg = wml::parse(core)?;
+    let mut palette = Palette::load(&cfg, root)?;
+    let mut shapes = shapes::Shapes::load(root, &cfg)?;
     let mut art = Art::new();
     let mut doc = new_map();
     let mut view = render::map_observation(doc.map());
@@ -460,11 +463,17 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             selecting = false;
             last_selection = None;
         }
-        let at = if tool != Tool::Paint && area.contains(p) {
+        if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
+            && !is_key_down(KeyCode::RightAlt) && tool != Tool::Fill {
+            shapes.keys();
+        }
+        let at = if area.contains(p) {
             camera.layout().and_then(|layout| layout.editor_hex_at(p))
         } else {
-            camera.hex_at(p)
+            None
         };
+        let footprint = at.filter(|_| !modal && (tool == Tool::Paint || tool == Tool::Select && !shift))
+            .map(|hex| shapes.footprint(doc.map(), hex)).unwrap_or_default();
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
         if tool == Tool::Select && !modal {
             if let Some(hex) = at {
@@ -476,7 +485,7 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                     if shift {
                         for at in region.hexes() { history.select(at, !ctrl); }
                     } else {
-                        history.select(hex, !ctrl);
+                        for &at in &footprint { history.select(at, !ctrl); }
                     }
                     last_selection = Some((hex, ctrl, shift));
                 }
@@ -499,15 +508,13 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             }
             if let Some(btn) = drawing
                 && is_mouse_button_down(btn)
-                && let Some(old) = doc.map().terrain_at(hex)
             {
                 let i = if btn == MouseButton::Left {
                     palette.fg
                 } else {
                     palette.bg
                 };
-                let code = palette.brushes[i].paint(old, shift);
-                history.paint(&mut doc, hex, &code);
+                shapes::paint(&mut doc, &mut history, &footprint, &palette.brushes[i], shift);
             }
         }
         if let Some(btn) = drawing
@@ -532,12 +539,15 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
                 &mut art,
                 &assets,
             );
+            for &hex in &footprint {
+                let [x, y] = layout.tile_origin(hex);
+                art.image(&assets, "editor/brush.png", Rect::new(x, y, layout.tile_size(), layout.tile_size()));
+            }
             if let Some(hex) = at {
                 let [x, y] = layout.tile_origin(hex);
                 let rect = Rect::new(x, y, layout.tile_size(), layout.tile_size());
                 art.image(&assets, "misc/hover-hex.png", rect);
                 if tool == Tool::Select && !modal {
-                    if !shift { art.image(&assets, "editor/brush.png", rect); }
                     let icon = if shift { "editor/tool-overlay-select-wand.png" } else { "editor/tool-overlay-select-brush.png" };
                     art.tinted(&assets, icon, rect, Color::from_rgba(255, 255, 255, 196));
                 }
@@ -572,9 +582,11 @@ pub(super) async fn run(root: &Path, core: &[u8]) -> Result<(), Box<dyn Error>> 
             let world = (point - origin) / zoom;
             camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
-        let tools = Rect::new(w - sidebar, mini_frame.bottom() + 6.0, sidebar, 70.0);
-        tool = tool.panel(tools, point, &mut art, &assets, &mut chrome.tip);
         let compact = w < 1024.0 || h < 768.0;
+        let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
+                    else { Rect::new(w - sidebar, 304., sidebar, 155.) };
+        tool = tool.panel(tools, compact, point, &mut art, &assets, &mut chrome.tip);
+        shapes.panel(tools, compact, tool != Tool::Fill && !modal, point, &mut art, &assets, &mut chrome.tip);
         let palette_y = if compact { 312.0 } else { 467.0 };
         let panel = Rect::new(w - sidebar, palette_y, sidebar, h - palette_y);
         palette.panel(panel, compact, point, &assets, &mut art, form.font.as_ref());
