@@ -18,4 +18,3 @@ def check(native_path, rust_path):
 
 if __name__ == "__main__":
     check(*map(Path, sys.argv[1:]))
-
