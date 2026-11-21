@@ -3,6 +3,7 @@ use super::*;
 mod unit_report;
 mod end_button;
 mod clock;
+mod time_report;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -75,6 +76,7 @@ pub(super) struct FrameArt {
     clock: clock::Clock,
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
+    time_report: time_report::Art,
     status: StatusBox,
 }
 
@@ -93,6 +95,7 @@ impl FrameArt {
             clock: clock::Clock::new(root),
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root, locale),
+            time_report: time_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: StatusBox::load(root),
         }
@@ -190,19 +193,10 @@ pub fn draw(
             }
         }
         art.frame.status.draw(rect(0.0, 43.0, 128.0, 42.0), s);
-        if let Some(period) = movement.global_time {
-            let (name, image) = art.periods.get(period.id.as_str())
-                .map_or((period.id.as_str(), None), |(name, image)| (*name, image.as_ref()));
-            let bounds = rect(3.0, 46.0, 122.0, 36.0);
-            if let Some(image) = image {
-                draw_texture_ex(image, bounds.x, bounds.y, WHITE, DrawTextureParams {
-                    dest_size: Some(vec2(bounds.w, bounds.h)), ..Default::default()
-                });
-            } else {
-                text_in(&art.font, name, bounds, 14, TEXT, true);
-            }
-            text_in(&art.font, name, rect(130.0, 47.0, 40.0, 15.0), 12, TEXT, true);
-            text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
+        if let Some(report) = movement.session.time_report(position) {
+            art.frame.time_report.draw(&report, movement.assets,
+                rect(2., 44., 125., 39.), rect(130., 52., 64., 22.), s, &art.dialogue_font,
+                movement.session.dialogue().is_none());
         }
         art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
         art.frame.unit_report.draw_headings(frame, &art.dialogue_font);

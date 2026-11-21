@@ -1,7 +1,32 @@
 use super::FixedMatch;
-use crate::hex::Hex;
+use crate::{hex::Hex, time_of_day::{Alignment, TimeOfDay}, visibility::HexVisibility};
+
+/// The schedule the viewer can see, plus the alignment modifiers for its current slot.
+pub struct TimeReport<'a> {
+    pub current: usize,
+    pub schedule: &'a [TimeOfDay],
+    pub lawful: i32,
+    pub liminal: i64,
+}
 
 impl FixedMatch<'_> {
+    pub fn time_report(&self, viewer: usize, position: Option<Hex>) -> Option<TimeReport<'_>> {
+        let side = self.scenario.sides.get(viewer.checked_sub(1)?)?;
+        if self.global_time_of_day().is_none() && self.linger_time().is_none() { return None; }
+        let shared = position.filter(|_| side.fog || side.shroud).map(|_| self.effective_vision(viewer));
+        let vision = shared.as_ref().unwrap_or(&self.vision[viewer - 1]);
+        let known = position.filter(|&at| matches!(vision.at(at), Some(HexVisibility::Visible | HexVisibility::Fogged)));
+        let schedule = &self.scenario.schedule;
+        let (current, entries) = schedule.cycle_report(self.current_round, known);
+        let lawful = match known.filter(|&at| vision.at(at) == Some(HexVisibility::Visible)) {
+            Some(at) => self.lawful_bonus_in_view(self.current_round, at, |hex|
+                vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(viewer, hex)),
+            None => entries[current].lawful_bonus,
+        };
+        Some(TimeReport { current, schedule: entries, lawful,
+            liminal: schedule.combat_modifier(lawful, Alignment::Liminal, false) })
+    }
+
     pub(super) fn lawful_bonus_at(&self, round: i32, position: Hex) -> i32 {
         self.lawful_bonus_in_view(round, position, |_| true)
     }
@@ -30,6 +55,48 @@ impl FixedMatch<'_> {
 mod tests {
     use super::*;
     use crate::{board::AttackChoice, fixed_match::Action, scenario_bundle::Bundle};
+
+    #[test]
+    fn a_shrouded_clock_cannot_reveal_an_unexplored_time_area() {
+        let bundle = Bundle::parse(br#"
+            [units]
+                [unit_type]
+                    id=Scout
+                    hitpoints=25
+                    movement=1
+                    vision=1
+                [/unit_type]
+            [/units]
+            [scenario]
+                map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Gg,Gg,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+                [time]
+                    id=dawn
+                    name=Dawn
+                    image=custom-dawn.png
+                [/time]
+                [time_area]
+                    x,y=8,1
+                    [time]
+                        id=cavern
+                    [/time]
+                [/time_area]
+                [side]
+                    type=Scout
+                    shroud=yes
+                [/side]
+                [side]
+                    type=Scout
+                [/side]
+            [/scenario]"#).unwrap();
+        let game = bundle.start(19, |_| unreachable!()).unwrap();
+        let cavern = Hex { x: 7, y: 0 };
+        let player = game.time_report(1, Some(cavern)).unwrap();
+        let occupant = game.time_report(2, Some(cavern)).unwrap();
+        assert_eq!((&*player.schedule[0].id, &*player.schedule[0].image), ("dawn", "custom-dawn.png"));
+        assert_eq!(occupant.schedule[0].id, "cavern");
+    }
 
     #[test]
     fn an_attacker_in_a_daytime_area_uses_daylight_against_a_defender_outside_it() {

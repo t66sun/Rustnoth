@@ -31,6 +31,7 @@ pub mod carryover;
 #[cfg(test)]
 mod amla_tests;
 mod illumination;
+pub use illumination::TimeReport;
 mod teleport;
 pub mod walk;
 #[cfg(test)]
