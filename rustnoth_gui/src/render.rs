@@ -1,4 +1,5 @@
 mod frame;
+pub(crate) use frame::StatusBox;
 mod minimap;
 pub(crate) use minimap::skirmish_preview;
 mod lighting;
