@@ -1,8 +1,28 @@
-use super::{FixedMatch, MatchError};
+use super::{Action, FixedMatch, MatchError, MatchState};
 use crate::{hex::Hex, visibility::HexVisibility};
 
+pub struct VisibleWalk {
+    pub side: usize,
+    pub unit_type: String,
+    /// Each pair is a visible edge. Hidden gaps have no elapsed time or coordinates.
+    pub edges: Vec<(Hex, Hex)>,
+    pub visible_destination: Option<Hex>,
+}
+
+pub(super) enum Trace<'a> {
+    Own(&'a mut Vec<Hex>),
+    Observer(usize, &'a mut Option<VisibleWalk>),
+}
+
 impl FixedMatch<'_> {
-    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex, trace: Option<&mut Vec<Hex>>) -> Result<(), MatchError> {
+    pub fn move_for_viewer(&mut self, from: Hex, to: Hex, viewer: usize, walk: &mut Option<VisibleWalk>)
+        -> Result<MatchState, MatchError> {
+        if !(1..=self.scenario.sides.len()).contains(&viewer) { return Err(MatchError::ActionUnavailable); }
+        *walk = None;
+        self.step_with_choices(Action::Move { from, to }, None, None, None, Some(Trace::Observer(viewer, walk)))
+    }
+
+    pub(super) fn walk(&mut self, side: usize, from: Hex, to: Hex, trace: Option<Trace<'_>>) -> Result<(), MatchError> {
         let route = self.planned_route(side, from, to)?;
         let (mut position, mut moves_left) = route[0];
         let mut landed_index = 0;
@@ -64,6 +84,20 @@ impl FixedMatch<'_> {
             }
         }
 
+        let travelled = &route[..=landed_index];
+        let visible_edges = if let Some(Trace::Observer(viewer, _)) = &trace {
+            let vision = self.effective_vision(*viewer);
+            let visible = |hex| {
+                vision.at(hex) == Some(HexVisibility::Visible) && if hex == from {
+                    self.unit_visible_on_known_hex(*viewer, hex)
+                } else {
+                    board.unit_visible_at(*viewer, hex, mover, false, self.lawful_bonus_at(self.current_round, hex),
+                        |a,b| sides[a - 1].is_enemy(&sides[b - 1]))
+                }
+            };
+            travelled.windows(2).map(|pair| (pair[0].0, pair[1].0))
+                .filter(|&(a,b)| visible(a) && visible(b)).collect()
+        } else { Vec::new() };
         let board = &mut self.scenario.board;
         board.finish_walk(from, position, moves_left, facing);
         for hex in discovered {
@@ -77,10 +111,17 @@ impl FixedMatch<'_> {
         if position != from {
             self.fire_unit_event("moveto", position)?;
         }
-        if let Some(trace) = trace
-            && self.scenario.board.unit_at(position).is_some_and(|unit| unit.serial == mover_serial && unit.side == side)
-        {
-            trace.extend(route[..=landed_index].iter().map(|&(hex, _)| hex));
+        if let Some(unit) = self.scenario.board.unit_at(position).filter(|u| u.serial == mover_serial && u.side == side) {
+            match trace {
+                Some(Trace::Own(out)) => out.extend(travelled.iter().map(|&(hex, _)| hex)),
+                Some(Trace::Observer(viewer, out)) if !visible_edges.is_empty() => {
+                    let destination_seen = self.effective_vision(viewer).at(position) == Some(HexVisibility::Visible)
+                        && self.unit_visible_on_known_hex(viewer, position);
+                    *out = Some(VisibleWalk { side, unit_type: unit.unit_type.id.clone(), edges: visible_edges,
+                        visible_destination: destination_seen.then_some(position) });
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -168,6 +209,23 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
 [/scenario]
 "#);
         Bundle::parse(wml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn observer_plays_only_the_walk_that_resolved_and_skipping_preserves_the_game() {
+        let bundle = scenario(false, true, "1 Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg^Vh,Gg");
+        let mut shown = bundle.start(1, |_| unreachable!()).unwrap();
+        let mut skipped = bundle.start(1, |_| unreachable!()).unwrap();
+        let mut movement = None;
+        shown.move_for_viewer(START, GOAL, 2, &mut movement).unwrap();
+        skipped.step(Action::Move { from: START, to: GOAL }).unwrap();
+        let movement = movement.unwrap();
+        let mid1 = Hex { x: 1, y: 0 };
+        let mid2 = Hex { x: 2, y: 0 };
+        assert_eq!(movement.edges, [(START, mid1), (mid1, mid2), (mid2, STOP)]);
+        assert_eq!(movement.visible_destination, Some(STOP));
+        assert_eq!(shown.observation_for(1), skipped.observation_for(1));
+        assert_eq!(shown.observation_for(2), skipped.observation_for(2));
     }
 
     #[test]

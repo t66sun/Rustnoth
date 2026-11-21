@@ -29,13 +29,13 @@ pub(super) fn tiled(rect: Rect, texture: &Texture2D) {
 enum Page { General, Display }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control { GeneralTab, DisplayTab, Scroll, Accelerated, Factor, Fullscreen, Grid, About, Close }
+enum Control { GeneralTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, Fullscreen, Grid, About, Close }
 
 impl Page {
     fn controls(self) -> &'static [Control] {
         use Control::*;
         match self {
-            Self::General => &[GeneralTab, DisplayTab, Scroll, Accelerated, Factor, About, Close],
+            Self::General => &[GeneralTab, DisplayTab, Scroll, SkipAi, Accelerated, Factor, About, Close],
             Self::Display => &[GeneralTab, DisplayTab, Fullscreen, Grid, About, Close],
         }
     }
@@ -68,6 +68,7 @@ impl Layout {
                 let x = 217. + self.scroll_label_width + 10.;
                 self.rect(x, 52., 775. - x, 22.)
             }
+            SkipAi => self.rect(217., 93., 557., 19.),
             Accelerated => self.rect(217., 122., 557., 19.),
             Factor => self.rect(242., 176., 533., 22.),
             Fullscreen => self.rect(217., 118., 557., 19.),
@@ -179,6 +180,7 @@ pub(super) async fn show(
     let mut speed = Speed::load()?;
     let mut saved_speed = speed;
     let mut grid = display_preferences::grid()?;
+    let mut skip_ai = display_preferences::skip_ai_moves()?;
     let mut page = Page::General;
     let mut focus = GeneralTab;
     let mut down = None;
@@ -221,6 +223,7 @@ pub(super) async fn show(
             Some(GeneralTab) => { page = Page::General; Ok(()) }
             Some(DisplayTab) => { page = Page::Display; Ok(()) }
             Some(Accelerated) => { speed.accelerated = !speed.accelerated; Ok(()) }
+            Some(SkipAi) => display_preferences::save_skip_ai_moves(!skip_ai).map(|()| skip_ai = !skip_ai),
             Some(Grid) => display_preferences::save_grid(!grid).map(|()| grid = !grid),
             Some(Fullscreen) => display_preferences::save(!*fullscreen).map(|()| {
                 if !*fullscreen { *windowed_size = vec2(screen_width(), screen_height()); }
@@ -245,6 +248,7 @@ pub(super) async fn show(
         match page {
             Page::General => {
                 dialog::text(font, scroll_label, window.x + 217., window.y + 69., 17, LABEL);
+                skin.check(art, layout.control(SkipAi), "Skip AI moves", skip_ai, highlight == Some(SkipAi));
                 skin.check(art, layout.control(Accelerated), "Accelerated speed", speed.accelerated, highlight == Some(Accelerated));
                 let caption = format!("{}  {}", art.locale.ui("Acceleration factor:"), FACTORS[usize::from(speed.factor)]);
                 dialog::text(font, &caption, window.x + 242., window.y + 167., 15, LABEL);
@@ -291,6 +295,8 @@ mod tests {
         set_step(Control::Factor, &mut speed, pointed_step(factor, 780., 11));
         assert_eq!(speed.factor, 7);
         assert!(Page::General.controls().contains(&Control::Scroll));
+        assert!(Page::General.controls().contains(&Control::SkipAi));
+        assert_eq!(layout.control(Control::SkipAi), Rect::new(420.,198.,557.,19.));
         assert!(Page::Display.controls().contains(&Control::Fullscreen));
         assert!(!Page::Display.controls().contains(&Control::Factor));
     }
