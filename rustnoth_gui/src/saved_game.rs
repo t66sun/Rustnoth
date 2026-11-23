@@ -22,6 +22,7 @@ pub(super) struct Restore {
     pub replay_roster: Option<engine_lite::fixed_match::carryover::CampaignCarryover>,
     pub map: Option<String>,
     pub events: Vec<Event>,
+    pub tutorial_hints: Option<crate::tutorial::SavedHints>,
     pub camera: Option<[f32; 3]>,
     pub selected: Option<Hex>,
 }
@@ -34,7 +35,7 @@ impl Restore {
 
 pub(super) enum CampaignSave<'a> {
     Replay(&'a Node),
-    Checkpoint(&'a Browser, &'a Node),
+    Checkpoint(&'a Browser, &'a Node, &'a str),
 }
 
 pub(super) struct Slot {
@@ -83,8 +84,11 @@ pub(super) fn save(
     let mut record = Node::default();
     set(&mut record, "format", 1);
     set(&mut record, "seed", data.seed);
-    if matches!(&campaign, Some(CampaignSave::Checkpoint(..))) {
+    if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
+        if let Some(lesson) = &data.lesson {
+            record.children.push(("battle_training".into(), lesson.checkpoint(hint)));
+        }
     }
     set(
         &mut record,
@@ -122,11 +126,14 @@ pub(super) fn save(
         if let Some(map) = map {
             fs::write(draft.join("board.map"), map)?;
         }
-        wml_emit::write_config(fs::File::create(draft.join("replay.cfg"))?, &record)?;
+        let mut output = io::BufWriter::new(fs::File::create(draft.join("replay.cfg"))?);
+        wml_emit::write_translatable_config(&mut output, &record)?;
+        io::Write::flush(&mut output)?;
+        drop(output);
         if let Some(kind) = campaign {
             let roster = match kind {
                 CampaignSave::Replay(roster) => roster,
-                CampaignSave::Checkpoint(browser, roster) => {
+                CampaignSave::Checkpoint(browser, roster, _) => {
                     browser.save_route(&draft.join("campaign.cfg"))?;
                     roster
                 }
@@ -158,11 +165,14 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         _ => return Err(invalid("Unknown control mode in saved game").into()),
     };
     let mut events = Vec::new();
+    let mut tutorial = None;
     for (tag, step) in &record.children {
-        if tag != "step" {
-            return Err(invalid("Unexpected saved game entry").into());
+        match tag.as_str() {
+            "step" => events.push(Event::decode(step)?),
+            "battle_training" if tutorial.is_none() && record.attribute("kind") == Some("campaign") =>
+                tutorial = Some(crate::tutorial::Lesson::from_checkpoint(step)?),
+            _ => return Err(invalid("Unexpected saved game entry").into()),
         }
-        events.push(Event::decode(step)?);
     }
     let map = match fs::read_to_string(dir.join("board.map")) {
         Ok(map) => Some(map),
@@ -201,7 +211,10 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         None => None,
         _ => return Err(invalid("Unknown saved game kind").into()),
     };
+    let (lesson, tutorial_hints) = tutorial.unzip();
+    data.lesson = lesson;
     data.restore = Some(Restore {
+        tutorial_hints,
         watch_replay: false,
         replay_roster: match fs::read(dir.join("starting-roster.cfg")) {
             Ok(bytes) => Some(engine_lite::fixed_match::carryover::CampaignCarryover::from_replay_roster(
@@ -287,7 +300,7 @@ gold=20
         live.dismiss_dialogue();
         let base = temp.join("saves");
         save(&base, "West", &board, Players::HotSeat, None, live.history(), None, None,
-            Some(CampaignSave::Checkpoint(&browser, &opening))).unwrap();
+            Some(CampaignSave::Checkpoint(&browser, &opening, ""))).unwrap();
         fs::remove_file(file).unwrap();
         fs::remove_dir_all(maps).unwrap();
         let (mut restored, players) = load(&slots(&base).unwrap()[0], &temp).unwrap();

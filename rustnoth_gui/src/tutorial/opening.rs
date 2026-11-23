@@ -62,7 +62,7 @@ fn first_enemy_refresh(scenario: &Node) -> Option<Node> {
 /// In particular the original Lua character selection, adjacent-unit filter and MOVE_UNIT
 /// macro must be resolved before handing the scenario to the fixed-match event reader.
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn Error>> {
-    let victory_award = crate::title_screen::tutorial_progress::Award::from_victory(scenario);
+    let authored = scenario.clone();
     let student = scenario.children.iter_mut().find(|(tag, side)| tag == "side" && side.attribute("id") == Some("student"))
         .ok_or("tutorial has no student")?;
     if hero == Hero::Lisar {
@@ -153,7 +153,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     let weapons = weapons::Exercise::read(scenario, hero)?;
     let instructions = [healing::Line::Message(introduction), healing::Line::Hint(hint)];
-    let mut lesson = Lesson::new(victory_award, mentor_hex, hero, instructions, undo_prompt, healing, recruiting, reasons, weapons);
+    let mut lesson = Lesson::new(authored, mentor_hex, hero, instructions, undo_prompt, healing, recruiting, reasons, weapons);
     if let Some(prompt) = gender_command(start, hero, "print").and_then(|cmd| cmd.attribute("text")) {
         lesson.select_prompt = prompt.into();
     }
@@ -176,7 +176,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use engine_lite::{fixed_match::Action, scenario_bundle::Bundle, wml, wml_emit};
     use rustnoth_gui::session::{Players, Session};
@@ -187,7 +187,7 @@ mod tests {
             [else]\n[{tag}]\nspeaker=narrator\nmessage={female}\n[/{tag}]\n[/else]\n[/if]")
     }
 
-    fn opening() -> Node {
+    pub(in crate::tutorial) fn opening() -> Node {
         let intro = gendered("message", "Welcome Konrad", "Welcome Lisar");
         let health = gendered("message", "_ \"Young man with $student_hp HP\"", "_ \"female^年轻的女士，你有$student_hp|点生命值\"")
             .replace("speaker=narrator", "speaker=Delfador");
@@ -198,7 +198,7 @@ mod tests {
             [else]\n[print]\ntext=Move Lisar to a village\n[/print]\n[/else]\n[/if]";
         let keep_prompt = villages.replace("a village", "the keep");
         let fourth = weapons::tests::turn_four();
-        wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
+        wml::parse(format!("#textdomain wesnoth-tutorial\nid=tutorial\nvictory_when_enemies_defeated=no\n\
             map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Ch,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Kh,Ch,Gg,Gg,Gg,Gg,Gg^Vh,Xv\nXv,Ch,Ch,Gg,Gg,Vh,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
             [side]\nside=1\ncontroller=human\ngold=100\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
@@ -286,8 +286,7 @@ name=MODIFY_UNIT_store
         assert_eq!(view.units.iter().find(|u| u.position == dummy).unwrap().moves_left, Some(5));
     }
 
-    #[test]
-    fn both_heroes_face_the_quintain_and_heal_on_their_next_turn() {
+    pub(in crate::tutorial) fn training_core() -> String {
         let mut units = String::from("[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n\
             [terrain_type]\nstring=Vh\ngives_income=yes\nheals=8\nmvt_alias=Gg\n[/terrain_type]\n\
             [terrain_type]\nid=village\nstring=Gg^Vh\naliasof=Gg\ngives_income=yes\n[/terrain_type]\n\
@@ -301,6 +300,25 @@ name=MODIFY_UNIT_store
                 [attack]\nname=sword\nrange=melee\ntype=blade\ndamage=1\nnumber=1\n[/attack]\n[/unit_type]\n"));
         }
         units.push_str("[/units]");
+        units
+    }
+
+    fn resume_lesson<'a>(lesson: &Lesson, live: &Session<'_>, mut restored: Session<'a>) -> (Lesson, Session<'a>) {
+        let saved = lesson.checkpoint(live.tutorial_hint());
+        let (mut restored_lesson, hints) = Lesson::from_checkpoint(&saved).unwrap();
+        restored_lesson.resume(&mut restored, live.history(), hints, std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default()).unwrap();
+        assert_eq!(live.history(), restored.history());
+        assert_eq!(live.observation(), restored.observation());
+        assert_eq!(live.legal_actions(), restored.legal_actions());
+        assert_eq!(live.tutorial_hint(), restored.tutorial_hint());
+        assert_eq!(lesson.prompt(false), restored_lesson.prompt(false));
+        assert!(restored.dialogue().is_none());
+        (restored_lesson, restored)
+    }
+
+    #[test]
+    fn both_heroes_face_the_quintain_and_heal_on_their_next_turn() {
+        let units = training_core();
         let center = Hex::from_wml(3, 2).unwrap();
         let ne = center.neighbor(Direction::NorthEast).unwrap();
         for (hero, to, introduction, hint) in [
@@ -332,7 +350,6 @@ condition=lose
             scenario.children.push(("event".into(), select));
             let mut lesson = prepare(&mut scenario, hero).unwrap();
             assert!(lesson.healing.markers().next().is_none());
-            lesson.localize_attack_instructions(std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default());
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
             let mut bytes = Vec::new();
@@ -357,7 +374,7 @@ condition=lose
             assert!(session.dialogue().is_none());
             assert!(session.legal_actions().contains(&Action::EndTurn));
             assert!(!session.legal_actions().iter().any(|action| matches!(action, Action::Recruit { .. })));
-            lesson.restrict(&mut session);
+            lesson.start(&mut session, std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default());
             assert_eq!(lesson.end_turn_denial(&session).unwrap().attribute("reason"), Some("Finish moving first"));
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
             let restart = || -> Result<Session<'_>, Box<dyn Error>> { Ok(Session::with_players(bundle.start_with_controllers(9, |_| unreachable!(), None, true)?, Players::Campaign)) };
@@ -377,6 +394,8 @@ condition=lose
             }
             assert_eq!(lesson.undo_prompt, "Use u to undo.");
             assert_eq!(session.observation().unwrap().tiles.iter().find(|t| t.position == village).unwrap().village_owner, Some(1));
+            let (mut lesson, mut session) = resume_lesson(&lesson, &session, restart().unwrap());
+            assert!(!lesson.select_student(&mut session));
             assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(intermediate));
             assert!(!lesson.show_undo_prompt);
             assert_eq!(lesson.undo(&mut session, restart).unwrap(), Some(origin));
@@ -490,6 +509,7 @@ condition=lose
             lesson.selected(student, &mut session);
             assert_eq!(session.dialogue().unwrap().text, "Use the fighters first");
             session.dismiss_dialogue();
+            let (mut lesson, mut session) = resume_lesson(&lesson, &session, restart().unwrap());
             lesson.selected(student, &mut session);
             assert!(session.dialogue().is_none());
         }

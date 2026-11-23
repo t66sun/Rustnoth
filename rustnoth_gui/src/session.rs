@@ -157,6 +157,14 @@ impl<'rules> Session<'rules> {
         }
     }
 
+    /// Manual tutorial saves are made on the map after local lesson dialogue closes.
+    /// Only scenario-generated dismissals have a corresponding replay event.
+    pub fn dismiss_local_dialogue(&mut self) {
+        while self.dialogue.front().is_some_and(|pending| !pending.record_dismissal) {
+            self.dismiss_dialogue();
+        }
+    }
+
     /// Battle Training's hint_message Lua action replaces an unlimited floating label.
     pub fn set_tutorial_hint(&mut self, cfg: &engine_lite::wml::Node) {
         let text = match cfg.attribute("message") {
