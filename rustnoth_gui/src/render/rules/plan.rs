@@ -169,24 +169,21 @@ fn apply<'a>(
                 {
                     continue;
                 }
-                let seed = noise(origin, rule.hash);
-                if seed % 100 > rule.probability {
+                let Some(seed) = winning_seed(rule.probability, || noise(origin, rule.hash), || {
+                    rule.cells.iter().all(|cell| {
+                        let at = translate(origin, cell.offset);
+                        let Some(tile) = tiles.get(&at) else {
+                            return false;
+                        };
+                        let terrain_matches = tile.terrain_group.map_or(matches_empty[cell.filter], |group| {
+                            allowed[cell.filter][group.get() - 1]
+                        });
+                        terrain_matches && cell.require.iter().all(|&flag| tile.has_flag(flag))
+                            && cell.forbid.iter().all(|&flag| !tile.has_flag(flag))
+                    })
+                }) else {
                     continue;
-                }
-                let matches = rule.cells.iter().all(|cell| {
-                    let at = translate(origin, cell.offset);
-                    let Some(tile) = tiles.get(&at) else {
-                        return false;
-                    };
-                    let terrain_matches = tile.terrain_group.map_or(matches_empty[cell.filter], |group| {
-                        allowed[cell.filter][group.get() - 1]
-                    });
-                    terrain_matches && cell.require.iter().all(|&flag| tile.has_flag(flag))
-                        && cell.forbid.iter().all(|&flag| !tile.has_flag(flag))
-                });
-                if !matches {
-                    continue;
-                }
+                };
                 for cell in &rule.cells {
                     let at = translate(origin, cell.offset);
                     let tile = tiles.get_mut(&at).unwrap();
@@ -207,10 +204,27 @@ fn apply<'a>(
     tiles
 }
 
+fn winning_seed(probability: u32, noise: impl FnOnce() -> u32, matches: impl FnOnce() -> bool) -> Option<u32> {
+    if probability >= 99 {
+        // Every roll passes. The seed is only needed to choose artwork for a match.
+        return matches().then(noise);
+    }
+    let seed = noise();
+    (seed % 100 <= probability && matches()).then_some(seed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn artwork_seeds_are_deferred_for_certain_rules_but_rare_rules_still_reject_early() {
+        assert_eq!(winning_seed(100, || panic!("nonmatching tile needs no seed"), || false), None);
+        assert_eq!(winning_seed(99, || 199, || true), Some(199));
+        assert_eq!(winning_seed(20, || 120, || true), Some(120));
+        assert_eq!(winning_seed(20, || 121, || panic!("probability rejected tile")), None);
+    }
 
     #[test]
     fn overlapping_terrain_rules_claim_overlay_anchors_before_bare_anchors() {
