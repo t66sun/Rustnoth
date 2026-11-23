@@ -209,6 +209,10 @@ impl Locale {
         let Some(value) = node.attributes.get(key).filter(|v| !v.text.is_empty()) else {
             return fallback.to_owned();
         };
+        self.value(root, value)
+    }
+
+    pub(crate) fn value(&mut self, root: &Path, value: &wml::Value) -> String {
         let mut text = String::new();
         let mut previous = 0;
         for segment in &value.translations {

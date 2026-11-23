@@ -129,6 +129,9 @@ impl Browser {
         mode.classify(&mut opening);
         let maps = self.maps.as_deref().ok_or("Missing Battle Training maps")?;
         let Some(hero) = crate::tutorial::choose_on_map(&opening, &self.core, maps, &self.root, self.seed).await? else { return Ok(()) };
+        let dir = crate::display_preferences::config_directory()?;
+        let mut locale = crate::title_screen::locale::Locale::load(&self.root, crate::title_screen::locale::saved(&dir)?)?;
+        crate::tutorial::localize_round_hints(&mut self.campaign, &self.root, &mut locale);
         let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
         let mut route = CampaignCarryover::default();
         let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
