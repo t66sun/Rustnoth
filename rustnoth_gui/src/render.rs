@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::Observation};
+use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::{Observation, ObservedUnit}};
 use engine_lite::time_of_day::TimeOfDay;
 use macroquad::prelude::*;
 use rustnoth_gui::{
@@ -133,6 +133,7 @@ pub struct BoardArt {
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
+    unit_order: UnitDrawOrder,
     hover: hover::Art,
     footsteps: footsteps::Art,
     poisoned: Option<Texture2D>,
@@ -234,6 +235,7 @@ impl BoardArt {
             map_items: Vec::new(),
             tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
+            unit_order: UnitDrawOrder::default(),
             footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
@@ -435,6 +437,7 @@ pub fn draw<T>(
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
     if let (Some(view), Some(layout)) = (observation, layout) {
+        art.unit_order.update(&view.units);
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, state, observation, layout, art, &movement);
@@ -577,6 +580,35 @@ impl BoardArt {
 
 // Odd columns are half a hex lower than even columns at the same map y.
 fn draw_row(hex: Hex) -> (i32, i32) { (hex.y, hex.x.rem_euclid(2)) }
+
+#[derive(Default)]
+struct UnitDrawOrder {
+    units: Vec<(usize, Hex)>,
+    #[cfg(test)]
+    sorts: usize,
+}
+
+impl UnitDrawOrder {
+    fn update(&mut self, units: &[ObservedUnit]) {
+        // Combat draws the opening positions even after the live view was refreshed.
+        if self.units.len() == units.len()
+            && self.units.iter().all(|&(index, at)| units[index].position == at)
+        {
+            return;
+        }
+        self.units.clear();
+        self.units.extend(units.iter().enumerate().map(|(index, unit)| (index, unit.position)));
+        self.units.sort_unstable_by_key(|&(_, at)| (draw_row(at), at.x));
+        #[cfg(test)]
+        {
+            self.sorts += 1;
+        }
+    }
+
+    fn standing<'a>(&'a self, units: &'a [ObservedUnit], moving: Option<Hex>) -> impl Iterator<Item = &'a ObservedUnit> {
+        self.units.iter().filter_map(move |&(index, at)| (Some(at) != moving).then(|| &units[index]))
+    }
+}
 
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
@@ -722,11 +754,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     // Native unit_default precedes terrain_fg *within* each half-row. A rear
     // castle wall must already be in place when a raised unit overlaps it.
     let moving = walking.and_then(|p| p.unit);
-    let mut standing: Vec<_> = view.units.iter().filter(|u| Some(u.position) != moving).collect();
-    standing.sort_unstable_by_key(|u| (draw_row(u.position), u.position.x));
     let mut foreground = terrain_clip.rows(layout, &art.rules.foreground, |at| at.y)
         .iter().copied().peekable();
-    for unit in standing {
+    for unit in art.unit_order.standing(&view.units, moving) {
         while let Some(at) = foreground.next_if(|at| draw_row(*at) < draw_row(unit.position)) {
             draw_foreground(at);
         }
@@ -908,6 +938,33 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_order_reuses_positions_until_the_drawn_view_changes() {
+        let unit = |x, y| ObservedUnit {
+            facing: None, position: Hex { x, y }, side: 1, type_id: "Fighter".into(),
+            can_recruit: false, emits_zoc: true, hitpoints: 30, max_hitpoints: 30,
+            full_action_points: Some(true), experience: 0, max_experience: 20,
+            poisoned: false, slowed: false, petrified: false, moves_left: Some(5), attacks_left: Some(1),
+        };
+        let mut live = [unit(0, 1), unit(1, 0), unit(4, 0), unit(2, 0)];
+        let mut order = UnitDrawOrder::default();
+        order.update(&live);
+        let standing = |order: &UnitDrawOrder, units: &[ObservedUnit], moving| {
+            order.standing(units, moving).map(|unit| unit.position.x).collect::<Vec<_>>()
+        };
+        assert_eq!(standing(&order, &live, None), [2, 4, 1, 0]);
+        live[3].hitpoints = 15;
+        order.update(&live);
+        assert_eq!(standing(&order, &live, Some(Hex { x: 4, y: 0 })), [2, 1, 0]);
+        assert_eq!(order.standing(&live, None).next().unwrap().hitpoints, 15);
+        assert_eq!(order.sorts, 1);
+
+        let opening = [unit(4, 0), unit(1, 0), unit(0, 0), unit(2, 1)];
+        order.update(&opening);
+        assert_eq!(standing(&order, &opening, None), [0, 4, 1, 2]);
+        assert_eq!(order.sorts, 2);
+    }
 
     #[test]
     fn battlefield_submits_only_sprites_overlapping_the_view_at_current_zoom() {
