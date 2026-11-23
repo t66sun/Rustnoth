@@ -102,11 +102,41 @@ fn selected_row(rows: &[usize], selected: Option<usize>) -> usize {
     selected.and_then(|id| rows.iter().position(|&row| row == id)).unwrap_or(0)
 }
 
+#[derive(Default)]
+struct ListData {
+    name_widths: [Option<(f32, i32)>; 2],
+    row_inputs: Option<(bool, sort::Order, String)>,
+    rows: Vec<usize>,
+}
+
+impl ListData {
+    fn name_width(&mut self, show_levels: bool, dpi: f32, measure: impl FnOnce() -> i32) -> i32 {
+        let cached = &mut self.name_widths[usize::from(show_levels)];
+        if let Some((scale, width)) = *cached && scale == dpi {
+            return width;
+        }
+        let width = measure();
+        *cached = Some((dpi, width));
+        width
+    }
+
+    fn update_rows(&mut self, show_levels: bool, ordering: sort::Order, query: &str,
+        matching: impl FnOnce(&str) -> Vec<usize>) {
+        if self.row_inputs.as_ref().is_some_and(|(levels, order, text)|
+            *levels == show_levels && *order == ordering && text == query) {
+            return;
+        }
+        self.rows = matching(query);
+        self.row_inputs = Some((show_levels, ordering, query.to_owned()));
+    }
+}
+
 pub(super) struct Selector<'a> {
     campaigns: Vec<Entry<'a>>,
     ordering: sort::Order,
     campaign_rows: Vec<usize>,
     levels: Vec<Entry<'a>>,
+    list_data: ListData,
     pub(super) campaigns_only: bool,
     show_levels: bool,
     cursor: usize,
@@ -135,6 +165,7 @@ impl<'a> Selector<'a> {
             footer_press: None,
             ordering: sort::Order::Rank, campaign_rows: (0..campaigns.len()).collect(),
             campaigns_only: false, show_levels: campaigns.is_empty(), campaigns, levels, cursor: 0, scroll: Default::default(),
+            list_data: ListData::default(),
             query: String::new(), editing, description_offset: 0, last_click: None,
             art: Art::new(root, campaign, language),
             difficulty_menu: difficulty::Menu::default(),
@@ -162,9 +193,11 @@ impl<'a> Selector<'a> {
         set_camera(&setup_camera(w, h));
         clear_background(BLACK);
         let entries = if self.show_levels { &self.levels } else { &self.campaigns };
-        let name_width = entries.iter().map(|entry|
-            self.art.typography.width(&entry.name, Caption::Row, self.art.font.as_ref()) as i32
-        ).max().unwrap_or(0);
+        let name_width = self.list_data.name_width(self.show_levels, screen_dpi_scale(), || {
+            entries.iter().map(|entry|
+                self.art.typography.width(&entry.name, Caption::Row, self.art.font.as_ref()) as i32
+            ).max().unwrap_or(0)
+        });
         let layout::Layout { window, panel, list, details, search, play, cancel } =
             layout::Layout::new(w, h, name_width as f32);
         let bottom = play.y;
@@ -196,8 +229,8 @@ impl<'a> Selector<'a> {
         } else {
             filtered(entries, self.campaign_rows.iter().copied(), query)
         };
-        let mut rows = matching(&self.query);
-        let selected = rows.get(self.cursor).copied();
+        self.list_data.update_rows(self.show_levels, self.ordering, &self.query, matching);
+        let selected = self.list_data.rows.get(self.cursor).copied();
         let mut changed = false;
         while let Some(c) = get_char_pressed() {
             if self.editing && !modal && !focus_shortcut && !c.is_control() {
@@ -209,9 +242,9 @@ impl<'a> Selector<'a> {
             changed |= self.query.pop().is_some();
         }
         if changed {
-            rows = matching(&self.query);
-            self.cursor = selected_row(&rows, selected);
-            if rows.get(self.cursor).copied() != selected { self.description_offset = 0; }
+            self.list_data.update_rows(self.show_levels, self.ordering, &self.query, matching);
+            self.cursor = selected_row(&self.list_data.rows, selected);
+            if self.list_data.rows.get(self.cursor).copied() != selected { self.description_offset = 0; }
             self.last_click = None;
         }
         let widths = ["Name", "Timeline"].map(|name|
@@ -221,14 +254,16 @@ impl<'a> Selector<'a> {
         if !self.show_levels && click
             && let Some((field, _)) = headers.iter().find(|(_, rect)| rect.contains(pointer))
         {
-            let selected = rows.get(self.cursor).copied();
+            let selected = self.list_data.rows.get(self.cursor).copied();
             self.ordering = self.ordering.toggle(*field);
             self.campaign_rows = self.ordering.rows(entries, &self.art.locale.effective);
-            rows = filtered(entries, self.campaign_rows.iter().copied(), &self.query);
-            self.cursor = selected_row(&rows, selected);
+            self.list_data.update_rows(self.show_levels, self.ordering, &self.query, |query|
+                filtered(entries, self.campaign_rows.iter().copied(), query));
+            self.cursor = selected_row(&self.list_data.rows, selected);
             reveal = true;
             self.last_click = None;
         }
+        let rows = &self.list_data.rows;
         let row_h = if self.show_levels { 44.0 } else { 82.0 };
         let top = list.y+30.0;
         let visible = ((list.bottom()-top)/row_h).floor().max(1.0) as usize;
@@ -553,6 +588,31 @@ fn relative(path: &Path) -> bool {
 mod tests {
     use super::*;
     use engine_lite::{campaign, wml};
+    #[test]
+    fn campaign_list_reuses_widths_and_rows_until_their_inputs_change() {
+        let mut data = ListData::default();
+        assert_eq!(data.name_width(false, 1.0, || 120), 120);
+        assert_eq!(data.name_width(false, 1.0, || panic!("remeasured campaigns")), 120);
+        assert_eq!(data.name_width(true, 1.0, || 95), 95);
+        assert_eq!(data.name_width(false, 1.0, || panic!("discarded campaign width")), 120);
+        assert_eq!(data.name_width(false, 1.5, || 121), 121);
+
+        let rank = sort::Order::Rank;
+        let sorted = rank.toggle(sort::Field::Name);
+        data.update_rows(false, rank, "", |_| vec![0, 1]);
+        data.update_rows(false, rank, "", |_| panic!("refiltered unchanged rows"));
+        assert_eq!(data.rows, [0, 1]);
+        data.update_rows(false, sorted, "", |_| vec![1, 0]);
+        assert_eq!(selected_row(&data.rows, Some(0)), 1);
+        data.update_rows(false, sorted, "south", |query| {
+            assert_eq!(query, "south");
+            vec![1]
+        });
+        assert_eq!(data.rows, [1]);
+        data.update_rows(true, sorted, "", |_| vec![0, 1, 2]);
+        assert_eq!(data.rows, [0, 1, 2]);
+    }
+
     #[test]
     fn a_footer_click_requires_press_and_release_on_the_same_enabled_button() {
         let mut press = None;

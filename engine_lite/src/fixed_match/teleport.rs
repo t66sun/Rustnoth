@@ -178,6 +178,27 @@ Xv,1 {start_terrain},Gg^Vh,Gg,Gg,Gg,Gg,Gg,Gg,Gg^Vh,Gg,Gg,Gg,Gg,Gg^Vh,Gg,2 Gg,Xv
     }
 
     #[test]
+    fn hover_previews_use_point_visibility_for_teleport_routes_and_enemy_control() {
+        use crate::visibility::FULL_VISION_BUILDS;
+
+        let bundle = scenario(ABILITY, "Gg", true, false);
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        game.scenario.board.place_recruit(2, "Mage", at(9)).unwrap();
+        let builds = FULL_VISION_BUILDS.get();
+
+        let fogged = game.move_preview(at(0), at(8)).unwrap();
+        assert_eq!(fogged.steps, [(at(0), 1), (at(1), 2), (at(8), 2)]);
+        assert!(!fogged.capture);
+        assert!(!fogged.zone_of_control);
+
+        game.vision[0].add_sight([at(9)]);
+        let seen = game.move_preview(at(0), at(8)).unwrap();
+        assert!(seen.zone_of_control);
+        assert_eq!(seen.steps, fogged.steps);
+        assert_eq!(FULL_VISION_BUILDS.get(), builds);
+    }
+
+    #[test]
     fn village_vision_pays_the_exit_cost_and_rejects_occupied_or_foreign_exits() {
         use crate::visibility::HexVisibility::{Fogged, Shrouded, Visible};
 

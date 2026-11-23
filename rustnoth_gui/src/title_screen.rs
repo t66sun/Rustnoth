@@ -38,6 +38,40 @@ pub(super) enum Games {
     Installed,
 }
 
+enum InstalledEntry {
+    Campaigns(Browser),
+    Multiplayer(Setup),
+    Data(desktop::GameData),
+}
+
+impl InstalledEntry {
+    fn start(
+        root: PathBuf,
+        seed: u32,
+        command: Command,
+        prepare: impl FnOnce(&Path, bool) -> std::io::Result<desktop::GameData> + Send + 'static,
+    ) -> std::thread::JoinHandle<Result<Self, String>> {
+        std::thread::spawn(move || {
+            let load = || -> Result<Self, Box<dyn Error>> {
+                let data = prepare(&root, matches!(command, Command::Campaigns | Command::Credits))?;
+                match command {
+                    Command::Campaigns => {
+                        let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
+                        let mut extra = wml::Node::default();
+                        if let Some(userdata) = profile::native_data_directory() {
+                            crate::campaign_browser::modifications::load_installed(&mut extra, &root, &userdata)?;
+                        }
+                        Ok(Self::Campaigns(Browser::installed(file, maps, data.core, root, seed, extra)?))
+                    }
+                    Command::Multiplayer => Ok(Self::Multiplayer(Setup::load(root, data.core, seed)?)),
+                    _ => Ok(Self::Data(data)),
+                }
+            };
+            load().map_err(|cause| cause.to_string())
+        })
+    }
+}
+
 pub(super) struct TitleScreen {
     pub(super) games: Games,
     pub(super) root: PathBuf,
@@ -206,37 +240,29 @@ impl TitleScreen {
 
     async fn open(&self, command: Command, art: &Art) -> Result<(), Box<dyn Error>> {
         let installed;
-        let (data, modifications) = match &self.games {
-            Games::Prepared(data) => (data, Default::default()),
+        let data = match &self.games {
+            Games::Prepared(data) => data,
             Games::Installed => {
-                let root = self.root.clone();
-                let worker = std::thread::spawn(move || -> std::io::Result<_> {
-                    let data = desktop::prepare(&root, matches!(command,Command::Campaigns | Command::Credits))?;
-                    let mut extra = engine_lite::wml::Node::default();
-                    if matches!(command, Command::Campaigns) && let Some(userdata) = profile::native_data_directory() {
-                        crate::campaign_browser::modifications::load_installed(&mut extra, &root, &userdata)?;
-                    }
-                    Ok((data, extra))
-                });
+                let worker = InstalledEntry::start(self.root.clone(), self.seed, command, desktop::prepare);
                 while !worker.is_finished() {
                     art.draw_background(screen_width(), screen_height());
                     dialog::text(art.font.as_ref(), "Loading game data…", 24.0, screen_height() - 32.0, 20, WHITE);
                     next_frame().await;
                 }
-                let (data, extra) = worker.join().map_err(|_| "Game data preparation stopped")??;
-                installed = data;
-                (&installed, extra)
+                match worker.join().map_err(|_| "Game data preparation stopped")?? {
+                    InstalledEntry::Campaigns(browser) => return browser.run().await,
+                    InstalledEntry::Multiplayer(setup) => return setup.run().await,
+                    InstalledEntry::Data(data) => {
+                        installed = data;
+                        &installed
+                    }
+                }
             }
         };
         match command {
             Command::Campaigns => {
                 let (file, maps) = data.campaign.as_ref().ok_or("No campaign supplied")?;
-                let browser = if matches!(&self.games, Games::Installed) {
-                    Browser::installed(file, maps, data.core.clone(), self.root.clone(), self.seed, modifications)?
-                } else {
-                    Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?
-                };
-                browser.run().await
+                Browser::load(file, maps.clone(), data.core.clone(), self.root.clone(), self.seed)?.run().await
             }
             Command::Credits => {
                 let catalog = data.campaign.as_ref().map(|(file,_)|read_file(file)).transpose()?;
@@ -608,6 +634,32 @@ mod tests {
         assert_eq!(options(&["--title", "core", "42"]).source, Source::Title(None));
         assert_eq!(menu(true), &[Command::Campaigns, Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
         assert_eq!(menu(false), &[Command::Multiplayer, Command::Load, Command::Addons, Command::Editor, Command::Preferences, Command::Achievements, Command::Community, Command::Credits, Command::Quit]);
+    }
+
+    #[test]
+    fn installed_multiplayer_worker_returns_a_loaded_setup() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("rustnoth-title-mp-{}-{nonce}", std::process::id()));
+        let multiplayer = root.join("data/multiplayer");
+        let maps = multiplayer.join("maps");
+        let factions = multiplayer.join("factions");
+        fs::create_dir_all(&maps).unwrap();
+        fs::create_dir_all(&factions).unwrap();
+        fs::write(maps.join("test.map"), "Xv,Xv,Xv,Xv\nXv,1 Kh,2 Kh,Xv\nXv,Xv,Xv,Xv").unwrap();
+        fs::write(factions.join("test-default.cfg"),
+            "[multiplayer_side]\nid=Loyalists\nleader=Guard\nrecruit=Guard\n[/multiplayer_side]").unwrap();
+
+        let title_thread = std::thread::current().id();
+        let worker = InstalledEntry::start(root.clone(), 7, Command::Multiplayer, move |_, campaign| {
+            assert_ne!(std::thread::current().id(), title_thread);
+            assert!(!campaign);
+            Ok(desktop::GameData { core: Vec::new(), campaign: None })
+        });
+        let entry = worker.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(matches!(entry, Ok(InstalledEntry::Multiplayer(_))));
     }
 
     #[test]
