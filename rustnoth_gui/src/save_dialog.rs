@@ -11,6 +11,8 @@ use crate::dialog::Skin;
 
 pub(super) async fn name(root: &Path, default_name: &str) -> Option<String> {
     let background = Texture2D::from_image(&get_screen_data());
+    // Consume the menu click after retaining this frame of the completed board.
+    next_frame().await;
     let skin = Skin::load(root);
     let mut value: String = default_name.chars().take(127).collect();
     let mut replace = true;

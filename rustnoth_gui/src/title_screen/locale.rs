@@ -1,4 +1,5 @@
 //! The two gettext domains used on Wesnoth's title screen.
+mod plural;
 use engine_lite::wml;
 use std::{collections::HashMap, env, fs, io, path::Path};
 
@@ -12,7 +13,10 @@ pub(crate) struct Locale {
 }
 
 #[derive(Default)]
-pub(super) struct Catalog(HashMap<String, String>);
+pub(super) struct Catalog {
+    messages: HashMap<String, String>,
+    plural_rule: Option<String>,
+}
 
 impl Catalog {
     pub(super) fn installed(root: &Path, language: &str, domain: &str) -> io::Result<Self> {
@@ -64,19 +68,36 @@ impl Catalog {
                 .ok_or_else(invalid)?;
             std::str::from_utf8(slice).map_err(|_| invalid())
         };
-        let mut catalog = HashMap::new();
+        let mut catalog = Self::default();
         for i in 0..count {
             let original = row(source, i)?;
             let target = row(translated, i)?;
-            if !original.is_empty() && !original.contains('\0') && !target.is_empty() {
-                catalog.insert(original.to_string(), target.to_string());
+            if original.is_empty() {
+                catalog.plural_rule = target.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if !name.eq_ignore_ascii_case("Plural-Forms") { return None; }
+                    value.split(';').find_map(|field| {
+                        let (key, expr) = field.split_once('=')?;
+                        (key.trim() == "plural").then(|| expr.trim().to_owned())
+                    })
+                });
+            } else if !target.is_empty() {
+                catalog.messages.insert(original.to_owned(), target.to_owned());
             }
         }
-        Ok(Self(catalog))
+        Ok(catalog)
     }
 
     pub(super) fn text<'a>(&'a self, key: &'a str) -> &'a str {
-        self.0.get(key).map(String::as_str).unwrap_or(key)
+        self.messages.get(key).map(String::as_str).unwrap_or(key)
+    }
+
+    fn plural<'a>(&'a self, singular: &'a str, plural: &'a str, count: u64) -> &'a str {
+        let fallback = if count == 1 { singular } else { plural };
+        let key = format!("{singular}\0{plural}");
+        let Some(forms) = self.messages.get(&key) else { return fallback; };
+        self.plural_rule.as_deref().and_then(|rule| plural::index(rule, count))
+            .and_then(|i| forms.split('\0').nth(i)).filter(|form| !form.is_empty()).unwrap_or(fallback)
     }
 }
 
@@ -256,6 +277,10 @@ impl Locale {
     pub fn game<'a>(&'a self, key: &'a str) -> &'a str {
         self.game.text(key)
     }
+
+    pub fn game_plural<'a>(&'a self, singular: &'a str, plural: &'a str, count: u64) -> &'a str {
+        self.game.plural(singular, plural, count)
+    }
 }
 
 pub(crate) fn saved(dir: &Path) -> io::Result<String> {
@@ -296,7 +321,7 @@ mod tests {
         assert_eq!(saved(&root).unwrap(), "");
         save(&root, "zh_CN").unwrap();
         let mut active = Locale::load(&root, saved(&root).unwrap()).unwrap();
-        active.interface.0.insert("language code for localized resources^en_US".into(), "zh_CN,zh".into());
+        active.interface.messages.insert("language code for localized resources^en_US".into(), "zh_CN,zh".into());
         assert_eq!(active.effective, "zh_CN");
         assert_eq!(active.language_name(&languages), "简体中文 (Jiăntĭ Zhōngwén)");
         assert_eq!(Locale::load(&root, "en_US".into()).unwrap().language_name(&languages), "English (US)");
@@ -330,12 +355,40 @@ mod tests {
     #[test]
     fn translates_only_authored_segments_using_each_campaign_domain() {
         let mut locale = Locale::default();
-        locale.game.0.insert("Hard".into(), "困难".into());
-        locale.domains.insert("wesnoth-did".into(), Catalog(HashMap::from([
+        locale.game.messages.insert("Hard".into(), "困难".into());
+        locale.domains.insert("wesnoth-did".into(), Catalog { messages: HashMap::from([
             ("Descent".into(), "堕落".into()),
-        ])));
+        ]), ..Default::default() });
         let data = wml::parse(b"#textdomain wesnoth-did\nname = _ \"Descent\" + \" / \" +\n\xFEtextdomain wesnoth\n_ \"Hard\"\n").unwrap();
         assert_eq!(locale.attribute(Path::new(""), &data, "name", ""), "堕落 / 困难");
+    }
+
+    #[test]
+    fn gettext_uses_the_catalogs_plural_rule_and_all_translated_forms() {
+        let singular = "(this turn left)";
+        let plural = "($remaining_turns turns left)";
+        let key = format!("{singular}\0{plural}");
+        let header = "Plural-Forms: nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2;\n";
+        let forms = "form one\0form few\0form many";
+        // Two MO rows: the header and the pair of native message IDs.
+        let mut bytes = Vec::new();
+        let mut strings = Vec::new();
+        for word in [0x950412de_u32, 0, 2, 28, 44, 0, 0] {
+            bytes.extend(word.to_le_bytes());
+        }
+        for value in ["", key.as_str(), header, forms] {
+            bytes.extend((value.len() as u32).to_le_bytes());
+            bytes.extend((60 + strings.len() as u32).to_le_bytes());
+            strings.extend(value.bytes());
+            strings.push(0);
+        }
+        bytes.extend(strings);
+        let locale = Locale { game: Catalog::read(&bytes).unwrap(), ..Default::default() };
+        assert_eq!(locale.game_plural(singular, plural, 1), "form one");
+        assert_eq!(locale.game_plural(singular, plural, 21), "form one");
+        assert_eq!(locale.game_plural(singular, plural, 22), "form few");
+        assert_eq!(locale.game_plural(singular, plural, 12), "form many");
+        assert_eq!(locale.game_plural("missing singular", "missing plural", 2), "missing plural");
     }
 
     #[test]

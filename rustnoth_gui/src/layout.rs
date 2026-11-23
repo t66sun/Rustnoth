@@ -138,11 +138,18 @@ impl BoardLayout {
         self.tile_size
     }
 
+    fn screen_origin(&self) -> [f32; 2] {
+        // At the stock 72px zoom, SDL blits the original sprite to whole pixels.
+        // Retain the fractional camera position so slow scrolling still accumulates.
+        if self.tile_size == 72.0 { self.origin.map(f32::floor) } else { self.origin }
+    }
+
     /// Screen coordinates of the top-left corner of a hex's sprite.
     pub fn tile_origin(&self, hex: Hex) -> [f32; 2] {
+        let origin = self.screen_origin();
         [
-            self.origin[0] + hex.x as f32 * COLUMN_SPACING * self.tile_size,
-            self.origin[1]
+            origin[0] + hex.x as f32 * COLUMN_SPACING * self.tile_size,
+            origin[1]
                 + (hex.y as f32 + hex.x.rem_euclid(2) as f32 * ODD_COLUMN_SHIFT) * self.tile_size,
         ]
     }
@@ -158,8 +165,9 @@ impl BoardLayout {
     }
 
     fn hit_test(&self, [x, y]: [f32; 2], border: i32) -> Option<Hex> {
-        let x = (x - self.origin[0]) / self.tile_size;
-        let y = (y - self.origin[1]) / self.tile_size;
+        let origin = self.screen_origin();
+        let x = (x - origin[0]) / self.tile_size;
+        let y = (y - origin[1]) / self.tile_size;
         let margin = border as f32;
         if !(-margin..self.width as f32 + 1.0 + margin).contains(&x)
             || !(-margin..self.height as f32 + 0.5 + margin).contains(&y)
@@ -277,6 +285,17 @@ mod tests {
         let small = BoardLayout::fit(2, 1, viewport).unwrap().native_scale(None);
         assert_eq!(small.tile_size(), 72.0);
         assert_eq!(small.tile_origin(Hex { x: 0, y: 0 }), [269.0, 206.0]);
+    }
+
+    #[test]
+    fn an_odd_height_battlefield_samples_whole_art_pixels_at_native_zoom() {
+        let viewport = Viewport { x: 0.0, y: 27.0, width: 1018.0, height: 793.0 };
+        let focus = Hex { x: 18, y: 21 };
+        let mut map = BoardLayout::battlefield(50, 50, viewport).unwrap().native_scale(Some(focus));
+        assert_eq!(map.tile_origin(focus), [473.0, 387.0]);
+        for _ in 0..4 { map = map.panned([0.25, 0.25]); }
+        assert_eq!(map.tile_origin(focus), [474.0, 388.0]);
+        assert_eq!(map.hex_at([510.0, 424.0]), Some(focus));
     }
 
     #[test]
