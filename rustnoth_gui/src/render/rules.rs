@@ -67,7 +67,7 @@ impl Rules {
             for part in &tile.layers {
                 let mut animations = Vec::new();
                 for variant in &catalog.images[part.image].variants {
-                    if !variant.flags.iter().all(|f| tile.flags.contains(f)) {
+                    if !variant.flags.iter().all(|&flag| tile.has_flag(flag)) {
                         continue;
                     }
                     let index = (part.seed / 7919) as usize % variant.choices.len();
@@ -104,7 +104,7 @@ impl Rules {
             self.tiles.insert(
                 hex,
                 Drawing {
-                    base: tile.flags.contains("base"),
+                    base: tile.has_flag(compile::Flag::BASE),
                     layers,
                 },
             );
@@ -215,15 +215,15 @@ set_no_flag=base
                 },
             ],
         };
-        let flags = |view: &Observation| {
+        let tile = |view: &Observation| {
             // A rule can supply connectivity flags without supplying a sprite.
-            let participating = plan::build_with_flags(&catalog, view, &Default::default());
-            participating[&road].flags.clone()
+            plan::build_with_flags(&catalog, view, &Default::default()).remove(&road).unwrap()
         };
-        let result = flags(&view);
-        assert!(result.contains("road-n") && result.contains("base"));
-        assert!(!result.contains("road-ne"));
+        let road_n = catalog.flag("road-n");
+        let result = tile(&view);
+        assert!(result.has_flag(road_n) && result.has_flag(catalog.flag("base")));
+        assert!(!result.has_flag(catalog.flag("road-ne")));
         view.tiles.pop();
-        assert!(!flags(&view).contains("road-n"));
+        assert!(!tile(&view).has_flag(road_n));
     }
 }
