@@ -1,6 +1,12 @@
+use std::rc::Rc;
+
 use image::RgbaImage;
-use macroquad::prelude::{
-    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex, vec2,
+use macroquad::{
+    miniquad::{TextureAccess, TextureParams, TextureSource},
+    prelude::{
+        Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex,
+        get_internal_gl, vec2,
+    },
 };
 
 const PAGE_SIDE: u16 = 2048;
@@ -9,7 +15,7 @@ const CHANNELS: usize = 4;
 
 #[derive(Default)]
 pub(super) struct Atlas {
-    pages: Vec<Texture2D>,
+    pages: Vec<Rc<PageTexture>>,
     layout: PageLayout,
 }
 
@@ -30,21 +36,18 @@ impl Atlas {
             let len = usize::from(width) * usize::from(height) * CHANNELS;
             let texture = linear_texture(width, height, &pixels.as_raw()[..len]);
             return Some(AtlasSprite {
-                texture,
+                texture: SpriteTexture::Standalone(texture),
                 source: None,
                 size,
             });
         };
 
         if slot.page == self.pages.len() {
-            let side = self.layout.side;
-            let len = usize::from(side).pow(2) * CHANNELS;
-            self.pages
-                .push(linear_texture(side, side, &vec![0; len]));
+            self.pages.push(Rc::new(PageTexture::new(self.layout.side)));
         }
-        let texture = &self.pages[slot.page];
+        let page = &self.pages[slot.page];
         let image = pad_edges(pixels, width, height);
-        texture.update_part(
+        page.0.update_part(
             &image,
             i32::from(slot.x),
             i32::from(slot.y),
@@ -52,7 +55,7 @@ impl Atlas {
             i32::from(image.height),
         );
         Some(AtlasSprite {
-            texture: texture.clone(),
+            texture: SpriteTexture::Page(Rc::clone(page)),
             source: Some(slot.source(width, height)),
             size,
         })
@@ -64,9 +67,54 @@ impl Atlas {
     }
 }
 
+struct PageTexture(Texture2D);
+
+impl PageTexture {
+    fn new(side: u16) -> Self {
+        let (source, params) = page_storage(side);
+        // A padded slot is uploaded before any sprite can refer to it.
+        let raw = unsafe { get_internal_gl() }
+            .quad_context
+            .new_texture(TextureAccess::Static, source, params);
+        Self(Texture2D::from_miniquad_texture(raw))
+    }
+}
+
+impl Drop for PageTexture {
+    fn drop(&mut self) {
+        let raw = self.0.raw_miniquad_id();
+        // Queued draws refer to the raw handle without owning the page.
+        unsafe {
+            let mut gl = get_internal_gl();
+            gl.flush();
+            gl.quad_context.delete_texture(raw);
+        }
+    }
+}
+
+fn page_storage(side: u16) -> (TextureSource<'static>, TextureParams) {
+    let side = u32::from(side);
+    (TextureSource::Empty, TextureParams { width: side, height: side, ..Default::default() })
+}
+
+#[derive(Clone)]
+enum SpriteTexture {
+    Page(Rc<PageTexture>),
+    Standalone(Texture2D),
+}
+
+impl SpriteTexture {
+    fn get(&self) -> &Texture2D {
+        match self {
+            Self::Page(page) => &page.0,
+            Self::Standalone(texture) => texture,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct AtlasSprite {
-    texture: Texture2D,
+    texture: SpriteTexture,
     source: Option<Rect>,
     size: Vec2,
 }
@@ -90,7 +138,7 @@ impl AtlasSprite {
 
     fn draw_region(&self, dst: Rect, tint: Color, source: Option<Rect>, (flip_x, flip_y): (bool, bool)) {
         draw_texture_ex(
-            &self.texture,
+            self.texture.get(),
             dst.x,
             dst.y,
             tint,
@@ -205,6 +253,16 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atlas_page_storage_has_no_initial_pixel_upload() {
+        let (source, params) = page_storage(PAGE_SIDE);
+        assert!(matches!(source, TextureSource::Empty));
+        assert_eq!((params.width, params.height), (2048, 2048));
+        assert_eq!(params.format, macroquad::miniquad::TextureFormat::RGBA8);
+        assert_eq!(params.min_filter, FilterMode::Linear);
+        assert_eq!(params.mag_filter, FilterMode::Linear);
+    }
 
     #[test]
     fn padding_extrudes_all_edges_and_corners_with_straight_alpha() {
