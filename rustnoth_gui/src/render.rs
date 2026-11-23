@@ -735,13 +735,15 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 viewport.contains([x, y]).then(|| layout.hex_at([x, y])).flatten()
             }).filter(|&at| hints.can_attack(at))
         });
-        for tile in view.tiles.iter().filter(|tile| {
-            Some(tile.position) != attack_target && Some(tile.position) != direct_target
-                && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
-                && !selected.is_some_and(|_| hints.is_reachable(tile.position))
+        for rect in reach::mask_rects(view, layout, viewport, mask.size(), |at| {
+            Some(at) != attack_target && Some(at) != direct_target
+                && !enemies.is_some_and(|reach| reach.counts.contains_key(&at))
+                && !selected.is_some_and(|_| hints.is_reachable(at))
         }) {
-            let [x, y] = layout.tile_origin(tile.position);
-            draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
+            draw_texture_ex(mask, rect.x, rect.y, WHITE, DrawTextureParams {
+                dest_size: Some(rect.size()),
+                ..Default::default()
+            });
         }
     }
     if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route, viewport); }
