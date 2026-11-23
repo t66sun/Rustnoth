@@ -37,6 +37,7 @@ pub(super) mod combat_motion;
 mod walking;
 mod ground;
 mod rules;
+mod terrain_clip;
 pub(crate) use rules::{map_observation, map_png, Rules as EditorTerrain};
 pub(crate) use minimap::Art as EditorMinimap;
 mod border;
@@ -109,6 +110,7 @@ pub struct BoardArt {
     lighting: lighting::Lighting,
     paths: HashMap<PathBuf, Option<Texture2D>>,
     terrain: BTreeMap<String, Vec<Texture2D>>,
+    terrain_texture_extent: Vec2,
     transitions: transitions::Transitions,
     ground: ground::Ground,
     rules: rules::Rules,
@@ -206,6 +208,7 @@ impl BoardArt {
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
+            terrain_texture_extent: Vec2::ZERO,
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
             rules: rules::Rules::default(),
@@ -299,6 +302,14 @@ impl BoardArt {
                     .collect()
             });
         }
+        self.terrain_texture_extent = texture_extent(
+            self.terrain.values().flatten()
+                .chain(self.flags.values().flatten().flatten())
+                .chain(self.grid.0.iter().flatten()),
+        )
+        .max(self.ground.texture_extent())
+        .max(self.transitions.texture_extent())
+        .max(self.rules.texture_extent());
         for unit in &observation.units {
             if let Some(prefix) = assets.ellipse_prefix(&unit.type_id) {
                 for selected in [false, true] {
@@ -442,12 +453,13 @@ pub fn draw<T>(
     result
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {
     let now = (get_time() * 1000.0) as u64;
     let size = layout.tile_size();
-    for tile in &view.tiles {
+    for tile in clip.rows(layout, &view.tiles, |tile| tile.position.y) {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
+        if !clip.contains(center) { continue; }
         if flag_frame.is_some() { art.lighting.terrain(tile.position, x, y, size); }
         if flag_frame.is_none() || !art.rules.has_base(tile.position) {
         let layers = &art.terrain[&tile.terrain];
@@ -478,8 +490,8 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
                 continue;
             }
             let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
-            let marker = center + vec2(0.27, -0.26) * size;
-            let radius = (size * 0.055).max(min_marker);
+            let (offset, radius) = terrain_clip::village_marker(size, min_marker);
+            let marker = center + offset;
             if !visible_rect(viewport, marker - Vec2::splat(radius), Vec2::splat(2. * radius)) { continue; }
             draw_circle(
                 marker.x, marker.y, radius,
@@ -544,17 +556,20 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
     let viewport = board_viewport();
+    let terrain_clip = terrain_clip::TerrainClip::new(viewport, size, art.terrain_texture_extent);
     let border_period = movement.global_time.map_or("", |t| t.id.as_str());
     art.lighting.flat(movement.global_time.map_or([0; 3], |period| period.color));
     for hex in engine_lite::map::border_positions(view.width, view.height) {
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
-        art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
+        if terrain_clip.contains(center) {
+            art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
+        }
     }
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
-    draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport);
+    draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport, terrain_clip);
     for (position, texture, use_time_color) in &art.map_items {
         if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
         let [x, y] = layout.tile_origin(*position);
@@ -663,19 +678,22 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
 
     let draw_foreground = |at: Hex| {
         let [x, y] = layout.tile_origin(at);
+        let center = vec2(x + size / 2.0, y + size / 2.0);
+        if !terrain_clip.contains(center) { return; }
         if (0..view.width).contains(&at.x) && (0..view.height).contains(&at.y) {
             art.lighting.terrain(at, x, y, size);
         } else {
             art.lighting.flat(global_color);
         }
-        art.rules.draw(at, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now, Some(viewport));
+        art.rules.draw(at, center, size, true, period, now, Some(viewport));
     };
     // Native unit_default precedes terrain_fg *within* each half-row. A rear
     // castle wall must already be in place when a raised unit overlaps it.
     let moving = walking.and_then(|p| p.unit);
     let mut standing: Vec<_> = view.units.iter().filter(|u| Some(u.position) != moving).collect();
     standing.sort_unstable_by_key(|u| (draw_row(u.position), u.position.x));
-    let mut foreground = art.rules.foreground.iter().copied().peekable();
+    let mut foreground = terrain_clip.rows(layout, &art.rules.foreground, |at| at.y)
+        .iter().copied().peekable();
     for unit in standing {
         while let Some(at) = foreground.next_if(|at| draw_row(*at) < draw_row(unit.position)) {
             draw_foreground(at);
@@ -785,6 +803,10 @@ mod ellipse_tests {
 
 fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32, clip: Option<Viewport>) {
     draw_centered_flipped(texture, center, hex_size, false, clip);
+}
+
+fn texture_extent<'a>(textures: impl Iterator<Item = &'a Texture2D>) -> Vec2 {
+    textures.map(Texture2D::size).fold(Vec2::ZERO, Vec2::max)
 }
 
 fn visible_rect(view: Viewport, top: Vec2, size: Vec2) -> bool {

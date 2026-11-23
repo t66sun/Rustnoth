@@ -115,6 +115,10 @@ impl Rules {
         self.tiles.get(&hex).is_some_and(|t| t.base)
     }
 
+    pub(super) fn texture_extent(&self) -> Vec2 {
+        super::texture_extent(self.bitmaps.frames())
+    }
+
     pub(crate) fn draw(
         &self,
         hex: Hex,
