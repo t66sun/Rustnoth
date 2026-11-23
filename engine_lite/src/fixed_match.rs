@@ -13,7 +13,7 @@ use crate::{
     income::{DEFAULT_BASE_INCOME, net_income},
     movement_cost::MovementCosts,
     movement_types::MovementType,
-    observation::{Observation, project},
+    observation::{Observation, ObservedTile, ObservedUnit, project},
     resistance::DamageTable,
     rng::ReplayRng,
     scenario_events::{BoardChange, EventState, ScenarioEvents},
@@ -109,6 +109,41 @@ impl Rules<'_> {
                 profile.map(|p| &p.movement_costs),
             ],
         )
+    }
+}
+
+struct DecisionPositions<'a> {
+    width: i32,
+    height: i32,
+    sparse_terrain: Option<&'a [ObservedTile]>,
+    units: &'a [ObservedUnit],
+}
+
+impl<'a> DecisionPositions<'a> {
+    /// The referee's projection emits each known hex once in row-major
+    /// order, and units in the board's hex order.
+    fn from_projection(view: &'a Observation) -> Self {
+        let area = view.width as usize * view.height as usize;
+        Self {
+            width: view.width,
+            height: view.height,
+            sparse_terrain: (view.tiles.len() != area).then_some(view.tiles.as_slice()),
+            units: &view.units,
+        }
+    }
+
+    fn terrain_known(&self, hex: Hex) -> bool {
+        if let Some(tiles) = self.sparse_terrain {
+            tiles
+                .binary_search_by_key(&(hex.y, hex.x), |tile| (tile.position.y, tile.position.x))
+                .is_ok()
+        } else {
+            (0..self.width).contains(&hex.x) && (0..self.height).contains(&hex.y)
+        }
+    }
+
+    fn unit_visible(&self, hex: Hex) -> bool {
+        self.units.binary_search_by_key(&hex, |unit| unit.position).is_ok()
     }
 }
 
@@ -518,10 +553,9 @@ impl<'data> FixedMatch<'data> {
         let board = &self.scenario.board;
         let sides = &self.scenario.sides;
         let is_enemy = |other: usize| sides[turn.side - 1].is_enemy(&sides[other - 1]);
-        let terrain: BTreeSet<_> = observation.tiles.iter().map(|tile| tile.position).collect();
-        let units: BTreeSet<_> = observation.units.iter().map(|unit| unit.position).collect();
-        let terrain_known = |hex| terrain.contains(&hex);
-        let unit_visible = |hex| units.contains(&hex);
+        let positions = DecisionPositions::from_projection(&observation);
+        let terrain_known = |hex| positions.terrain_known(hex);
+        let unit_visible = |hex| positions.unit_visible(hex);
         let mut actions = Vec::new();
         for (from, unit) in board.units().filter(|(_, unit)| unit.side == turn.side) {
             let villages = self.teleport_villages(from, unit, terrain_known, unit_visible);
@@ -988,6 +1022,92 @@ mod tests {
         unit_type::{UnitType, read_unit_types},
         wml,
     };
+
+    #[test]
+    fn decision_queries_borrow_the_projection_and_use_bounds_for_fully_known_terrain() {
+        use crate::scenario_bundle::Bundle;
+
+        let bundle = Bundle::parse(br#"
+[terrain_type]
+    id=flat
+    string=Gg
+[/terrain_type]
+[units]
+    [unit_type]
+        id=Scout
+        hitpoints=25
+        movement=5
+        [movement_costs]
+            flat=1
+        [/movement_costs]
+        [attack]
+            range=melee
+            min_range=1
+            max_range=4
+            damage=1
+            number=1
+        [/attack]
+    [/unit_type]
+[/units]
+[scenario]
+    map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,Xv
+Xv,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+    [side]
+        type=Scout
+        fog=yes
+        shroud=yes
+    [/side]
+    [side]
+        type=Scout
+    [/side]
+[/scenario]
+"#).unwrap();
+        let mut game = bundle.start(1, |_| unreachable!()).unwrap();
+        let own = Hex { x: 0, y: 0 };
+        let east = Hex { x: 1, y: 0 };
+        let south = Hex { x: 0, y: 1 };
+        let unknown = Hex { x: 2, y: 0 };
+        let enemy = Hex { x: 2, y: 1 };
+        let border = Hex { x: -1, y: 0 };
+
+        game.vision[0] = VisibilityMask::new(3, 2, true, true);
+        game.vision[0].add_sight([east, enemy]);
+        game.vision[0].replace_sight([own, south]);
+        let (view, actions) = game.decision().unwrap();
+        let positions = DecisionPositions::from_projection(&view);
+        assert!(std::ptr::eq(
+            positions.sparse_terrain.unwrap(),
+            view.tiles.as_slice()
+        ));
+        assert!(std::ptr::eq(positions.units, view.units.as_slice()));
+        assert!(positions.terrain_known(east) && positions.terrain_known(enemy));
+        assert!(!positions.unit_visible(enemy) && !positions.terrain_known(unknown));
+        assert!(!positions.terrain_known(border));
+        assert_eq!(
+            actions,
+            [
+                Action::Move { from: own, to: south },
+                Action::Move { from: own, to: east },
+                // A fogged enemy cannot block a planned destination in the policy view.
+                Action::Move { from: own, to: enemy },
+                Action::EndTurn,
+            ],
+        );
+
+        game.vision[0] = VisibilityMask::new(3, 2, false, false);
+        let (view, actions) = game.decision().unwrap();
+        let positions = DecisionPositions::from_projection(&view);
+        assert!(positions.sparse_terrain.is_none());
+        assert!(positions.terrain_known(unknown) && !positions.terrain_known(border));
+        assert!(positions.unit_visible(own) && positions.unit_visible(enemy));
+        assert!(actions.contains(&Action::Attack(AttackChoice {
+            from: own,
+            to: enemy,
+            weapon: 0,
+        })));
+    }
 
     #[test]
     fn advances_combat_survivors_using_their_chosen_or_first_declared_type() {
