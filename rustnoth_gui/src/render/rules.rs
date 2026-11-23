@@ -109,6 +109,7 @@ impl Rules {
                 },
             );
         }
+        self.bitmaps.release_sources();
     }
 
     pub(super) fn has_base(&self, hex: Hex) -> bool {
