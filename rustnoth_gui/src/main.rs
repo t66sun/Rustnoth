@@ -301,16 +301,13 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let preference_dir = display_preferences::config_directory()?;
     let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed, &locale)?;
-    if let Some(lesson) = &mut data.lesson {
-        lesson.localize_attack_instructions(&data.wesnoth_root, &mut locale);
-    }
     if let Some(checkpoint) = restore {
         if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
             return Ok(None);
         }
         if let Some((lesson, hints)) = data.lesson.as_mut().zip(checkpoint.tutorial_hints) {
-            lesson.resume(&mut session, &checkpoint.events, hints)?;
+            lesson.resume(&mut session, &checkpoint.events, hints, &data.wesnoth_root, &mut locale)?;
         } else {
             for event in checkpoint.events { event.apply(&mut session)?; }
         }
@@ -320,7 +317,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             if let Some(focus) = checkpoint.camera { camera.restore(focus); }
         }
     } else {
-        if let Some(lesson) = &data.lesson { lesson.restrict(&mut session); }
+        if let Some(lesson) = &mut data.lesson { lesson.start(&mut session, &data.wesnoth_root, &mut locale); }
         story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref(), locale.ui("Skip")).await;
     }
     if let Some(observation) = session.observation() {

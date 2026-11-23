@@ -89,7 +89,12 @@ impl Lesson {
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+    pub(super) fn start(&mut self, session: &mut Session<'_>, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+        self.localize_attack_instructions(root, locale);
+        self.restrict(session);
+    }
+
+    fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
         for line in &mut self.attack_instructions {
             let cfg = match line {
                 healing::Line::Message(cfg) | healing::Line::Hint(cfg) => cfg,
