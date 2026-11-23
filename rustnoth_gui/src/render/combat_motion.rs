@@ -274,23 +274,20 @@ impl Pose {
     pub(super) fn sprite(
         &self,
         at: Hex,
-        center: Vec2,
-        layout: &BoardLayout,
+        center: impl Fn(Hex, f32) -> Vec2,
     ) -> Option<(Vec2, Option<(&Texture2D, bool)>)> {
         let i = self.actors.iter().position(|u| u.at == at)?;
         let actor = &self.actors[i];
-        let delta = Vec2::from_array(layout.tile_origin(self.actors[1 - i].at))
-            - Vec2::from_array(layout.tile_origin(at));
         Some((
-            center + delta * actor.offset,
+            center(self.actors[1 - i].at, actor.offset),
             actor.frame.as_ref().map(|(t, b)| (t, *b)),
         ))
     }
 
-    pub(super) fn draw_impact(&self, layout: &BoardLayout, font: Option<&Font>) {
+    pub(super) fn draw_impact(&self, layout: &BoardLayout, font: Option<&Font>, unit_origin: impl Fn(Hex) -> Vec2) {
         if let Some((tex, phase, dir)) = &self.missile {
             let origin =
-                |h| Vec2::from_array(layout.tile_origin(h)) + Vec2::splat(layout.tile_size() * 0.5);
+                |h| unit_origin(h) + Vec2::splat(layout.tile_size() * 0.5);
             let at = origin(self.actors[0].at).lerp(origin(self.actors[1].at), *phase);
             let size = tex.size() * (layout.tile_size() / super::ART_HEX_SIZE);
             draw_texture_ex(
@@ -310,7 +307,7 @@ impl Pose {
             );
         }
         if let Some((loss, progress)) = self.damage {
-            let p = Vec2::from_array(layout.tile_origin(self.actors[1].at));
+            let p = unit_origin(self.actors[1].at);
             let text = loss.to_string();
             let size = (layout.tile_size() * 0.31).clamp(12.0, 30.0) as u16;
             let x = p.x + (layout.tile_size() - measure_text(&text, font, size, 1.0).width) * 0.5;
