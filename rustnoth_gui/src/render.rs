@@ -68,13 +68,42 @@ enum Cover {
     Shroud,
 }
 
-fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
+#[derive(Default)]
+struct CoverTiles {
+    cells: Vec<(Hex, Cover)>,
+    fog_end: usize,
+    playable_end: usize,
+}
+
+impl CoverTiles {
+    fn extend_border(&mut self, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) {
+        self.cells.extend(engine_lite::map::border_positions(view.width, view.height).filter_map(|at| {
+            match border.get(&at) {
+                Some((_, true)) => None,
+                Some((_, false)) => Some((at, Cover::Fog)),
+                None => Some((at, Cover::Shroud)),
+            }
+        }));
+    }
+
+    fn rows<'a>(&'a self, layout: &BoardLayout, clip: terrain_clip::TerrainClip) -> impl Iterator<Item = &'a (Hex, Cover)> {
+        // The playable fog and shroud are drawn in separate row-ordered passes.
+        let (playable, border) = self.cells.split_at(self.playable_end);
+        let (fog, shroud) = playable.split_at(self.fog_end);
+        clip.rows(layout, fog, |(hex, _)| hex.y).iter()
+            .chain(clip.rows(layout, shroud, |(hex, _)| hex.y))
+            .chain(border)
+    }
+}
+
+fn map_cover(view: &Observation) -> CoverTiles {
     let mut cover = Vec::new();
     for tile in &view.tiles {
         if !tile.visible {
             cover.push((tile.position, Cover::Fog));
         }
     }
+    let fog_end = cover.len();
     if view.tiles.len() < view.width as usize * view.height as usize {
         let explored: HashSet<Hex> = view.tiles.iter().map(|tile| tile.position).collect();
         for y in 0..view.height {
@@ -86,7 +115,8 @@ fn map_cover(view: &Observation) -> Vec<(Hex, Cover)> {
             }
         }
     }
-    cover
+    let playable_end = cover.len();
+    CoverTiles { cells: cover, fog_end, playable_end }
 }
 
 pub(crate) struct GridArt([Option<Texture2D>; 2]);
@@ -145,7 +175,7 @@ pub struct BoardArt {
     unreachable: Option<Texture2D>,
     linger: Option<Texture2D>,
     pub(super) linger_color: Option<[i32; 3]>,
-    cover: Vec<(Hex, Cover)>,
+    cover: CoverTiles,
     team_colors: Option<TeamColors>,
     pub(super) font: Option<Font>,
     dialogue_font: Option<Font>,
@@ -247,7 +277,7 @@ impl BoardArt {
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             linger: load_texture(&terrain_dir.join("darken-linger.png"), None),
             linger_color: None,
-            cover: Vec::new(),
+            cover: CoverTiles::default(),
             team_colors: palette(TeamColors::parse),
             tutorial_hint: tutorial_hint::Art::new(wesnoth_root),
             #[cfg(windows)]
@@ -278,14 +308,8 @@ impl BoardArt {
         }
         let border = session.known_border();
         self.cover = map_cover(observation);
-        self.cover.extend(engine_lite::map::border_positions(observation.width, observation.height).filter_map(|at| {
-            match border.get(&at) {
-                Some((_, true)) => None,
-                Some((_, false)) => Some((at, Cover::Fog)),
-                None => Some((at, Cover::Shroud)),
-            }
-        }));
-        self.fog_edges.update(observation, &border, &self.cover);
+        self.cover.extend_border(observation, &border);
+        self.fog_edges.update(observation, &border, &self.cover.cells);
         self.minimap.load(observation, assets);
         if self.rules.load(assets, observation, &border) {
             self.transitions.load(observation, assets);
@@ -538,9 +562,12 @@ pub fn minimap_point(view: &Observation, pointer: Vec2) -> Option<[f32; 2]> {
 
 fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
     let size = layout.tile_size();
-    for &(hex, ref cover) in &art.cover {
+    let extent = texture_extent(art.fog.iter().chain(art.shroud.iter()));
+    let clip = terrain_clip::TerrainClip::new(viewport, size, extent);
+    for &(hex, ref cover) in art.cover.rows(layout, clip) {
         let [x, y] = layout.tile_origin(hex);
         let center = vec2(x + size * 0.5, y + size * 0.5);
+        if !clip.contains(center) { continue; }
         let texture = match cover {
             Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x + hex.y).rem_euclid(art.fog.len() as i32) as usize]),
             Cover::Fog => None,
@@ -564,7 +591,7 @@ fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
 
 impl BoardArt {
     pub(crate) fn draw_map_label(&self, layout: &BoardLayout, hex: Hex, label: &str, highlight: bool, visible_in_fog: bool) {
-        if self.cover.iter().any(|(at, cover)| *at == hex && (*cover == Cover::Shroud || !visible_in_fog)) { return; }
+        if self.cover.cells.iter().any(|(at, cover)| *at == hex && (*cover == Cover::Shroud || !visible_in_fog)) { return; }
         let view = board_viewport();
         let [x, y] = layout.tile_origin(hex);
         let size = layout.tile_size();
@@ -967,6 +994,34 @@ mod tests {
     }
 
     #[test]
+    fn cover_rows_skip_offscreen_masks_in_their_original_layer_order() {
+        use engine_lite::observation::ObservedTile;
+        let viewport = Viewport { x: 0.0, y: 0.0, width: 160.0, height: 160.0 };
+        let layout = BoardLayout::battlefield(100, 100, viewport).unwrap()
+            .native_scale(Some(Hex { x: 50, y: 50 }));
+        let tile = |y| ObservedTile {
+            position: Hex { x: 50, y }, terrain: "Gg".into(),
+            visible: false, village_owner: None, time_color: [0; 3],
+        };
+        let view = Observation {
+            side: 1, allied_sides: vec![1], gold: None, width: 100, height: 100,
+            tiles: vec![tile(0), tile(50), tile(99)], units: vec![],
+        };
+        let mut cover = map_cover(&view);
+        cover.extend_border(&view, &Default::default());
+        let size = layout.tile_size();
+        let clip = terrain_clip::TerrainClip::new(viewport, size, vec2(100.0, 100.0));
+        let rows: Vec<_> = cover.rows(&layout, clip).collect();
+        assert!(rows.len() < cover.cells.len() / 5);
+        let center = |hex| Vec2::from_array(layout.tile_origin(hex)) + size * 0.5;
+        let visible = |&(hex, _): &(Hex, Cover)| clip.contains(center(hex));
+        assert_eq!(
+            rows.into_iter().filter(|cell| visible(cell)).collect::<Vec<_>>(),
+            cover.cells.iter().filter(|cell| visible(cell)).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
     fn battlefield_submits_only_sprites_overlapping_the_view_at_current_zoom() {
         let area = Viewport { x: 10.0, y: 27.0, width: 120.0, height: 80.0 };
         let view = Some(area);
@@ -1001,11 +1056,11 @@ mod tests {
             side: 1, allied_sides: vec![1], gold: None, width: 3, height: 1,
             tiles: vec![tile(0, true), tile(2, false)], units: Vec::new(),
         };
-        assert_eq!(map_cover(&view), [(Hex { x: 2, y: 0 }, Cover::Fog), (Hex { x: 1, y: 0 }, Cover::Shroud)]);
+        assert_eq!(map_cover(&view).cells, [(Hex { x: 2, y: 0 }, Cover::Fog), (Hex { x: 1, y: 0 }, Cover::Shroud)]);
         view.tiles = vec![tile(0, false), tile(1, true), tile(2, true)];
-        assert_eq!(map_cover(&view), [(Hex { x: 0, y: 0 }, Cover::Fog)]);
+        assert_eq!(map_cover(&view).cells, [(Hex { x: 0, y: 0 }, Cover::Fog)]);
         view.tiles[0].visible = true;
-        assert!(map_cover(&view).is_empty());
+        assert!(map_cover(&view).cells.is_empty());
     }
 
     #[test]
