@@ -54,6 +54,10 @@ fn apply_opacity(image: &mut RgbaImage, argument: &str) {
 }
 
 impl Bitmaps {
+    pub(super) fn frames(&self) -> impl Iterator<Item = &Texture2D> {
+        self.cropped.values().flatten()
+    }
+
     fn read(&mut self, catalog: &Catalog, expression: &str) -> Option<Rc<RgbaImage>> {
         if let Some(src) = self.sources.get(expression) {
             return Some(Rc::clone(src));
