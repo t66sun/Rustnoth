@@ -116,6 +116,7 @@ pub struct BoardArt {
     grid: GridArt,
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    sprite_paths: SpriteTextures<Texture2D>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
@@ -169,7 +170,7 @@ impl BoardArt {
         self.moving.entry(type_id.to_owned()).or_default().entry(side).or_insert_with(|| {
             standing::Sprites::load(assets.movement_animations(type_id), |image| {
                 let path = assets.resolve_image(Path::new(image))?;
-                load_texture(&path, palette)
+                self.sprite_paths.texture(path, palette)
             })
         });
     }
@@ -177,8 +178,10 @@ impl BoardArt {
     pub fn start_observed_walk(&mut self, walk: engine_lite::fixed_match::walk::VisibleWalk, assets: &AssetCatalog) {
         self.load_movement(&walk.unit_type, walk.side, assets);
         if walk.visible_destination.is_none() {
+            let palette = self.team_colors.as_ref().map(|colors| (colors, walk.side));
             self.units.entry(walk.unit_type.clone()).or_default().entry(walk.side).or_insert_with(|| {
-                load_texture(&assets.unit_image(&walk.unit_type)?, self.team_colors.as_ref().map(|c| (c, walk.side)))
+                let path = assets.unit_image(&walk.unit_type)?;
+                self.sprite_paths.texture(path, palette)
             });
         }
         self.walk.start_observed(walk, (get_time() * 1000.0) as u64, self.animation_rate());
@@ -213,6 +216,7 @@ impl BoardArt {
             grid: GridArt::load(&terrain_dir),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
+            sprite_paths: SpriteTextures::default(),
             standing: HashMap::new(),
             combat_pose: None,
             moving: HashMap::new(),
@@ -311,11 +315,11 @@ impl BoardArt {
                     });
                 }
             }
+            let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
             self.standing.entry(unit.type_id.clone()).or_default().entry(unit.side).or_insert_with(|| {
-                let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
                 standing::Sprites::load(assets.standing_animations(&unit.type_id), |image| {
                     let path = assets.resolve_image(Path::new(image))?;
-                    load_texture(&path, palette)
+                    self.sprite_paths.texture(path, palette)
                 })
             });
             self.units
@@ -324,10 +328,31 @@ impl BoardArt {
                 .entry(unit.side)
                 .or_insert_with(|| {
                     let path = assets.unit_image(&unit.type_id)?;
-                    let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
-                    load_texture(&path, palette)
+                    self.sprite_paths.texture(path, palette)
                 });
         }
+    }
+}
+
+struct SpriteTextures<T>(HashMap<(PathBuf, Option<usize>), Option<T>>);
+
+impl<T> Default for SpriteTextures<T> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+impl SpriteTextures<Texture2D> {
+    fn texture(&mut self, path: PathBuf, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+        self.load(path, palette.map(|(_, side)| side), |path| load_texture(path, palette))
+    }
+}
+
+impl<T: Clone> SpriteTextures<T> {
+    // Base sprites, standing frames and walking frames can share the same
+    // installed bitmap. Team recoloring is the only change at these call sites.
+    fn load(&mut self, path: PathBuf, side: Option<usize>, decode: impl FnOnce(&Path) -> Option<T>) -> Option<T> {
+        self.0.entry((path, side)).or_insert_with_key(|(path, _)| decode(path)).clone()
     }
 }
 
@@ -768,6 +793,30 @@ fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [Stri
     let zoc = if zoc { "" } else { "nozoc-" };
     let selected = if selected { "selected-" } else { "" };
     ["top", "bottom"].map(|half| format!("{prefix}-{leader}{zoc}{selected}{half}.png"))
+}
+
+#[cfg(test)]
+mod sprite_tests {
+    use super::SpriteTextures;
+    use std::{cell::Cell, path::Path};
+
+    #[test]
+    fn unit_art_uploads_a_shared_sprite_once_per_palette() {
+        let mut sprites = SpriteTextures::default();
+        let path = Path::new("units/elves-wood/fighter.png");
+        let calls = Cell::new(0);
+        let upload = |path: &Path| {
+            assert!(path.ends_with("fighter.png"));
+            calls.set(calls.get() + 1);
+            Some(calls.get())
+        };
+        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
+        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
+        assert_eq!(sprites.load(path.into(), Some(2), upload), Some(2));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
+        assert_eq!(calls.get(), 3);
+    }
 }
 
 #[cfg(test)]
