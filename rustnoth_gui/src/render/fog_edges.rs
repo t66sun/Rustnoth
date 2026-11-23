@@ -3,8 +3,9 @@ use super::{
     BoardLayout, Cover, Hex, Observation, Viewport,
     atlas::{Atlas, AtlasSprite},
     recolored_pixels, sprite_rect,
+    terrain_clip::TerrainClip,
 };
-use macroquad::prelude::{Vec2, WHITE, vec2};
+use macroquad::prelude::{Vec2, WHITE};
 use std::{collections::HashMap, fs, path::Path};
 
 const DIRECTIONS: [&str; 6] = ["n", "ne", "se", "s", "sw", "nw"];
@@ -125,35 +126,59 @@ struct Boundary {
     shroud: u8,
 }
 
-fn boundaries(known: impl Iterator<Item = (Hex, bool)>, cover: &[(Hex, Cover)]) -> Vec<Boundary> {
+fn boundaries(
+    playable: impl Iterator<Item = (Hex, bool)>,
+    border: impl Iterator<Item = (Hex, bool)>,
+    cover: &[(Hex, Cover)],
+) -> (Vec<Boundary>, usize) {
     if cover.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let covered: HashMap<_, _> = cover.iter().map(|(at, kind)| (*at, kind)).collect();
-    known
-        .filter_map(|(at, visible)| {
-            let mut fog = 0;
-            let mut shroud = 0;
-            for (i, neighbor) in at.neighbors().enumerate() {
-                match covered.get(&neighbor) {
-                    Some(Cover::Shroud) => shroud |= 1 << i,
-                    Some(Cover::Fog) if visible => fog |= 1 << i,
-                    _ => {}
-                }
+    let boundary = |(at, visible): (Hex, bool)| {
+        let mut fog = 0;
+        let mut shroud = 0;
+        for (i, neighbor) in at.neighbors().enumerate() {
+            match covered.get(&neighbor) {
+                Some(Cover::Shroud) => shroud |= 1 << i,
+                Some(Cover::Fog) if visible => fog |= 1 << i,
+                _ => {}
             }
-            (fog != 0 || shroud != 0).then_some(Boundary {
-                at,
-                fog,
-                shroud,
-            })
+        }
+        (fog != 0 || shroud != 0).then_some(Boundary { at, fog, shroud })
+    };
+    let mut entries: Vec<_> = playable.filter_map(&boundary).collect();
+    let playable_len = entries.len();
+    entries.extend(border.filter_map(boundary));
+    (entries, playable_len)
+}
+
+fn visible_boundaries<'a>(
+    tiles: &'a [Boundary],
+    playable_len: usize,
+    layout: &'a BoardLayout,
+    viewport: Viewport,
+    edge_extent: Vec2,
+) -> impl Iterator<Item = (&'a Boundary, Vec2)> + 'a {
+    let size = layout.tile_size();
+    let clip = TerrainClip::new(viewport, size, edge_extent);
+    let (playable, border) = tiles.split_at(playable_len);
+    // Playable anchors are row-sorted. Border anchors retain map order.
+    clip.rows(layout, playable, |tile| tile.at.y)
+        .iter()
+        .chain(border)
+        .filter_map(move |tile| {
+            let center = Vec2::from_array(layout.tile_origin(tile.at)) + size * 0.5;
+            clip.contains(center).then_some((tile, center))
         })
-        .collect()
 }
 
 pub(super) struct Art {
     sprites: Sprites<AtlasSprite>,
     fill_extent: Vec2,
+    edge_extent: Vec2,
     tiles: Vec<Boundary>,
+    playable_len: usize,
 }
 
 impl Art {
@@ -162,7 +187,9 @@ impl Art {
         let sprites = Sprites::load(terrain, |path| atlas.add(&recolored_pixels(path, None)?));
         let fill_extent = sprites.fog.iter().chain(sprites.shroud.iter())
             .map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max);
-        Self { sprites, fill_extent, tiles: Vec::new() }
+        let edge_extent = sprites.fog_edges.iter().chain(&sprites.shroud_edges).flatten()
+            .map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max);
+        Self { sprites, fill_extent, edge_extent, tiles: Vec::new(), playable_len: 0 }
     }
 
     pub(super) fn fill(&self, at: Hex, cover: &Cover) -> Option<&AtlasSprite> {
@@ -174,16 +201,14 @@ impl Art {
     }
 
     pub(super) fn update(&mut self, view: &Observation, border: &engine_lite::map::KnownBorder<'_>, cover: &[(Hex, Cover)]) {
-        let known = view.tiles.iter().map(|t| (t.position, t.visible))
-            .chain(border.iter().map(|(&at, &(_, visible))| (at, visible)));
-        self.tiles = boundaries(known, cover);
+        let playable = view.tiles.iter().map(|t| (t.position, t.visible));
+        let border = border.iter().map(|(&at, &(_, visible))| (at, visible));
+        (self.tiles, self.playable_len) = boundaries(playable, border, cover);
     }
 
     pub(super) fn draw_edges(&self, layout: &BoardLayout, viewport: Viewport) {
         let size = layout.tile_size();
-        for tile in &self.tiles {
-            let [x, y] = layout.tile_origin(tile.at);
-            let center = vec2(x + size / 2.0, y + size / 2.0);
+        for (tile, center) in visible_boundaries(&self.tiles, self.playable_len, layout, viewport, self.edge_extent) {
             for sprite in self.sprites.fog_edges[tile.fog as usize]
                 .iter()
                 .chain(&self.sprites.shroud_edges[tile.shroud as usize])
@@ -265,7 +290,12 @@ mod tests {
             tiles: vec![tile(0, 0, true), tile(1, 0, false), tile(1, 1, false)],
             units: vec![],
         };
-        let result = boundaries(view.tiles.iter().map(|t| (t.position, t.visible)), &map_cover(&view).cells);
+        let (result, playable_len) = boundaries(
+            view.tiles.iter().map(|t| (t.position, t.visible)),
+            std::iter::empty(),
+            &map_cover(&view).cells,
+        );
+        assert_eq!(playable_len, 3);
         assert_eq!(
             result,
             [
@@ -286,5 +316,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn viewport_clips_boundary_tiles_before_mask_lookup_and_preserves_border_order() {
+        let view = Viewport { x: 10.25, y: 30.75, width: 121.5, height: 119.5 };
+        let layout = BoardLayout::battlefield(90, 90, view).unwrap()
+            .native_scale(Some(Hex { x: 0, y: 45 }));
+        let boundary = |at| Boundary { at, fog: 1, shroud: 1 };
+        let mut tiles: Vec<_> = (0..90).flat_map(|y| (0..90).map(move |x| boundary(Hex { x, y }))).collect();
+        let playable_len = tiles.len();
+        let overhang = Hex { x: -1, y: 45 };
+        let next_border = Hex { x: -1, y: 46 };
+        tiles.extend([Hex { x: 90, y: 0 }, overhang, next_border].map(boundary));
+
+        let size = layout.tile_size();
+        let center = |at| Vec2::from_array(layout.tile_origin(at)) + size * 0.5;
+        let extent = Vec2::new(216.0, 248.0);
+        let [x, y] = center(overhang).to_array();
+        let view = Viewport { x: x + 10.25, y: y - 54.75, ..view };
+        assert!(!view.contains(center(overhang).to_array()));
+
+        let visited: Vec<_> = visible_boundaries(&tiles, playable_len, &layout, view, extent)
+            .map(|(tile, _)| tile.at).collect();
+        let overlapping: Vec<_> = tiles.iter().filter_map(|tile| {
+            sprite_rect(center(tile.at), extent, size, Some(view)).map(|_| tile.at)
+        }).collect();
+        assert_eq!(visited, overlapping);
+        assert!(visited.len() < 50);
+        assert!(visited.ends_with(&[overhang, next_border]));
     }
 }
