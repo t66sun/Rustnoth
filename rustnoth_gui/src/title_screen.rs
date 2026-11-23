@@ -10,6 +10,7 @@ mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
+pub(crate) use languages::window;
 mod load_game;
 mod credits;
 mod community;
