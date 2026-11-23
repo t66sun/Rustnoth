@@ -8,7 +8,7 @@ mod plan;
 
 use super::{AssetCatalog, Hex, Observation, draw_centered};
 use macroquad::prelude::{Texture2D, Vec2};
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
 pub(crate) struct Rules {
@@ -25,10 +25,31 @@ struct Drawing {
     layers: Vec<(bool, Vec<Animation>)>,
 }
 struct Animation {
+    sequence: Rc<Sequence>,
+    offset: u32,
+}
+
+struct Sequence {
     periods: Vec<String>,
     frames: Vec<(Option<Texture2D>, u32)>,
     duration: u32,
-    offset: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct SequenceKey {
+    image: usize,
+    variant: usize,
+    choice: usize,
+    cut: Option<compile::Cut>,
+}
+
+#[derive(Default)]
+struct Sequences(HashMap<SequenceKey, Option<Rc<Sequence>>>);
+
+impl Sequences {
+    fn load(&mut self, key: SequenceKey, prepare: impl FnOnce() -> Option<Sequence>) -> Option<Rc<Sequence>> {
+        self.0.entry(key).or_insert_with(|| prepare().map(Rc::new)).clone()
+    }
 }
 
 impl Rules {
@@ -62,37 +83,37 @@ impl Rules {
             .get_or_insert_with(|| compile::compile(assets.terrain_rules(), assets.image_roots()));
         self.tiles.clear();
         let tiles = plan(catalog);
+        let mut sequences = Sequences::default();
         for (hex, tile) in tiles {
             let mut layers = Vec::new();
             for part in &tile.layers {
                 let mut animations = Vec::new();
-                for variant in &catalog.images[part.image].variants {
+                for (variant_index, variant) in catalog.images[part.image].variants.iter().enumerate() {
                     if !variant.flags.iter().all(|&flag| tile.has_flag(flag)) {
                         continue;
                     }
-                    let index = (part.seed / 7919) as usize % variant.choices.len();
-                    let mut duration = 0u32;
-                    let frames: Vec<_> = variant.choices[index]
-                        .iter()
-                        .map(|&(id, time)| {
+                    let choice = (part.seed / 7919) as usize % variant.choices.len();
+                    let key = SequenceKey { image: part.image, variant: variant_index, choice, cut: part.cut };
+                    let Some(sequence) = sequences.load(key, || {
+                        let mut duration = 0u32;
+                        let frames: Vec<_> = variant.choices[choice].iter().map(|&(id, time)| {
                             duration = duration.saturating_add(time);
                             (self.bitmaps.frame(catalog, id, part.cut), duration)
+                        }).collect();
+                        frames.iter().any(|(image, _)| image.is_some()).then(|| Sequence {
+                            periods: variant.periods.clone(),
+                            frames,
+                            duration,
                         })
-                        .collect();
-                    if frames.iter().all(|(image, _)| image.is_none()) {
+                    }) else {
                         continue;
-                    }
+                    };
                     let offset = match variant.random {
                         0 => 0,
                         n if n > 0 => part.seed % n as u32,
-                        _ => part.seed % duration,
+                        _ => part.seed % sequence.duration,
                     };
-                    animations.push(Animation {
-                        periods: variant.periods.clone(),
-                        frames,
-                        duration,
-                        offset,
-                    });
+                    animations.push(Animation { sequence, offset });
                 }
                 if !animations.is_empty() {
                     layers.push((
@@ -136,12 +157,13 @@ impl Rules {
         for (_, variants) in tile.layers.iter().filter(|(front, _)| *front == foreground) {
             let Some(animation) = variants
                 .iter()
-                .find(|a| a.periods.is_empty() || a.periods.iter().any(|p| p == tod))
+                .find(|a| a.sequence.periods.is_empty() || a.sequence.periods.iter().any(|p| p == tod))
             else {
                 continue;
             };
-            let phase = ((ms + u64::from(animation.offset)) % u64::from(animation.duration)) as u32;
-            if let Some((Some(texture), _)) = animation.frames.iter().find(|(_, end)| phase < *end)
+            let sequence = &animation.sequence;
+            let phase = ((ms + u64::from(animation.offset)) % u64::from(sequence.duration)) as u32;
+            if let Some((Some(texture), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
             {
                 draw_centered(texture, center, size, clip);
             }
@@ -153,6 +175,29 @@ impl Rules {
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn same_variant_reuses_frames_until_its_choice_or_crop_changes() {
+        let mut sequences = Sequences::default();
+        let key = SequenceKey { image: 0, variant: 0, choice: 0, cut: None };
+        let prepare = || Some(Sequence {
+            periods: vec!["dawn".into()],
+            frames: vec![(None, 60), (None, 120)],
+            duration: 120,
+        });
+
+        let first = sequences.load(key, prepare).unwrap();
+        let repeated = sequences.load(key, || panic!("already prepared")).unwrap();
+        assert!(Rc::ptr_eq(&first, &repeated));
+
+        let other_choice = SequenceKey { choice: 1, ..key };
+        assert!(!Rc::ptr_eq(&first, &sequences.load(other_choice, prepare).unwrap()));
+
+        let crop = compile::Cut { x: -8, y: 12, center: None };
+        let absent = SequenceKey { cut: Some(crop), ..key };
+        assert!(sequences.load(absent, || None).is_none());
+        assert!(sequences.load(absent, || panic!("already found missing")).is_none());
+    }
 
     #[test]
     fn applies_rotated_roads_only_when_the_neighbor_is_known_and_respects_flags() {
