@@ -48,10 +48,11 @@ rustnoth_gui --skirmish <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-root <directory>]\n\
 rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
-Press Home to fit the board.";
+Press Home to fit the board.\n\
+Put --uncapped before the launch arguments to render without waiting for vertical sync.";
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    let (args, uncapped) = launch_arguments(env::args_os().skip(1).collect());
     if let [flag] = args.as_slice()
         && (flag == "--help" || flag == "-h")
     {
@@ -91,7 +92,7 @@ fn main() -> ExitCode {
         window_resizable: true,
         ..Conf::default()
     };
-    Window::from_config(sprite_batches(configuration), async move {
+    Window::from_config(sprite_batches(configuration, uncapped), async move {
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
@@ -107,10 +108,21 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn sprite_batches(window: Conf) -> macroquad::conf::Conf {
+fn launch_arguments(mut args: Vec<OsString>) -> (Vec<OsString>, bool) {
+    let uncapped = args.first().is_some_and(|arg| arg == "--uncapped");
+    if uncapped {
+        args.remove(0);
+    }
+    (args, uncapped)
+}
+
+fn sprite_batches(window: Conf, uncapped: bool) -> macroquad::conf::Conf {
     // Changing terrain textures starts a fresh GPU buffer pair. Most pairs hold
     // one quad. Consecutive glyphs or sprites sharing a texture can still batch.
     let mut config = macroquad::conf::Conf::from(window);
+    if uncapped {
+        config.miniquad_conf.platform.swap_interval = Some(0);
+    }
     config.draw_call_vertex_capacity = 64 * 4;
     config.draw_call_index_capacity = 64 * 6;
     config
@@ -793,7 +805,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             continue;
         }
         if let Some(window) = attack_dialog && let Some(choices) = menu.as_mut() {
-            confirmed_action = window.choose(choices, &data.assets, &art).await;
+            confirmed_action = window.choose(choices, &data.assets).await;
             if let Some(Action::Attack(choice)) = confirmed_action.as_ref()
                 && let Some(plan) = session.hovered_attack().filter(|plan| plan.origin != plan.staging)
                 && let Some(preview) = plan.weapons.iter().find(|row| row.choice == *choice) {
@@ -872,12 +884,27 @@ mod tests {
 
     #[test]
     fn textured_batches_fit_the_largest_board_primitive_without_reserving_a_full_mesh() {
-        let config = sprite_batches(Conf::default());
+        let config = sprite_batches(Conf::default(), false);
         // A filled circle emits a 20-triangle fan in macroquad.
         assert!(config.draw_call_vertex_capacity >= 22 && config.draw_call_index_capacity >= 60);
         let bytes = config.draw_call_vertex_capacity * size_of::<Vertex>()
             + config.draw_call_index_capacity * size_of::<u16>();
         assert!(bytes <= 16 * 1024, "{bytes} bytes for each texture change");
+    }
+
+    #[test]
+    fn uncapped_launch_preserves_the_existing_arguments_and_disables_vertical_sync() {
+        let launch: Vec<OsString> = ["--wesnoth-root", "stock"].map(OsString::from).to_vec();
+        let (ordinary, uncapped) = launch_arguments(launch.clone());
+        assert_eq!(ordinary, launch);
+        assert!(!uncapped);
+        assert_eq!(sprite_batches(Conf::default(), uncapped).miniquad_conf.platform.swap_interval, None);
+
+        let mut input = vec![OsString::from("--uncapped")];
+        input.extend(launch.clone());
+        let (arguments, uncapped) = launch_arguments(input);
+        assert_eq!(arguments, launch);
+        assert_eq!(sprite_batches(Conf::default(), uncapped).miniquad_conf.platform.swap_interval, Some(0));
     }
 
     #[test]

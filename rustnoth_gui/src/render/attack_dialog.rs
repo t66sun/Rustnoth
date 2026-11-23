@@ -1,5 +1,5 @@
 //! Weapon selection from the stock unit_attack window.
-use super::{BoardArt, get_texture};
+use super::{BoardArt, atlas::AtlasSprite, get_texture};
 use crate::{dialog, menu::Menu};
 use engine_lite::{
     board::AttackChoice,
@@ -23,7 +23,7 @@ struct UnitPane {
     title: String,
     hitpoints: i32,
     xp: String,
-    sprite: Option<Texture2D>,
+    sprite: Option<AtlasSprite>,
     portrait: Option<Texture2D>,
 }
 
@@ -194,17 +194,15 @@ impl AttackDialog {
         let pane = &self.units[index];
         let right = index == 1;
         let left = if right { area.right() - 144.0 } else { area.x };
-        let art = if profile {
-            pane.portrait.as_ref()
-        } else {
-            pane.sprite.as_ref()
-        };
-        image(
-            art.or(pane.sprite.as_ref()),
-            Rect::new(left, area.y, 144.0, 144.0),
-            true,
-            right,
-        );
+        let portrait_cell = Rect::new(left, area.y, 144.0, 144.0);
+        if profile && let Some(portrait) = pane.portrait.as_ref() {
+            image(Some(portrait), portrait_cell, true, right);
+        } else if let Some(sprite) = pane.sprite.as_ref() {
+            let original = sprite.size();
+            let size = original * (portrait_cell.w / original.x).min(portrait_cell.h / original.y);
+            let pos = portrait_cell.center() - size * 0.5;
+            sprite.draw(Rect::new(pos.x, pos.y, size.x, size.y), WHITE, right);
+        }
         let x = if right { area.x } else { left + 148.0 };
         let mut rect = Rect::new(x, area.y + 12.0, area.w - 151.0, 25.0);
         self.label(&pane.title, rect, 20, GOLD, 0.0);
@@ -284,8 +282,8 @@ impl AttackDialog {
         &self,
         menu: &mut Menu,
         assets: &AssetCatalog,
-        art: &BoardArt,
     ) -> Option<Action> {
+        let backdrop = dialog::Backdrop::capture(FilterMode::Nearest);
         let count = self.rows.len();
         let visible = count.min(5);
         let height = 252.0 + visible as f32 * ROW_HEIGHT;
@@ -295,12 +293,22 @@ impl AttackDialog {
         let mut opening = true;
         let mut last_click: Option<(usize, f64)> = None;
         loop {
-            art.surface.present();
             let scale = (screen_width() / (PANEL_WIDTH + 12.0))
                 .min(screen_height() / (height + 12.0))
                 .clamp(0.01, 1.0);
             let (w, h) = (screen_width() / scale, screen_height() / scale);
             set_camera(&dialog::setup_camera(w, h));
+            draw_texture_ex(
+                backdrop.texture(),
+                0.0,
+                0.0,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(w, h)),
+                    flip_y: true,
+                    ..Default::default()
+                },
+            );
             let p = Vec2::from(mouse_position()) / scale;
             let bounds = Rect::new(
                 (w - PANEL_WIDTH) * 0.5,
