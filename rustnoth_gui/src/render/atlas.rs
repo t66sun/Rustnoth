@@ -14,6 +14,10 @@ pub(super) struct Atlas {
 }
 
 impl Atlas {
+    pub(super) fn with_page_side(side: u16) -> Self {
+        Self { pages: Vec::new(), layout: PageLayout::new(side) }
+    }
+
     pub(super) fn add(&mut self, pixels: &RgbaImage) -> Option<AtlasSprite> {
         let width = u16::try_from(pixels.width()).ok()?;
         let height = u16::try_from(pixels.height()).ok()?;
@@ -33,9 +37,10 @@ impl Atlas {
         };
 
         if slot.page == self.pages.len() {
-            let len = usize::from(PAGE_SIDE).pow(2) * CHANNELS;
+            let side = self.layout.side;
+            let len = usize::from(side).pow(2) * CHANNELS;
             self.pages
-                .push(linear_texture(PAGE_SIDE, PAGE_SIDE, &vec![0; len]));
+                .push(linear_texture(side, side, &vec![0; len]));
         }
         let texture = &self.pages[slot.page];
         let image = pad_edges(pixels, width, height);
@@ -129,32 +134,42 @@ fn pad_edges(pixels: &RgbaImage, width: u16, height: u16) -> Image {
     }
 }
 
-#[derive(Default)]
 struct PageLayout {
+    side: u16,
     page: usize,
     x: u16,
     y: u16,
     row_height: u16,
 }
 
+impl Default for PageLayout {
+    fn default() -> Self {
+        Self::new(PAGE_SIDE)
+    }
+}
+
 impl PageLayout {
+    fn new(side: u16) -> Self {
+        Self { side, page: 0, x: 0, y: 0, row_height: 0 }
+    }
+
     fn place(&mut self, width: u16, height: u16) -> Option<Slot> {
-        let max_side = PAGE_SIDE - 2 * PADDING;
+        let max_side = self.side - 2 * PADDING;
         if width > max_side || height > max_side {
             return None;
         }
         let width = width + 2 * PADDING;
         let height = height + 2 * PADDING;
 
-        if self.x + width > PAGE_SIDE {
+        if self.x + width > self.side {
             self.x = 0;
             self.y += self.row_height;
             self.row_height = 0;
         }
-        if self.y + height > PAGE_SIDE {
+        if self.y + height > self.side {
             *self = Self {
                 page: self.page + 1,
-                ..Self::default()
+                ..Self::new(self.side)
             };
         }
 
@@ -267,6 +282,18 @@ mod tests {
         let second = layout.place(72, 72).unwrap();
         assert_eq!(first.page, second.page);
         assert_eq!(second.x, first.x + 72 + 2 * PADDING);
+    }
+
+    #[test]
+    fn compact_pages_fit_status_art_without_reserving_terrain_sized_pages() {
+        let mut layout = PageLayout::new(256);
+        assert_eq!(layout.place(1, 1).unwrap().page, 0);
+        for _ in 0..7 {
+            assert_eq!(layout.place(72, 72).unwrap().page, 0);
+        }
+        assert_eq!(layout.place(250, 250).unwrap().page, 1);
+        assert!(layout.place(300, 72).is_none());
+        assert_eq!(layout.side, 256);
     }
 
     #[test]
