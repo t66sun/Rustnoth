@@ -91,6 +91,7 @@ struct Section {
     topics: Vec<String>,
 }
 
+#[derive(Default)]
 pub(super) struct Book {
     root: Section,
     sections: HashMap<String, Section>,
@@ -122,18 +123,24 @@ fn section(node: &Node) -> Section {
 }
 
 impl Book {
+    pub fn insert_unit(&mut self, id: String, topic: Topic) {
+        let section = self.sections.get_mut("units").unwrap_or(&mut self.root);
+        if !section.topics.contains(&id) { section.topics.push(id.clone()); }
+        self.topics.insert(id, topic);
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let book = Self::read(bytes)?;
+        if book.initial().is_none() {
+            return Err("The help contents contain no readable starting topic".into());
+        }
+        Ok(book)
+    }
+
+    pub fn read(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let root = wml::parse(bytes)?;
-        let help = root
-            .children
-            .iter()
-            .find(|(tag, _)| tag == "help")
-            .ok_or("Core data contains no [help] section")?;
-        let mut book = Self {
-            root: Section::default(),
-            sections: HashMap::new(),
-            topics: HashMap::new(),
-        };
+        let mut book = Self::default();
+        let Some(help) = root.children.iter().find(|(tag, _)| tag == "help") else { return Ok(book) };
         for (tag, child) in &help.1.children {
             let id = child.attribute("id").unwrap_or("");
             match tag.as_str() {
@@ -152,9 +159,6 @@ impl Book {
                 }
                 _ => {}
             }
-        }
-        if book.initial().is_none() {
-            return Err("The help contents contain no readable starting topic".into());
         }
         Ok(book)
     }
