@@ -1,4 +1,6 @@
 //! Locate original artwork at desktop startup and prepare game data on first use.
+pub(super) mod window;
+
 use std::{
     collections::hash_map::DefaultHasher,
     env, fs,

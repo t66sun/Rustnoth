@@ -1,10 +1,7 @@
 //! Wesnoth achievement definitions and the status recorded by the original local profile.
 use super::super::locale::Catalog;
 use engine_lite::wml::Node;
-#[cfg(test)]
-use engine_lite::wml;
 use std::{collections::HashMap, io, path::Path};
-pub(super) use super::super::profile::read_profile;
 
 pub(super) struct Group {
     pub id: String,
@@ -31,7 +28,7 @@ fn has_id(node: Option<&Node>, key: &str, id: &str) -> bool {
     node.and_then(|n| n.attribute(key)).unwrap_or("").split(',').any(|item| item.trim() == id)
 }
 
-pub(super) fn groups(config: &Node, profile: &Node, root: &Path, language: &str) -> io::Result<Vec<Group>> {
+pub(super) fn groups(config: &Node, profile: &Node, tutorial_progress: u32, root: &Path, language: &str) -> io::Result<Vec<Group>> {
     let mut domains = HashMap::new();
     let mut translate = |n: &Node, attr: &str| -> io::Result<String> {
         let Some(value) = n.attributes.get(attr) else { return Ok(String::new()); };
@@ -58,11 +55,12 @@ pub(super) fn groups(config: &Node, profile: &Node, root: &Path, language: &str)
         for row in children(group, "achievement") {
             let Some(id) = row.attribute("id").filter(|s| !s.is_empty() && !s.contains(',')) else { continue };
             group_view.total += 1;
-            let complete = has_id(status, "ids", id);
+            let earned = if key == "tutorial" && id == "completed" { tutorial_progress } else { 0 };
+            let mut max: u32 = row.attribute("max_progress").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let complete = has_id(status, "ids", id) || max > 0 && earned >= max;
             if complete { group_view.completed += 1; }
             if !complete && matches!(row.attribute("hidden"), Some("yes" | "true" | "on" | "1")) { continue; }
             let partial = status.and_then(|s| children(s, "in_progress").find(|p| p.attribute("id") == Some(id)));
-            let mut max: u32 = row.attribute("max_progress").and_then(|s| s.parse().ok()).unwrap_or(0);
             let mut subs = Vec::new();
             for sub in children(row, "sub_achievement") {
                 let Some(subid) = sub.attribute("id").filter(|v| !v.is_empty()) else { continue };
@@ -80,7 +78,7 @@ pub(super) fn groups(config: &Node, profile: &Node, root: &Path, language: &str)
                 name: translate(row, attr("name", "name_completed"))?,
                 description: translate(row, attr("description", "description_completed"))?,
                 icon: row.attribute(attr("icon", "icon_completed")).unwrap_or("").to_owned(),
-                progress: (!complete && max > 0).then_some((current, max)), subs });
+                progress: (!complete && max > 0).then_some((earned.max(current), max)), subs });
         }
         result.push(group_view);
     }
@@ -90,6 +88,7 @@ pub(super) fn groups(config: &Node, profile: &Node, root: &Path, language: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_lite::wml;
     #[test]
     fn hidden_rows_count_in_total_and_only_a_matching_profile_unlocks_them() {
         let definitions = wml::parse(r#"[achievement_group]
@@ -121,13 +120,13 @@ progress_at=1
 sub_ids=one
 [/in_progress]
 [/achievements]"#).unwrap();
-        let fresh = groups(&definitions, &Node::default(), Path::new("."), "C").unwrap().remove(0);
+        let fresh = groups(&definitions, &Node::default(), 0, Path::new("."), "C").unwrap().remove(0);
         assert_eq!((fresh.total, fresh.completed, fresh.rows.len(), fresh.rows[0].progress), (2, 0, 1, Some((0, 3))));
-        let played = groups(&definitions, &profile, Path::new("."), "C").unwrap().remove(0);
+        let played = groups(&definitions, &profile, 0, Path::new("."), "C").unwrap().remove(0);
         assert_eq!((played.rows.len(), played.completed), (2, 1));
         assert_eq!((&*played.rows[0].name, &*played.rows[0].icon, played.rows[0].progress), ("Revealed", "earned.png", None));
         assert_eq!(played.rows[1].progress, Some((1, 3)));
         assert!(played.rows[1].subs[0].2);
-        assert!(groups(&Node::default(), &profile, Path::new("."), "C").unwrap().is_empty());
+        assert!(groups(&Node::default(), &profile, 0, Path::new("."), "C").unwrap().is_empty());
     }
 }
