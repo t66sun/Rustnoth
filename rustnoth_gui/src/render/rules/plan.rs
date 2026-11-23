@@ -70,6 +70,15 @@ pub(super) fn build_with_flags(catalog: &Catalog, view: &Observation, border: &e
     })
 }
 
+fn fringe_positions(width: i32, height: i32) -> impl Iterator<Item = Hex> {
+    (-2..=width).flat_map(move |x| {
+        let side_column = x < 0 || x == width;
+        let north_end = if side_column { height } else { height.min(-1) };
+        let south = (!side_column && height >= 0).then_some(height);
+        (-2..=north_end).chain(south).map(move |y| Hex { x, y })
+    })
+}
+
 fn apply<'a>(
     catalog: &Catalog,
     view: &'a Observation,
@@ -79,14 +88,8 @@ fn apply<'a>(
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
     }
-    for (x, y) in (-2..=view.width).flat_map(|x| (-2..=view.height).map(move |y| (x, y))) {
-        if x < 0 || y < 0 || x >= view.width || y >= view.height {
-            let at = Hex { x, y };
-            groups
-                .entry(border(at).unwrap_or(""))
-                .or_default()
-                .push(at);
-        }
+    for at in fringe_positions(view.width, view.height) {
+        groups.entry(border(at).unwrap_or("")).or_default().push(at);
     }
     let mut groups: Vec<_> = groups
         .into_iter()
@@ -211,6 +214,19 @@ fn apply<'a>(
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn terrain_fringe_preserves_column_order_and_scales_with_the_perimeter() {
+        for width in 0..=4 {
+            for height in 0..=4 {
+                let reference = (-2..=width)
+                    .flat_map(|x| (-2..=height).map(move |y| Hex { x, y }))
+                    .filter(|at| at.x < 0 || at.y < 0 || at.x >= width || at.y >= height);
+                assert!(fringe_positions(width, height).eq(reference));
+            }
+        }
+        assert_eq!(fringe_positions(10_000, 8_000).count(), 54_009);
+    }
 
     #[test]
     fn overlapping_terrain_rules_claim_overlay_anchors_before_bare_anchors() {
