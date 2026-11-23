@@ -142,6 +142,7 @@ amount=1
             assert!(!session.final_victory_ready(true));
             session.apply(Action::EndTurn).unwrap();
             assert!(session.next_scenario().is_none());
+            assert_eq!(session.human_won(), victim != "student");
             if victim == "student" {
                 assert!(session.dialogue().is_none());
                 assert!(!session.final_victory_ready(true));

@@ -8,7 +8,6 @@ mod preferences;
 pub(crate) use preferences::tiled;
 mod hotkeys;
 mod help;
-pub(crate) use help::show_unit;
 pub(crate) mod locale;
 mod languages;
 pub(crate) use languages::window;
@@ -16,9 +15,10 @@ mod load_game;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::tutorial_progress;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
-mod profile;
+pub(crate) mod profile;
 pub(crate) mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
@@ -83,7 +83,7 @@ fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize
 }
 
 impl TitleScreen {
-    pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn run(self, mut fullscreen: bool, mut windowed_size: Vec2) -> Result<(), Box<dyn Error>> {
         let mut bindings = hotkeys::Bindings::load(&self.root)?;
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
@@ -97,7 +97,6 @@ impl TitleScreen {
         let mut focus = None;
         let mut pressed = None;
         let mut last_pointer = None;
-        let mut windowed_size = vec2(1200.0, 820.0);
         let mut error: Option<String> = None;
         loop {
             let scale = (screen_width() / 660.0).min(screen_height() / 460.0).clamp(0.01, 1.0);
@@ -268,26 +267,6 @@ struct ButtonBacking {
 }
 
 impl ButtonBacking {
-    fn load(root: &Path) -> Result<[Self; 3], Box<dyn Error>> {
-        let backing = |name: &str| -> Result<Self, Box<dyn Error>> {
-            let file = root.join("images/buttons/button_normal").join(name);
-            Ok(Self { pixels: crate::artwork::rgba(&read_file(&file)?)?, sizes: Default::default() })
-        };
-        Ok([backing("background.png")?, backing("background-active.png")?, backing("background-pressed.png")?])
-    }
-
-    fn button(buttons: &[Self; 3], font: Option<&Font>, rect: Rect, label: &str, focused: bool, pressed: bool) {
-        use button_canvas::State;
-        let state = if pressed { State::Pressed } else if focused { State::Focused } else { State::Enabled };
-        buttons[state as usize].draw(rect, state);
-        let Rect { x, y, w, h } = rect;
-        let metrics = measure_text(label, font, 16, 1.0);
-        let shift = if pressed { 1.0 } else { 0.0 };
-        dialog::text(font, label, (x + (w - metrics.width) * 0.5).round() + shift,
-            (y + (h - metrics.height) * 0.5 + metrics.offset_y).round() + shift,
-            16, Color::from_rgba(186, 172, 125, 255));
-    }
-
     fn draw(&self, bounds: Rect, state: button_canvas::State) {
         let width = (bounds.w - 2.).round().max(1.) as u16;
         let height = (bounds.h - 2.).round().max(1.) as u16;
@@ -447,6 +426,12 @@ impl Art {
     }
     fn load(root: &Path, locale: locale::Locale) -> Result<Self, Box<dyn Error>> {
         let texture = |name: &str| load_texture(root, name);
+        let button = |name: &str| -> Result<ButtonBacking, Box<dyn Error>> {
+            Ok(ButtonBacking {
+                pixels: crate::artwork::rgba(&read_file(&root.join(name))?)?,
+                sizes: Default::default(),
+            })
+        };
         let (font, italic) = title_fonts(root, &locale.effective);
         let logo = texture(&locale.logo(root))?;
         let map = localized_map(root, &locale)?;
@@ -465,7 +450,9 @@ impl Art {
                 &read_file(&root.join("data/core/images/maps/background.webp"))?)?),
             map,
             logo_shadow: texture("images/misc/logo-bg.png")?, logo,
-            buttons: ButtonBacking::load(root)?,
+            buttons: [button("images/buttons/button_normal/background.png")?,
+                button("images/buttons/button_normal/background-active.png")?,
+                button("images/buttons/button_normal/background-pressed.png")?],
             font, italic,
         })
     }
@@ -531,7 +518,14 @@ impl Art {
     }
 
     fn button(&self, rect: Rect, label: &str, focused: bool, pressed: bool) {
-        ButtonBacking::button(&self.buttons, self.font.as_ref(), rect, label, focused, pressed);
+        self.button_frame(rect,focused,pressed);
+        let Rect{x,y,w,h}=rect;
+        let font = self.font.as_ref();
+        let metrics = measure_text(label, font, 16, 1.0);
+        let shift = if pressed { 1.0 } else { 0.0 };
+        dialog::text(font, label, (x + (w - metrics.width) * 0.5).round() + shift,
+            (y + (h - metrics.height) * 0.5 + metrics.offset_y).round() + shift,
+            16, Color::from_rgba(186, 172, 125, 255));
     }
 }
 

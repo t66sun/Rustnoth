@@ -67,21 +67,6 @@ impl Bundle {
         self.unit_types.get(id)
     }
 
-    /// Public unit-type help uses the same terrain and resistance tables as combat.
-    pub fn unit_resistances<'a>(&'a self, unit: &'a UnitType) -> BTreeMap<&'a str, i32> {
-        let base = self.resistance.get(&unit.movement_type);
-        unit.resistance_overrides.damage_types().chain(base.into_iter().flat_map(DamageTable::damage_types))
-            .map(|kind| (kind, 100 - unit.resistance_overrides.damage_taken_with_fallback(kind, base)))
-            .collect()
-    }
-
-    pub fn unit_terrain_modifiers(&self, unit: &UnitType, terrain: &str) -> (u8, Option<u32>) {
-        let base = self.movement.get(&unit.movement_type);
-        let hit = unit.defense_overrides.hit_chance_with_fallback(&self.terrain, terrain, base.map(|m| &m.defense));
-        let cost = unit.movement_cost_overrides.cost_with_fallback(&self.terrain, terrain, false, base.map(|m| &m.movement_costs));
-        (100 - hit, cost.map(|n| n.get()))
-    }
-
     /// Start a fresh match, using the caller's resolver for a named map file.
     pub fn start(
         &self,

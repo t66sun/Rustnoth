@@ -21,6 +21,7 @@ pub(crate) use hiding::Hiding;
 pub struct UnitType {
     pub id: String,
     pub(crate) race: String,
+    pub(crate) default_female: bool,
     pub(crate) undead_variation: String,
     pub(crate) variation_id: String,
     variations: BTreeMap<String, UnitType>,
@@ -129,6 +130,7 @@ impl UnitType {
         let mut result = Self {
             id: text("id").to_owned(),
             race: text("race").to_owned(),
+            default_female: text("gender").split(',').next().is_some_and(|first| first.trim() == "female"),
             undead_variation: catalog.undead_variation(&unit).to_owned(),
             variation_id: text("variation_id").to_owned(),
             variations: variations::read(&unit, catalog),

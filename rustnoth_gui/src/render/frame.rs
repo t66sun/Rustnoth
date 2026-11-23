@@ -2,7 +2,7 @@
 use super::*;
 mod unit_report;
 mod end_button;
-mod time_report;
+mod clock;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -72,9 +72,9 @@ pub(super) struct FrameArt {
     minimap_buttons: crate::minimap_buttons::Buttons,
     end_button: end_button::Art,
     reports: [Texture; 5],
+    clock: clock::Clock,
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
-    time_report: time_report::Art,
     status: StatusBox,
 }
 
@@ -90,9 +90,9 @@ impl FrameArt {
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
             minimap_buttons: crate::minimap_buttons::Buttons::load(root),
             end_button: end_button::Art::load(root),
+            clock: clock::Clock::new(root),
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root, locale),
-            time_report: time_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: StatusBox::load(root),
         }
@@ -163,6 +163,7 @@ pub fn draw(
     let s = frame.scale;
     if s <= 0.0 { return; }
     draw_reports(frame, state, observation, movement.session.economy(), art);
+    art.frame.clock.draw(frame, art.dialogue_font.as_ref(), #[cfg(windows)] art.dialogue_text.renderer());
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
@@ -189,10 +190,19 @@ pub fn draw(
             }
         }
         art.frame.status.draw(rect(0.0, 43.0, 128.0, 42.0), s);
-        if let Some(report) = movement.session.time_report(position) {
-            art.frame.time_report.draw(&report, movement.assets,
-                rect(2., 44., 125., 39.), rect(130., 52., 64., 22.), s, &art.dialogue_font,
-                movement.session.dialogue().is_none());
+        if let Some(period) = movement.global_time {
+            let (name, image) = art.periods.get(period.id.as_str())
+                .map_or((period.id.as_str(), None), |(name, image)| (*name, image.as_ref()));
+            let bounds = rect(3.0, 46.0, 122.0, 36.0);
+            if let Some(image) = image {
+                draw_texture_ex(image, bounds.x, bounds.y, WHITE, DrawTextureParams {
+                    dest_size: Some(vec2(bounds.w, bounds.h)), ..Default::default()
+                });
+            } else {
+                text_in(&art.font, name, bounds, 14, TEXT, true);
+            }
+            text_in(&art.font, name, rect(130.0, 47.0, 40.0, 15.0), 12, TEXT, true);
+            text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
         art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
         art.frame.unit_report.draw_headings(frame, &art.dialogue_font);
@@ -206,7 +216,7 @@ pub fn draw(
     if let Some(message) = movement.message {
         text_in(&art.font, message, hint, 14, ERROR, false);
     } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
-        text_in(&art.font, "Dismiss veteran [Shift+D]", hint, 14, TEXT, false);
+        text_in(&art.font, "Dismiss veteran [D]", hint, 14, TEXT, false);
     }
 }
 

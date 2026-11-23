@@ -127,6 +127,7 @@ pub struct BoardArt {
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
+    periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
@@ -191,6 +192,18 @@ impl BoardArt {
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
         let palette_path = wesnoth_root.join("data/core/team-colors.cfg");
         let terrain_dir = wesnoth_root.join("data/core/images/terrain");
+        let clock_dir = wesnoth_root.join("data/core/images/misc/time-schedules/default");
+        let periods = [
+            ("dawn", "Dawn", "dawn"),
+            ("morning", "Morning", "morning"),
+            ("afternoon", "Afternoon", "afternoon"),
+            ("dusk", "Dusk", "dusk"),
+            ("first_watch", "First Watch", "firstwatch"),
+            ("second_watch", "Second Watch", "secondwatch"),
+        ].into_iter().map(|(id, name, file)| {
+            let image = load_texture(&clock_dir.join(format!("schedule-{file}.png")), None);
+            (id, (name, image))
+        }).collect();
         let palette_bytes = fs::read(&palette_path)
             .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
             .ok();
@@ -224,6 +237,7 @@ impl BoardArt {
             flag_dir: wesnoth_root.join("data/core/images/flags"),
             flag_colors: palette(TeamColors::parse_flags),
             flags: BTreeMap::new(),
+            periods,
             map_items: Vec::new(),
             tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
@@ -588,8 +602,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
     if let Some(mask) = art.unreachable.as_ref()
         && (enemies.is_some() || own.is_some()) {
+        let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
         for tile in view.tiles.iter().filter(|tile| {
-            !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
                 && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
         }) {
             let [x, y] = layout.tile_origin(tile.position);
@@ -702,6 +717,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat([0; 3]);
     if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(plan) = movement.session.hovered_attack() {
+        art.footsteps.draw_attack(layout, plan.staging, plan.target, viewport);
+    }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {

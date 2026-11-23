@@ -8,8 +8,6 @@ use crate::hex::Hex;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimeOfDay {
     pub id: String,
-    pub name: crate::wml::Value,
-    pub image: String,
     pub lawful_bonus: i32,
     /// Additive red, green and blue shifts from the scenario WML.
     pub color: [i32; 3],
@@ -67,8 +65,6 @@ impl TimeSchedule {
         if entries.is_empty() {
             entries.push(TimeOfDay {
                 id: String::from("nulltod"),
-                name: Default::default(),
-                image: String::new(),
                 lawful_bonus: 0,
                 color: [0; 3],
             });
@@ -125,23 +121,14 @@ impl TimeSchedule {
 
     /// Returns the last matching area's time or the global time at this turn.
     pub fn at_hex(&self, turn: i32, position: Hex) -> &TimeOfDay {
-        self.cycle_at(Some(position)).at_turn(turn)
-    }
-
-    pub(crate) fn cycle_report(&self, turn: i32, position: Option<Hex>) -> (usize, &[TimeOfDay]) {
-        let cycle = self.cycle_at(position);
-        (cycle.index_at_turn(turn), &cycle.entries)
-    }
-
-    fn cycle_at(&self, position: Option<Hex>) -> &TimeCycle {
-        if let Some((x, y)) = position.and_then(|p| p.to_wml())
+        if let Some((x, y)) = position.to_wml()
             && let Some(area) = self.areas.iter().rev().find(|area|
                 area.locations.iter().any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))
             )
         {
-            return &area.cycle;
+            return area.cycle.at_turn(turn);
         }
-        &self.global
+        self.at_turn(turn)
     }
 
     /// Sets the scenario's explicit liminal bonus instead of the schedule default.
@@ -216,8 +203,6 @@ mod tests {
         .into_iter()
         .map(|(id, lawful_bonus)| TimeOfDay {
             id: id.into(),
-            name: Default::default(),
-            image: String::new(),
             lawful_bonus,
             color: [0; 3],
         })
@@ -296,8 +281,6 @@ mod tests {
                 .iter()
                 .map(|&lawful_bonus| TimeOfDay {
                     id: String::new(),
-                    name: Default::default(),
-                    image: String::new(),
                     lawful_bonus,
                     color: [0; 3],
                 })

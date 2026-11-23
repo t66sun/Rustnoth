@@ -19,7 +19,6 @@ pub(super) enum Command {
     ShowEnemyMoves,
     Recruit,
     RecruitAt(Hex),
-    Describe(Hex),
     Recall,
     Undo,
 }
@@ -34,7 +33,6 @@ impl Command {
             Self::ShowEnemyMoves => "Show Enemy Moves",
             Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
-            Self::Describe(_) => "Unit Description",
             Self::Undo => "Undo",
         }
     }
@@ -45,7 +43,6 @@ pub(super) struct State {
     recruit_at: Option<(Hex, Vec2)>,
     cursor: usize,
     context: Vec2,
-    context_target: Vec2,
 }
 pub(super) struct Response {
     pub handled: bool,
@@ -112,12 +109,6 @@ pub(super) fn next_unit(view: &Observation, selected: Option<Hex>) -> Option<Hex
     Some(first)
 }
 
-// menu_handler::current_unit prefers the visible unit beneath the pointer.
-pub(super) fn described_unit(hovered: Option<Hex>, selected: Option<Hex>,
-    visible: impl Fn(Hex) -> bool) -> Option<Hex> {
-    [hovered, selected].into_iter().flatten().find(|hex| visible(*hex))
-}
-
 pub(super) fn available(objectives: bool, units: bool, actions: &[Action]) -> Vec<Command> {
     let mut commands = Vec::new();
     if objectives {
@@ -151,7 +142,7 @@ fn items(group: Group, commands: &[Command]) -> Vec<Command> {
         .filter(|c| match group {
             Group::Menu => matches!(c, Command::Objectives | Command::UnitList | Command::Save | Command::Quit),
             Group::Actions => matches!(c, Command::NextUnit | Command::Recruit | Command::Recall | Command::Undo | Command::ShowEnemyMoves),
-            Group::Context => matches!(c, Command::Undo | Command::Describe(_) | Command::RecruitAt(_)),
+            Group::Context => *c == Command::Undo,
         })
         .collect()
 }
@@ -165,8 +156,18 @@ fn row(button: Rect, i: usize, scale: f32) -> Rect {
 }
 
 impl State {
-    pub fn target_point(&self, pointer: [f32; 2]) -> [f32; 2] {
-        if self.open == Some(Group::Context) { self.context_target.to_array() } else { pointer }
+    pub fn vertical_edge_scroll(&self, pointer: Vec2, canvas: Vec2, threshold: f32) -> i32 {
+        // Macroquad's initial position is (0, 0) until the first pointer event.
+        if self.open.is_some() || pointer == Vec2::ZERO || pointer.x < 0.0 || pointer.x >= canvas.x
+            || pointer.y < 0.0 || pointer.y >= canvas.y
+        {
+            return 0;
+        }
+        let direction = (pointer.y < threshold) as i32 - (pointer.y > canvas.y - threshold) as i32;
+        if direction != 0 && geometry(canvas.x, canvas.y).0.iter().any(|b| b.contains(pointer)) {
+            return 0;
+        }
+        direction
     }
 
     fn anchor(&self, group: Group, buttons: [Rect; 2]) -> Rect {
@@ -207,17 +208,14 @@ impl State {
         }
         let prior = self.open;
         let mut command = None;
-        if prior.is_none() {
-            if is_mouse_button_pressed(MouseButton::Right) && crate::render::board_viewport().contains(pointer.to_array())
-                && !items(Group::Context, commands).is_empty() {
+        if prior.is_none() && commands.contains(&Command::Undo) {
+            if is_mouse_button_pressed(MouseButton::Right) && crate::render::board_viewport().contains(pointer.to_array()) {
                 self.open = Some(Group::Context);
                 self.cursor = 0;
-                self.context_target = pointer;
-                let height = items(Group::Context, commands).len() as f32 * 27.0 * s;
-                self.context = vec2(pointer.x.min(screen_width() - 192.0 * s), pointer.y.min(screen_height() - height));
+                self.context = vec2(pointer.x.min(screen_width() - 192.0 * s), pointer.y.min(screen_height() - 27.0 * s));
                 return Response { handled: true, command: None };
             }
-            if commands.contains(&Command::Undo) && is_key_pressed(KeyCode::U) && ![
+            if is_key_pressed(KeyCode::U) && ![
                 KeyCode::LeftAlt, KeyCode::RightAlt, KeyCode::LeftControl, KeyCode::RightControl,
                 KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftSuper, KeyCode::RightSuper,
             ].into_iter().any(is_key_down) {
@@ -344,20 +342,22 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn a_context_description_keeps_the_original_target_when_the_pointer_enters_the_menu() {
-        let hex = Hex { x: 2, y: 4 };
-        let point = vec2(592., 309.);
-        let state = State { open: Some(Group::Context), context_target: point, ..Default::default() };
-        assert_eq!(state.target_point([650., 351.]), point.to_array());
-        let commands = [Command::Quit, Command::Recruit, Command::Describe(hex)];
-        assert_eq!(items(Group::Context, &commands), [Command::Describe(hex)]);
-        assert!(!items(Group::Actions, &commands).contains(&Command::Describe(hex)));
-        let selected = Hex { x: 4, y: 2 };
-        assert_eq!(described_unit(Some(hex), Some(selected), |_| true), Some(hex));
-        assert_eq!(described_unit(Some(hex), Some(selected), |at| at == selected), Some(selected));
-        assert_eq!(described_unit(Some(hex), None, |_| false), None);
+    fn window_edges_use_the_native_threshold_and_release_over_menus() {
+        let mut state = State::default();
+        let canvas = vec2(1200.0, 820.0);
+        let edge = |menu: &State, x, y| menu.vertical_edge_scroll(vec2(x, y), canvas, 10.0);
+        assert_eq!(edge(&state, 600.0, 0.0), 1);
+        assert_eq!(edge(&state, 600.0, 9.0), 1);
+        assert_eq!(edge(&state, 600.0, 10.0), 0);
+        assert_eq!(edge(&state, 600.0, 810.0), 0);
+        assert_eq!(edge(&state, 600.0, 811.0), -1);
+        assert_eq!(edge(&state, 600.0, 820.0), 0);
+        assert_eq!(edge(&state, 40.0, 5.0), 0);
+        assert_eq!(edge(&state, 145.0, 5.0), 0);
+        assert_eq!(state.vertical_edge_scroll(vec2(600.0, 819.0), canvas, 0.0), 0);
+        state.open = Some(Group::Context);
+        assert_eq!(edge(&state, 600.0, 819.0), 0);
     }
 
     #[test]

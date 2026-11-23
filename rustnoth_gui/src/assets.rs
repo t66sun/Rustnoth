@@ -24,7 +24,6 @@ pub struct AssetCatalog {
 
 #[derive(Debug)]
 struct UnitAssets {
-    help_text: Node,
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
     dialogue_profile: Option<String>,
@@ -71,11 +70,6 @@ impl UnitBars {
 }
 
 impl AssetCatalog {
-    /// Authored, translatable name and description for the unit's help page.
-    pub fn unit_help_text(&self, id: &str) -> Option<&Node> {
-        self.units.get(id).map(|unit| &unit.help_text)
-    }
-
     /// Reads core definitions before custom scenario definitions.
     pub fn parse(wesnoth_root: &Path, core: &[u8], bundle: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_config(wesnoth_root, core, bundle, true)
@@ -301,12 +295,6 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
-                            help_text: Node {
-                                attributes: ["name", "description"].into_iter()
-                                    .filter_map(|k| unit.attributes.get(k).map(|v| (k.to_owned(), v.clone())))
-                                    .collect(),
-                                children: Vec::new(),
-                            },
                             combat: unit.children.iter().filter(|(tag, _)| matches!(tag.as_str(), "attack_anim" | "defend"))
                                 .cloned().collect(),
                             moving: unit.children.iter().filter(|(tag, _)| tag == "movement_anim")
