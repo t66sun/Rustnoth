@@ -49,6 +49,14 @@ pub(crate) struct Message {
 }
 
 impl Message {
+    pub(crate) fn tutorial_speech(cfg: &Node) -> Option<Self> {
+        let mut message = Self::read(cfg)?;
+        if message.speaker != "narrator" {
+            message.focus = Some((Subject::Unit(message.speaker.clone()), true));
+        }
+        Some(message)
+    }
+
     pub(crate) fn read(cfg: &Node) -> Option<Self> {
         // Options, text input and conditional dialogue require interactive WML.
         let focus = match cfg.children.as_slice() {
@@ -148,7 +156,11 @@ impl FixedMatch<'_> {
         }).collect::<Vec<_>>();
         let focus = message.focus.and_then(|(subject, only_if_offscreen)| {
             let (hex, owner) = match subject {
-                Subject::Unit(id) => self.scenario.board.units().find(|(_, u)| u.id.as_ref() == Some(&id))
+                Subject::Unit(id) => self.scenario.board.units().find(|(_, u)| match id.as_str() {
+                    "unit" => Some(u.serial) == event_units[0],
+                    "second_unit" => Some(u.serial) == event_units[1],
+                    _ => u.id.as_ref() == Some(&id),
+                })
                     .map(|(pos, u)| (pos, Some(u.side)))?,
                 Subject::Tile(hex) => (hex, None),
             };

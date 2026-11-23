@@ -44,10 +44,11 @@ impl Lesson {
         Ok((lesson, hints))
     }
 
-    pub(crate) fn resume(&mut self, session: &mut Session<'_>, events: &[Event], hints: SavedHints)
+    pub(crate) fn resume(&mut self, session: &mut Session<'_>, events: &[Event], hints: SavedHints,
+        root: &std::path::Path, locale: &mut crate::title_screen::locale::Locale)
         -> Result<(), Box<dyn Error>>
     {
-        self.restrict(session);
+        self.start(session, root, locale);
         for event in events {
             session.dismiss_local_dialogue();
             let weapon = match event {

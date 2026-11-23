@@ -90,7 +90,7 @@ impl Report {
         #[cfg(windows)]
         {
             self.texture = renderer.map(|r| {
-                let texture = Texture2D::from_image(&r.button(&label, _point, [221; 3]));
+                let texture = Texture2D::from_image(&r.battlefield_report(&label, _point));
                 texture.set_filter(FilterMode::Nearest);
                 texture
             });

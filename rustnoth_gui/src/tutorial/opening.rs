@@ -198,7 +198,7 @@ pub(super) mod tests {
             [else]\n[print]\ntext=Move Lisar to a village\n[/print]\n[/else]\n[/if]";
         let keep_prompt = villages.replace("a village", "the keep");
         let fourth = weapons::tests::turn_four();
-        wml::parse(format!("id=tutorial\nvictory_when_enemies_defeated=no\n\
+        wml::parse(format!("#textdomain wesnoth-tutorial\nid=tutorial\nvictory_when_enemies_defeated=no\n\
             map_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,Vh,Ch,Gg,Gg,Gg,Gg,Gg,Xv\nXv,1 Kh,Ch,Gg,Gg,Gg,Gg,Gg^Vh,Xv\nXv,Ch,Ch,Gg,Gg,Vh,Gg,Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
             [side]\nside=1\ncontroller=human\ngold=100\nid=student\nname=Konrad\ntype=Fighter\nteam_name=player\n[/side]\n\
             [side]\nside=2\nno_leader=yes\ndefeat_condition=never\n[/side]\n\
@@ -306,7 +306,7 @@ name=MODIFY_UNIT_store
     fn resume_lesson<'a>(lesson: &Lesson, live: &Session<'_>, mut restored: Session<'a>) -> (Lesson, Session<'a>) {
         let saved = lesson.checkpoint(live.tutorial_hint());
         let (mut restored_lesson, hints) = Lesson::from_checkpoint(&saved).unwrap();
-        restored_lesson.resume(&mut restored, live.history(), hints).unwrap();
+        restored_lesson.resume(&mut restored, live.history(), hints, std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default()).unwrap();
         assert_eq!(live.history(), restored.history());
         assert_eq!(live.observation(), restored.observation());
         assert_eq!(live.legal_actions(), restored.legal_actions());
@@ -350,7 +350,6 @@ condition=lose
             scenario.children.push(("event".into(), select));
             let mut lesson = prepare(&mut scenario, hero).unwrap();
             assert!(lesson.healing.markers().next().is_none());
-            lesson.localize_attack_instructions(std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default());
             let mut document = Node::default();
             document.children.push(("scenario".into(), scenario));
             let mut bytes = Vec::new();
@@ -375,7 +374,7 @@ condition=lose
             assert!(session.dialogue().is_none());
             assert!(session.legal_actions().contains(&Action::EndTurn));
             assert!(!session.legal_actions().iter().any(|action| matches!(action, Action::Recruit { .. })));
-            lesson.restrict(&mut session);
+            lesson.start(&mut session, std::path::Path::new(""), &mut crate::title_screen::locale::Locale::default());
             assert_eq!(lesson.end_turn_denial(&session).unwrap().attribute("reason"), Some("Finish moving first"));
             assert!(session.legal_actions().iter().all(|action| matches!(action, Action::Move { .. })));
             let restart = || -> Result<Session<'_>, Box<dyn Error>> { Ok(Session::with_players(bundle.start_with_controllers(9, |_| unreachable!(), None, true)?, Players::Campaign)) };

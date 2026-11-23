@@ -185,7 +185,8 @@ impl BoardArt {
         self.walk.start_observed(walk, (get_time() * 1000.0) as u64, self.animation_rate());
     }
 
-    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed) -> Result<Self, macroquad::Error> {
+    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed,
+        locale: &crate::title_screen::locale::Locale) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -213,7 +214,7 @@ impl BoardArt {
         };
         Ok(Self {
             surface: surface::Surface::new()?,
-            frame: FrameArt::load(wesnoth_root),
+            frame: FrameArt::load(wesnoth_root, locale),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
@@ -601,8 +602,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
     if let Some(mask) = art.unreachable.as_ref()
         && (enemies.is_some() || own.is_some()) {
+        let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
         for tile in view.tiles.iter().filter(|tile| {
-            !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
                 && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
         }) {
             let [x, y] = layout.tile_origin(tile.position);
@@ -715,6 +717,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     art.lighting.flat([0; 3]);
     if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(plan) = movement.session.hovered_attack() {
+        art.footsteps.draw_attack(layout, plan.staging, plan.target, viewport);
+    }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {

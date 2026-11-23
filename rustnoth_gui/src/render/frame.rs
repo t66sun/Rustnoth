@@ -81,7 +81,7 @@ pub(super) struct FrameArt {
 impl FrameArt {
     pub fn clear_unit_report(&mut self) { self.unit_report.cached = None; }
 
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, locale: &crate::title_screen::locale::Locale) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
         Self {
@@ -92,7 +92,7 @@ impl FrameArt {
             end_button: end_button::Art::load(root),
             clock: clock::Clock::new(root),
             side_flags: BTreeMap::new(),
-            unit_report: unit_report::Art::new(root),
+            unit_report: unit_report::Art::new(root, locale),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: StatusBox::load(root),
         }
@@ -154,8 +154,12 @@ pub fn draw(
 ) {
     fill(frame.bar, PANEL);
     fill(frame.sidebar, PANEL);
-    paint(&art.frame.bar, frame.bar);
-    paint(&art.frame.sidebar, frame.sidebar);
+    // Classic theme panels repeat the installed bitmap and clip the last tile.
+    for (texture, bounds) in [(&art.frame.bar, frame.bar), (&art.frame.sidebar, frame.sidebar)] {
+        if let Some(texture) = texture {
+            crate::title_screen::tiled(bounds, texture);
+        }
+    }
     let s = frame.scale;
     if s <= 0.0 { return; }
     draw_reports(frame, state, observation, movement.session.economy(), art);
@@ -201,6 +205,7 @@ pub fn draw(
             text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
         art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
+        art.frame.unit_report.draw_headings(frame, &art.dialogue_font);
         if let Some(view) = observation
             && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
         {
@@ -211,7 +216,7 @@ pub fn draw(
     if let Some(message) = movement.message {
         text_in(&art.font, message, hint, 14, ERROR, false);
     } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
-        text_in(&art.font, "Dismiss veteran [D]", hint, 14, TEXT, false);
+        text_in(&art.font, "Dismiss veteran [Shift+D]", hint, 14, TEXT, false);
     }
 }
 

@@ -21,6 +21,22 @@ pub(crate) fn read_profile() -> io::Result<Node> {
     }
 }
 
+pub(crate) fn mouse_scroll_threshold(profile: &Node) -> f32 {
+    if matches!(profile.attribute("mouse_scrolling"), Some("no" | "false" | "off" | "0")) {
+        return 0.0;
+    }
+    profile.attribute("scroll_threshold").and_then(|s| s.parse::<i32>().ok()).unwrap_or(10).max(0) as f32
+}
+
+#[test]
+fn reads_native_mouse_scrolling_and_threshold() {
+    assert_eq!(mouse_scroll_threshold(&Node::default()), 10.0);
+    let profile = wml::parse("scroll_threshold=19").unwrap();
+    assert_eq!(mouse_scroll_threshold(&profile), 19.0);
+    let disabled = wml::parse("mouse_scrolling=no\nscroll_threshold=19").unwrap();
+    assert_eq!(mouse_scroll_threshold(&disabled), 0.0);
+}
+
 #[cfg(windows)]
 pub(super) fn native_data_directory() -> Option<PathBuf> {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};

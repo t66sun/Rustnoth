@@ -9,15 +9,56 @@ pub(super) struct Art {
     pub(super) cached: Option<((Hex, Hex), Option<UnitReport>)>,
     icons: HashMap<String, Texture>,
     conditions: [Texture; 3],
+    headings: [String; 4],
+    #[cfg(windows)]
+    heading_glyphs: [[Texture; 4]; 2],
 }
 
 impl Art {
-    pub(super) fn new(root: &Path) -> Self {
+    pub(super) fn new(root: &Path, locale: &crate::title_screen::locale::Locale) -> Self {
+        let headings = ["HP", "XP", "MP", "def"].map(|label| locale.game(label).to_owned());
+        #[cfg(windows)]
+        let font = crate::title_screen::tip_pango::Text::load(root, "Lato");
         Self {
             cached: None,
             icons: HashMap::new(),
+            #[cfg(windows)]
+            heading_glyphs: [13, 11].map(|size| headings.each_ref().map(|label| {
+                font.as_ref().map(|font| {
+                    let tex = Texture2D::from_image(&font.button(label, size, [221; 3]));
+                    tex.set_filter(FilterMode::Nearest);
+                    tex
+                })
+            })),
+            headings,
             conditions: ["slowed", "poisoned", "petrified"]
                 .map(|name| load_texture(&root.join("images/misc").join(format!("{name}.png")), None)),
+        }
+    }
+
+    // Static labels in themes/default.cfg are anchored to unit-box-topright.
+    // Only the values below those labels depend on the unit under the pointer.
+    pub(super) fn draw_headings(&self, frame: &BattlefieldFrame, font: &Option<Font>) {
+        let scale = frame.scale;
+        let line = if frame.compact { 13. } else { 14. };
+        let left = frame.sidebar.x + 89. * scale;
+        let top = frame.minimap_frame.bottom() + 89. * scale;
+        let step = (line + 14.) * scale;
+        let positions = [(left, top, 60.), (left, top + step, 65.),
+            (left, top + 2. * step, 65.), (left + 66. * scale, top + 2. * step, 25.)];
+        for (i, (x, y, width)) in positions.into_iter().enumerate() {
+            if y + line * scale > frame.end_turn.y - 20. * scale { continue; }
+            #[cfg(windows)]
+            if let Some(glyphs) = &self.heading_glyphs[usize::from(frame.compact)][i] {
+                let ratio = (width / glyphs.width()).min(1.) * scale;
+                draw_texture_ex(glyphs, x, y, WHITE, DrawTextureParams {
+                    dest_size: Some(glyphs.size() * ratio), ..Default::default()
+                });
+                continue;
+            }
+            let size = if frame.compact { 11 } else { 13 };
+            text_in(font, &self.headings[i], Rect::new(x, y, width * scale, line * scale),
+                size, Color::from_rgba(221, 221, 221, 255), false);
         }
     }
 
@@ -113,15 +154,13 @@ pub(super) fn draw(
         advancement == Some(true),
     );
     let line = if frame.compact { 13.0 } else { 14.0 };
-    let stats: [(&str, String, Color); 3] = [
+    let stats = [
         (
-            "HP",
             format!("{}/{}", unit.hitpoints, unit.max_hitpoints),
             rgb(hp_color),
         ),
-        ("XP", experience, rgb(xp_color)),
+        (experience, rgb(xp_color)),
         (
-            "MP",
             unit.moves_left.map_or_else(
                 || format!("–/{}", report.max_movement),
                 |m| format!("{m}/{}", report.max_movement),
@@ -129,12 +168,10 @@ pub(super) fn draw(
             TEXT,
         ),
     ];
-    for (i, (label, value, color)) in stats.into_iter().enumerate() {
+    for (i, (value, color)) in stats.into_iter().enumerate() {
         let y = i as f32 * (line + 14.0) - 1.0;
-        text(label, 82.0, y, 37.0, line, tiny, TEXT);
         text(&value, 85.0, y + line, 58.0, line, tiny, color);
     }
-    text("def", 148.0, 2.0 * (line + 14.0) - 1.0, 27.0, line, tiny, TEXT);
     text(
         &format!("{}%", report.defense),
         143.0,
