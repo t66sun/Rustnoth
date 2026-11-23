@@ -1,5 +1,6 @@
 //! Geometry and bitmaps of the default Wesnoth 1.18 battlefield theme.
 use super::*;
+use engine_lite::observation::ObservedTile;
 mod unit_report;
 mod end_button;
 mod clock;
@@ -151,6 +152,21 @@ pub fn turn_button(art: &mut BoardArt, bounds: Rect, highlighted: bool, enabled:
     art.frame.end_button.draw(bounds, highlighted, enabled, title, &art.dialogue_font);
 }
 
+#[cfg(test)]
+thread_local! {
+    static TERRAIN_REPORT_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn terrain_for_report(tiles: &[ObservedTile], hex: Hex) -> Option<&str> {
+    // The observation projects known tiles in row-major order, even through shroud.
+    let index = tiles.binary_search_by_key(&(hex.y, hex.x), |tile| {
+        #[cfg(test)]
+        TERRAIN_REPORT_PROBES.set(TERRAIN_REPORT_PROBES.get() + 1);
+        (tile.position.y, tile.position.x)
+    }).ok()?;
+    Some(&tiles[index].terrain)
+}
+
 pub fn draw(
     frame: &BattlefieldFrame, state: MatchState, observation: Option<&Observation>,
     board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>,
@@ -187,8 +203,8 @@ pub fn draw(
         art.frame.status.draw(rect(0.0, 19.0, 171.0, 21.0), s);
         if let Some(hex) = position {
             text_in(&art.font, &format!("{}, {}", hex.x + 1, hex.y + 1), rect(5.0, 2.0, 161.0, 17.0), 14, TEXT, false);
-            if let Some(tile) = observation.and_then(|v| v.tiles.iter().find(|t| t.position == hex)) {
-                let terrain = movement.assets.terrain_name(&tile.terrain).unwrap_or(&tile.terrain);
+            if let Some(code) = observation.and_then(|view| terrain_for_report(&view.tiles, hex)) {
+                let terrain = movement.assets.terrain_name(code).unwrap_or(code);
                 text_in(&art.font, terrain, rect(5.0, 21.0, 161.0, 17.0), 14, TEXT, false);
             }
         }
@@ -259,6 +275,28 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_report_searches_known_rows_without_scanning_the_map() {
+        let shrouded = Hex { x: 2, y: 128 };
+        let fogged = Hex { x: 3, y: 255 };
+        let tiles: Vec<_> = (0..256).flat_map(|y| (0..4).map(move |x| Hex { x, y }))
+            .filter(|&position| position != shrouded)
+            .map(|position| ObservedTile {
+                position,
+                terrain: if position == fogged { "Hh" } else { "Gg" }.into(),
+                visible: position != fogged,
+                village_owner: None,
+                time_color: [0; 3],
+            }).collect();
+
+        for (hex, expected) in [(fogged, Some("Hh")), (shrouded, None)] {
+            TERRAIN_REPORT_PROBES.set(0);
+            assert_eq!(terrain_for_report(&tiles, hex), expected);
+            assert!((1..=12).contains(&TERRAIN_REPORT_PROBES.get()));
+        }
+    }
+
     #[test]
     fn standard_theme_keeps_the_original_fixed_panels_at_each_resolution() {
         for (width, height, map_width, mini, end) in [
