@@ -1,6 +1,7 @@
 use image::RgbaImage;
-use macroquad::prelude::{
-    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex, vec2,
+use macroquad::{
+    models::Vertex,
+    prelude::{Color, DrawMode, FilterMode, Image, Rect, Texture2D, Vec2, get_internal_gl, vec2},
 };
 
 const PAGE_SIDE: u16 = 2048;
@@ -14,6 +15,10 @@ pub(super) struct Atlas {
 }
 
 impl Atlas {
+    pub(super) fn with_page_side(side: u16) -> Self {
+        Self { pages: Vec::new(), layout: PageLayout::new(side) }
+    }
+
     pub(super) fn add(&mut self, pixels: &RgbaImage) -> Option<AtlasSprite> {
         let width = u16::try_from(pixels.width()).ok()?;
         let height = u16::try_from(pixels.height()).ok()?;
@@ -27,15 +32,16 @@ impl Atlas {
             let texture = linear_texture(width, height, &pixels.as_raw()[..len]);
             return Some(AtlasSprite {
                 texture,
-                source: None,
+                uv: Rect::new(0.0, 0.0, 1.0, 1.0),
                 size,
             });
         };
 
         if slot.page == self.pages.len() {
-            let len = usize::from(PAGE_SIDE).pow(2) * CHANNELS;
+            let side = self.layout.side;
+            let len = usize::from(side).pow(2) * CHANNELS;
             self.pages
-                .push(linear_texture(PAGE_SIDE, PAGE_SIDE, &vec![0; len]));
+                .push(linear_texture(side, side, &vec![0; len]));
         }
         let texture = &self.pages[slot.page];
         let image = pad_edges(pixels, width, height);
@@ -46,9 +52,11 @@ impl Atlas {
             i32::from(image.width),
             i32::from(image.height),
         );
+        let source = slot.source(width, height);
+        let page = texture.size();
         Some(AtlasSprite {
             texture: texture.clone(),
-            source: Some(slot.source(width, height)),
+            uv: Rect::new(source.x / page.x, source.y / page.y, source.w / page.x, source.h / page.y),
             size,
         })
     }
@@ -62,7 +70,7 @@ impl Atlas {
 #[derive(Clone)]
 pub(super) struct AtlasSprite {
     texture: Texture2D,
-    source: Option<Rect>,
+    uv: Rect,
     size: Vec2,
 }
 
@@ -72,19 +80,40 @@ impl AtlasSprite {
     }
 
     pub(super) fn draw(&self, dst: Rect, tint: Color, flip_x: bool) {
-        draw_texture_ex(
-            &self.texture,
-            dst.x,
-            dst.y,
-            tint,
-            DrawTextureParams {
-                dest_size: Some(vec2(dst.w, dst.h)),
-                source: self.source,
-                flip_x,
-                ..Default::default()
-            },
-        );
+        self.draw_region(dst, tint, self.uv, (flip_x, false));
     }
+
+    pub(super) fn draw_part(&self, dst: Rect, tint: Color, source: Rect, flip: (bool, bool)) {
+        let pixel = self.uv.size() / self.size;
+        let uv = Rect::new(
+            self.uv.x + source.x * pixel.x,
+            self.uv.y + source.y * pixel.y,
+            source.w * pixel.x,
+            source.h * pixel.y,
+        );
+        self.draw_region(dst, tint, uv, flip);
+    }
+
+    fn draw_region(&self, dst: Rect, tint: Color, uv: Rect, flip: (bool, bool)) {
+        let vertices = quad(dst, uv, tint, flip);
+        // The borrowed queue belongs to the render thread. Geometry is appended
+        // to the active camera/material without flushing preceding primitives.
+        let gl = unsafe { get_internal_gl() }.quad_gl;
+        gl.texture(Some(&self.texture));
+        gl.draw_mode(DrawMode::Triangles);
+        gl.geometry(&vertices, &[0, 1, 2, 0, 2, 3]);
+    }
+}
+
+fn quad(dst: Rect, uv: Rect, tint: Color, (flip_x, flip_y): (bool, bool)) -> [Vertex; 4] {
+    let (first_u, last_u) = if flip_x { (uv.right(), uv.x) } else { (uv.x, uv.right()) };
+    let (first_v, last_v) = if flip_y { (uv.bottom(), uv.y) } else { (uv.y, uv.bottom()) };
+    [
+        Vertex::new(dst.x, dst.y, 0.0, first_u, first_v, tint),
+        Vertex::new(dst.right(), dst.y, 0.0, last_u, first_v, tint),
+        Vertex::new(dst.right(), dst.bottom(), 0.0, last_u, last_v, tint),
+        Vertex::new(dst.x, dst.bottom(), 0.0, first_u, last_v, tint),
+    ]
 }
 
 fn linear_texture(width: u16, height: u16, rgba: &[u8]) -> Texture2D {
@@ -116,32 +145,42 @@ fn pad_edges(pixels: &RgbaImage, width: u16, height: u16) -> Image {
     }
 }
 
-#[derive(Default)]
 struct PageLayout {
+    side: u16,
     page: usize,
     x: u16,
     y: u16,
     row_height: u16,
 }
 
+impl Default for PageLayout {
+    fn default() -> Self {
+        Self::new(PAGE_SIDE)
+    }
+}
+
 impl PageLayout {
+    fn new(side: u16) -> Self {
+        Self { side, page: 0, x: 0, y: 0, row_height: 0 }
+    }
+
     fn place(&mut self, width: u16, height: u16) -> Option<Slot> {
-        let max_side = PAGE_SIDE - 2 * PADDING;
+        let max_side = self.side - 2 * PADDING;
         if width > max_side || height > max_side {
             return None;
         }
         let width = width + 2 * PADDING;
         let height = height + 2 * PADDING;
 
-        if self.x + width > PAGE_SIDE {
+        if self.x + width > self.side {
             self.x = 0;
             self.y += self.row_height;
             self.row_height = 0;
         }
-        if self.y + height > PAGE_SIDE {
+        if self.y + height > self.side {
             *self = Self {
                 page: self.page + 1,
-                ..Self::default()
+                ..Self::new(self.side)
             };
         }
 
@@ -177,6 +216,23 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_quads_flip_only_the_horizontal_uv_and_keep_tint_and_corners() {
+        let dst = Rect::new(10.5, 5.25, 12.0, 10.0);
+        let uv = Rect::new(0.25, 0.5, 0.125, 0.25);
+        let tint = Color::from_rgba(5, 60, 200, 144);
+        let plain = quad(dst, uv, tint, (false, false));
+        let flipped = quad(dst, uv, tint, (true, false));
+        assert_eq!(plain.map(|v| v.position.to_array()), [
+            [10.5, 5.25, 0.0], [22.5, 5.25, 0.0], [22.5, 15.25, 0.0], [10.5, 15.25, 0.0],
+        ]);
+        assert_eq!(flipped.map(|v| v.position), plain.map(|v| v.position));
+        assert_eq!(plain.map(|v| v.uv.to_array()), [[0.25, 0.5], [0.375, 0.5], [0.375, 0.75], [0.25, 0.75]]);
+        assert_eq!(flipped.map(|v| v.uv.to_array()), [[0.375, 0.5], [0.25, 0.5], [0.25, 0.75], [0.375, 0.75]]);
+        assert_eq!(quad(dst, uv, tint, (false, true)).map(|v| v.uv.y), [0.75, 0.75, 0.5, 0.5]);
+        assert_eq!(flipped.map(|v| v.color), [Vertex::new(0., 0., 0., 0., 0., tint).color; 4]);
+    }
 
     #[test]
     fn padding_extrudes_all_edges_and_corners_with_straight_alpha() {
@@ -254,6 +310,18 @@ mod tests {
         let second = layout.place(72, 72).unwrap();
         assert_eq!(first.page, second.page);
         assert_eq!(second.x, first.x + 72 + 2 * PADDING);
+    }
+
+    #[test]
+    fn compact_pages_fit_status_art_without_reserving_terrain_sized_pages() {
+        let mut layout = PageLayout::new(256);
+        assert_eq!(layout.place(1, 1).unwrap().page, 0);
+        for _ in 0..7 {
+            assert_eq!(layout.place(72, 72).unwrap().page, 0);
+        }
+        assert_eq!(layout.place(250, 250).unwrap().page, 1);
+        assert!(layout.place(300, 72).is_none());
+        assert_eq!(layout.side, 256);
     }
 
     #[test]

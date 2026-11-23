@@ -1,11 +1,11 @@
 mod atlas;
 mod frame;
-mod surface;
 mod tutorial_print;
 pub(crate) use frame::StatusBox;
 pub(crate) mod minimap;
 pub(crate) use minimap::save::save_preview;
 mod lighting;
+use atlas::{Atlas, AtlasSprite};
 use frame::{BattlefieldFrame, FrameArt};
 
 use std::{
@@ -120,27 +120,29 @@ fn map_cover(view: &Observation) -> CoverTiles {
     CoverTiles { cells: cover, fog_end, playable_end }
 }
 
-pub(crate) struct GridArt([Option<Texture2D>; 2]);
+pub(crate) struct GridArt([Option<AtlasSprite>; 2]);
 
 impl GridArt {
-    pub(crate) fn load(terrain_dir: &Path) -> Self {
-        Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
+    pub(crate) fn load(terrain_dir: &Path, rules: &mut rules::Rules) -> Self {
+        Self(["grid-top.png", "grid-bottom.png"].map(|name| {
+            rules.add_terrain_sprite(&recolored_pixels(&terrain_dir.join(name), None)?)
+        }))
     }
 
     pub(crate) fn draw(&self, center: Vec2, size: f32, clip: Option<Viewport>) {
         for grid in self.0.iter().flatten() {
-            draw_centered(grid, center, size, clip);
+            draw_atlas_centered(grid, center, size, clip);
         }
     }
 }
 
 pub struct BoardArt {
-    surface: surface::Surface,
     frame: FrameArt,
     minimap: minimap::Art,
     lighting: lighting::Lighting,
     paths: HashMap<PathBuf, Option<Texture2D>>,
-    terrain: BTreeMap<String, Vec<Texture2D>>,
+    terrain: BTreeMap<String, Vec<AtlasSprite>>,
+    terrain_paths: SpriteTextures<AtlasSprite>,
     terrain_texture_extent: Vec2,
     transitions: transitions::Transitions,
     ground: ground::Ground,
@@ -148,8 +150,8 @@ pub struct BoardArt {
     border_background: Option<Texture2D>,
     grid: GridArt,
     pub show_grid: bool,
-    units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
-    sprite_paths: SpriteTextures<Texture2D>,
+    units: BTreeMap<String, BTreeMap<usize, Option<AtlasSprite>>>,
+    sprite_paths: SpriteTextures<AtlasSprite>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
@@ -157,10 +159,10 @@ pub struct BoardArt {
     pub(crate) briefing_highlight: Option<Hex>,
     speed: crate::display_preferences::speed::Speed,
     ellipse_colors: Option<TeamColors>,
-    ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
+    ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<AtlasSprite>; 2]>>,
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
-    flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
+    flags: BTreeMap<usize, [Option<AtlasSprite>; FLAG_FRAMES]>,
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
@@ -236,19 +238,21 @@ impl BoardArt {
                 .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
                 .ok()
         };
+        let mut rules = rules::Rules::default();
+        let grid = GridArt::load(&terrain_dir, &mut rules);
         Ok(Self {
-            surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root, locale),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
+            terrain_paths: SpriteTextures::default(),
             terrain_texture_extent: Vec2::ZERO,
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
-            rules: rules::Rules::default(),
+            rules,
             border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
-            grid: GridArt::load(&terrain_dir),
+            grid,
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             sprite_paths: SpriteTextures::default(),
@@ -313,32 +317,32 @@ impl BoardArt {
         self.fog_edges.update(observation, &border, &self.cover.cells);
         self.minimap.load(observation, assets);
         if self.rules.load(assets, observation, &border) {
-            self.transitions.load(observation, assets);
+            self.transitions.load(observation, assets, &mut self.rules, &mut self.terrain_paths);
+            for tile in &observation.tiles {
+                if self.rules.has_base(tile.position) { continue; }
+                let mut texture = |path| self.terrain_paths.terrain(path, &mut self.rules);
+                self.ground.load(&tile.terrain, assets, &mut texture);
+                self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
+                    assets.terrain_images(&tile.terrain).into_iter().filter_map(texture).collect()
+                });
+            }
         }
         for tile in &observation.tiles {
-            self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
                 && colors.marker_color(owner).is_some()
             {
                 self.flags.entry(owner).or_insert_with(|| std::array::from_fn(|i| {
                     let path = self.flag_dir.join(format!("flag-{}.png", i + 1));
-                    load_texture(&path, Some((colors, owner)))
+                    self.rules.add_terrain_sprite(&recolored_pixels(&path, Some((colors, owner)))?)
                 }));
             }
-            self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
-                assets
-                    .terrain_images(&tile.terrain)
-                    .into_iter()
-                    .filter_map(|path| get_texture(&mut self.paths, path))
-                    .collect()
-            });
         }
-        self.terrain_texture_extent = texture_extent(
-            self.terrain.values().flatten()
-                .chain(self.flags.values().flatten().flatten())
+        self.terrain_texture_extent = atlas_extent(
+            self.flags.values().flatten().flatten()
                 .chain(self.grid.0.iter().flatten()),
         )
+        .max(atlas_extent(self.terrain.values().flatten()))
         .max(self.ground.texture_extent())
         .max(self.transitions.texture_extent())
         .max(self.rules.texture_extent());
@@ -349,7 +353,8 @@ impl BoardArt {
                     self.ellipses.entry(prefix.to_owned()).or_default().entry(key).or_insert_with(|| {
                         ellipse_files(prefix, unit.can_recruit, unit.emits_zoc, selected).map(|file| {
                             let path = assets.resolve_image(Path::new(&file))?;
-                            load_texture(&path, self.ellipse_colors.as_ref().map(|colors| (colors, unit.side)))
+                            let palette = self.ellipse_colors.as_ref().map(|colors| (colors, unit.side));
+                            self.sprite_paths.atlas_sprite(path, palette, SpritePalette::Ellipse)
                         })
                     });
                 }
@@ -373,25 +378,58 @@ impl BoardArt {
     }
 }
 
-struct SpriteTextures<T>(HashMap<(PathBuf, Option<usize>), Option<T>>);
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum SpritePalette {
+    Unit(usize),
+    Ellipse(usize),
+}
+
+struct SpriteTextures<T> {
+    atlas: Atlas,
+    entries: HashMap<(PathBuf, Option<SpritePalette>), Option<T>>,
+}
 
 impl<T> Default for SpriteTextures<T> {
     fn default() -> Self {
-        Self(HashMap::new())
+        Self { atlas: Atlas::default(), entries: HashMap::new() }
     }
 }
 
-impl SpriteTextures<Texture2D> {
-    fn texture(&mut self, path: PathBuf, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
-        self.load(path, palette.map(|(_, side)| side), |path| load_texture(path, palette))
+impl SpriteTextures<AtlasSprite> {
+    fn texture(&mut self, path: PathBuf, palette: Option<(&TeamColors, usize)>) -> Option<AtlasSprite> {
+        self.atlas_sprite(path, palette, SpritePalette::Unit)
+    }
+
+    fn atlas_sprite(
+        &mut self,
+        path: PathBuf,
+        palette: Option<(&TeamColors, usize)>,
+        key: fn(usize) -> SpritePalette,
+    ) -> Option<AtlasSprite> {
+        self.load(path, palette.map(|(_, side)| key(side)), |atlas, path| {
+            atlas.add(&recolored_pixels(path, palette)?)
+        })
+    }
+}
+
+impl SpriteTextures<AtlasSprite> {
+    fn terrain(&mut self, path: PathBuf, rules: &mut rules::Rules) -> Option<AtlasSprite> {
+        self.load(path, None, |_, path| {
+            rules.add_terrain_sprite(&recolored_pixels(path, None)?)
+        })
     }
 }
 
 impl<T: Clone> SpriteTextures<T> {
-    // Base sprites, standing frames and walking frames can share the same
-    // installed bitmap. Team recoloring is the only change at these call sites.
-    fn load(&mut self, path: PathBuf, side: Option<usize>, decode: impl FnOnce(&Path) -> Option<T>) -> Option<T> {
-        self.0.entry((path, side)).or_insert_with_key(|(path, _)| decode(path)).clone()
+    // Body frames and ellipses share the atlas, with their color ranges keyed separately.
+    fn load(
+        &mut self,
+        path: PathBuf,
+        palette: Option<SpritePalette>,
+        upload: impl FnOnce(&mut Atlas, &Path) -> Option<T>,
+    ) -> Option<T> {
+        self.entries.entry((path, palette))
+            .or_insert_with_key(|(path, _)| upload(&mut self.atlas, path)).clone()
     }
 }
 
@@ -407,18 +445,23 @@ pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -
 }
 
 fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamColors, usize)>) -> Option<Texture2D> {
+    let pixels = recolored_pixels(path, palettes)?;
+    let texture = Texture2D::from_rgba8(pixels.width().try_into().ok()?, pixels.height().try_into().ok()?, pixels.as_raw());
+    texture.set_filter(FilterMode::Linear);
+    Some(texture)
+}
+
+fn recolored_pixels<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamColors, usize)>) -> Option<::image::RgbaImage> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
-    let mut image = crate::artwork::image(&bytes)
+    let mut pixels = crate::artwork::rgba(&bytes)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
     for (colors, side) in palettes {
-        colors.recolor(side, &mut image.bytes);
+        colors.recolor(side, pixels.as_mut());
     }
-    let texture = Texture2D::from_image(&image);
-    texture.set_filter(FilterMode::Linear);
-    Some(texture)
+    Some(pixels)
 }
 
 pub struct MovementView<'a> {
@@ -457,7 +500,7 @@ pub fn draw<T>(
     movement: MovementView<'_>,
     overlay: impl FnOnce(&mut BoardArt) -> T,
 ) -> T {
-    art.surface.begin();
+    set_default_camera();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
@@ -502,49 +545,42 @@ pub fn draw<T>(
             }
         }
     }
-    let result = overlay(art);
-    art.surface.present();
-    result
+    overlay(art)
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: (usize, [i32; 3]), tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {
     let now = (get_time() * 1000.0) as u64;
     let size = layout.tile_size();
     for tile in clip.rows(layout, &view.tiles, |tile| tile.position.y) {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         if !clip.contains(center) { continue; }
-        if flag_frame.is_some() { art.lighting.terrain(tile.position, x, y, size); }
-        if flag_frame.is_none() || !art.rules.has_base(tile.position) {
-        let layers = &art.terrain[&tile.terrain];
-        let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
-        if let Some(base) = ground.or_else(|| layers.first()) {
-            draw_centered(base, center, size, Some(viewport));
-        } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
-        }
-        if flag_frame.is_some() {
-            art.transitions.draw(tile.position, center, size, viewport);
-        }
-        for overlay in layers.iter().skip(1) {
-            draw_centered(overlay, center, size, Some(viewport));
-        }
-        }
-        if flag_frame.is_some() {
-            art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
-            if art.show_grid {
-                if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                art.grid.draw(center, size, Some(viewport));
+        art.lighting.terrain(tile.position, x, y, size);
+        if !art.rules.has_base(tile.position) {
+            let layers = &art.terrain[&tile.terrain];
+            let ground = art.ground.texture(&tile.terrain, tile.position);
+            if let Some(base) = ground.or_else(|| layers.first()) {
+                draw_atlas_centered(base, center, size, Some(viewport));
+            } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
+                draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
             }
+            art.transitions.draw(tile.position, center, size, viewport);
+            for overlay in layers.iter().skip(1) {
+                draw_atlas_centered(overlay, center, size, Some(viewport));
+            }
+        }
+        art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
+        if art.show_grid {
+            art.lighting.flat(flag_frame.1);
+            art.grid.draw(center, size, Some(viewport));
         }
         if let Some(owner) = tile.village_owner {
-            if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
-            if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
-                draw_centered(flag, center, size, Some(viewport));
+            art.lighting.flat(flag_frame.1);
+            if let Some(flag) = art.flags.get(&owner).and_then(|frames| frames[flag_frame.0].as_ref()) {
+                draw_atlas_centered(flag, center, size, Some(viewport));
                 continue;
             }
-            let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
-            let (offset, radius) = terrain_clip::village_marker(size, min_marker);
+            let (offset, radius) = terrain_clip::village_marker(size, 2.0);
             let marker = center + offset;
             if !visible_rect(viewport, marker - Vec2::splat(radius), Vec2::splat(2. * radius)) { continue; }
             draw_circle(
@@ -655,7 +691,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
-    draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport, terrain_clip);
+    draw_terrain(view, layout, art, (frame, global_color), period, viewport, terrain_clip);
     let observed_tile = |hex: Hex| {
         view.tiles.binary_search_by_key(&(hex.y, hex.x), |tile| (tile.position.y, tile.position.x))
             .ok().map(|i| &view.tiles[i])
@@ -740,7 +776,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 || enemies.is_some_and(|reach| reach.threatening.contains(&unit.position));
             let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
             if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
-                for texture in halves.iter().flatten() { draw_centered(texture, center, size, Some(viewport)); }
+                for sprite in halves.iter().flatten() {
+                    draw_centered_unit(sprite, center, size, false, Some(viewport));
+                }
             }
         }
         let base = art
@@ -761,8 +799,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, |to, offset|
             raised(&unit.type_id, unit.position, to, offset) + Vec2::splat(size * 0.5)));
         let (at, attack_frame) = posed.unwrap_or((center, None));
-        if let Some((texture, flipped)) = attack_frame.or(walking_frame).or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
+        if let Some((texture, flipped)) = attack_frame {
             draw_centered_flipped(texture, at, size, flipped, Some(viewport));
+        } else if let Some((sprite, flipped)) = walking_frame.or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
+            draw_centered_unit(sprite, at, size, flipped, Some(viewport));
         } else if visible_rect(viewport, center - Vec2::splat(size * 0.23), Vec2::splat(size * 0.46)) {
             draw_circle(center.x, center.y, size * 0.23, marker);
         }
@@ -804,7 +844,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             .or_else(|| art.units.get(id)?.get(side)?.as_ref().map(|t| (t, standing::west(direction))));
         if let Some((tex, flipped)) = sprite {
             let origin = raised(id, pose.from, pose.to, pose.fraction);
-            draw_centered_flipped(tex, origin + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
+            draw_centered_unit(tex, origin + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
         }
     }
 
@@ -815,7 +855,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     for unit in &view.units {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
-                .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
+                .and_then(Option::as_ref).map_or(ART_HEX_SIZE, |sprite| sprite.size().x);
             let orb = unit_status::orb_for(view, unit, hints.is_actionable(unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit);
@@ -880,25 +920,32 @@ fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [Stri
 
 #[cfg(test)]
 mod sprite_tests {
-    use super::SpriteTextures;
-    use std::{cell::Cell, path::Path};
+    use super::{Atlas, SpritePalette, SpriteTextures};
+    use std::{cell::Cell, path::Path, ptr};
 
     #[test]
-    fn unit_art_uploads_a_shared_sprite_once_per_palette() {
+    fn unit_and_ellipse_palettes_cache_distinct_sprites_on_one_atlas() {
         let mut sprites = SpriteTextures::default();
         let path = Path::new("units/elves-wood/fighter.png");
         let calls = Cell::new(0);
-        let upload = |path: &Path| {
+        let shared_atlas = ptr::addr_of!(sprites.atlas);
+        let upload = |atlas: &mut Atlas, path: &Path| {
+            assert!(ptr::eq(atlas, shared_atlas));
             assert!(path.ends_with("fighter.png"));
             calls.set(calls.get() + 1);
             Some(calls.get())
         };
-        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
-        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
-        assert_eq!(sprites.load(path.into(), Some(2), upload), Some(2));
-        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
-        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
-        assert_eq!(calls.get(), 3);
+        let red_unit = Some(SpritePalette::Unit(1));
+        let red_ellipse = Some(SpritePalette::Ellipse(1));
+        let blue_unit = Some(SpritePalette::Unit(2));
+        assert_eq!(sprites.load(path.into(), red_unit, upload), Some(1));
+        assert_eq!(sprites.load(path.into(), red_unit, upload), Some(1));
+        assert_eq!(sprites.load(path.into(), red_ellipse, upload), Some(2));
+        assert_eq!(sprites.load(path.into(), red_ellipse, upload), Some(2));
+        assert_eq!(sprites.load(path.into(), blue_unit, upload), Some(3));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(4));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(4));
+        assert_eq!(calls.get(), 4);
     }
 }
 
@@ -923,6 +970,16 @@ fn texture_extent<'a>(textures: impl Iterator<Item = &'a Texture2D>) -> Vec2 {
     textures.map(Texture2D::size).fold(Vec2::ZERO, Vec2::max)
 }
 
+fn atlas_extent<'a>(sprites: impl Iterator<Item = &'a AtlasSprite>) -> Vec2 {
+    sprites.map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max)
+}
+
+fn draw_atlas_centered(sprite: &AtlasSprite, center: Vec2, hex_size: f32, clip: Option<Viewport>) {
+    if let Some(rect) = sprite_rect(center, sprite.size(), hex_size, clip) {
+        sprite.draw(rect, WHITE, false);
+    }
+}
+
 fn visible_rect(view: Viewport, top: Vec2, size: Vec2) -> bool {
     view.width > 0.0 && view.height > 0.0
         && top.x < view.x + view.width && top.y < view.y + view.height
@@ -943,6 +1000,12 @@ fn draw_centered_flipped(texture: &Texture2D, center: Vec2, hex_size: f32, flip_
         dest_size: Some(rect.size()),
         ..DrawTextureParams::default()
     });
+}
+
+fn draw_centered_unit(sprite: &AtlasSprite, center: Vec2, hex_size: f32, flip_x: bool, clip: Option<Viewport>) {
+    if let Some(rect) = sprite_rect(center, sprite.size(), hex_size, clip) {
+        sprite.draw(rect, WHITE, flip_x);
+    }
 }
 
 fn side_color(palette: Option<&TeamColors>, side: usize) -> Color {
@@ -1040,6 +1103,17 @@ mod tests {
     fn village_flag_cycles_through_four_original_frames_every_600ms() {
         assert_eq!([0, 149, 150, 300, 450, 599, 600].map(village_flag_frame),
                    [0, 0, 1, 2, 3, 3, 0]);
+    }
+
+    #[test]
+    fn terrain_overlays_hold_atlas_sprites() {
+        // Guard against restoring separate GPU textures for these interleaved layers.
+        let _: fn(&BoardArt, usize, usize) -> Option<&AtlasSprite> =
+            |board, side, frame| board.flags.get(&side)?[frame].as_ref();
+        let grid_layer: fn(&GridArt, usize) -> Option<&AtlasSprite> =
+            |grid, layer| grid.0[layer].as_ref();
+        let missing_grid = GridArt([None, None]);
+        assert!((0..2).all(|layer| grid_layer(&missing_grid, layer).is_none()));
     }
 
     #[test]
