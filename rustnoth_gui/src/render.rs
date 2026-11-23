@@ -1,3 +1,4 @@
+mod atlas;
 mod frame;
 mod surface;
 mod tutorial_print;
