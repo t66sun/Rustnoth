@@ -6,8 +6,8 @@ mod compile;
 pub(super) mod pattern;
 mod plan;
 
-use super::{AssetCatalog, Hex, Observation, atlas::AtlasSprite, sprite_rect};
-use macroquad::prelude::{Vec2, WHITE};
+use super::{AssetCatalog, Hex, Observation, atlas::AtlasSprite, atlas_extent, draw_atlas_centered};
+use macroquad::prelude::Vec2;
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
@@ -161,7 +161,11 @@ impl Rules {
     }
 
     pub(super) fn texture_extent(&self) -> Vec2 {
-        self.bitmaps.frames().map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max)
+        atlas_extent(self.bitmaps.frames())
+    }
+
+    pub(super) fn add_fallback_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
+        self.bitmaps.add_sprite(pixels)
     }
 
     pub(crate) fn draw(
@@ -187,9 +191,8 @@ impl Rules {
             let sequence = &animation.sequence;
             let phase = ((ms + u64::from(animation.offset)) % u64::from(sequence.duration)) as u32;
             if let Some((Some(sprite), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
-                && let Some(rect) = sprite_rect(center, sprite.size(), size, clip)
             {
-                sprite.draw(rect, WHITE, false);
+                draw_atlas_centered(sprite, center, size, clip);
             }
         }
     }
