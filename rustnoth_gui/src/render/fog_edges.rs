@@ -183,7 +183,7 @@ mod tests {
             tiles: vec![tile(0, 0, true), tile(1, 0, false), tile(1, 1, false)],
             units: vec![],
         };
-        let result = boundaries(view.tiles.iter().map(|t| (t.position, t.visible)), &map_cover(&view));
+        let result = boundaries(view.tiles.iter().map(|t| (t.position, t.visible)), &map_cover(&view).cells);
         assert_eq!(
             result,
             [
