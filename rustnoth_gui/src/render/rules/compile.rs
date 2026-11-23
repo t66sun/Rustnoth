@@ -10,7 +10,26 @@ pub(super) struct Catalog {
     pub names: Vec<String>,
     pub images: Vec<Image>,
     pub files: HashMap<String, PathBuf>,
+    #[cfg(test)]
+    flag_ids: HashMap<String, Flag>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Flag(usize);
+
+impl Flag {
+    pub(super) const BASE: Self = Self(0);
+    pub(super) const BOARD: Self = Self(1);
+    pub(super) const BORDER: Self = Self(2);
+}
+
+#[cfg(test)]
+impl Catalog {
+    pub(super) fn flag(&self, name: &str) -> Flag {
+        self.flag_ids[name]
+    }
+}
+
 pub(super) struct Rule {
     pub cells: Vec<Cell>,
     pub probability: u32,
@@ -22,9 +41,9 @@ pub(super) struct Rule {
 pub(super) struct Cell {
     pub offset: Hex,
     pub filter: usize,
-    pub require: Vec<String>,
-    pub forbid: Vec<String>,
-    pub set: Vec<String>,
+    pub require: Vec<Flag>,
+    pub forbid: Vec<Flag>,
+    pub set: Vec<Flag>,
     pub parts: Vec<Part>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,7 +63,7 @@ pub(super) struct Image {
     pub hash: u32,
 }
 pub(super) struct Variant {
-    pub flags: Vec<String>,
+    pub flags: Vec<Flag>,
     pub periods: Vec<String>,
     pub choices: Vec<Vec<(usize, u32)>>,
     pub random: i32,
@@ -53,6 +72,7 @@ pub(super) struct Variant {
 struct Builder {
     data: Catalog,
     filter_ids: HashMap<String, usize>,
+    flag_ids: HashMap<String, Flag>,
     name_ids: HashMap<String, usize>,
     image_ids: HashMap<(usize, usize), Option<usize>>,
 }
@@ -90,8 +110,14 @@ pub(super) fn compile_files(nodes: &[Node], files: HashMap<String, PathBuf>) -> 
             names: Vec::new(),
             images: Vec::new(),
             files,
+            #[cfg(test)]
+            flag_ids: HashMap::new(),
         },
         filter_ids: HashMap::new(),
+        flag_ids: [("base", Flag::BASE), ("_board", Flag::BOARD), ("_border", Flag::BORDER)]
+            .into_iter()
+            .map(|(name, flag)| (name.to_owned(), flag))
+            .collect(),
         name_ids: HashMap::new(),
         image_ids: HashMap::new(),
     };
@@ -115,6 +141,10 @@ pub(super) fn compile_files(nodes: &[Node], files: HashMap<String, PathBuf>) -> 
         builder.rule(node);
     }
     builder.data.rules.sort_by_key(|rule| rule.precedence);
+    #[cfg(test)]
+    {
+        builder.data.flag_ids = builder.flag_ids;
+    }
     builder.data
 }
 
@@ -241,6 +271,11 @@ fn anchors(node: &Node) -> Vec<Anchor<'_>> {
 }
 
 impl Builder {
+    fn intern_flag(&mut self, name: String) -> Flag {
+        let next = Flag(self.flag_ids.len());
+        *self.flag_ids.entry(name).or_insert(next)
+    }
+
     fn rule(&mut self, node: &Node) {
         let cells = anchors(node);
         if cells.is_empty() {
@@ -265,18 +300,20 @@ impl Builder {
                     self.data.filters.push(filter.into());
                     id
                 });
-                let flags = |key: &str| {
+                let mut flags = |key: &str| {
                     [anchor.tile, Some(node)]
                         .into_iter()
                         .flatten()
                         .flat_map(|n| pattern::expand(attr(n, key)))
                         .map(|s| pattern::rotate(&s, angle, &names))
+                        .map(|name| self.intern_flag(name))
                         .collect::<Vec<_>>()
                 };
+                let require = flags("has_flag");
                 let mut forbid = flags("no_flag");
                 let mut set = flags("set_flag");
                 let both = flags("set_no_flag");
-                forbid.extend(both.iter().cloned());
+                forbid.extend(both.iter().copied());
                 set.extend(both);
                 let mut parts = Vec::new();
                 let mut add = |owner: &Node, global: bool| {
@@ -325,7 +362,7 @@ impl Builder {
                 out.push(Cell {
                     offset: rotate_hex(anchor.hex, angle),
                     filter,
-                    require: flags("has_flag"),
+                    require,
                     forbid,
                     set,
                     parts,
@@ -417,7 +454,10 @@ impl Builder {
                 v => v.parse().unwrap_or(-1),
             };
             variants.push(Variant {
-                flags: pattern::expand(attr(variant, "has_flag")),
+                flags: pattern::expand(attr(variant, "has_flag"))
+                    .into_iter()
+                    .map(|name| self.intern_flag(name))
+                    .collect(),
                 periods: pattern::split(attr(variant, "tod"))
                     .into_iter()
                     .filter(|s| !s.is_empty())

@@ -47,12 +47,11 @@ impl FixedMatch<'_> {
     pub(super) fn planned_route(&self, side: usize, from: Hex, to: Hex) -> Result<Vec<(Hex, u32)>, MoveError> {
         let board = &self.scenario.board;
         let unit = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
-        let vision = self.effective_vision(side);
         let unit_type = unit.unit_type;
         let inherited = self.rules.movement.get(&unit_type.movement_type).map(|m| &m.defense);
         let sides = &self.scenario.sides;
-        let known = |hex| matches!(vision.at(hex), Some(HexVisibility::Visible | HexVisibility::Fogged));
-        let visible = |hex| vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
+        let known = |hex| matches!(self.visibility_at(side, hex), Some(HexVisibility::Visible | HexVisibility::Fogged));
+        let visible = |hex| self.visibility_at(side, hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
         let villages = self.teleport_villages(from, unit, known, visible);
         board.walk_steps_in_view(side, from, to,
             |terrain| self.rules.walking_cost(unit_type, terrain),
@@ -60,6 +59,11 @@ impl FixedMatch<'_> {
             |other| sides[side - 1].is_enemy(&sides[other - 1]),
             known, visible, &villages,
         )
+    }
+
+    pub(super) fn visibility_at(&self, side: usize, hex: Hex) -> Option<HexVisibility> {
+        let sides = &self.scenario.sides;
+        self.vision[side - 1].at_with_allies(hex, &sides[side - 1], sides.iter().zip(&self.vision))
     }
 
     pub(super) fn effective_vision(&self, side: usize) -> VisibilityMask {
