@@ -2,8 +2,31 @@
 use super::{Hero, opening::children};
 use engine_lite::wml::Node;
 
+mod island_village;
+
+fn later_round(event: &Node) -> bool {
+    event.attribute("name").and_then(|name| name.strip_prefix("turn "))
+        .and_then(|round| round.parse::<u8>().ok()).is_some_and(|round| (4..=12).contains(&round))
+}
+
+pub(crate) fn localize_round_hints(campaign: &mut Node, root: &std::path::Path,
+    locale: &mut crate::title_screen::locale::Locale) {
+    for (_, scenario) in campaign.children.iter_mut().filter(|(tag, cfg)|
+        tag == "scenario" && cfg.attribute("id") == Some("2_Tutorial")) {
+        for (_, event) in scenario.children.iter_mut().filter(|(tag, cfg)| tag == "event" && later_round(cfg)) {
+            for (_, hint) in event.children.iter_mut().filter(|(tag, _)| tag == "hint_message") {
+                for value in hint.attributes.values_mut().filter(|v| !v.translations.is_empty()) {
+                    value.text = locale.value(root, value);
+                    value.translations.clear();
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
-    let mut zone = None;
+    island_village::prepare(scenario, hero);
+    let mut before = Vec::new();
     for (index, (tag, event)) in scenario.children.iter_mut().enumerate() {
         if tag != "event" || children(event, "hint_message").next().is_none() { continue; }
         if event.attribute("name") == Some("turn 3") && children(event, "item").any(|cfg| zone_subject(cfg).is_some()) {
@@ -13,7 +36,23 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
             teaching.children.retain(|(tag, _)| tag != "event");
             event.children.retain(|(tag, _)| tag == "event");
             project(&mut teaching, hero);
-            zone = Some((index, teaching));
+            before.push((index, teaching));
+            continue;
+        }
+        if later_round(event) && event.attributes.len() == 1
+            && !event.children.iter().any(|(tag, _)| tag.starts_with("filter")) {
+            let hint = event.children.iter().position(|(tag, _)| tag == "hint_message").unwrap();
+            if event.children[..hint].iter().all(|(tag, _)| matches!(tag.as_str(), "scroll_to" | "message")) {
+                if hint + 1 == event.children.len() {
+                    project(event, hero);
+                } else {
+                    // Turn six clears the label before firing check_income and testing village ownership.
+                    let mut teaching = Node { attributes: event.attributes.clone(),
+                        children: event.children.drain(..=hint).collect() };
+                    project(&mut teaching, hero);
+                    before.push((index, teaching));
+                }
+            }
             continue;
         }
         let briefing = match event.attribute("name") {
@@ -24,7 +63,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
         };
         if briefing { project(event, hero); }
     }
-    if let Some((index, teaching)) = zone {
+    for (index, teaching) in before.into_iter().rev() {
         scenario.children.insert(index, ("event".into(), teaching));
     }
 }
@@ -215,6 +254,85 @@ amount=5
         let kind = if hero == Hero::Konrad { "Fighter" } else { "Fighteress" };
         wml::parse(format!("{MAP}\n[side]\nid=student\ntype={kind}\nname={}\ncontroller=human\nsave_id=human_player\ngold=120\n{extra}\n[/side]\n\
             [side]\nid=Thrag\ntype=Hero\n[/side]\n{events}", hero.name())).unwrap()
+    }
+
+    #[test]
+    fn later_round_labels_replace_and_clear_in_the_authored_order() {
+        let events = r#"
+[event]
+name=turn 4
+[hint_message]
+message=Check the defense percentage.
+[/hint_message]
+[/event]
+[event]
+name=turn 4
+[filter_condition]
+[false]
+[/false]
+[/filter_condition]
+[hint_message]
+message=This label must stay hidden.
+[/hint_message]
+[/event]
+[event]
+name=turn 5
+[message]
+speaker=narrator
+message=Night has fallen.
+[/message]
+[hint_message]
+caption=Time of Day
+message=Hover over the sky.
+[/hint_message]
+[/event]
+[event]
+name=turn 6
+[hint_message]
+remove=yes
+[/hint_message]
+[fire_event]
+name=check_income
+[/fire_event]
+[/event]
+[event]
+name=turn 8
+[hint_message]
+caption=Long-distance Movement
+message=Choose a destination.
+[/hint_message]
+[/event]
+[event]
+name=turn 12
+[hint_message]
+caption=Victory Conditions
+message=Defeat the orc leader.
+[/hint_message]
+[/event]"#;
+        let mut second = scenario(Hero::Konrad, "", events);
+        prepare(&mut second, Hero::Konrad);
+        prepare(&mut second, Hero::Konrad);
+        let scenario = board(second);
+        let mut session = Session::new(scenario.start(7, |_| unreachable!()).unwrap());
+        for round in 2..=12 {
+            let previous = session.tutorial_hint().to_owned();
+            session.apply(Action::EndTurn).unwrap();
+            assert_eq!(session.tutorial_hint(), previous);
+            session.apply(Action::EndTurn).unwrap();
+            if round == 5 {
+                assert_eq!(session.dialogue().unwrap().text, "Night has fallen.");
+                assert_eq!(session.tutorial_hint(), previous);
+                session.dismiss_dialogue();
+                assert!(session.dialogue().is_none());
+            }
+            assert_eq!(session.tutorial_hint(), match round {
+                4 => "Check the defense percentage.",
+                5 => "<b><big>Time of Day</big></b>\nHover over the sky.",
+                8..=11 => "<b><big>Long-distance Movement</big></b>\nChoose a destination.",
+                12 => "<b><big>Victory Conditions</big></b>\nDefeat the orc leader.",
+                _ => "",
+            });
+        }
     }
 
     #[test]

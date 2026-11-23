@@ -2,12 +2,15 @@
 use super::*;
 use crate::combat::Combatant;
 
+#[derive(Clone)]
 pub struct AttackPreview {
+    participants: (u64, u64),
     pub choice: AttackChoice,
     pub offense: StrikePreview,
     pub response: Option<StrikePreview>,
 }
 
+#[derive(Clone)]
 pub struct StrikePreview {
     pub weapon: usize,
     pub range: String,
@@ -15,6 +18,14 @@ pub struct StrikePreview {
     pub damage: u32,
     pub strikes: u32,
     pub hit_chance: u8,
+}
+
+impl AttackPreview {
+    /// A movement event can replace either participant before the selected weapon is used.
+    pub fn matches_current(&self, game: &FixedMatch<'_>) -> bool {
+        game.attack_previews(self.choice.from, self.choice.to).iter()
+            .any(|row| row.choice == self.choice && row.participants == self.participants)
+    }
 }
 
 impl StrikePreview {
@@ -37,6 +48,12 @@ impl StrikePreview {
 impl FixedMatch<'_> {
     /// Uses legal targets and visible providers of leadership, illumination and flanking.
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<AttackPreview> {
+        self.attack_previews_from(from, from, to)
+    }
+
+    /// Preview from a reachable attack hex using only the current side's observation.
+    /// Moving the attacker here is hypothetical: visibility, events and movement points stay untouched.
+    pub fn attack_previews_from(&self, origin: Hex, from: Hex, to: Hex) -> Vec<AttackPreview> {
         let MatchState::Playing(turn) = self.state else {
             return Vec::new();
         };
@@ -44,20 +61,23 @@ impl FixedMatch<'_> {
             return Vec::new();
         };
         let visible: BTreeSet<_> = view.units.iter().map(|unit| unit.position).collect();
-        legal
-            .into_iter()
-            .filter_map(|action| {
-                let Action::Attack(choice) = action else {
-                    return None;
-                };
-                if choice.from != from || choice.to != to {
-                    return None;
-                }
-                let (attack, backstab) = self
-                    .prepare_attack_in_view(turn, choice, |pos| visible.contains(&pos))
-                    .ok()?;
-                let attacker = self.scenario.board.unit_at(from)?;
-                let defender = self.scenario.board.unit_at(to)?;
+        let Some(attacker) = self.scenario.board.unit_at(origin).filter(|unit|
+            visible.contains(&origin) && unit.side == view.side && unit.attacks_left() > 0) else { return Vec::new() };
+        let Some(defender) = self.scenario.board.unit_at(to).filter(|unit|
+            visible.contains(&to) && !view.allied_sides.contains(&unit.side) && !unit.petrified) else { return Vec::new() };
+        if origin != from && (from.distance(to) != 1 || visible.contains(&from) ||
+            !legal.contains(&Action::Move { from: origin, to: from })) { return Vec::new(); }
+
+        let occupant = |at| {
+            if at == from { Some(origin) }
+            else { (at != origin && visible.contains(&at)).then_some(at) }
+        };
+        attacker.unit_type.attacks.iter().enumerate()
+            .filter_map(|(weapon_index, profile)| {
+                let choice = AttackChoice { from, to, weapon: weapon_index };
+                if !within_range(profile, from.distance(to) as i64) ||
+                    origin == from && !legal.contains(&Action::Attack(choice)) { return None; }
+                let (attack, backstab) = self.prepare_attack_in_view(turn, choice, occupant).ok()?;
                 let weapon = &attacker.unit_type.attacks[choice.weapon];
                 let parry = attack
                     .retaliation
@@ -88,6 +108,7 @@ impl FixedMatch<'_> {
                     )
                 });
                 Some(AttackPreview {
+                    participants: (attacker.serial, defender.serial),
                     choice,
                     offense,
                     response,

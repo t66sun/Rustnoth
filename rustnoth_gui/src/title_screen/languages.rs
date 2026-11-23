@@ -2,6 +2,7 @@
 use super::{Art, dialog, load_font, load_texture, locale};
 mod scrollbar;
 mod view;
+pub(crate) use view::window;
 use crate::list_scroll::Scroll;
 use scrollbar::BarArt;
 pub(super) use view::Label;

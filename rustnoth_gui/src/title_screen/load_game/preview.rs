@@ -3,7 +3,8 @@ use super::*;
 use crate::{BoardData, render};
 use engine_lite::fixed_match::{MatchState, carryover::CampaignCarryover};
 use rustnoth_gui::session::{Players, Session};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::desktop::local_date;
+use std::time::SystemTime;
 
 #[derive(Default)]
 pub(super) struct Date {
@@ -18,19 +19,6 @@ impl Date {
         let today = local_date(now).is_some_and(|n| n.tm_year == time.tm_year && n.tm_yday == time.tm_yday);
         let short = if today { format!("{:02}:{:02}", time.tm_hour, time.tm_min) } else { long[..10].into() };
         Self { short, long }
-    }
-}
-
-fn local_date(time: SystemTime) -> Option<libc::tm> {
-    let stamp = libc::time_t::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
-    let mut out = std::mem::MaybeUninit::uninit();
-    // Both functions write a complete tm to the supplied buffer on success.
-    unsafe {
-        #[cfg(windows)]
-        let ok = libc::localtime_s(out.as_mut_ptr(), &stamp) == 0;
-        #[cfg(not(windows))]
-        let ok = !libc::localtime_r(&stamp, out.as_mut_ptr()).is_null();
-        ok.then(|| out.assume_init())
     }
 }
 

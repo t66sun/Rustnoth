@@ -13,14 +13,15 @@ impl FixedMatch<'_> {
     pub fn time_report(&self, viewer: usize, position: Option<Hex>) -> Option<TimeReport<'_>> {
         let side = self.scenario.sides.get(viewer.checked_sub(1)?)?;
         if self.global_time_of_day().is_none() && self.linger_time().is_none() { return None; }
-        let shared = position.filter(|_| side.fog || side.shroud).map(|_| self.effective_vision(viewer));
-        let vision = shared.as_ref().unwrap_or(&self.vision[viewer - 1]);
-        let known = position.filter(|&at| matches!(vision.at(at), Some(HexVisibility::Visible | HexVisibility::Fogged)));
+        let visibility = |hex| self.vision[viewer - 1].at_with_allies(hex, side,
+            self.scenario.sides.iter().zip(&self.vision));
+        let tile = position.and_then(visibility);
+        let known = position.filter(|_| matches!(tile, Some(HexVisibility::Visible | HexVisibility::Fogged)));
         let schedule = &self.scenario.schedule;
         let (current, entries) = schedule.cycle_report(self.current_round, known);
-        let lawful = match known.filter(|&at| vision.at(at) == Some(HexVisibility::Visible)) {
+        let lawful = match known.filter(|_| tile == Some(HexVisibility::Visible)) {
             Some(at) => self.lawful_bonus_in_view(self.current_round, at, |hex|
-                vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(viewer, hex)),
+                visibility(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(viewer, hex)),
             None => entries[current].lawful_bonus,
         };
         Some(TimeReport { current, schedule: entries, lawful,
@@ -32,6 +33,10 @@ impl FixedMatch<'_> {
     }
 
     pub(super) fn lawful_bonus_in_view(&self, round: i32, position: Hex, visible: impl Fn(Hex) -> bool) -> i32 {
+        self.lawful_bonus_with_occupants(round, position, |at| visible(at).then_some(at))
+    }
+
+    pub(super) fn lawful_bonus_with_occupants(&self, round: i32, position: Hex, occupant: impl Fn(Hex) -> Option<Hex>) -> i32 {
         let board = &self.scenario.board;
         let scheduled = self.scenario.schedule.at_hex(round, position).lawful_bonus;
         let base = board.map().terrain_at(position).map_or(scheduled, |code|
@@ -41,7 +46,7 @@ impl FixedMatch<'_> {
             return base;
         }
         let illuminated = std::iter::once(position).chain(position.neighbors())
-            .filter(|hex| visible(*hex))
+            .filter_map(occupant)
             .any(|hex| board.unit_at(hex).is_some_and(|unit| unit.unit_type.illuminates));
         if illuminated { (base + 25).min(25) } else { base }
     }
@@ -92,6 +97,14 @@ Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv,Xv"
         let occupant = game.time_report(2, Some(cavern)).unwrap();
         assert_eq!((&*player.schedule[0].id, &*player.schedule[0].image), ("dawn", "custom-dawn.png"));
         assert_eq!(occupant.schedule[0].id, "cavern");
+
+        let builds = crate::visibility::FULL_VISION_BUILDS.get();
+        for _ in 0..3 {
+            let report = game.time_report(1, Some(Hex { x: 0, y: 0 })).unwrap();
+            assert_eq!(report.schedule[report.current].id, "dawn");
+        }
+        assert_eq!(crate::visibility::FULL_VISION_BUILDS.get(), builds,
+            "repainting the battlefield clock rebuilt the entire vision mask");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 use super::*;
 mod unit_report;
 mod end_button;
+mod clock;
 mod time_report;
 
 pub(super) struct BattlefieldFrame {
@@ -72,6 +73,7 @@ pub(super) struct FrameArt {
     minimap_buttons: crate::minimap_buttons::Buttons,
     end_button: end_button::Art,
     reports: [Texture; 5],
+    clock: clock::Clock,
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
     time_report: time_report::Art,
@@ -81,7 +83,7 @@ pub(super) struct FrameArt {
 impl FrameArt {
     pub fn clear_unit_report(&mut self) { self.unit_report.cached = None; }
 
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, locale: &crate::title_screen::locale::Locale) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
         Self {
@@ -90,8 +92,9 @@ impl FrameArt {
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
             minimap_buttons: crate::minimap_buttons::Buttons::load(root),
             end_button: end_button::Art::load(root),
+            clock: clock::Clock::new(root),
             side_flags: BTreeMap::new(),
-            unit_report: unit_report::Art::new(root),
+            unit_report: unit_report::Art::new(root, locale),
             time_report: time_report::Art::new(root),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: StatusBox::load(root),
@@ -154,11 +157,16 @@ pub fn draw(
 ) {
     fill(frame.bar, PANEL);
     fill(frame.sidebar, PANEL);
-    paint(&art.frame.bar, frame.bar);
-    paint(&art.frame.sidebar, frame.sidebar);
+    // Classic theme panels repeat the installed bitmap and clip the last tile.
+    for (texture, bounds) in [(&art.frame.bar, frame.bar), (&art.frame.sidebar, frame.sidebar)] {
+        if let Some(texture) = texture {
+            crate::title_screen::tiled(bounds, texture);
+        }
+    }
     let s = frame.scale;
     if s <= 0.0 { return; }
     draw_reports(frame, state, observation, movement.session.economy(), art);
+    art.frame.clock.draw(frame, art.dialogue_font.as_ref(), #[cfg(windows)] art.dialogue_text.renderer());
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
@@ -191,6 +199,7 @@ pub fn draw(
                 movement.session.dialogue().is_none());
         }
         art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
+        art.frame.unit_report.draw_headings(frame, &art.dialogue_font);
         if let Some(view) = observation
             && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
         {
@@ -201,7 +210,7 @@ pub fn draw(
     if let Some(message) = movement.message {
         text_in(&art.font, message, hint, 14, ERROR, false);
     } else if movement.menu.is_none() && movement.actions.iter().any(|a| matches!(a, Action::Disband { .. })) {
-        text_in(&art.font, "Dismiss veteran [D]", hint, 14, TEXT, false);
+        text_in(&art.font, "Dismiss veteran [Shift+D]", hint, 14, TEXT, false);
     }
 }
 

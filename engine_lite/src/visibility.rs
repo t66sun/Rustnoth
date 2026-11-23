@@ -86,6 +86,11 @@ pub struct VisibilityMask {
     explored: BTreeSet<Hex>,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static FULL_VISION_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl VisibilityMask {
     /// Creates a mask before any tiles have been uncovered by sight.
     pub fn new(width: i32, height: i32, fog: bool, shroud: bool) -> Self {
@@ -151,19 +156,46 @@ impl VisibilityMask {
         viewer: &SideConfig,
         sides: impl IntoIterator<Item = (&'a SideConfig, &'a VisibilityMask)>,
     ) -> Self {
+        #[cfg(test)]
+        FULL_VISION_BUILDS.set(FULL_VISION_BUILDS.get() + 1);
         let mut view = self.clone();
         for (donor, mask) in sides {
-            if donor.side == viewer.side || viewer.is_enemy(donor) {
-                continue;
-            }
-            if view.shroud && mask.shroud && donor.share_vision != ShareVision::None {
+            let (explored, sight) = self.shared_layers(viewer, donor, mask);
+            if explored {
                 view.explored.extend(&mask.explored);
             }
-            if view.fog && mask.fog && donor.share_vision == ShareVision::All {
+            if sight {
                 view.sight.extend(&mask.sight);
             }
         }
         view
+    }
+
+    fn shared_layers(&self, viewer: &SideConfig, donor: &SideConfig, mask: &Self) -> (bool, bool) {
+        if donor.side == viewer.side || viewer.is_enemy(donor) {
+            return (false, false);
+        }
+        (self.shroud && mask.shroud && donor.share_vision != ShareVision::None,
+         self.fog && mask.fog && donor.share_vision == ShareVision::All)
+    }
+
+    /// Point lookup for display reports that only need the hovered hex and its neighbors.
+    pub(crate) fn at_with_allies<'a>(
+        &self, hex: Hex, viewer: &SideConfig,
+        sides: impl IntoIterator<Item = (&'a SideConfig, &'a VisibilityMask)>,
+    ) -> Option<HexVisibility> {
+        if !self.is_playable(hex) { return None; }
+        let mut explored = !self.shroud || self.explored.contains(&hex);
+        let mut seen = !self.fog || self.sight.contains(&hex) || self.fog_override.contains(&hex);
+        for (donor, mask) in sides {
+            if explored && seen { break; }
+            let (share_map, share_sight) = self.shared_layers(viewer, donor, mask);
+            explored |= share_map && mask.explored.contains(&hex);
+            seen |= share_sight && mask.sight.contains(&hex);
+        }
+        Some(if !explored { HexVisibility::Shrouded }
+            else if !seen { HexVisibility::Fogged }
+            else { HexVisibility::Visible })
     }
 
     /// Returns the visibility of a playable tile. Map borders lie outside this mask.
@@ -387,6 +419,22 @@ mod tests {
         let view_without_fog = VisibilityMask::new(2, 1, false, true)
             .with_allied_vision(viewer, [(&sides[1], &shroud_only)]);
         assert_eq!(view_without_fog.at(RIGHT), Some(HexVisibility::Visible));
+
+        donor.fog_override.insert(LEFT);
+        let all_donors = [(&sides[1], &shroud_only), (&sides[2], &fog_only)];
+        for (viewer_side, donors) in [
+            (viewer, &all_donors[..]), (viewer, &[(&sides[1], &donor)][..]),
+            (viewer, &[(&sides[2], &donor)][..]), (viewer, &[(&sides[3], &donor)][..]),
+            (&sides[2], &[(viewer, &donor)][..]),
+        ] {
+            for (fog, shroud) in [(true, true), (false, true), (true, false), (false, false)] {
+                let own = VisibilityMask::new(2, 1, fog, shroud);
+                let shared = own.with_allied_vision(viewer_side, donors.iter().copied());
+                for hex in [LEFT, RIGHT, BORDER] {
+                    assert_eq!(own.at_with_allies(hex, viewer_side, donors.iter().copied()), shared.at(hex));
+                }
+            }
+        }
     }
 
     #[test]

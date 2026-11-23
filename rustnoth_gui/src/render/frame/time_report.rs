@@ -48,7 +48,7 @@ impl Art {
         #[cfg(windows)]
         let rasterized = if let Some(font) = self.font.get_or_init(|| crate::title_screen::tip_pango::Text::load(&self.root, "Lato")) {
             if !self.number.as_ref().is_some_and(|(n, len, _)| (*n, *len) == (current, total)) {
-                let label = font.button(&format!("{current}/{total}"), 15, [221; 3]);
+                let label = font.battlefield_report(&format!("{current}/{total}"), 15);
                 let texture = Texture2D::from_image(&label);
                 texture.set_filter(FilterMode::Nearest);
                 self.number = Some((current, total, texture));
