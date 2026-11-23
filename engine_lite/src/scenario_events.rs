@@ -6,6 +6,7 @@ mod endlevel;
 pub(crate) mod kill;
 mod items;
 mod have_unit;
+mod wounded;
 mod objectives;
 use have_unit::HaveUnit;
 pub(crate) mod variables;
@@ -631,6 +632,7 @@ struct Handler {
 
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
+    pub(crate) wounded: Option<wounded::WoundedLesson>,
     objective_definitions: BTreeMap<usize, objectives::Definition>,
     handlers: Vec<Handler>,
     pub(crate) active_side: usize,
@@ -641,8 +643,10 @@ pub(crate) struct ScenarioEvents {
 
 impl ScenarioEvents {
     pub(crate) fn read(scenario: &Node, side_count: usize) -> Self {
-        Self::from_events(scenario, side_count, scenario.children.iter()
-            .filter(|(tag, _)| tag == "event").map(|(_, event)| event))
+        let mut result = Self::from_events(scenario, side_count, scenario.children.iter()
+            .filter(|(tag, _)| tag == "event").map(|(_, event)| event));
+        result.wounded = wounded::WoundedLesson::read(scenario);
+        result
     }
 
     pub(crate) fn accepts_event(scenario: &Node, side_count: usize, event: &Node) -> bool {
@@ -698,6 +702,7 @@ impl ScenarioEvents {
         handlers.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
         Self {
             handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
+            wounded: None,
             objective_definitions: BTreeMap::new(),
             active_side: 1,
             variables: variables::initial(scenario),
@@ -737,6 +742,7 @@ impl ScenarioEvents {
 
     pub(crate) fn begin_turn(&mut self, turn: Turn, new_round: bool, state: &mut EventState<'_>) {
         self.active_side = turn.side;
+        if new_round && let Some(lesson) = &mut self.wounded { lesson.begin_round(turn.round); }
         if self.handlers.is_empty() { return; }
         let Turn { side, round } = turn;
         if new_round {

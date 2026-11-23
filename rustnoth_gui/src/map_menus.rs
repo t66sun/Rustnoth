@@ -20,6 +20,7 @@ pub(super) enum Command {
     Recruit,
     RecruitAt(Hex),
     Describe(Hex),
+    Disband,
     Recall,
     Undo,
 }
@@ -35,6 +36,7 @@ impl Command {
             Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
             Self::Describe(_) => "Unit Description",
+            Self::Disband => "Dismiss veteran",
             Self::Undo => "Undo",
         }
     }
@@ -118,6 +120,17 @@ pub(super) fn described_unit(hovered: Option<Hex>, selected: Option<Hex>,
     [hovered, selected].into_iter().flatten().find(|hex| visible(*hex))
 }
 
+pub(super) fn unit_shortcut(described: Option<Hex>, down: impl Fn(KeyCode) -> bool) -> Option<Command> {
+    use KeyCode::*;
+    if [LeftControl, RightControl, LeftAlt, RightAlt, LeftSuper, RightSuper].into_iter().any(&down) {
+        None
+    } else if down(LeftShift) || down(RightShift) {
+        Some(Command::Disband)
+    } else {
+        described.map(Command::Describe)
+    }
+}
+
 pub(super) fn available(objectives: bool, units: bool, actions: &[Action]) -> Vec<Command> {
     let mut commands = Vec::new();
     if objectives {
@@ -165,6 +178,20 @@ fn row(button: Rect, i: usize, scale: f32) -> Rect {
 }
 
 impl State {
+    pub fn vertical_edge_scroll(&self, pointer: Vec2, canvas: Vec2, threshold: f32) -> i32 {
+        // Macroquad's initial position is (0, 0) until the first pointer event.
+        if self.open.is_some() || pointer == Vec2::ZERO || pointer.x < 0.0 || pointer.x >= canvas.x
+            || pointer.y < 0.0 || pointer.y >= canvas.y
+        {
+            return 0;
+        }
+        let direction = (pointer.y < threshold) as i32 - (pointer.y > canvas.y - threshold) as i32;
+        if direction != 0 && geometry(canvas.x, canvas.y).0.iter().any(|b| b.contains(pointer)) {
+            return 0;
+        }
+        direction
+    }
+
     pub fn target_point(&self, pointer: [f32; 2]) -> [f32; 2] {
         if self.open == Some(Group::Context) { self.context_target.to_array() } else { pointer }
     }
@@ -344,6 +371,41 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_edges_use_the_native_threshold_and_release_over_menus() {
+        let mut state = State::default();
+        let canvas = vec2(1200.0, 820.0);
+        let edge = |menu: &State, x, y| menu.vertical_edge_scroll(vec2(x, y), canvas, 10.0);
+        assert_eq!(edge(&state, 600.0, 0.0), 1);
+        assert_eq!(edge(&state, 600.0, 9.0), 1);
+        assert_eq!(edge(&state, 600.0, 10.0), 0);
+        assert_eq!(edge(&state, 600.0, 810.0), 0);
+        assert_eq!(edge(&state, 600.0, 811.0), -1);
+        assert_eq!(edge(&state, 600.0, 820.0), 0);
+        assert_eq!(edge(&state, 40.0, 5.0), 0);
+        assert_eq!(edge(&state, 145.0, 5.0), 0);
+        assert_eq!(state.vertical_edge_scroll(vec2(600.0, 819.0), canvas, 0.0), 0);
+        state.open = Some(Group::Context);
+        assert_eq!(edge(&state, 600.0, 819.0), 0);
+    }
+
+    #[test]
+    fn d_describes_a_visible_unit_and_only_shift_d_opens_veteran_dismissal() {
+        use KeyCode::*;
+        let unit = Hex { x: 3, y: 2 };
+        let shortcut = |target, modifiers: &[KeyCode]| unit_shortcut(target, |key| modifiers.contains(&key));
+        assert_eq!(shortcut(Some(unit), &[]), Some(Command::Describe(unit)));
+        assert_eq!(shortcut(None, &[]), None);
+        for target in [Some(unit), None] {
+            for shift in [LeftShift, RightShift] {
+                assert_eq!(shortcut(target, &[shift]), Some(Command::Disband));
+            }
+            for modifier in [LeftControl, RightControl, LeftAlt, RightAlt, LeftSuper, RightSuper] {
+                assert_eq!(shortcut(target, &[modifier]), None);
+                assert_eq!(shortcut(target, &[RightShift, modifier]), None);
+            }
+        }
+    }
 
     #[test]
     fn a_context_description_keeps_the_original_target_when_the_pointer_enters_the_menu() {

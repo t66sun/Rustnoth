@@ -25,8 +25,8 @@ pub struct AssetCatalog {
 
 #[derive(Debug)]
 struct UnitAssets {
-    flying: bool,
     help_text: Node,
+    flying: bool,
     image: Option<PathBuf>,
     portrait: Option<PathBuf>,
     dialogue_profile: Option<String>,
@@ -199,15 +199,23 @@ impl AssetCatalog {
         self.resolve_image(self.units.get(id)?.weapons.get(index)?.1.as_deref()?)
     }
 
-    /// Elevation of a sprite above its hex at the original 72-pixel zoom.
-    pub fn unit_elevation(&self, code: &str, unit: &str) -> i32 {
-        let height = if self.terrain.contains_key(code) {
+    fn terrain_height(&self, code: &str) -> i32 {
+        if self.terrain.contains_key(code) {
             self.unit_heights.get(code)
         } else {
             code.find('^').and_then(|split| self.unit_heights.get(&code[split..])
                 .or_else(|| self.unit_heights.get(&code[..split])))
-        }.copied().unwrap_or(0);
-        if height < 0 && self.units.get(unit).is_some_and(|u| u.flying) { 0 } else { height }
+        }.copied().unwrap_or(0)
+    }
+
+    /// Original 72-pixel sprite elevation at this point in a walk or attack.
+    pub fn unit_elevation(&self, unit: &str, from: &str, to: &str, offset: f32) -> i32 {
+        let start = self.terrain_height(from);
+        let height = if offset == 0.0 || from == to { start } else {
+            let end = self.terrain_height(to);
+            (start as f32 * (1.0 - offset) + end as f32 * offset) as i32
+        };
+        if self.units.get(unit).is_some_and(|u| u.flying) { height.max(0) } else { height }
     }
 
     /// Name of the highlighted tile as displayed in the terrain report.
@@ -304,7 +312,7 @@ impl AssetCatalog {
                 }
                 "units" => {
                     let flying: BTreeSet<_> = node.children.iter()
-                        .filter(|(tag, kind)| tag == "movetype" && matches!(kind.attribute("flying"), Some("yes" | "true" | "1")))
+                        .filter(|(tag, kind)| tag == "movetype" && flying_override(kind) == Some(true))
                         .filter_map(|(_, kind)| kind.attribute("name")).collect();
                     let races: BTreeMap<_, _> = node.children.iter().filter(|(tag, _)| tag == "race")
                         .filter_map(|(_, race)| {
@@ -320,13 +328,14 @@ impl AssetCatalog {
                             continue;
                         };
                         self.units.entry(id.to_owned()).or_insert_with(|| UnitAssets {
-                            flying: unit.attribute("movement_type").is_some_and(|name| flying.contains(name)),
                             help_text: Node {
                                 attributes: ["name", "description"].into_iter()
                                     .filter_map(|k| unit.attributes.get(k).map(|v| (k.to_owned(), v.clone())))
                                     .collect(),
                                 children: Vec::new(),
                             },
+                            flying: flying_override(unit).unwrap_or_else(||
+                                unit.attribute("movement_type").is_some_and(|name| flying.contains(name))),
                             combat: unit.children.iter().filter(|(tag, _)| matches!(tag.as_str(), "attack_anim" | "defend"))
                                 .cloned().collect(),
                             moving: unit.children.iter().filter(|(tag, _)| tag == "movement_anim")
@@ -369,6 +378,15 @@ impl AssetCatalog {
             }
         }
     }
+}
+
+// The current WML spelling takes precedence over the older "flies" on both tags.
+fn flying_override(node: &Node) -> Option<bool> {
+    ["flying", "flies"].iter().find_map(|key| match node.attribute(key) {
+        Some("yes" | "true") => Some(true),
+        Some("no" | "false") => Some(false),
+        _ => None,
+    })
 }
 
 fn safe_relative_path(path: &Path) -> bool {
@@ -429,11 +447,32 @@ movement_type=winged
 [/unit_type]
 [/units]"#;
         let art = AssetCatalog::parse(Path::new("wesnoth"), core, b"").unwrap();
-        assert_eq!(art.unit_elevation("Kh", "Fighter"), 20);
-        assert_eq!(art.unit_elevation("Kh^Vh", "Fighter"), 20);
-        assert_eq!(art.unit_elevation("Kh^Flat", "Fighter"), 0);
-        assert_eq!(art.unit_elevation("Ds", "Fighter"), -4);
-        assert_eq!(art.unit_elevation("Ds", "Bat"), 0);
+        let standing = |terrain, unit| art.unit_elevation(unit, terrain, terrain, 0.0);
+        assert_eq!(standing("Kh", "Fighter"), 20);
+        assert_eq!(standing("Kh^Vh", "Fighter"), 20);
+        assert_eq!(standing("Kh^Flat", "Fighter"), 0);
+        assert_eq!(standing("Ds", "Fighter"), -4);
+        assert_eq!(standing("Ds", "Bat"), 0);
+        assert_eq!(art.unit_elevation("Bat", "Kh", "Ds", 0.5), 8);
+        assert_eq!(art.unit_elevation("Bat", "Ds", "Kh", 0.125), 0);
+        assert_eq!(art.unit_elevation("Fighter", "Ds", "Kh", 0.125), -1);
+    }
+
+    #[test]
+    fn unit_flight_overrides_the_movement_type_on_low_terrain() {
+        let core = b"[terrain_type]\nstring=Ds\nunit_height_adjust=-4\n[/terrain_type]\n\
+[units]\n[movetype]\nname=ground\nflies=yes\nflying=no\n[/movetype]\n\
+[movetype]\nname=winged\nflies=yes\n[/movetype]\n[/units]";
+        for (movetype, attributes, expected) in [
+            ("ground", "", -4), ("winged", "", 0),
+            ("ground", "flying=yes", 0), ("winged", "flying=no", -4),
+            ("", "flying=true", 0), ("ground", "flies=yes", 0),
+            ("winged", "flies=yes\nflying=false", -4),
+        ] {
+            let custom = format!("[units]\n[unit_type]\nid=Student\nmovement_type={movetype}\n{attributes}\n[/unit_type]\n[/units]");
+            let art = AssetCatalog::parse(Path::new("wesnoth"), core, custom.as_bytes()).unwrap();
+            assert_eq!(art.unit_elevation("Student", "Ds", "Ds", 0.0), expected, "{movetype} {attributes}");
+        }
     }
 
     #[test]

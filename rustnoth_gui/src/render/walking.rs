@@ -1,5 +1,5 @@
 //! Player-facing movement after the referee has resolved the walk.
-use super::{Hex, Vec2};
+use super::Hex;
 use engine_lite::hex::Direction;
 
 const STEP_MS: u64 = 200;
@@ -16,10 +16,10 @@ pub(crate) struct Walk {
 #[derive(Clone, Copy)]
 pub(super) struct Pose {
     pub unit: Option<Hex>,
-    from: Hex,
+    pub from: Hex,
     pub to: Hex,
     pub direction: Option<Direction>,
-    fraction: f32,
+    pub fraction: f32,
     pub elapsed: u64,
 }
 
@@ -66,12 +66,6 @@ impl Walk {
         // A tunnel moves directly between its endpoints, never through the intervening map.
         let fraction = if direction.is_some() { progress } else if progress < 0.5 { 0.0 } else { 1.0 };
         Some(Pose { unit: self.unit, from, to, direction, fraction, elapsed })
-    }
-}
-
-impl Pose {
-    pub(super) fn origin(&self, point: impl Fn(Hex) -> Vec2) -> Vec2 {
-        point(self.from).lerp(point(self.to), self.fraction)
     }
 }
 
