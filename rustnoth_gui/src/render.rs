@@ -8,7 +8,7 @@ mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -105,18 +105,20 @@ fn map_cover(view: &Observation) -> CoverTiles {
     }
     let fog_end = cover.len();
     if view.tiles.len() < view.width as usize * view.height as usize {
-        let explored: HashSet<Hex> = view.tiles.iter().map(|tile| tile.position).collect();
-        for y in 0..view.height {
-            for x in 0..view.width {
-                let position = Hex { x, y };
-                if !explored.contains(&position) {
-                    cover.push((position, Cover::Shroud));
-                }
-            }
-        }
+        let explored = view.tiles.iter().map(|tile| tile.position);
+        cover.extend(shrouded_positions(view.width, view.height, explored)
+            .map(|position| (position, Cover::Shroud)));
     }
     let playable_end = cover.len();
     CoverTiles { cells: cover, fog_end, playable_end }
+}
+
+fn shrouded_positions(width: i32, height: i32, explored: impl Iterator<Item = Hex>) -> impl Iterator<Item = Hex> {
+    // The referee projects playable tiles in row-major order, including fogged tiles.
+    let mut explored = explored.peekable();
+    (0..height)
+        .flat_map(move |y| (0..width).map(move |x| Hex { x, y }))
+        .filter(move |position| explored.next_if_eq(position).is_none())
 }
 
 pub(crate) struct GridArt([Option<Texture2D>; 2]);
@@ -1061,6 +1063,48 @@ mod tests {
         assert_eq!(map_cover(&view).cells, [(Hex { x: 0, y: 0 }, Cover::Fog)]);
         view.tiles[0].visible = true;
         assert!(map_cover(&view).cells.is_empty());
+    }
+
+    #[test]
+    fn sparse_cover_streams_shroud_gaps_and_keeps_fog_first() {
+        use engine_lite::observation::ObservedTile;
+        use std::cell::Cell;
+
+        let positions = [Hex { x: 1, y: 0 }, Hex { x: 0, y: 2 }, Hex { x: 2, y: 2 }];
+        let reads = Cell::new(0);
+        let explored = positions.into_iter().inspect(|_| reads.set(reads.get() + 1));
+        let mut shroud = shrouded_positions(3, 3, explored);
+        assert_eq!(shroud.next(), Some(Hex { x: 0, y: 0 }));
+        assert_eq!(reads.get(), 1);
+
+        let view = Observation {
+            side: 1,
+            allied_sides: vec![1],
+            gold: None,
+            width: 3,
+            height: 3,
+            tiles: positions.into_iter().enumerate().map(|(index, position)| ObservedTile {
+                position,
+                terrain: "Gg".into(),
+                visible: index == 1,
+                village_owner: None,
+                time_color: [0; 3],
+            }).collect(),
+            units: Vec::new(),
+        };
+        let cover = map_cover(&view);
+        assert_eq!(cover.fog_end, 2);
+        assert_eq!(cover.playable_end, 8);
+        assert_eq!(cover.cells, [
+            (positions[0], Cover::Fog),
+            (positions[2], Cover::Fog),
+            (Hex { x: 0, y: 0 }, Cover::Shroud),
+            (Hex { x: 2, y: 0 }, Cover::Shroud),
+            (Hex { x: 0, y: 1 }, Cover::Shroud),
+            (Hex { x: 1, y: 1 }, Cover::Shroud),
+            (Hex { x: 2, y: 1 }, Cover::Shroud),
+            (Hex { x: 1, y: 2 }, Cover::Shroud),
+        ]);
     }
 
     #[test]
