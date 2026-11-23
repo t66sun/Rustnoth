@@ -205,6 +205,11 @@ impl Text {
         self.rasterize(width, height, [221; 3])
     }
 
+    pub(crate) fn battlefield_report(&self, text: &str, size: u16) -> macroquad::texture::Image {
+        let (width, height) = self.prepare(text, size, None, 0, false);
+        self.rasterize_label(width, height, [221; 3], 0, true)
+    }
+
     pub(crate) fn paragraph(&self, text: &str, width: u16, alignment: i32) -> macroquad::texture::Image {
         let (_, height) = self.prepare(text, 17, Some(width), alignment, true);
         self.rasterize(width, height, [215; 3])
