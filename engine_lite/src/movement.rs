@@ -47,7 +47,7 @@ pub(crate) fn reachable_with_teleports(
     tile_at: impl Fn(Hex) -> Option<MovementTile>,
 ) -> BTreeMap<Hex, u32> {
     let mut frontier = BinaryHeap::from([(moves_left, origin)]);
-    let mut reached = BTreeSet::from([origin]);
+    let mut examined = BTreeSet::from([origin]);
     let mut destinations = BTreeMap::new();
 
     while let Some((remaining, current)) = frontier.pop() {
@@ -56,7 +56,9 @@ pub(crate) fn reachable_with_teleports(
         }
 
         for next in current.neighbors().chain(teleport_exits(villages, current).iter().copied()) {
-            if reached.contains(&next) {
+            // Entry cost and blockers are fixed. The first predecessor has the
+            // most remaining movement, so later ones cannot improve the result.
+            if !examined.insert(next) {
                 continue;
             }
             let Some(tile) = tile_at(next) else {
@@ -70,9 +72,6 @@ pub(crate) fn reachable_with_teleports(
             };
             let after_entry = if tile.stops_movement { 0 } else { after_entry };
 
-            // Entry cost depends only on the destination. The max-heap visits
-            // the predecessor with the most remaining movement first.
-            reached.insert(next);
             if after_entry > 0 {
                 frontier.push((after_entry, next));
             }
@@ -88,12 +87,39 @@ pub(crate) fn reachable_with_teleports(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     fn tile(cost: u32, occupancy: Occupancy) -> MovementTile {
         MovementTile {
             cost: NonZeroU32::new(cost).unwrap(),
             occupancy,
             stops_movement: false,
+        }
+    }
+
+    #[test]
+    fn queries_rejected_hexes_only_once() {
+        let origin = Hex { x: 0, y: 0 };
+        let west = Hex { x: -1, y: 0 };
+        let east = Hex { x: 1, y: 0 };
+        let expensive = Hex { x: -1, y: -1 };
+        let enemy = Hex { x: 1, y: -1 };
+        let absent = Hex { x: 0, y: 1 };
+        let tiles = BTreeMap::from([
+            (west, tile(1, Occupancy::Empty)),
+            (east, tile(1, Occupancy::Empty)),
+            (expensive, tile(3, Occupancy::Empty)),
+            (enemy, tile(1, Occupancy::Enemy)),
+        ]);
+        let queries = RefCell::new(BTreeMap::new());
+        let reachable = reachable_destinations(origin, 2, |hex| {
+            *queries.borrow_mut().entry(hex).or_insert(0) += 1;
+            tiles.get(&hex).copied()
+        });
+
+        assert_eq!(reachable, BTreeMap::from([(west, 1), (east, 1)]));
+        for hex in [expensive, enemy, absent] {
+            assert_eq!(queries.borrow().get(&hex), Some(&1), "{hex:?}");
         }
     }
 
