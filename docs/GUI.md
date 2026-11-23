@@ -1,5 +1,7 @@
 # 桌面版
 
+在启动参数开头加上 `--uncapped` 可关闭垂直同步，用于测量渲染吞吐量。例如 `Rustnoth.exe --uncapped --wesnoth-root <安装目录>`。
+
 在 Windows 双击发布版 `Rustnoth.exe` 即可进入标题画面。从源码运行可在仓库根目录执行 `cargo run --manifest-path rustnoth_gui/Cargo.toml --locked`。程序会在 Steam 游戏库中寻找 Wesnoth 1.18.8。也可以使用 `rustnoth_gui --wesnoth-root <安装目录>` 或设置 `WESNOTH_ROOT` 指定安装位置。首次进入 Multiplayer 或 Campaigns 时，程序用原版可执行文件预处理规则并保存在当前用户的 Rustnoth 缓存中。**Campaigns（战役）** 会列出本机安装的单人战役，可用所选语言搜索战役名，再选择难度。教学战役目前可体验开场的移动和攻击练习。
 
 桌面版使用 Rust 裁判运行本地对局，支持自由混战和盟军共同获胜。各阵营依次使用同一窗口，棋盘和行动范围由当前阵营的裁判视图决定。启用战争迷雾后，曾探索但当前不可见的地形会变暗；启用黑幕后，未探索的格子会被遮住。地形、精灵、队色和字体取自指定的 Wesnoth 素材目录。

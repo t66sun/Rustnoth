@@ -51,7 +51,10 @@ fn panel(view: Vec2, title: Vec2, body: Vec2) -> Rect {
 }
 
 pub async fn show(objectives: &ScenarioObjectives, title: &str, locale: &Locale, art: &mut BoardArt, root: &Path) {
-    let frame = get_screen_data();
+    let mut frame = get_screen_data();
+    for pixel in frame.get_image_data_mut() {
+        pixel[3] = 255;
+    }
     let board = Texture2D::from_image(&frame);
     board.set_filter(FilterMode::Nearest);
     let tile = get_texture(&mut art.paths, root.join("images/dialogs/translucent65-background.png"));
