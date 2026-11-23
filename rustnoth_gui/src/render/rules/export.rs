@@ -109,7 +109,7 @@ pub(crate) fn map_png(root: &Path, file: &Path, output: &Path) -> Result<(), Box
                 }
                 for variant in &catalog.images[part.image].variants {
                     if !variant.periods.is_empty()
-                        || !variant.flags.iter().all(|f| tile.flags.contains(f))
+                        || !variant.flags.iter().all(|&flag| tile.has_flag(flag))
                     {
                         continue;
                     }
@@ -180,8 +180,7 @@ mod tests {
         };
         assert!(
             plan::build_with_flags(&catalog, &view, &Default::default())[&Hex { x: -1, y: 0 }]
-                .flags
-                .contains("base")
+                .has_flag(catalog.flag("base"))
         );
     }
 }

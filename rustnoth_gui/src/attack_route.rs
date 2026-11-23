@@ -5,6 +5,11 @@ use engine_lite::{
     observation::Observation,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    static DIRECT_ATTACK_ACTION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct AttackRoute {
     pub origin: Hex,
     pub staging: Hex,
@@ -31,17 +36,24 @@ impl Cursor {
         let previous = self.last.filter(|(source, _, _)| *source == origin).map(|(_, at, _)| at);
         if previous.is_none() { self.free = None; }
         self.last = Some(key);
-        let direct = actions.iter().any(|action|
-            matches!(action, Action::Attack(choice) if choice.from == origin && choice.to == target));
         let unit_at = |at| view.units.iter().find(|unit| unit.position == at);
         self.attack = None;
-        if target == origin || unit_at(target).is_none() {
+        let hovered = if target == origin { None } else { unit_at(target) };
+        let Some(defender) = hovered else {
             self.free = Some(target);
             return;
+        };
+        if view.allied_sides.contains(&defender.side) || defender.petrified
+            || !unit_at(origin).is_some_and(|unit| unit.side == view.side && unit.attacks_left.unwrap_or(0) > 0)
+        {
+            return;
         }
-        if !unit_at(origin).is_some_and(|unit| unit.side == view.side && unit.attacks_left.unwrap_or(0) > 0) ||
-            !unit_at(target).is_some_and(|unit| !view.allied_sides.contains(&unit.side) && !unit.petrified) { return; }
 
+        let direct = actions.iter().any(|action| {
+            #[cfg(test)]
+            DIRECT_ATTACK_ACTION_VISITS.set(DIRECT_ATTACK_ACTION_VISITS.get() + 1);
+            matches!(action, Action::Attack(choice) if choice.from == origin && choice.to == target)
+        });
         let staging = if direct && origin.distance(target) > 1 {
             // Preserve a custom weapon that can already reach its target from here.
             Some(origin)
@@ -80,12 +92,9 @@ fn attack_hex(target: Hex, previous: Hex, free: Hex, reachable: impl Fn(Hex) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_lite::scenario_bundle::Bundle;
 
-    #[test]
-    fn hovering_enemy_previews_the_approach_without_moving_and_confirms_the_same_weapon() {
-        use crate::session::Session;
-        use engine_lite::scenario_bundle::Bundle;
-        let bundle = Bundle::parse(br#"
+    const ATTACK_SCENARIO: &[u8] = br#"
 [terrain_type]
 id=flat
 string=Gg
@@ -124,7 +133,38 @@ type=Fighter
 [side]
 type=Fighter
 [/side]
-[/scenario]"#).unwrap();
+[/scenario]"#;
+
+    #[test]
+    fn hovering_non_targets_does_not_visit_attack_candidates() {
+        let bundle = Bundle::parse(ATTACK_SCENARIO).unwrap();
+        let game = bundle.start(3, |_| unreachable!()).unwrap();
+        let (mut view, actions) = game.decision().unwrap();
+        let origin = Hex { x: 0, y: 0 };
+        let empty = Hex { x: 2, y: 0 };
+        let occupied = Hex { x: 3, y: 0 };
+        let mut cursor = Cursor::default();
+        DIRECT_ATTACK_ACTION_VISITS.set(0);
+
+        view.allied_sides.push(2);
+        for target in [origin, empty, occupied] {
+            cursor.update(Some((origin, target)), true, Some(&view), &actions, &game);
+            assert!(cursor.attack.is_none());
+        }
+        assert_eq!(cursor.free, Some(empty));
+        assert_eq!(DIRECT_ATTACK_ACTION_VISITS.get(), 0);
+
+        view.allied_sides.retain(|&side| side != 2);
+        cursor.update(Some((origin, empty)), true, Some(&view), &actions, &game);
+        cursor.update(Some((origin, occupied)), true, Some(&view), &actions, &game);
+        assert!(cursor.attack.is_some());
+        assert!(DIRECT_ATTACK_ACTION_VISITS.get() > 0);
+    }
+
+    #[test]
+    fn hovering_enemy_previews_the_approach_without_moving_and_confirms_the_same_weapon() {
+        use crate::session::Session;
+        let bundle = Bundle::parse(ATTACK_SCENARIO).unwrap();
         let mut session = Session::new(bundle.start(3, |_| unreachable!()).unwrap());
         let origin = Hex { x: 0, y: 0 };
         let staging = Hex { x: 2, y: 0 };

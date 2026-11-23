@@ -113,6 +113,10 @@ pub(super) struct Transitions {
 }
 
 impl Transitions {
+    pub(super) fn texture_extent(&self) -> Vec2 {
+        super::texture_extent(self.textures.values().flatten())
+    }
+
     pub(super) fn load(&mut self, view: &Observation, assets: &AssetCatalog) {
         self.tiles.clear();
         for (hex, edges) in plan(view) {
