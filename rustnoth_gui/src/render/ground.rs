@@ -68,6 +68,10 @@ impl Ground {
         let set = self.loaded.get(base_code(terrain))?.as_ref()?;
         set.textures.get(variation(hex, set.textures.len(), set.varied, set.plain, set.probability))
     }
+
+    pub(super) fn texture_extent(&self) -> super::Vec2 {
+        super::texture_extent(self.loaded.values().flatten().flat_map(|variants| &variants.textures))
+    }
 }
 
 fn ground_rules(source: &str) -> HashMap<String, (String, Option<u32>)> {
