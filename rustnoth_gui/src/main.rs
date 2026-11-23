@@ -8,7 +8,7 @@ use std::{
 };
 
 use engine_lite::{
-    fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle, wml,
+    fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle,
 };
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
 use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::{Players, Session}};
@@ -229,24 +229,27 @@ impl BoardData {
         if !images.is_dir() {
             return Err(format!("Wesnoth image directory is missing at {}", images.display()).into());
         }
-        let scenario = Bundle::parse_with_core(source, core)?;
-        let assets = AssetCatalog::parse(&wesnoth_root, core, source)?;
-        let document = wml::parse(source)?;
-        let (_, config) = document.children.iter().find(|(tag, _)| tag == "scenario")
-            .ok_or("bundle has no scenario")?;
-        let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
-        let story = story::read(config, &title);
-        let skip_turn_confirmation = end_turn::side_overrides(config);
+        let (scenario, (assets, title, story, skip_turn_confirmation, turn_names, tutorial_award, fresh_attack_seeds)) =
+            Bundle::parse_with_core_and(source, core, |sources| {
+                let config = sources.scenario;
+                let fresh_attack_seeds = sources.bundle.attribute("rustnoth_interactive_rng") == Some("yes")
+                    && sources.bundle.attribute("random_mode").unwrap_or_default().is_empty();
+                let assets = AssetCatalog::from_board(&wesnoth_root, sources)?;
+                let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
+                let story = story::read(config, &title);
+                Ok((assets, title, story, end_turn::side_overrides(config),
+                    turn_notice::names(config), title_screen::tutorial_progress::Award::from_victory(config),
+                    fresh_attack_seeds))
+            })?;
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
-            fresh_attack_seeds: document.attribute("rustnoth_interactive_rng") == Some("yes")
-                && document.attribute("random_mode").unwrap_or_default().is_empty(),
+            fresh_attack_seeds,
             scenario,
             lesson: None,
-            tutorial_award: title_screen::tutorial_progress::Award::from_victory(config),
+            tutorial_award,
             story,
             skip_turn_confirmation,
-            turn_names: turn_notice::names(config),
+            turn_names,
             assets,
             title,
             directory,
