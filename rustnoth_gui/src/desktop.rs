@@ -1,4 +1,6 @@
 //! Locate original artwork at desktop startup and prepare game data on first use.
+pub(super) mod window;
+
 use std::{
     collections::hash_map::DefaultHasher,
     env, fs,
@@ -8,6 +10,19 @@ use std::{
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+pub(crate) fn local_date(time: SystemTime) -> Option<libc::tm> {
+    let stamp = libc::time_t::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
+    let mut out = std::mem::MaybeUninit::uninit();
+    // Both functions write a complete tm to the supplied buffer on success.
+    unsafe {
+        #[cfg(windows)]
+        let ok = libc::localtime_s(out.as_mut_ptr(), &stamp) == 0;
+        #[cfg(not(windows))]
+        let ok = !libc::localtime_r(&stamp, out.as_mut_ptr()).is_null();
+        ok.then(|| out.assume_init())
+    }
+}
 
 #[cfg(test)]
 const CAMPAIGN: &str = "data/campaigns/The_South_Guard";
