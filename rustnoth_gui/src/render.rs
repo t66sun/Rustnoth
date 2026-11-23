@@ -556,7 +556,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         let center = vec2(x + size / 2.0, y + size / 2.0);
         if !clip.contains(center) { continue; }
         art.lighting.terrain(tile.position, x, y, size);
-        if !art.rules.has_base(tile.position) {
+        art.rules.draw_background(tile.position, center, size, tod, now, Some(viewport), || {
             let layers = &art.terrain[&tile.terrain];
             let ground = art.ground.texture(&tile.terrain, tile.position);
             if let Some(base) = ground.or_else(|| layers.first()) {
@@ -568,8 +568,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
             for overlay in layers.iter().skip(1) {
                 draw_atlas_centered(overlay, center, size, Some(viewport));
             }
-        }
-        art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
+        });
         if art.show_grid {
             art.lighting.flat(flag_frame.1);
             art.grid.draw(center, size, Some(viewport));
