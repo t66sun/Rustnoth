@@ -617,14 +617,24 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
-    let raised = |at: Hex, kind: &str| {
-        let height = view.tiles.binary_search_by_key(&(at.y, at.x), |t| (t.position.y, t.position.x))
-            .ok().map_or(0, |i| movement.assets.unit_elevation(&view.tiles[i].terrain, kind));
-        Vec2::from_array(layout.tile_origin(at)) - vec2(0., (height as f32 * size / ART_HEX_SIZE).trunc())
+    let terrain_at = |at: Hex| {
+        view.tiles.binary_search_by_key(&(at.y, at.x), |tile| (tile.position.y, tile.position.x))
+            .ok().map(|i| view.tiles[i].terrain.as_str())
+    };
+    let raised = |kind: &str, from: Hex, to: Hex, offset: f32| {
+        let mut point = Vec2::from_array(layout.tile_origin(from));
+        let start = terrain_at(from).unwrap_or("");
+        let end = if offset == 0.0 { start } else {
+            point = point.lerp(Vec2::from_array(layout.tile_origin(to)), offset);
+            terrain_at(to).unwrap_or("")
+        };
+        let height = movement.assets.unit_elevation(kind, start, end, offset);
+        point - vec2(0., (height as f32 * size / ART_HEX_SIZE).trunc())
     };
     let origin = |unit: &engine_lite::observation::ObservedUnit| {
-        let point = |at| raised(at, &unit.type_id);
-        walking.filter(|p| p.unit == Some(unit.position)).map_or_else(|| point(unit.position), |p| p.origin(point))
+        walking.filter(|p| p.unit == Some(unit.position)).map_or_else(
+            || raised(&unit.type_id, unit.position, unit.position, 0.0),
+            |p| raised(&unit.type_id, p.from, p.to, p.fraction))
     };
     for unit in &view.units {
         let center = origin(unit) + Vec2::splat(size / 2.0);
@@ -645,19 +655,15 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let motion = walking.filter(|p| p.unit == Some(unit.position));
         let direction = motion.and_then(|p| p.direction).unwrap_or_else(|| standing::facing(unit));
         let walking_frame = motion.and_then(|p| {
-            let terrain = view.tiles.binary_search_by_key(&(p.to.y, p.to.x), |tile| (tile.position.y, tile.position.x))
-                .ok().map(|index| view.tiles[index].terrain.as_str());
-            art.moving.get(&unit.type_id)?.get(&unit.side)?.frame(direction, terrain, p.elapsed)
+            art.moving.get(&unit.type_id)?.get(&unit.side)?.frame(direction, terrain_at(p.to), p.elapsed)
         });
         let standing_frame = art.standing.get(&unit.type_id).and_then(|teams| teams.get(&unit.side))
             .and_then(|sprites| {
                 if unit.petrified { return None; }
-                let terrain = view.tiles.binary_search_by_key(
-                    &(unit.position.y, unit.position.x), |tile| (tile.position.y, tile.position.x),
-                ).ok().map(|index| view.tiles[index].terrain.as_str());
-                sprites.frame(direction, terrain, now)
+                sprites.frame(direction, terrain_at(unit.position), now)
             });
-        let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, center, |at| raised(at, &unit.type_id)));
+        let posed = art.combat_pose.as_ref().and_then(|p| p.sprite(unit.position, |to, offset|
+            raised(&unit.type_id, unit.position, to, offset) + Vec2::splat(size * 0.5)));
         let (at, attack_frame) = posed.unwrap_or((center, None));
         if let Some((texture, flipped)) = attack_frame.or(walking_frame).or(standing_frame).or_else(|| base.map(|image| (image, standing::west(direction)))) {
             draw_centered_flipped(texture, at, size, flipped, Some(viewport));
@@ -669,12 +675,12 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     // An observer can watch the visible portion of a walk that ends back in fog.
     if let (Some(pose), Some((id, side))) = (walking, &art.walk.transient_sprite) {
         let direction = pose.direction.unwrap_or(engine_lite::hex::Direction::South);
-        let terrain = view.tiles.binary_search_by_key(&(pose.to.y, pose.to.x), |t| (t.position.y, t.position.x))
-            .ok().map(|i| view.tiles[i].terrain.as_str());
+        let terrain = terrain_at(pose.to);
         let sprite = art.moving.get(id).and_then(|s| s.get(side)).and_then(|s| s.frame(direction, terrain, pose.elapsed))
             .or_else(|| art.units.get(id)?.get(side)?.as_ref().map(|t| (t, standing::west(direction))));
         if let Some((tex, flipped)) = sprite {
-            draw_centered_flipped(tex, pose.origin(|at| raised(at, id)) + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
+            let origin = raised(id, pose.from, pose.to, pose.fraction);
+            draw_centered_flipped(tex, origin + Vec2::splat(size * 0.5), size, flipped, Some(viewport));
         }
     }
 
@@ -729,7 +735,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref(), |at| {
         let unit = view.units.iter().find(|u| u.position == at);
-        raised(at, unit.map_or("", |u| &u.type_id))
+        raised(unit.map_or("", |u| &u.type_id), at, at, 0.0)
     }); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {

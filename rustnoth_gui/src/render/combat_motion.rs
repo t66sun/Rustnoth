@@ -274,14 +274,12 @@ impl Pose {
     pub(super) fn sprite(
         &self,
         at: Hex,
-        center: Vec2,
-        origin: impl Fn(Hex) -> Vec2,
+        center: impl Fn(Hex, f32) -> Vec2,
     ) -> Option<(Vec2, Option<(&Texture2D, bool)>)> {
         let i = self.actors.iter().position(|u| u.at == at)?;
         let actor = &self.actors[i];
-        let delta = origin(self.actors[1 - i].at) - origin(at);
         Some((
-            center + delta * actor.offset,
+            center(self.actors[1 - i].at, actor.offset),
             actor.frame.as_ref().map(|(t, b)| (t, *b)),
         ))
     }
