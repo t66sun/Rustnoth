@@ -555,8 +555,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
     draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport);
+    let observed_tile = |hex: Hex| {
+        view.tiles.binary_search_by_key(&(hex.y, hex.x), |tile| (tile.position.y, tile.position.x))
+            .ok().map(|i| &view.tiles[i])
+    };
     for (position, texture, use_time_color) in &art.map_items {
-        if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
+        let tile = if *use_time_color { observed_tile(*position) } else { None };
+        art.lighting.item(tile);
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
     }
@@ -566,11 +571,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             load_texture(&path, None)
         })
     {
-        for hex in center.neighbors().filter(|hex| view.tiles.binary_search_by_key(
-            &(hex.y, hex.x), |tile| (tile.position.y, tile.position.x)).is_ok())
-        {
-            art.lighting.item(hex);
-            let [x, y] = layout.tile_origin(hex);
+        for tile in center.neighbors().filter_map(observed_tile) {
+            art.lighting.item(Some(tile));
+            let [x, y] = layout.tile_origin(tile.position);
             draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
     }
@@ -605,10 +608,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
-    let terrain_at = |at: Hex| {
-        view.tiles.binary_search_by_key(&(at.y, at.x), |tile| (tile.position.y, tile.position.x))
-            .ok().map(|i| view.tiles[i].terrain.as_str())
-    };
+    let terrain_at = |at: Hex| observed_tile(at).map(|tile| tile.terrain.as_str());
     let raised = |kind: &str, from: Hex, to: Hex, offset: f32| {
         let mut point = Vec2::from_array(layout.tile_origin(from));
         let start = terrain_at(from).unwrap_or("");

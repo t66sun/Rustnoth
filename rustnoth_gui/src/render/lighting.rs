@@ -1,7 +1,7 @@
 //! Wesnoth's additive terrain light and directional regional-time masks.
 use std::{cell::Cell, collections::HashMap, fs, path::Path};
 
-use engine_lite::{hex::{Direction, Hex}, observation::Observation};
+use engine_lite::{hex::{Direction, Hex}, observation::{Observation, ObservedTile}};
 use macroquad::{miniquad::{BlendFactor, BlendState, BlendValue, Equation}, prelude::*};
 
 type Shift = [i32; 3];
@@ -40,10 +40,56 @@ fn mask_atlas(directory: &Path) -> Texture2D {
 
 pub(super) struct Lighting {
     material: Material,
-    known: HashMap<Hex, Shift>,
-    edges: HashMap<Hex, [Shift; 6]>,
+    terrain: TerrainLighting,
     // Flat neighboring hexes with the same schedule stay in the same GPU batch.
     active_flat: Cell<Option<Shift>>,
+}
+
+enum TerrainLighting {
+    Uniform(Shift),
+    Regional {
+        colors: HashMap<Hex, Shift>,
+        edges: HashMap<Hex, [Shift; 6]>,
+    },
+}
+
+impl Default for TerrainLighting {
+    fn default() -> Self {
+        Self::Uniform([0; 3])
+    }
+}
+
+impl TerrainLighting {
+    fn update(&mut self, view: &Observation) {
+        let first = view.tiles.first().map_or([0; 3], |tile| tile.time_color);
+        if view.tiles.iter().all(|tile| tile.time_color == first) {
+            *self = Self::Uniform(terrain_shift(first));
+            return;
+        }
+
+        let (mut colors, mut edges) = match std::mem::take(self) {
+            Self::Uniform(_) => (HashMap::new(), HashMap::new()),
+            Self::Regional { colors, edges } => (colors, edges),
+        };
+        colors.clear();
+        colors.extend(view.tiles.iter().map(|tile| (tile.position, terrain_shift(tile.time_color))));
+        edges.clear();
+        for (&hex, &color) in &colors {
+            let neighbors = Direction::CLOCKWISE.map(|dir| hex.neighbor(dir)
+                .and_then(|pos| colors.get(&pos)).copied().unwrap_or(color));
+            if neighbors.iter().any(|other| *other != color) {
+                edges.insert(hex, neighbors);
+            }
+        }
+        *self = Self::Regional { colors, edges };
+    }
+
+    fn shade(&self, hex: Hex) -> (Shift, Option<&[Shift; 6]>) {
+        match self {
+            Self::Uniform(color) => (*color, None),
+            Self::Regional { colors, edges } => (colors[&hex], edges.get(&hex)),
+        }
+    }
 }
 
 impl Lighting {
@@ -60,25 +106,11 @@ impl Lighting {
             textures: vec!["Masks".into()],
         })?;
         material.set_texture("Masks", mask_atlas(directory));
-        Ok(Self { material, known: HashMap::new(), edges: HashMap::new(), active_flat: Cell::new(Some([0; 3])) })
+        Ok(Self { material, terrain: TerrainLighting::default(), active_flat: Cell::new(Some([0; 3])) })
     }
 
     pub(super) fn update(&mut self, view: &Observation) {
-        self.known.clear();
-        self.known.extend(view.tiles.iter().map(|tile| (tile.position, terrain_shift(tile.time_color))));
-        self.edges.clear();
-        if let Some(first) = view.tiles.first()
-            && view.tiles.iter().all(|tile| tile.time_color == first.time_color)
-        {
-            return;
-        }
-        for (&hex, &color) in &self.known {
-            let neighbors = Direction::CLOCKWISE.map(|dir| hex.neighbor(dir)
-                .and_then(|pos| self.known.get(&pos)).copied().unwrap_or(color));
-            if neighbors.iter().any(|other| *other != color) {
-                self.edges.insert(hex, neighbors);
-            }
-        }
+        self.terrain.update(view);
     }
 
     pub(super) fn flat(&self, color: Shift) {
@@ -94,8 +126,8 @@ impl Lighting {
     }
 
     pub(super) fn terrain(&self, hex: Hex, left: f32, top: f32, size: f32) {
-        let color = self.known[&hex];
-        if let Some(neighbors) = self.edges.get(&hex) {
+        let (color, neighbors) = self.terrain.shade(hex);
+        if let Some(neighbors) = neighbors {
             self.active_flat.set(None);
             gl_use_material(&self.material);
             self.material.set_uniform("Shift", normalized(color));
@@ -107,8 +139,8 @@ impl Lighting {
         }
     }
 
-    pub(super) fn item(&self, hex: Hex) {
-        self.flat(self.known.get(&hex).copied().unwrap_or_default());
+    pub(super) fn item(&self, tile: Option<&ObservedTile>) {
+        self.flat(tile.map_or([0; 3], |tile| terrain_shift(tile.time_color)));
     }
 }
 
@@ -175,5 +207,37 @@ mod tests {
         assert_eq!(terrain_shift([-25, -15, 0]), [-24, -14, 0]);
         assert_eq!(terrain_shift([10, -20, -35]), [10, -20, -34]);
         assert_eq!(terrain_shift([-999, 999, -1]), [-256, 254, 0]);
+    }
+
+    #[test]
+    fn uniform_light_stores_one_shift_and_regional_light_keeps_neighbor_masks() {
+        let north = Hex { x: 1, y: 1 };
+        let south = Hex { x: 1, y: 2 };
+        let tile = |position| ObservedTile {
+            position, terrain: "Gg".into(), visible: true,
+            village_owner: None, time_color: [-25, -15, 0],
+        };
+        let mut view = Observation {
+            side: 1, allied_sides: vec![1], gold: None, width: 3, height: 3,
+            tiles: vec![tile(north), tile(south)], units: vec![],
+        };
+        let mut terrain = TerrainLighting::default();
+        terrain.update(&view);
+        let night = [-24, -14, 0];
+        assert!(matches!(terrain, TerrainLighting::Uniform(shift) if shift == night));
+        assert_eq!(terrain.shade(north), (night, None));
+
+        view.tiles[1].time_color = [26, 10, 0];
+        terrain.update(&view);
+        let (shift, neighbors) = terrain.shade(north);
+        assert_eq!(shift, night);
+        let expected = Direction::CLOCKWISE.map(|dir| {
+            if dir == Direction::South { [26, 10, 0] } else { night }
+        });
+        assert_eq!(neighbors, Some(&expected));
+
+        view.tiles.pop();
+        terrain.update(&view);
+        assert!(matches!(terrain, TerrainLighting::Uniform(shift) if shift == night));
     }
 }
