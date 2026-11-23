@@ -17,6 +17,28 @@ pub enum AliasTerm<'a> {
     Terrain(&'a str),
 }
 
+pub(crate) enum TermSource<'a> {
+    Defined(&'a [String]),
+    Merged(Vec<AliasTerm<'a>>),
+    Undefined(&'a str),
+}
+
+impl<'a> TermSource<'a> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = AliasTerm<'a>> + '_ {
+        let (defined, merged, undefined): (&'a [String], &[AliasTerm<'a>], _) = match self {
+            Self::Defined(codes) => (*codes, &[], None),
+            Self::Merged(terms) => (&[], terms, None),
+            Self::Undefined(code) => (&[], &[], Some(AliasTerm::Terrain(code))),
+        };
+        alias_terms(defined).chain(merged.iter().copied()).chain(undefined)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static TERM_VECTOR_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TerrainLayer { Both, Base, Overlay }
 
@@ -191,16 +213,26 @@ impl TerrainAliases {
     /// Resolve one layer of aliasing. Callers can evaluate terrain references
     /// recursively with their own movement or defense values.
     pub fn terms<'a>(&'a self, code: &'a str, kind: AliasKind) -> Vec<AliasTerm<'a>> {
+        #[cfg(test)]
+        TERM_VECTOR_BUILDS.set(TERM_VECTOR_BUILDS.get() + 1);
+        match self.term_source(code, kind) {
+            TermSource::Defined(codes) => alias_terms(codes).collect(),
+            TermSource::Merged(terms) => terms,
+            TermSource::Undefined(code) => vec![AliasTerm::Terrain(code)],
+        }
+    }
+
+    pub(crate) fn term_source<'a>(&'a self, code: &'a str, kind: AliasKind) -> TermSource<'a> {
         let code = canonical_code(code);
         if let Some(definition) = self.definitions.get(code) {
-            return alias_terms(definition.terms(kind)).collect();
+            return TermSource::Defined(definition.terms(kind));
         }
 
         if let Some((base, overlay)) = self.layers(code) {
-            return merge_aliases(base.terms(kind), overlay.terms(kind));
+            return TermSource::Merged(merge_aliases(base.terms(kind), overlay.terms(kind)));
         }
 
-        vec![AliasTerm::Terrain(code)]
+        TermSource::Undefined(code)
     }
 
     pub(crate) fn merge_terrain(&self, old: &str, new: &str, layer: TerrainLayer, fallback: bool) -> Option<String> {
