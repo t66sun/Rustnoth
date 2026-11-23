@@ -75,7 +75,22 @@ impl AtlasSprite {
     }
 
     pub(super) fn draw(&self, dst: Rect, tint: Color, flip_x: bool) {
-        let vertices = quad(dst, self.uv, tint, flip_x);
+        self.draw_region(dst, tint, self.uv, (flip_x, false));
+    }
+
+    pub(super) fn draw_part(&self, dst: Rect, tint: Color, source: Rect, flip: (bool, bool)) {
+        let pixel = self.uv.size() / self.size;
+        let uv = Rect::new(
+            self.uv.x + source.x * pixel.x,
+            self.uv.y + source.y * pixel.y,
+            source.w * pixel.x,
+            source.h * pixel.y,
+        );
+        self.draw_region(dst, tint, uv, flip);
+    }
+
+    fn draw_region(&self, dst: Rect, tint: Color, uv: Rect, flip: (bool, bool)) {
+        let vertices = quad(dst, uv, tint, flip);
         // The borrowed queue belongs to the render thread. Geometry is appended
         // to the active camera/material without flushing preceding primitives.
         let gl = unsafe { get_internal_gl() }.quad_gl;
@@ -85,13 +100,14 @@ impl AtlasSprite {
     }
 }
 
-fn quad(dst: Rect, uv: Rect, tint: Color, flip_x: bool) -> [Vertex; 4] {
+fn quad(dst: Rect, uv: Rect, tint: Color, (flip_x, flip_y): (bool, bool)) -> [Vertex; 4] {
     let (first_u, last_u) = if flip_x { (uv.right(), uv.x) } else { (uv.x, uv.right()) };
+    let (first_v, last_v) = if flip_y { (uv.bottom(), uv.y) } else { (uv.y, uv.bottom()) };
     [
-        Vertex::new(dst.x, dst.y, 0.0, first_u, uv.y, tint),
-        Vertex::new(dst.right(), dst.y, 0.0, last_u, uv.y, tint),
-        Vertex::new(dst.right(), dst.bottom(), 0.0, last_u, uv.bottom(), tint),
-        Vertex::new(dst.x, dst.bottom(), 0.0, first_u, uv.bottom(), tint),
+        Vertex::new(dst.x, dst.y, 0.0, first_u, first_v, tint),
+        Vertex::new(dst.right(), dst.y, 0.0, last_u, first_v, tint),
+        Vertex::new(dst.right(), dst.bottom(), 0.0, last_u, last_v, tint),
+        Vertex::new(dst.x, dst.bottom(), 0.0, first_u, last_v, tint),
     ]
 }
 
@@ -191,14 +207,15 @@ mod tests {
         let dst = Rect::new(10.5, 5.25, 12.0, 10.0);
         let uv = Rect::new(0.25, 0.5, 0.125, 0.25);
         let tint = Color::from_rgba(5, 60, 200, 144);
-        let plain = quad(dst, uv, tint, false);
-        let flipped = quad(dst, uv, tint, true);
+        let plain = quad(dst, uv, tint, (false, false));
+        let flipped = quad(dst, uv, tint, (true, false));
         assert_eq!(plain.map(|v| v.position.to_array()), [
             [10.5, 5.25, 0.0], [22.5, 5.25, 0.0], [22.5, 15.25, 0.0], [10.5, 15.25, 0.0],
         ]);
         assert_eq!(flipped.map(|v| v.position), plain.map(|v| v.position));
         assert_eq!(plain.map(|v| v.uv.to_array()), [[0.25, 0.5], [0.375, 0.5], [0.375, 0.75], [0.25, 0.75]]);
         assert_eq!(flipped.map(|v| v.uv.to_array()), [[0.375, 0.5], [0.25, 0.5], [0.25, 0.75], [0.375, 0.75]]);
+        assert_eq!(quad(dst, uv, tint, (false, true)).map(|v| v.uv.y), [0.75, 0.75, 0.5, 0.5]);
         assert_eq!(flipped.map(|v| v.color), [Vertex::new(0., 0., 0., 0., 0., tint).color; 4]);
     }
 

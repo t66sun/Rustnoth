@@ -443,7 +443,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         tip: None,
         toolbar: Default::default(),
     };
-    let grid = render::GridArt::load(&root.join("data/core/images/terrain"));
+    let grid = render::GridArt::load(&root.join("data/core/images/terrain"), &mut rules);
     let folder = crate::display_preferences::config_directory()?.join("editor/maps");
     let mut status = String::new();
     let mut drawing = None;

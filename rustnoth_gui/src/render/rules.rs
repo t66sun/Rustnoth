@@ -6,8 +6,8 @@ mod compile;
 pub(super) mod pattern;
 mod plan;
 
-use super::{AssetCatalog, Hex, Observation, draw_centered};
-use macroquad::prelude::{Texture2D, Vec2};
+use super::{AssetCatalog, Hex, Observation, atlas::AtlasSprite, atlas_extent, draw_atlas_centered};
+use macroquad::prelude::Vec2;
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
@@ -22,8 +22,27 @@ pub(crate) struct Rules {
 
 struct Drawing {
     base: bool,
-    layers: Vec<(bool, Vec<Animation>)>,
+    layers: DrawLayers<Animation>,
 }
+
+struct DrawLayers<T> {
+    ordered: Vec<Vec<T>>,
+    foreground_start: usize,
+}
+
+impl<T> DrawLayers<T> {
+    fn new(mut background: Vec<Vec<T>>, foreground: Vec<Vec<T>>) -> Self {
+        let foreground_start = background.len();
+        background.extend(foreground);
+        Self { ordered: background, foreground_start }
+    }
+
+    fn for_pass(&self, foreground: bool) -> &[Vec<T>] {
+        let (back, front) = self.ordered.split_at(self.foreground_start);
+        if foreground { front } else { back }
+    }
+}
+
 struct Animation {
     sequence: Rc<Sequence>,
     offset: u32,
@@ -31,7 +50,7 @@ struct Animation {
 
 struct Sequence {
     periods: Vec<String>,
-    frames: Vec<(Option<Texture2D>, u32)>,
+    frames: Vec<(Option<AtlasSprite>, u32)>,
     duration: u32,
 }
 
@@ -68,7 +87,7 @@ impl Rules {
         self.build(assets, |catalog| plan::battlefield(catalog, view, border));
         self.foreground = view.tiles.iter().map(|t| t.position)
             .chain(engine_lite::map::border_positions(view.width, view.height))
-            .filter(|hex| self.tiles.get(hex).is_some_and(|t| t.layers.iter().any(|(front, _)| *front)))
+            .filter(|hex| self.tiles.get(hex).is_some_and(|t| !t.layers.for_pass(true).is_empty()))
             .collect();
         self.foreground.sort_unstable_by_key(|hex| (super::draw_row(*hex), hex.x));
         true
@@ -87,7 +106,8 @@ impl Rules {
         let tiles = plan(catalog);
         let mut sequences = Sequences::default();
         for (hex, tile) in tiles {
-            let mut layers = Vec::new();
+            let mut background = Vec::new();
+            let mut foreground = Vec::new();
             for part in &tile.layers {
                 let mut animations = Vec::new();
                 for (variant_index, variant) in catalog.images[part.image].variants.iter().enumerate() {
@@ -118,17 +138,18 @@ impl Rules {
                     animations.push(Animation { sequence, offset });
                 }
                 if !animations.is_empty() {
-                    layers.push((
-                        part.layer > 0 || part.layer == 0 && part.y >= 54,
-                        animations,
-                    ));
+                    if part.layer > 0 || part.layer == 0 && part.y >= 54 {
+                        foreground.push(animations);
+                    } else {
+                        background.push(animations);
+                    }
                 }
             }
             self.tiles.insert(
                 hex,
                 Drawing {
                     base: tile.has_flag(compile::Flag::BASE),
-                    layers,
+                    layers: DrawLayers::new(background, foreground),
                 },
             );
         }
@@ -140,7 +161,11 @@ impl Rules {
     }
 
     pub(super) fn texture_extent(&self) -> Vec2 {
-        super::texture_extent(self.bitmaps.frames())
+        atlas_extent(self.bitmaps.frames())
+    }
+
+    pub(super) fn add_terrain_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
+        self.bitmaps.add_sprite(pixels)
     }
 
     pub(crate) fn draw(
@@ -156,7 +181,7 @@ impl Rules {
         let Some(tile) = self.tiles.get(&hex) else {
             return;
         };
-        for (_, variants) in tile.layers.iter().filter(|(front, _)| *front == foreground) {
+        for variants in tile.layers.for_pass(foreground) {
             let Some(animation) = variants
                 .iter()
                 .find(|a| a.sequence.periods.is_empty() || a.sequence.periods.iter().any(|p| p == tod))
@@ -165,9 +190,9 @@ impl Rules {
             };
             let sequence = &animation.sequence;
             let phase = ((ms + u64::from(animation.offset)) % u64::from(sequence.duration)) as u32;
-            if let Some((Some(texture), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
+            if let Some((Some(sprite), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
             {
-                draw_centered(texture, center, size, clip);
+                draw_atlas_centered(sprite, center, size, clip);
             }
         }
     }
@@ -177,6 +202,15 @@ impl Rules {
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn foreground_and_background_keep_contiguous_spans_in_painter_order() {
+        let layers = DrawLayers::new(vec![vec![0, 1], vec![3]], vec![vec![2], vec![4, 5]]);
+        assert_eq!(layers.ordered, [vec![0, 1], vec![3], vec![2], vec![4, 5]]);
+        assert_eq!(layers.for_pass(false), &layers.ordered[..2]);
+        assert_eq!(layers.for_pass(true), &layers.ordered[2..]);
+        assert!(DrawLayers::<u32>::new(Vec::new(), Vec::new()).for_pass(true).is_empty());
+    }
 
     #[test]
     fn same_variant_reuses_frames_until_its_choice_or_crop_changes() {

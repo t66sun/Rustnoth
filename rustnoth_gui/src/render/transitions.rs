@@ -2,8 +2,10 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use engine_lite::{hex::{Direction, Hex}, observation::Observation};
-use macroquad::prelude::{Texture2D, Vec2};
+use macroquad::prelude::Vec2;
 use rustnoth_gui::assets::AssetCatalog;
+
+use super::{AtlasSprite, SpriteTextures, atlas_extent, draw_atlas_centered, rules::Rules};
 
 const DIRECTIONS: [&str; 6] = ["n", "ne", "se", "s", "sw", "nw"];
 // Inside blends are applied in this order. The outer blends run in reverse.
@@ -94,10 +96,11 @@ fn edges(target: Terrain, adjacent: [Option<Terrain>; 6]) -> Vec<Edge> {
     result
 }
 
-fn plan(view: &Observation) -> impl Iterator<Item = (Hex, Vec<Edge>)> {
+fn plan(view: &Observation, needs_fallback: impl Fn(Hex) -> bool) -> impl Iterator<Item = (Hex, Vec<Edge>)> {
     let known: HashMap<_, _> = view.tiles.iter().filter_map(|tile|
         Some((tile.position, terrain(&tile.terrain)?))).collect();
     view.tiles.iter().filter_map(move |tile| {
+        if !needs_fallback(tile.position) { return None; }
         let &target = known.get(&tile.position)?;
         let adjacent = Direction::CLOCKWISE.map(|direction|
             tile.position.neighbor(direction).and_then(|hex| known.get(&hex).copied()));
@@ -108,21 +111,22 @@ fn plan(view: &Observation) -> impl Iterator<Item = (Hex, Vec<Edge>)> {
 
 #[derive(Default)]
 pub(super) struct Transitions {
-    textures: HashMap<Edge, Option<Texture2D>>,
+    textures: HashMap<Edge, Option<AtlasSprite>>,
     tiles: HashMap<Hex, Vec<Edge>>,
 }
 
 impl Transitions {
     pub(super) fn texture_extent(&self) -> Vec2 {
-        super::texture_extent(self.textures.values().flatten())
+        atlas_extent(self.textures.values().flatten())
     }
 
-    pub(super) fn load(&mut self, view: &Observation, assets: &AssetCatalog) {
+    pub(super) fn load(&mut self, view: &Observation, assets: &AssetCatalog, rules: &mut Rules, paths: &mut SpriteTextures<AtlasSprite>) {
+        let planned: Vec<_> = plan(view, |hex| !rules.has_base(hex)).collect();
         self.tiles.clear();
-        for (hex, edges) in plan(view) {
+        for (hex, edges) in planned {
             for &edge in &edges {
                 self.textures.entry(edge).or_insert_with(|| {
-                    assets.resolve_image(&edge.path()).and_then(|path| super::load_texture(&path, None))
+                    assets.resolve_image(&edge.path()).and_then(|path| paths.terrain(path, rules))
                 });
             }
             self.tiles.insert(hex, edges);
@@ -132,7 +136,7 @@ impl Transitions {
     pub(super) fn draw(&self, hex: Hex, center: Vec2, size: f32, viewport: super::Viewport) {
         if let Some(edges) = self.tiles.get(&hex) {
             for texture in edges.iter().filter_map(|edge| self.textures[edge].as_ref()) {
-                super::draw_centered(texture, center, size, Some(viewport));
+                draw_atlas_centered(texture, center, size, Some(viewport));
             }
         }
     }
@@ -155,7 +159,7 @@ mod tests {
             side: 1, allied_sides: vec![1], gold: None, width: 4, height: 4, units: vec![],
             tiles: vec![tile(water, "Ww"), tile(north, "Gg^Fp"), tile(northeast, "Gd")],
         };
-        let paths = |view: &Observation, position| plan(view).find(|(hex, _)| *hex == position)
+        let paths = |view: &Observation, position| plan(view, |_| true).find(|(hex, _)| *hex == position)
             .map(|(_, edges)| edges.into_iter().map(Edge::path).collect::<Vec<_>>()).unwrap_or_default();
         assert_eq!(paths(&view, water), [
             PathBuf::from("terrain/flat/bank-to-ice-n-ne.png"),
@@ -164,6 +168,13 @@ mod tests {
         ]);
         assert_eq!(paths(&view, north), [PathBuf::from("terrain/grass/dry-long-se.png")]);
         assert_eq!(paths(&view, northeast), [PathBuf::from("terrain/grass/green-long-nw.png")]);
+
+        // Rule artwork suppresses a fallback anchor, while its known terrain
+        // still contributes edges to a neighboring fallback hex.
+        let fallback: Vec<_> = plan(&view, |hex| hex == water).collect();
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].0, water);
+        assert_eq!(fallback[0].1.iter().copied().map(Edge::path).collect::<Vec<_>>(), paths(&view, water));
 
         // Remove the shrouded neighbor entirely, as the referee does.
         view.tiles.pop();
