@@ -141,6 +141,10 @@ impl Lesson {
         })
     }
 
+    pub(super) fn permits_move_attack(&self) -> bool {
+        matches!(self.step, Step::EndThird | Step::FighterAttack | Step::Practice)
+    }
+
     pub(super) fn restrict(&self, session: &mut Session<'_>) {
         session.retain_actions(|action| match (self.step, action) {
             (Step::Approach, Action::Move { .. }) => true,

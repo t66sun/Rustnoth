@@ -3,8 +3,19 @@ use super::{Hero, opening::children};
 use engine_lite::wml::Node;
 
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
-    for (tag, event) in &mut scenario.children {
+    let mut zone = None;
+    for (index, (tag, event)) in scenario.children.iter_mut().enumerate() {
         if tag != "event" || children(event, "hint_message").next().is_none() { continue; }
+        if event.attribute("name") == Some("turn 3") && children(event, "item").any(|cfg| zone_subject(cfg).is_some()) {
+            // The nested attack_end handler is a later exercise. Keep its original
+            // registration separate from the immediately displayed turn-three lines.
+            let mut teaching = event.clone();
+            teaching.children.retain(|(tag, _)| tag != "event");
+            event.children.retain(|(tag, _)| tag == "event");
+            project(&mut teaching, hero);
+            zone = Some((index, teaching));
+            continue;
+        }
         let briefing = match event.attribute("name") {
             Some("start") => children(event, "if").flat_map(|cfg| children(cfg, "have_unit"))
                 .any(|filter| filter.attribute("search_recall_list") == Some("yes")),
@@ -13,12 +24,24 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) {
         };
         if briefing { project(event, hero); }
     }
+    if let Some((index, teaching)) = zone {
+        scenario.children.insert(index, ("event".into(), teaching));
+    }
+}
+
+fn zone_subject(cfg: &Node) -> Option<&str> {
+    if cfg.attribute("image") != Some("misc/highlight-hex.png") { return None; }
+    let adjacent = children(cfg, "filter_adjacent_location").next()?;
+    children(adjacent, "filter").next()?.attribute("id")
 }
 
 pub(super) fn project(commands: &mut Node, hero: Hero) {
     let mut scroll = None;
+    let mut zone = None;
     for (tag, mut cfg) in std::mem::take(&mut commands.children) {
         match tag.as_str() {
+            "item" if zone_subject(&cfg).is_some() => zone = zone_subject(&cfg).map(str::to_owned),
+            "remove_item" if zone.is_some() && cfg.attribute("image") == Some("misc/highlight-hex.png") => zone = None,
             "scroll_to" | "scroll_to_unit" if cfg.attribute("highlight") == Some("yes") => {
                 scroll = Some(cfg);
             }
@@ -37,6 +60,7 @@ pub(super) fn project(commands: &mut Node, hero: Hero) {
                 commands.children.push((tag, cfg));
             }
             "message" => {
+                if let Some(id) = &zone { super::put(&mut cfg, "rustnoth_tutorial_zone_unit", id); }
                 // TALK_ABOUT's scroll explicitly overrides the speaker for just this line.
                 let focus = scroll.take().or_else(|| {
                     let id = cfg.attribute("speaker")?;
@@ -267,6 +291,116 @@ name=turn 2
             assert!(session.legal_actions().contains(&Action::EndTurn));
             session.apply(Action::EndTurn).unwrap();
         }
+    }
+
+    #[test]
+    fn third_round_tracks_the_island_and_marks_only_the_guard_explanation() {
+        use engine_lite::{fixed_match::dialogue::DialogueFocus, hex::Hex};
+        let lesson = r#"
+[event]
+name=turn 3
+[hint_message]
+caption=Tracking Enemy Movement
+message=Use Show Enemy Moves.
+[/hint_message]
+[scroll_to]
+x,y=2,1
+highlight=yes
+[/scroll_to]
+[message]
+speaker=Galdrad
+message=We must occupy that island.
+[/message]
+[message]
+speaker=student
+message=Can we go around?
+female_message=female^Could we go around?
+[/message]
+[item]
+image=misc/highlight-hex.png
+[filter_adjacent_location]
+[filter]
+id=Dumbo
+[/filter]
+[/filter_adjacent_location]
+[/item]
+[scroll_to_unit]
+id=Dumbo
+highlight=yes
+[/scroll_to_unit]
+[message]
+speaker=Galdrad
+message=You will have to kill the Grunt.
+[/message]
+[message]
+speaker=narrator
+image=wesnoth-icon.png
+caption=Zone of Control
+message=The immediately adjacent hexes are its zone of control.
+[/message]
+[remove_item]
+image=misc/highlight-hex.png
+[/remove_item]
+[message]
+speaker=narrator
+message=Resume play.
+[/message]
+[event]
+name=attack_end
+[message]
+speaker=Galdrad
+message=Place a Shaman behind the wounded.
+[/message]
+[/event]
+[/event]"#;
+        for hero in [Hero::Konrad, Hero::Lisar] {
+            let mut second = scenario(hero, "[unit]\nid=Galdrad\ntype=Champion\nx,y=2,1\n[/unit]", lesson);
+            let (_, enemy) = second.children.iter_mut().find(|(tag, cfg)|
+                tag == "side" && cfg.attribute("id") == Some("Thrag")).unwrap();
+            super::super::put(enemy, "id", "Dumbo");
+            prepare(&mut second, hero);
+            prepare(&mut second, hero);
+            let scenario = board(second);
+            let mut game = scenario.start(7, |_| unreachable!()).unwrap();
+            for _ in 0..4 {
+                assert!(game.take_presentation(1).is_empty());
+                game.step(Action::EndTurn).unwrap();
+            }
+            let mut session = Session::with_players(game, Players::Campaign);
+            assert_eq!(session.tutorial_hint(), "<b><big>Tracking Enemy Movement</big></b>\nUse Show Enemy Moves.");
+            let at = |x, only_if_offscreen| Some(DialogueFocus { hex: Hex::from_wml(x, 1).unwrap(), only_if_offscreen });
+            let guard = Hex::from_wml(3, 1);
+            let question = if hero == Hero::Konrad { "Can we go around?" } else { "Could we go around?" };
+            for (text, focus, zone) in [
+                ("We must occupy that island.", at(2, false), None),
+                (question, at(1, true), None),
+                ("You will have to kill the Grunt.", at(3, false), guard),
+                ("The immediately adjacent hexes are its zone of control.", None, guard),
+                ("Resume play.", None, None),
+            ] {
+                let line = session.dialogue().unwrap();
+                assert_eq!((&*line.text, line.focus, line.zone_center), (text, focus, zone));
+                if focus.is_none() && zone.is_some() {
+                    assert_eq!(line.caption.as_deref(), Some("Zone of Control"));
+                    assert_eq!(line.image.as_deref(), Some("wesnoth-icon.png"));
+                }
+                session.dismiss_dialogue();
+            }
+            assert!(session.dialogue().is_none());
+            assert!(session.legal_actions().contains(&Action::EndTurn));
+        }
+    }
+
+    #[test]
+    fn a_shrouded_viewer_hears_the_narrator_without_the_enemy_zone() {
+        let cfg = scenario(Hero::Konrad, "", "[side]\nside=3\ncontroller=null\nno_leader=yes\nteam_name=neutral\nfog=yes\nshroud=yes\n[/side]");
+        let scenario = board(cfg);
+        let mut game = scenario.start(7, |_| unreachable!()).unwrap();
+        let narration = wml::parse("speaker=narrator\nmessage=Zone of Control\nrustnoth_tutorial_zone_unit=Thrag").unwrap();
+        game.present_message(&narration);
+        let lines = game.take_dialogue(3);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].zone_center, None);
     }
 
     #[test]

@@ -63,7 +63,7 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
     let worker = std::thread::spawn(move || -> io::Result<Vec<Group>> {
         let bytes = crate::desktop::achievements(&installed)?;
         let config = engine_lite::wml::parse(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        catalog::groups(&config, &catalog::read_profile()?, &installed, &language)
+        catalog::groups(&config, &super::profile::read_profile()?, &installed, &language)
     });
     while !worker.is_finished() {
         behind(screen_width(), screen_height());
