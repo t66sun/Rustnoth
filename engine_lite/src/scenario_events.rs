@@ -633,7 +633,7 @@ struct Handler {
 pub(crate) struct ScenarioEvents {
     objective_definitions: BTreeMap<usize, objectives::Definition>,
     handlers: Vec<Handler>,
-    active_side: usize,
+    pub(crate) active_side: usize,
     variables: Scalars,
     pub(crate) items: MapItems,
     pub(crate) new_round_at_start: bool,

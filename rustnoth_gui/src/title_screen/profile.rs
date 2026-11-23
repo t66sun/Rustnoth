@@ -1,4 +1,41 @@
-use std::path::PathBuf;
+use engine_lite::wml::{self, Node};
+use std::{fs, io, path::PathBuf};
+
+#[cfg(any(target_os = "macos", windows))]
+fn preferences_file() -> Option<PathBuf> {
+    native_data_directory().map(|dir| dir.join("preferences"))
+}
+#[cfg(not(any(target_os = "macos", windows)))]
+fn preferences_file() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))?;
+    Some(base.join("wesnoth/preferences"))
+}
+
+pub(crate) fn read_profile() -> io::Result<Node> {
+    let Some(path) = preferences_file() else { return Ok(Node::default()); };
+    match fs::read(path) {
+        Ok(bytes) => wml::parse(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Node::default()),
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn mouse_scroll_threshold(profile: &Node) -> f32 {
+    if matches!(profile.attribute("mouse_scrolling"), Some("no" | "false" | "off" | "0")) {
+        return 0.0;
+    }
+    profile.attribute("scroll_threshold").and_then(|s| s.parse::<i32>().ok()).unwrap_or(10).max(0) as f32
+}
+
+#[test]
+fn reads_native_mouse_scrolling_and_threshold() {
+    assert_eq!(mouse_scroll_threshold(&Node::default()), 10.0);
+    let profile = wml::parse("scroll_threshold=19").unwrap();
+    assert_eq!(mouse_scroll_threshold(&profile), 19.0);
+    let disabled = wml::parse("mouse_scrolling=no\nscroll_threshold=19").unwrap();
+    assert_eq!(mouse_scroll_threshold(&disabled), 0.0);
+}
 
 #[cfg(windows)]
 pub(super) fn native_data_directory() -> Option<PathBuf> {

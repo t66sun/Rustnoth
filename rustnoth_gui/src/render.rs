@@ -23,6 +23,8 @@ use rustnoth_gui::{
 };
 use crate::menu::Menu;
 
+mod label;
+pub(crate) use label::Label;
 pub mod objectives;
 pub mod attack_dialog;
 mod dialogue;
@@ -127,6 +129,7 @@ pub struct BoardArt {
     flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
     periods: HashMap<&'static str, (&'static str, Option<Texture2D>)>,
     map_items: Vec<(Hex, Texture2D, bool)>,
+    tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
     hover: hover::Art,
     footsteps: footsteps::Art,
@@ -146,6 +149,8 @@ pub struct BoardArt {
     tutorial_hint: tutorial_hint::Art,
     #[cfg(windows)]
     tutorial_print: tutorial_print::Art,
+    #[cfg(windows)]
+    dialogue_text: dialogue::native::Art,
 }
 
 impl BoardArt {
@@ -233,6 +238,7 @@ impl BoardArt {
             flags: BTreeMap::new(),
             periods,
             map_items: Vec::new(),
+            tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
             footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
@@ -252,6 +258,8 @@ impl BoardArt {
             tutorial_print: tutorial_print::Art::default(),
             dialogue_font: fs::read(wesnoth_root.join("fonts/Lato-Regular.ttf"))
                 .ok().and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok()).or_else(|| font.clone()),
+            #[cfg(windows)]
+            dialogue_text: dialogue::native::Art::new(wesnoth_root),
             font,
         })
     }
@@ -382,8 +390,8 @@ pub fn end_turn_button(width: f32, height: f32, can_end_turn: bool) -> Option<Re
     (can_end_turn && bounds.w > 0.0 && bounds.h > 0.0).then_some(bounds)
 }
 
-pub fn draw_turn_button(bounds: Rect, highlighted: bool, art: &BoardArt, text: &str) {
-    frame::turn_button(art, bounds, highlighted, text);
+pub fn draw_turn_button(bounds: Rect, highlighted: bool, enabled: bool, art: &mut BoardArt, text: &str) {
+    frame::turn_button(art, bounds, highlighted, enabled, text);
 }
 
 pub fn menu_area() -> Rect {
@@ -563,6 +571,20 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
     }
+    if let Some(center) = movement.session.dialogue().and_then(|line| line.zone_center)
+        && let Some(texture) = art.tutorial_zone_image.get_or_init(|| {
+            let path = movement.assets.resolve_image(Path::new("misc/highlight-hex.png"))?;
+            load_texture(&path, None)
+        })
+    {
+        for hex in center.neighbors().filter(|hex| view.tiles.binary_search_by_key(
+            &(hex.y, hex.x), |tile| (tile.position.y, tile.position.x)).is_ok())
+        {
+            art.lighting.item(hex);
+            let [x, y] = layout.tile_origin(hex);
+            draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
+        }
+    }
     art.lighting.flat([0; 3]);
     let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
         Action::Move { from, .. } => Some(*from),
@@ -575,9 +597,15 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
             .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
     });
+    let enemies = movement.session.enemy_reach();
+    let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
     if let Some(mask) = art.unreachable.as_ref()
-        && let Some(reachable) = reach::reachable(movement.selected, movement.actions, target) {
-        for tile in view.tiles.iter().filter(|tile| !reachable.contains(&tile.position)) {
+        && (enemies.is_some() || own.is_some()) {
+        let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
+        for tile in view.tiles.iter().filter(|tile| {
+            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+                && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
+        }) {
             let [x, y] = layout.tile_origin(tile.position);
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
@@ -594,7 +622,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let center = origin(unit.position) + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
-            let selected = movement.selected == Some(unit.position);
+            let selected = movement.selected == Some(unit.position)
+                || enemies.is_some_and(|reach| reach.threatening.contains(&unit.position));
             let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
             if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
                 for texture in halves.iter().flatten() { draw_centered(texture, center, size, Some(viewport)); }
@@ -644,11 +673,12 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
     let (mx, my) = mouse_position();
     let hover = art.briefing_highlight.or_else(|| layout.hex_at([mx, my]));
+    let linger_side = art.linger_color.map(|_| movement.session.playing_side());
     for unit in &view.units {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
-            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position));
+            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit.position);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
@@ -684,7 +714,11 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     draw_cover(layout, art, viewport);
     art.fog_edges.draw(layout, viewport);
     art.lighting.flat([0; 3]);
+    if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
+    if let Some(plan) = movement.session.hovered_attack() {
+        art.footsteps.draw_attack(layout, plan.staging, plan.target, viewport);
+    }
     if let Some(pose) = &art.combat_pose { pose.draw_impact(layout, art.font.as_ref()); }
     if let Some(route) = movement.route { art.footsteps.draw_mark(layout, route, art.font.as_ref()); }
     if let (Some(color), Some(texture)) = (art.linger_color, art.linger.as_ref()) {

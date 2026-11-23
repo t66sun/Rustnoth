@@ -10,13 +10,14 @@ mod hotkeys;
 mod help;
 pub(crate) mod locale;
 mod languages;
+pub(crate) use languages::window;
 mod load_game;
 mod credits;
 mod community;
 mod achievements;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
-mod profile;
+pub(crate) mod profile;
 pub(crate) mod panel_blur;
 mod panel_grid;
 pub(crate) mod button_canvas;
@@ -81,7 +82,7 @@ fn keyboard_focus(current: Option<usize>, count: usize, backward: bool) -> usize
 }
 
 impl TitleScreen {
-    pub(super) async fn run(self, mut fullscreen: bool) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn run(self, mut fullscreen: bool, mut windowed_size: Vec2) -> Result<(), Box<dyn Error>> {
         let mut bindings = hotkeys::Bindings::load(&self.root)?;
         let selected = crate::display_preferences::config_directory().and_then(|dir| locale::saved(&dir)).unwrap_or_default();
         let mut art = Art::load(&self.root, locale::Locale::load(&self.root, selected)?)?;
@@ -95,7 +96,6 @@ impl TitleScreen {
         let mut focus = None;
         let mut pressed = None;
         let mut last_pointer = None;
-        let mut windowed_size = vec2(1200.0, 820.0);
         let mut error: Option<String> = None;
         loop {
             let scale = (screen_width() / 660.0).min(screen_height() / 460.0).clamp(0.01, 1.0);

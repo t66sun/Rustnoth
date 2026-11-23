@@ -43,6 +43,7 @@ mod retaliation;
 pub mod attack_preview;
 pub mod combat_display;
 pub mod move_preview;
+pub mod enemy_moves;
 pub mod unit_report;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -383,6 +384,9 @@ impl<'data> FixedMatch<'data> {
         self.state.clone()
     }
 
+    /// The public turn owner, retained after the match has ended.
+    pub fn playing_side(&self) -> usize { self.scenario.events.active_side }
+
     /// Public scenario time for the active round, before terrain or unit illumination.
     pub fn global_time_of_day(&self) -> Option<&crate::time_of_day::TimeOfDay> {
         let MatchState::Playing(turn) = self.state else { return None };
@@ -444,7 +448,7 @@ impl<'data> FixedMatch<'data> {
 
     pub fn save_victory_replay(&self) -> bool { self.replay_save && self.human_won() }
 
-    fn human_won(&self) -> bool {
+    pub fn human_won(&self) -> bool {
         let human_won = |side: usize| self.scenario.sides[side - 1].controller == crate::scenario_sides::SideController::Human;
         match &self.state {
             MatchState::CampaignVictory => true,
@@ -755,28 +759,28 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn prepare_attack(&self, turn: Turn, choice: AttackChoice) -> Result<Attack, AttackError> {
-        self.prepare_attack_in_view(turn, choice, |_| true).map(|(attack, _)| attack)
+        self.prepare_attack_in_view(turn, choice, Some).map(|(attack, _)| attack)
     }
 
     fn prepare_attack_in_view(
-        &self, turn: Turn, choice: AttackChoice, visible: impl Fn(Hex) -> bool + Copy,
+        &self, turn: Turn, choice: AttackChoice, occupant: impl Fn(Hex) -> Option<Hex> + Copy,
     ) -> Result<(Attack, bool), AttackError> {
         let board = &self.scenario.board;
-        let attacker = board.unit_at(choice.from).ok_or(AttackError::MissingAttacker)?;
-        let defender = board.unit_at(choice.to).ok_or(AttackError::MissingDefender)?;
+        let attacker = occupant(choice.from).and_then(|at| board.unit_at(at)).ok_or(AttackError::MissingAttacker)?;
+        let defender = occupant(choice.to).and_then(|at| board.unit_at(at)).ok_or(AttackError::MissingDefender)?;
         let weapon = attacker
             .unit_type
             .attacks
             .get(choice.weapon)
             .ok_or(AttackError::UnavailableWeapon)?;
         let distance = choice.from.distance(choice.to) as i64;
-        let attack_leadership = self.leadership_in_view(choice.from, attacker, visible);
-        let defense_leadership = self.leadership_in_view(choice.to, defender, visible);
-        let attack_light = self.lawful_bonus_in_view(turn.round, choice.from, visible);
-        let defense_light = self.lawful_bonus_in_view(turn.round, choice.to, visible);
+        let attack_leadership = self.leadership_with_occupants(choice.from, attacker, occupant);
+        let defense_leadership = self.leadership_with_occupants(choice.to, defender, occupant);
+        let attack_light = self.lawful_bonus_with_occupants(turn.round, choice.from, occupant);
+        let defense_light = self.lawful_bonus_with_occupants(turn.round, choice.to, occupant);
         let modifiers = self.modifiers(attack_light, attacker, defender, weapon, choice.to, attack_leadership, true);
         let backstab = board.backstabs(choice.from, choice.to, weapon, |at, side| {
-            visible(at) && self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
+            occupant(at).is_some() && self.scenario.sides[defender.side - 1].is_enemy(&self.scenario.sides[side - 1])
         });
         let offensive_role = StrikeRole::Attack { backstab };
         let candidates = defender
@@ -816,7 +820,11 @@ impl<'data> FixedMatch<'data> {
     }
 
     fn leadership_in_view(&self, position: Hex, recipient: &UnitState<'_>, visible: impl Fn(Hex) -> bool) -> i64 {
-        position.neighbors().filter(|hex| visible(*hex))
+        self.leadership_with_occupants(position, recipient, |at| visible(at).then_some(at))
+    }
+
+    fn leadership_with_occupants(&self, position: Hex, recipient: &UnitState<'_>, occupant: impl Fn(Hex) -> Option<Hex>) -> i64 {
+        position.neighbors().filter_map(occupant)
             .filter_map(|hex| self.scenario.board.unit_at(hex))
             .filter(|unit| unit.side == recipient.side && unit.unit_type.leadership)
             .map(|unit| i64::from(unit.unit_type.level) - i64::from(recipient.unit_type.level))

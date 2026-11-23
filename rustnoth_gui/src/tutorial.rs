@@ -79,7 +79,6 @@ impl Lesson {
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
-    #[cfg(test)]
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
     pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
@@ -140,6 +139,10 @@ impl Lesson {
             Step::FighterAttack | Step::Practice if self.weapons.prompting => &self.weapons.prompt,
             Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::FighterAttack | Step::Practice | Step::Complete => return None,
         })
+    }
+
+    pub(super) fn permits_move_attack(&self) -> bool {
+        matches!(self.step, Step::EndThird | Step::FighterAttack | Step::Practice)
     }
 
     pub(super) fn restrict(&self, session: &mut Session<'_>) {
