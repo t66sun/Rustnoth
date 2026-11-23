@@ -32,7 +32,7 @@ impl Award {
             .flat_map(|g| children(g, "achievement")).find(|a| a.attribute("id") == Some("completed"))
             .and_then(|a| a.attribute("max_progress")).and_then(|value| value.parse().ok())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing tutorial achievement maximum"))?;
-        let native = super::catalog::read_profile()?;
+        let native = crate::title_screen::profile::read_profile()?;
         self.update(&native, maximum, directory)
     }
 

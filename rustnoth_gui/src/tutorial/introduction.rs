@@ -45,7 +45,7 @@ struct Picker {
 }
 
 impl Picker {
-    fn load(root: &Path, font: Option<&Font>) -> Result<Self, Box<dyn Error>> {
+    fn load(root: &Path, font: Option<&Font>, locale: &mut title_screen::locale::Locale) -> Result<Self, Box<dyn Error>> {
         let folder = root.join(desktop::TUTORIAL);
         let colors = TeamColors::parse(&fs::read(root.join("data/core/team-colors.cfg"))?)?;
         let document = engine_lite::wml::parse(fs::read(folder.join("gui/character_selection.cfg"))?)?;
@@ -60,8 +60,6 @@ impl Picker {
         widgets(&document, "button", &mut buttons);
         let [title, question] = labels[..] else { return Err("invalid tutorial character labels".into()) };
         let [male, female] = buttons[..] else { return Err("invalid tutorial character buttons".into()) };
-        let dir = crate::display_preferences::config_directory()?;
-        let mut locale = title_screen::locale::Locale::load(root, title_screen::locale::saved(&dir)?)?;
         let native = |s: &str| render::load_texture(&root.join("images").join(s), None)
             .ok_or_else(|| format!("missing tutorial widget image {s}"));
         #[cfg(windows)]
@@ -148,14 +146,16 @@ pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
     let session = Session::with_players(game, Players::Campaign);
     let view = session.observation().ok_or("missing tutorial opening view")?;
     let opening = session.dialogue().ok_or("missing authored tutorial introduction")?;
-    let mut art = render::BoardArt::new(root, Speed::load()?)?;
+    let dir = crate::display_preferences::config_directory()?;
+    let mut locale = title_screen::locale::Locale::load(root, title_screen::locale::saved(&dir)?)?;
+    let mut art = render::BoardArt::new(root, Speed::load()?, &locale)?;
     art.load(view, &data.assets, &session);
     let mut camera = BoardCamera::default();
     camera.update(render::board_viewport(), view, false);
     camera.open_at(Some(keep));
     let menus = map_menus::State::default();
     let menu_art = map_menus::Art::new(root);
-    let mut picker = Picker::load(root, art.font.as_ref())?;
+    let mut picker = Picker::load(root, art.font.as_ref(), &mut locale)?;
     let mut introduction = true;
     let mut page = 0;
     loop {

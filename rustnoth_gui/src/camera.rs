@@ -172,6 +172,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_stationary_pointer_scrolls_each_frame_in_both_directions() {
+        use macroquad::prelude::vec2;
+        let menu = crate::map_menus::State::default();
+        let canvas = vec2(800.0, 600.0);
+        let mut camera = BoardCamera::default();
+        camera.fit(Viewport { x: 0.0, y: 27.0, width: 600.0, height: 573.0 }, 40, 40, false);
+        camera.open_at(Some(Hex { x: 20, y: 20 }));
+        let start = camera.checkpoint().unwrap();
+        let mut previous = start;
+        for (y, direction) in [(599.0, 1.0), (2.0, -1.0)] {
+            for _ in 0..3 {
+                let edge = menu.vertical_edge_scroll(vec2(300.0, y), canvas, 10.0);
+                camera.pan([0.0, edge as f32 * 24.0]);
+                let next = camera.checkpoint().unwrap();
+                assert!((next[1] - previous[1]) * direction > 0.0);
+                assert_eq!((next[0], next[2]), (start[0], start[2]));
+                previous = next;
+            }
+        }
+        assert_eq!(camera.checkpoint(), Some(start));
+    }
+
+    #[test]
     fn briefing_scroll_reaches_the_subject_before_dialogue_and_preserves_zoom() {
         let mut camera = BoardCamera::default();
         let area = Viewport { x: 0.0, y: 27.0, width: 400.0, height: 300.0 };

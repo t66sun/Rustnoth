@@ -64,7 +64,7 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
     let worker = std::thread::spawn(move || -> io::Result<Vec<Group>> {
         let bytes = crate::desktop::achievements(&installed)?;
         let config = engine_lite::wml::parse(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let native = catalog::read_profile()?;
+        let native = super::profile::read_profile()?;
         let local = tutorial_progress::read(&crate::display_preferences::config_directory()?)?;
         catalog::groups(&config, &native, local, &installed, &language)
     });
