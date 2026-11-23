@@ -54,6 +54,10 @@ fn apply_opacity(image: &mut RgbaImage, argument: &str) {
 }
 
 impl Bitmaps {
+    pub(super) fn frames(&self) -> impl Iterator<Item = &Texture2D> {
+        self.cropped.values().flatten()
+    }
+
     fn read(&mut self, catalog: &Catalog, expression: &str) -> Option<Rc<RgbaImage>> {
         if let Some(src) = self.sources.get(expression) {
             return Some(Rc::clone(src));
@@ -165,6 +169,11 @@ impl Bitmaps {
         self.cropped.insert((id, part), result.clone());
         result
     }
+
+    pub(super) fn release_sources(&mut self) {
+        // The uploaded fragments are cached independently of the decoded images.
+        self.sources.clear();
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +227,40 @@ mod tests {
         let frame = bitmaps.pixels(&catalog, 0, None).unwrap();
         assert_eq!(frame.get_pixel(0, 0)[3], 0);
         assert_eq!(frame.get_pixel(35, 35).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn building_terrain_releases_decoded_sources_and_retains_fragment_entries() {
+        use super::super::{Rules, compile, map_observation};
+        use engine_lite::map::ScenarioMap;
+        use rustnoth_gui::assets::AssetCatalog;
+
+        let name = "transparent.png";
+        let assets = AssetCatalog::parse(std::path::Path::new(""), br#"
+[terrain_graphics]
+    [tile]
+        x,y=0,0
+        type=Gg
+        [image]
+            name=transparent.png
+        [/image]
+    [/tile]
+[/terrain_graphics]
+"#, b"").unwrap();
+        let mut rules = Rules::default();
+        rules.catalog = Some(compile::compile_files(
+            assets.terrain_rules(),
+            HashMap::from([(name.into(), name.into())]),
+        ));
+        // Transparent fragments exercise the upload cache without a graphics context.
+        let source = Rc::new(RgbaImage::new(144, 144));
+        let decoded = Rc::downgrade(&source);
+        rules.bitmaps.sources.insert(name.into(), source);
+        let map = ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg,Gg").unwrap();
+        rules.load_editor(&assets, &map_observation(&map), &map);
+
+        assert!(rules.bitmaps.cropped.contains_key(&(0, None)));
+        assert!(decoded.upgrade().is_none());
     }
 
     #[test]
