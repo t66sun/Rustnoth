@@ -1,11 +1,11 @@
 use super::{
     Hex,
-    compile::{Catalog, Cut, translate},
+    compile::{Catalog, Cut, Flag, translate},
     pattern,
 };
 use crate::render::ground::noise;
 use engine_lite::observation::Observation;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
 pub(super) struct Layer {
@@ -19,7 +19,19 @@ pub(super) struct Layer {
 #[derive(Default)]
 pub(super) struct Tile {
     pub layers: Vec<Layer>,
-    pub flags: HashSet<String>,
+    flags: Vec<Flag>,
+}
+
+impl Tile {
+    pub(super) fn has_flag(&self, flag: Flag) -> bool {
+        self.flags.binary_search(&flag).is_ok()
+    }
+
+    fn set_flag(&mut self, flag: Flag) {
+        if let Err(index) = self.flags.binary_search(&flag) {
+            self.flags.insert(index, flag);
+        }
+    }
 }
 
 /// Playable terrain comes only from the observation. The referee separately
@@ -44,7 +56,7 @@ fn sorted(view: &Observation, mut tiles: HashMap<Hex, Tile>) -> HashMap<Hex, Til
             && hex.y >= -1
             && hex.x <= view.width
             && hex.y <= view.height
-            && (!tile.layers.is_empty() || tile.flags.contains("base"))
+            && (!tile.layers.is_empty() || tile.has_flag(Flag::BASE))
     });
     tiles
 }
@@ -119,8 +131,7 @@ fn apply<'a>(
         .map(|&hex| {
             let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
             let mut tile = Tile::default();
-            tile.flags
-                .insert(if inside { "_board" } else { "_border" }.into());
+            tile.set_flag(if inside { Flag::BOARD } else { Flag::BORDER });
             (hex, tile)
         })
         .collect();
@@ -166,10 +177,9 @@ fn apply<'a>(
                     let Some(tile) = tiles.get(&at) else {
                         return false;
                     };
-                    let flags = &tile.flags;
                     types.get(&at).map_or(matches_empty[cell.filter], |&id| allowed[cell.filter][id])
-                        && cell.require.iter().all(|f| flags.contains(f))
-                        && cell.forbid.iter().all(|f| !flags.contains(f))
+                        && cell.require.iter().all(|&flag| tile.has_flag(flag))
+                        && cell.forbid.iter().all(|&flag| !tile.has_flag(flag))
                 });
                 if !matches {
                     continue;
@@ -177,7 +187,9 @@ fn apply<'a>(
                 for cell in &rule.cells {
                     let at = translate(origin, cell.offset);
                     let tile = tiles.get_mut(&at).unwrap();
-                    tile.flags.extend(cell.set.iter().cloned());
+                    for &flag in &cell.set {
+                        tile.set_flag(flag);
+                    }
                     tile.layers.extend(cell.parts.iter().map(|part| Layer {
                         layer: part.layer,
                         y: part.base_y,
@@ -224,9 +236,10 @@ set_no_flag=claimed
         .unwrap();
         let view = super::super::map_observation(&map);
         let tiles = build_with_flags(&catalog, &view, &Default::default());
-        assert!(tiles[&Hex { x: 0, y: 1 }].flags.contains("origin"));
-        assert!(tiles[&Hex { x: 0, y: 2 }].flags.contains("claimed"));
-        assert!(!tiles[&Hex { x: 0, y: 0 }].flags.contains("claimed"));
+        let claimed = catalog.flag("claimed");
+        assert!(tiles[&Hex { x: 0, y: 1 }].has_flag(catalog.flag("origin")));
+        assert!(tiles[&Hex { x: 0, y: 2 }].has_flag(claimed));
+        assert!(!tiles[&Hex { x: 0, y: 0 }].has_flag(claimed));
     }
 
     #[test]
@@ -236,16 +249,17 @@ set_no_flag=claimed
         let map = engine_lite::map::ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg^Fp,Gg").unwrap();
         let view = super::super::map_observation(&map);
         let border = Hex { x: 0, y: map.height() };
-        assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].flags.contains("forest"));
+        let forest = catalog.flag("forest");
+        assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].has_flag(forest));
         let explored = [(border, ("Gg^Fp", false))].into_iter().collect();
-        assert!(build_with_flags(&catalog, &view, &explored)[&border].flags.contains("forest"));
-        assert!(!build_with_flags(&catalog, &view, &Default::default())[&border].flags.contains("forest"));
+        assert!(build_with_flags(&catalog, &view, &explored)[&border].has_flag(forest));
+        assert!(!build_with_flags(&catalog, &view, &Default::default())[&border].has_flag(forest));
 
         let mut obscured = view;
         obscured.height = 2;
         obscured.tiles[0].terrain = "Gg^Fp".into();
         let origin = obscured.tiles[0].position;
-        assert!(!build_with_flags(&catalog, &obscured, &Default::default())[&origin].flags.contains("forest"));
+        assert!(!build_with_flags(&catalog, &obscured, &Default::default())[&origin].has_flag(forest));
     }
 
     #[test]
@@ -270,12 +284,52 @@ set_no_flag=claimed
             }],
         };
         let tiles = battlefield(&catalog, &view, &Default::default());
-        assert!(tiles[&at].flags.contains("base") && tiles[&at].flags.contains("_board"));
+        assert!(tiles[&at].has_flag(catalog.flag("base")) && tiles[&at].has_flag(catalog.flag("_board")));
         let layers = &tiles[&at].layers;
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].layer, -1000);
         let frame = catalog.images[layers[0].image].variants[0].choices[0][0].0;
         assert_eq!(catalog.names[frame], "off-map/alpha.png");
         assert!(!tiles.contains_key(&Hex { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn matched_tiles_and_image_variants_share_compact_flag_ids() {
+        let rule = wml::parse(
+            br#"
+[tile]
+x,y=0,0
+type=Gg
+set_flag=track,track
+[image]
+name=grass/green.png
+    [variant]
+    name=grass/tracked.png
+    has_flag=track,_board
+    [/variant]
+[/image]
+[/tile]
+"#,
+        )
+        .unwrap();
+        let catalog = super::super::compile::compile_files(
+            &[rule],
+            ["grass/green.png", "grass/tracked.png"]
+                .into_iter()
+                .map(|name| (name.into(), name.into()))
+                .collect(),
+        );
+        let map = engine_lite::map::ScenarioMap::parse("Gg,Gg,Gg,Gg\nGg,Gg,Gg,Gg\nGg,Gg,Gg,Gg").unwrap();
+        let view = super::super::map_observation(&map);
+        let tiles = build_with_flags(&catalog, &view, &Default::default());
+        let track = catalog.flag("track");
+        for x in 0..2 {
+            let tile = &tiles[&Hex { x, y: 0 }];
+            assert_eq!(tile.flags, [Flag::BOARD, track]);
+            let variants = &catalog.images[tile.layers[0].image].variants;
+            assert_eq!(variants[0].flags, [track, Flag::BOARD]);
+            assert!(variants[1].flags.is_empty());
+        }
+        assert_eq!(std::mem::size_of_val(&track), std::mem::size_of::<usize>());
     }
 }

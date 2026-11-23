@@ -77,8 +77,10 @@ impl MovementCosts {
         if ancestors.len() > MAX_ALIAS_DEPTH || ancestors.contains(&code) {
             return UNREACHABLE;
         }
-        let terms = aliases.terms(code, AliasKind::Movement);
-        if terms.is_empty() || terms.as_slice() == [AliasTerm::Terrain(code)] {
+        let source = aliases.term_source(code, AliasKind::Movement);
+        let mut terms = source.iter().peekable();
+        let first = terms.next();
+        if first.is_none() || (first == Some(AliasTerm::Terrain(code)) && terms.peek().is_none()) {
             return aliases
                 .terrain_id(code)
                 .and_then(|id| layers.iter().flatten().find_map(|table| table.costs.get(id)))
@@ -86,14 +88,14 @@ impl MovementCosts {
                 .unwrap_or(UNREACHABLE);
         }
 
-        let mut cost = if terms.first() == Some(&AliasTerm::Worst) {
+        let mut cost = if first == Some(AliasTerm::Worst) {
             1
         } else {
             UNREACHABLE
         };
         let mut prefer_worst = false;
         ancestors.push(code);
-        for term in terms {
+        for term in first.into_iter().chain(terms) {
             match term {
                 AliasTerm::Best => prefer_worst = false,
                 AliasTerm::Worst => prefer_worst = true,
@@ -123,6 +125,29 @@ mod tests {
 
     fn costs(table: &str) -> MovementCosts {
         MovementCosts::from_wml(&wml::parse(table).unwrap())
+    }
+
+    #[test]
+    fn walking_cost_borrows_stock_ground_aliases_and_preserves_table_overrides() {
+        use crate::terrain_aliases::TERM_VECTOR_BUILDS;
+
+        let aliases = catalog(
+            "[terrain_type]\nstring=Gt\nid=flat\n[/terrain_type]\n\
+             [terrain_type]\nstring=Gg\nid=grass\naliasof=Gt\n[/terrain_type]\n\
+             [terrain_type]\nstring=Wst\nid=shallow_water\n[/terrain_type]\n\
+             [terrain_type]\nstring=Ww\nid=water\naliasof=Wst\n[/terrain_type]",
+        );
+        let inherited = costs("flat=2\nshallow_water=1\n");
+        let overrides = costs("shallow_water=unknown");
+        let builds = TERM_VECTOR_BUILDS.get();
+
+        assert_eq!(
+            overrides.cost_with_fallback(&aliases, " 1 Gg^ ", true, Some(&inherited)),
+            NonZeroU32::new(4),
+        );
+        assert_eq!(inherited.cost(&aliases, "Gt", false), NonZeroU32::new(2));
+        assert_eq!(overrides.cost_with_fallback(&aliases, "Ww", false, Some(&inherited)), None);
+        assert_eq!(TERM_VECTOR_BUILDS.get(), builds);
     }
 
     #[test]

@@ -1,4 +1,7 @@
+mod action_hints;
 mod enemy_moves;
+
+pub use action_hints::ActionHints;
 
 use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
@@ -7,6 +10,7 @@ use engine_lite::{
     opponent::attack_or_approach,
     scenario_sides::SideController,
 };
+use std::cell::{Ref, RefCell};
 
 #[cfg(test)]
 std::thread_local! {
@@ -71,6 +75,7 @@ pub struct Session<'rules> {
     computer_action: Option<Action>,
     observation: Option<Observation>,
     legal_actions: Vec<Action>,
+    action_hints: RefCell<ActionHints>,
 }
 
 impl<'rules> Session<'rules> {
@@ -85,6 +90,7 @@ impl<'rules> Session<'rules> {
             enemy_moves: Default::default(),
             attack_cursor: Default::default(), hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
+            action_hints: RefCell::default(),
         };
         session.refresh();
         session
@@ -97,6 +103,7 @@ impl<'rules> Session<'rules> {
         self.route = None;
         self.computer_action = None;
         self.legal_actions.clear();
+        self.action_hints.get_mut().invalidate();
         match self.game.state() {
             MatchState::Playing(turn) => {
                 let controller = self.players.controller(&self.game, turn.side);
@@ -398,6 +405,11 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn action_hints(&self, selected: Option<Hex>) -> Ref<'_, ActionHints> {
+        self.action_hints.borrow_mut().update(selected, &self.legal_actions);
+        self.action_hints.borrow()
+    }
+
     pub fn track_pointer(&mut self, endpoints: Option<(Hex, Hex)>, allow_move_attack: bool) {
         self.attack_cursor.update(endpoints, allow_move_attack, self.observation.as_ref(), &self.legal_actions, &self.game);
         let route = self.hovered_attack().map(|plan| (plan.origin, plan.staging)).or(endpoints);
@@ -435,7 +447,11 @@ impl<'rules> Session<'rules> {
 
     /// Limit the actions offered by the interface during a scripted tutorial step.
     pub fn retain_actions(&mut self, allowed: impl FnMut(&Action) -> bool) {
+        let previous_len = self.legal_actions.len();
         self.legal_actions.retain(allowed);
+        if self.legal_actions.len() != previous_len {
+            self.action_hints.get_mut().invalidate();
+        }
     }
 
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {

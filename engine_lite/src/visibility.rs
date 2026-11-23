@@ -185,6 +185,14 @@ impl VisibilityMask {
         sides: impl IntoIterator<Item = (&'a SideConfig, &'a VisibilityMask)>,
     ) -> Option<HexVisibility> {
         if !self.is_playable(hex) { return None; }
+        Some(self.visibility_with_allies(hex, viewer, sides))
+    }
+
+    /// Looks up a single stored hex, including the authored map border.
+    pub(crate) fn visibility_with_allies<'a>(
+        &self, hex: Hex, viewer: &SideConfig,
+        sides: impl IntoIterator<Item = (&'a SideConfig, &'a VisibilityMask)>,
+    ) -> HexVisibility {
         let mut explored = !self.shroud || self.explored.contains(&hex);
         let mut seen = !self.fog || self.sight.contains(&hex) || self.fog_override.contains(&hex);
         for (donor, mask) in sides {
@@ -193,9 +201,9 @@ impl VisibilityMask {
             explored |= share_map && mask.explored.contains(&hex);
             seen |= share_sight && mask.sight.contains(&hex);
         }
-        Some(if !explored { HexVisibility::Shrouded }
+        if !explored { HexVisibility::Shrouded }
             else if !seen { HexVisibility::Fogged }
-            else { HexVisibility::Visible })
+            else { HexVisibility::Visible }
     }
 
     /// Returns the visibility of a playable tile. Map borders lie outside this mask.
@@ -387,7 +395,7 @@ mod tests {
         let raw = VisibilityMask::new(2, 1, true, true);
         let mut donor = VisibilityMask::new(2, 1, true, true);
         donor.add_sight([LEFT]);
-        donor.replace_sight([RIGHT]);
+        donor.replace_sight([RIGHT, BORDER]);
 
         let only_map = raw.with_allied_vision(viewer, [(&sides[1], &donor)]);
         assert_eq!(only_map.at(LEFT), Some(HexVisibility::Fogged));
@@ -402,11 +410,11 @@ mod tests {
         assert_eq!(raw.at(RIGHT), Some(HexVisibility::Shrouded));
 
         let mut fog_only = VisibilityMask::new(2, 1, true, false);
-        fog_only.add_sight([RIGHT]);
+        fog_only.add_sight([RIGHT, BORDER]);
         let with_fog_only = raw.with_allied_vision(viewer, [(&sides[2], &fog_only)]);
         assert_eq!(with_fog_only.at(RIGHT), Some(HexVisibility::Shrouded));
         let mut shroud_only = VisibilityMask::new(2, 1, false, true);
-        shroud_only.add_sight([RIGHT]);
+        shroud_only.add_sight([RIGHT, BORDER]);
         let with_shroud_only = raw.with_allied_vision(viewer, [(&sides[2], &shroud_only)]);
         assert_eq!(with_shroud_only.at(RIGHT), Some(HexVisibility::Fogged));
         let both =
@@ -432,6 +440,10 @@ mod tests {
                 let shared = own.with_allied_vision(viewer_side, donors.iter().copied());
                 for hex in [LEFT, RIGHT, BORDER] {
                     assert_eq!(own.at_with_allies(hex, viewer_side, donors.iter().copied()), shared.at(hex));
+                    assert_eq!(
+                        own.visibility_with_allies(hex, viewer_side, donors.iter().copied()),
+                        shared.visibility(hex),
+                    );
                 }
             }
         }
