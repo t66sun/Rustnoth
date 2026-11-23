@@ -18,6 +18,8 @@ pub(crate) struct Rules {
     bounds: (i32, i32),
     tiles: HashMap<Hex, Drawing>,
     pub(super) foreground: Vec<Hex>,
+    #[cfg(test)]
+    drawing_lookups: std::cell::Cell<usize>,
 }
 
 struct Drawing {
@@ -136,7 +138,13 @@ impl Rules {
     }
 
     pub(super) fn has_base(&self, hex: Hex) -> bool {
-        self.tiles.get(&hex).is_some_and(|t| t.base)
+        self.drawing_at(hex).is_some_and(|drawing| drawing.base)
+    }
+
+    fn drawing_at(&self, hex: Hex) -> Option<&Drawing> {
+        #[cfg(test)]
+        self.drawing_lookups.set(self.drawing_lookups.get() + 1);
+        self.tiles.get(&hex)
     }
 
     pub(super) fn texture_extent(&self) -> Vec2 {
@@ -145,6 +153,25 @@ impl Rules {
 
     pub(super) fn add_terrain_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
         self.bitmaps.add_sprite(pixels)
+    }
+
+    pub(super) fn draw_background(
+        &self,
+        hex: Hex,
+        center: Vec2,
+        size: f32,
+        tod: &str,
+        ms: u64,
+        clip: Option<super::Viewport>,
+        draw_fallback: impl FnOnce(),
+    ) {
+        let drawing = self.drawing_at(hex);
+        if !drawing.is_some_and(|drawing| drawing.base) {
+            draw_fallback();
+        }
+        if let Some(drawing) = drawing {
+            drawing.draw(center, size, false, tod, ms, clip);
+        }
     }
 
     pub(crate) fn draw(
@@ -157,10 +184,23 @@ impl Rules {
         ms: u64,
         clip: Option<super::Viewport>,
     ) {
-        let Some(tile) = self.tiles.get(&hex) else {
-            return;
-        };
-        for (_, variants) in tile.layers.iter().filter(|(front, _)| *front == foreground) {
+        if let Some(drawing) = self.drawing_at(hex) {
+            drawing.draw(center, size, foreground, tod, ms, clip);
+        }
+    }
+}
+
+impl Drawing {
+    fn draw(
+        &self,
+        center: Vec2,
+        size: f32,
+        foreground: bool,
+        tod: &str,
+        ms: u64,
+        clip: Option<super::Viewport>,
+    ) {
+        for (_, variants) in self.layers.iter().filter(|(front, _)| *front == foreground) {
             let Some(animation) = variants
                 .iter()
                 .find(|a| a.sequence.periods.is_empty() || a.sequence.periods.iter().any(|p| p == tod))
@@ -181,6 +221,23 @@ impl Rules {
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn background_draw_looks_up_each_hex_once_and_only_falls_back_without_a_base() {
+        let based = Hex { x: 0, y: 0 };
+        let overlay_only = Hex { x: 1, y: 0 };
+        let absent = Hex { x: 2, y: 0 };
+        let mut rules = Rules::default();
+        rules.tiles.insert(based, Drawing { base: true, layers: Vec::new() });
+        rules.tiles.insert(overlay_only, Drawing { base: false, layers: Vec::new() });
+
+        let mut fallback = Vec::new();
+        for hex in [based, overlay_only, absent] {
+            rules.draw_background(hex, Vec2::ZERO, 72.0, "", 0, None, || fallback.push(hex));
+        }
+        assert_eq!(rules.drawing_lookups.get(), 3);
+        assert_eq!(fallback, [overlay_only, absent]);
+    }
 
     #[test]
     fn same_variant_reuses_frames_until_its_choice_or_crop_changes() {
