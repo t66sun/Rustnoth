@@ -91,8 +91,13 @@ fn portrait_flip(expression: &str, mirror: bool) -> (bool, bool) {
     (horizontal, vertical)
 }
 
+enum PortraitImage {
+    File(Texture2D),
+    Unit(AtlasSprite),
+}
+
 struct Portrait {
-    texture: Texture2D,
+    texture: PortraitImage,
     size: Vec2,
     flip: (bool, bool),
 }
@@ -105,15 +110,16 @@ impl Portrait {
             "unit_image" => {
                 let (id, side) = speaker?;
                 let texture = art.units.entry(id.to_owned()).or_default().entry(side).or_insert_with(|| {
-                    load_texture(&assets.unit_image(id)?, art.team_colors.as_ref().map(|colors| (colors, side)))
+                    let palette = art.team_colors.as_ref().map(|colors| (colors, side));
+                    art.sprite_paths.texture(assets.unit_image(id)?, palette)
                 }).clone()?;
                 // The Lua unit portrait accessor returns a team-colored 144x144 image for this fallback.
-                (texture, vec2(144.0, 144.0))
+                (PortraitImage::Unit(texture), vec2(144.0, 144.0))
             }
             explicit => {
                 let texture = get_texture(&mut art.paths, assets.resolve_image(Path::new(explicit))?)?;
                 let size = vec2(texture.width(), texture.height());
-                (texture, size)
+                (PortraitImage::File(texture), size)
             }
         };
         Some(Self { texture, size, flip: portrait_flip(image, mirror) })
@@ -126,12 +132,19 @@ impl Portrait {
         let (flip_x, flip_y) = self.flip;
         let dx = if flip_x { rect.x + rect.w - clip.x - clip.w } else { clip.x - rect.x };
         let dy = if flip_y { rect.y + rect.h - clip.y - clip.h } else { clip.y - rect.y };
-        let sx = self.texture.width() / rect.w;
-        let sy = self.texture.height() / rect.h;
-        draw_texture_ex(&self.texture, clip.x, clip.y, WHITE, DrawTextureParams {
-            source: Some(Rect::new(dx * sx, dy * sy, clip.w * sx, clip.h * sy)),
-            dest_size: Some(vec2(clip.w, clip.h)), flip_x, flip_y, ..Default::default()
-        });
+        let texture_size = match &self.texture {
+            PortraitImage::File(texture) => texture.size(),
+            PortraitImage::Unit(sprite) => sprite.size(),
+        };
+        let sx = texture_size.x / rect.w;
+        let sy = texture_size.y / rect.h;
+        let source = Rect::new(dx * sx, dy * sy, clip.w * sx, clip.h * sy);
+        match &self.texture {
+            PortraitImage::File(texture) => draw_texture_ex(texture, clip.x, clip.y, WHITE, DrawTextureParams {
+                source: Some(source), dest_size: Some(clip.size()), flip_x, flip_y, ..Default::default()
+            }),
+            PortraitImage::Unit(sprite) => sprite.draw_part(clip, WHITE, source, self.flip),
+        }
     }
 }
 

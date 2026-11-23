@@ -1,7 +1,6 @@
 //! Primary unit frames from the stock [standing_anim] definitions.
-use super::rules::pattern;
+use super::{atlas::AtlasSprite, rules::pattern};
 use engine_lite::{hex::Direction, observation::ObservedUnit, wml::Node};
-use macroquad::prelude::Texture2D;
 use std::collections::HashMap;
 
 pub(super) fn facing(unit: &ObservedUnit) -> Direction {
@@ -40,13 +39,13 @@ impl Cycle {
 
 pub(super) struct Sprites {
     directions: [Vec<Cycle>; 6],
-    textures: HashMap<String, Option<Texture2D>>,
+    textures: HashMap<String, Option<AtlasSprite>>,
 }
 
 impl Sprites {
     pub(super) fn load(
         definitions: &[Node],
-        mut load: impl FnMut(&str) -> Option<Texture2D>,
+        mut load: impl FnMut(&str) -> Option<AtlasSprite>,
     ) -> Self {
         let mut textures = HashMap::new();
         let directions = Direction::CLOCKWISE.map(|direction| {
@@ -72,7 +71,7 @@ impl Sprites {
         direction: Direction,
         terrain: Option<&str>,
         now: u64,
-    ) -> Option<(&Texture2D, bool)> {
+    ) -> Option<(&AtlasSprite, bool)> {
         let cycles = &self.directions[direction as usize];
         let cycle = cycles
             .iter()
