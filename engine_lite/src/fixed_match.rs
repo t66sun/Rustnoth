@@ -384,6 +384,9 @@ impl<'data> FixedMatch<'data> {
         self.state.clone()
     }
 
+    /// The public turn owner, retained after the match has ended.
+    pub fn playing_side(&self) -> usize { self.scenario.events.active_side }
+
     /// Public scenario time for the active round, before terrain or unit illumination.
     pub fn global_time_of_day(&self) -> Option<&crate::time_of_day::TimeOfDay> {
         let MatchState::Playing(turn) = self.state else { return None };

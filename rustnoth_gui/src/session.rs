@@ -301,6 +301,8 @@ impl<'rules> Session<'rules> {
 
     pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
 
+    pub fn playing_side(&self) -> usize { self.game.playing_side() }
+
     pub fn linger_color(&self, end_report_shown: bool) -> Option<[i32; 3]> {
         if self.dialogue().is_some() || self.show_end_report() && !end_report_shown {
             return None;

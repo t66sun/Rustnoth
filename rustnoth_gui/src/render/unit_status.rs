@@ -11,12 +11,15 @@ pub(super) enum Orb {
     Disengaged,
     Moved,
     Ally,
+    AllyMoved,
 }
 
-pub(super) fn orb_for(view: &Observation, unit: &ObservedUnit, actionable: bool) -> Option<Orb> {
+pub(super) fn orb_for(view: &Observation, unit: &ObservedUnit, actionable: bool, linger_side: Option<usize>) -> Option<Orb> {
     if unit.side != view.side {
-        return view.allied_sides.contains(&unit.side).then_some(Orb::Ally);
+        let ally = if linger_side == Some(unit.side) { Orb::AllyMoved } else { Orb::Ally };
+        return view.allied_sides.contains(&unit.side).then_some(ally);
     }
+    if linger_side.is_some() { return Some(Orb::Moved); }
     Some(own_orb(unit.full_action_points == Some(true), actionable, unit.attacks_left == Some(0)))
 }
 
@@ -43,11 +46,15 @@ impl StatusArt {
                 if let Some(texture) = load_texture(&dir.join("orb.png"), Some((&palette, 1))) {
                     orbs.insert(orb, texture);
                 }
-                if orb == Orb::Partial
-                    && let Ok(moved) = TeamColors::named_range(colors, "ellipse_red", "red")
-                    && let Some(texture) = load_recolored(&dir.join("orb-two-color.png"), [(&moved, 1), (&palette, 1)])
+                let (split_orb, ring_color) = match orb {
+                    Orb::Partial => (Orb::Disengaged, "red"),
+                    Orb::Moved => (Orb::AllyMoved, "lightblue"),
+                    _ => continue,
+                };
+                if let Ok(ring) = TeamColors::named_range(colors, "ellipse_red", ring_color)
+                    && let Some(texture) = load_recolored(&dir.join("orb-two-color.png"), [(&ring, 1), (&palette, 1)])
                 {
-                    orbs.insert(Orb::Disengaged, texture);
+                    orbs.insert(split_orb, texture);
                 }
             }
         }
@@ -137,5 +144,60 @@ mod tests {
         assert_eq!(own_orb(false, false, true), Orb::Moved);
         assert_eq!(own_orb(false, true, true), Orb::Disengaged);
         assert_eq!(own_orb(false, true, false), Orb::Partial);
+    }
+
+    #[test]
+    fn linger_marks_own_units_spent_and_keeps_the_playing_ally_distinct() {
+        use engine_lite::{fixed_match::Action, scenario_bundle::Bundle};
+        use rustnoth_gui::session::{Players, Session};
+
+        let bundle = Bundle::parse(br#"
+[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=5
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,3 Gg,4 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+team_name=allies
+[/side]
+[side]
+type=Guard
+team_name=allies
+[/side]
+[side]
+type=Guard
+team_name=allies
+[/side]
+[side]
+type=Guard
+team_name=enemies
+[/side]
+[event]
+name=side 2 turn
+[endlevel]
+result=victory
+carryover_report=no
+[/endlevel]
+[/event]
+[/scenario]"#).unwrap();
+        let mut session = Session::with_players(bundle.start(3, |_| unreachable!()).unwrap(), Players::VersusComputer);
+        let colors = |session: &Session<'_>| {
+            let view = session.observation().unwrap();
+            let linger = session.linger_color(false).map(|_| session.playing_side());
+            (1..=4).map(|side| {
+                let unit = view.units.iter().find(|unit| unit.side == side).unwrap();
+                orb_for(view, unit, true, linger)
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(colors(&session), [Some(Orb::Unmoved), Some(Orb::Ally), Some(Orb::Ally), None]);
+        session.apply(Action::EndTurn).unwrap();
+        assert_eq!(colors(&session), [Some(Orb::Moved), Some(Orb::AllyMoved), Some(Orb::Ally), None]);
     }
 }
