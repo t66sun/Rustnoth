@@ -284,9 +284,10 @@ impl BoardArt {
             }
         }));
         self.fog_edges.update(observation, &border, &self.cover);
-        self.transitions.load(observation, assets);
         self.minimap.load(observation, assets);
-        self.rules.load(assets, observation, &border);
+        if self.rules.load(assets, observation, &border) {
+            self.transitions.load(observation, assets);
+        }
         for tile in &observation.tiles {
             self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
