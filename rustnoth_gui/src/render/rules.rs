@@ -32,14 +32,15 @@ struct Animation {
 }
 
 impl Rules {
-    pub(super) fn load(&mut self, assets: &AssetCatalog, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) {
+    /// Returns whether terrain artwork needs refreshing, including fallback transitions.
+    pub(super) fn load(&mut self, assets: &AssetCatalog, view: &Observation, border: &engine_lite::map::KnownBorder<'_>) -> bool {
         // Fog alone leaves terrain unchanged; exploration can reveal a new
         // border neighbour and change the forest/shore rules on playable tiles.
         let known = || view.tiles.iter().map(|t| (t.position, t.terrain.as_str()))
             .chain(border.iter().map(|(&at, &(code, _))| (at, code)));
         if self.bounds == (view.width, view.height)
             && self.known.iter().map(|(at, id)| (*at, id.as_str())).eq(known()) {
-            return;
+            return false;
         }
         self.bounds = (view.width, view.height);
         self.known = known().map(|(at, code)| (at, code.to_owned())).collect();
@@ -49,6 +50,7 @@ impl Rules {
             .filter(|hex| self.tiles.get(hex).is_some_and(|t| t.layers.iter().any(|(front, _)| *front)))
             .collect();
         self.foreground.sort_unstable_by_key(|hex| (super::draw_row(*hex), hex.x));
+        true
     }
 
     pub(crate) fn load_editor(&mut self, assets: &AssetCatalog, view: &Observation, map: &engine_lite::map::ScenarioMap) {
@@ -148,6 +150,30 @@ impl Rules {
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn fallback_terrain_refreshes_only_when_known_terrain_changes() {
+        let assets = AssetCatalog::parse(std::path::Path::new(""), b"", b"").unwrap();
+        let map = engine_lite::map::ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg,Gg").unwrap();
+        let mut view = map_observation(&map);
+        let border = Default::default();
+        let mut rules = Rules::default();
+
+        assert!(rules.load(&assets, &view, &border));
+
+        view.tiles[0].visible = false;
+        view.tiles[0].village_owner = Some(2);
+        view.tiles[0].time_color = [-20, -10, 0];
+        assert!(!rules.load(&assets, &view, &border));
+
+        view.tiles[0].terrain = "Gs".into();
+        assert!(rules.load(&assets, &view, &border));
+        let hidden_tile = view.tiles.pop().unwrap();
+        assert!(rules.load(&assets, &view, &border));
+        view.tiles.push(hidden_tile);
+        assert!(rules.load(&assets, &view, &border));
+        assert!(!rules.load(&assets, &view, &border));
+    }
 
     #[test]
     fn applies_rotated_roads_only_when_the_neighbor_is_known_and_respects_flags() {
