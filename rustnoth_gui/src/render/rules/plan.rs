@@ -5,7 +5,7 @@ use super::{
 };
 use crate::render::ground::noise;
 use engine_lite::observation::Observation;
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 #[derive(Clone, Copy)]
 pub(super) struct Layer {
@@ -20,6 +20,8 @@ pub(super) struct Layer {
 pub(super) struct Tile {
     pub layers: Vec<Layer>,
     flags: Vec<Flag>,
+    // One-based index into the terrain groups. The outer fringe is unindexed.
+    terrain_group: Option<NonZeroUsize>,
 }
 
 impl Tile {
@@ -101,11 +103,6 @@ fn apply<'a>(
     });
     let matches_empty: Vec<_> = catalog.filters.iter()
         .map(|filter| pattern::matches(filter, "")).collect();
-    let types: HashMap<_, _> = groups
-        .iter()
-        .enumerate()
-        .flat_map(|(id, (_, hexes))| hexes.iter().map(move |hex| (*hex, id)))
-        .collect();
     let allowed: Vec<Vec<bool>> = catalog
         .filters
         .iter()
@@ -126,22 +123,26 @@ fn apply<'a>(
                 .sum()
         })
         .collect();
-    let mut tiles: HashMap<Hex, Tile> = types
-        .keys()
-        .map(|&hex| {
-            let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
-            let mut tile = Tile::default();
-            tile.set_flag(if inside { Flag::BOARD } else { Flag::BORDER });
-            (hex, tile)
+    let mut tiles: HashMap<Hex, Tile> = groups
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (_, hexes))| {
+            let terrain_group = NonZeroUsize::new(index + 1);
+            hexes.iter().map(move |&hex| {
+                let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
+                let mut tile = Tile { terrain_group, ..Tile::default() };
+                tile.set_flag(if inside { Flag::BOARD } else { Flag::BORDER });
+                (hex, tile)
+            })
         })
         .collect();
     // Only anchors through (width,height) enter the terrain index. Multi-hex
     // rules can still read and set flags one row and column beyond that index.
     for y in -2..=view.height + 1 {
-        tiles.insert(Hex { x: view.width + 1, y }, Tile::default());
+        tiles.entry(Hex { x: view.width + 1, y }).or_default().flags.clear();
     }
     for x in -2..=view.width {
-        tiles.insert(Hex { x, y: view.height + 1 }, Tile::default());
+        tiles.entry(Hex { x, y: view.height + 1 }).or_default().flags.clear();
     }
     for rule in &catalog.rules {
         let Some(anchor) = rule.cells.iter().min_by_key(|c| counts[c.filter]) else {
@@ -177,8 +178,10 @@ fn apply<'a>(
                     let Some(tile) = tiles.get(&at) else {
                         return false;
                     };
-                    types.get(&at).map_or(matches_empty[cell.filter], |&id| allowed[cell.filter][id])
-                        && cell.require.iter().all(|&flag| tile.has_flag(flag))
+                    let terrain_matches = tile.terrain_group.map_or(matches_empty[cell.filter], |group| {
+                        allowed[cell.filter][group.get() - 1]
+                    });
+                    terrain_matches && cell.require.iter().all(|&flag| tile.has_flag(flag))
                         && cell.forbid.iter().all(|&flag| !tile.has_flag(flag))
                 });
                 if !matches {
@@ -252,14 +255,22 @@ set_no_flag=claimed
         let forest = catalog.flag("forest");
         assert!(apply(&catalog, &view, |at| map.terrain_at(at))[&border].has_flag(forest));
         let explored = [(border, ("Gg^Fp", false))].into_iter().collect();
-        assert!(build_with_flags(&catalog, &view, &explored)[&border].has_flag(forest));
+        let tiles = build_with_flags(&catalog, &view, &explored);
+        assert!(tiles[&border].has_flag(forest));
+        assert!(tiles[&border].terrain_group.is_some());
+        let outer_fringe = Hex { x: view.width + 1, y: 0 };
+        assert!(tiles[&outer_fringe].terrain_group.is_none());
         assert!(!build_with_flags(&catalog, &view, &Default::default())[&border].has_flag(forest));
 
         let mut obscured = view;
         obscured.height = 2;
         obscured.tiles[0].terrain = "Gg^Fp".into();
         let origin = obscured.tiles[0].position;
-        assert!(!build_with_flags(&catalog, &obscured, &Default::default())[&origin].has_flag(forest));
+        let hidden = translate(origin, Hex { x: 0, y: 1 });
+        obscured.tiles.retain(|tile| tile.position != hidden);
+        let tiles = build_with_flags(&catalog, &obscured, &Default::default());
+        assert!(!tiles.contains_key(&hidden));
+        assert!(!tiles[&origin].has_flag(forest));
     }
 
     #[test]
