@@ -297,9 +297,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         &title_screen::profile::read_profile().unwrap_or_default(),
     );
     let skip_ai = display_preferences::skip_ai_moves()?;
-    let mut art = render::BoardArt::new(&data.wesnoth_root, speed)?;
     let preference_dir = display_preferences::config_directory()?;
     let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
+    let mut art = render::BoardArt::new(&data.wesnoth_root, speed, &locale)?;
     if let Some(lesson) = &mut data.lesson {
         lesson.localize_attack_instructions(&data.wesnoth_root, &mut locale);
     }

@@ -79,7 +79,7 @@ pub(super) struct FrameArt {
 impl FrameArt {
     pub fn clear_unit_report(&mut self) { self.unit_report.cached = None; }
 
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, locale: &crate::title_screen::locale::Locale) -> Self {
         let themes = root.join("data/core/images/themes");
         let theme = |name: &str| load_texture(&themes.join(name), None);
         Self {
@@ -89,7 +89,7 @@ impl FrameArt {
             minimap_buttons: crate::minimap_buttons::Buttons::load(root),
             end_button: end_button::Art::load(root),
             side_flags: BTreeMap::new(),
-            unit_report: unit_report::Art::new(root),
+            unit_report: unit_report::Art::new(root, locale),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
             status: StatusBox::load(root),
         }
@@ -197,6 +197,7 @@ pub fn draw(
             text_in(&art.font, &format!("{:+}%", period.lawful_bonus), rect(130.0, 63.0, 40.0, 17.0), 14, TEXT, true);
         }
         art.frame.status.draw(rect(0.0, 90.0, 78.0, 78.0), s);
+        art.frame.unit_report.draw_headings(frame, &art.dialogue_font);
         if let Some(view) = observation
             && let Some(unit) = unit_report::displayed_unit(view, hovered, movement.selected)
         {

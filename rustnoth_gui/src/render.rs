@@ -185,7 +185,8 @@ impl BoardArt {
         self.walk.start_observed(walk, (get_time() * 1000.0) as u64, self.animation_rate());
     }
 
-    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed) -> Result<Self, macroquad::Error> {
+    pub fn new(wesnoth_root: &Path, speed: crate::display_preferences::speed::Speed,
+        locale: &crate::title_screen::locale::Locale) -> Result<Self, macroquad::Error> {
         let font = fs::read(wesnoth_root.join("fonts/DejaVuSans.ttf"))
             .ok()
             .and_then(|bytes| load_ttf_font_from_bytes(&bytes).ok());
@@ -213,7 +214,7 @@ impl BoardArt {
         };
         Ok(Self {
             surface: surface::Surface::new()?,
-            frame: FrameArt::load(wesnoth_root),
+            frame: FrameArt::load(wesnoth_root, locale),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
