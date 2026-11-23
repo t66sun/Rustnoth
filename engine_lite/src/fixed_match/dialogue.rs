@@ -1,9 +1,19 @@
 //! Side-filtered campaign dialogue for the desktop player.
 use super::FixedMatch;
+use crate::hex::Hex;
 use crate::{scenario_sides::bool_attribute, visibility::HexVisibility, wml::Node};
 
 #[derive(Clone, Debug)]
+pub enum Presentation {
+    Dialogue(DialogueLine),
+    TutorialHint(Node),
+}
+
+#[derive(Clone, Debug)]
 pub struct DialogueLine {
+    pub focus: Option<DialogueFocus>,
+    /// The visible unit whose adjacent hexes the tutorial marks during this line.
+    pub zone_center: Option<Hex>,
     pub text: String,
     pub caption: Option<String>,
     pub image: Option<String>,
@@ -16,8 +26,23 @@ pub struct DialogueLine {
     pub second_mirror: bool,
 }
 
+/// A visible subject of the tutorial briefing. Normal speakers only scroll when offscreen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialogueFocus {
+    pub hex: Hex,
+    pub only_if_offscreen: bool,
+}
+
+#[derive(Clone, Debug)]
+enum Subject {
+    Unit(String),
+    Tile(Hex),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Message {
+    zone_unit: Option<String>,
+    focus: Option<(Subject, bool)>,
     speaker: String,
     sides: Option<Vec<usize>>,
     line: DialogueLine,
@@ -26,10 +51,25 @@ pub(crate) struct Message {
 impl Message {
     pub(crate) fn read(cfg: &Node) -> Option<Self> {
         // Options, text input and conditional dialogue require interactive WML.
-        if !cfg.children.is_empty() || cfg.attributes.values().any(|v| v.text.contains('$'))
+        let focus = match cfg.children.as_slice() {
+            [] => None,
+            [(tag, target)] if tag == "rustnoth_tutorial_focus" => {
+                let subject = if let Some(id) = target.attribute("id") {
+                    Subject::Unit(id.into())
+                } else {
+                    let x = target.attribute("x")?.parse().ok()?;
+                    let y = target.attribute("y")?.parse().ok()?;
+                    Subject::Tile(Hex::from_wml(x, y)?)
+                };
+                Some((subject, bool_attribute(target, "only_if_offscreen", false)))
+            }
+            _ => return None,
+        };
+        if cfg.attributes.iter().any(|(k, v)|
+            v.text.contains('$') && !(k == "image" && v.text == "$unit.profile" && cfg.attribute("speaker") == Some("narrator")))
             || cfg.attributes.keys().any(|k| !matches!(k.as_str(),
                 "message" | "speaker" | "side_for" | "caption" | "image" | "image_pos" |
-                "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice"))
+                "mirror" | "second_image" | "second_mirror" | "scroll" | "highlight" | "sound" | "voice" | "rustnoth_tutorial_zone_unit"))
         { return None; }
         let speaker = cfg.attribute("speaker")?;
         if speaker.is_empty() { return None; }
@@ -44,7 +84,9 @@ impl Message {
             None => None,
             _ => return None,
         };
-        Some(Self { speaker: speaker.to_owned(), sides, line: DialogueLine {
+        Some(Self { speaker: speaker.to_owned(), sides, focus,
+            zone_unit: cfg.attribute("rustnoth_tutorial_zone_unit").map(str::to_owned), line: DialogueLine {
+            focus: None, zone_center: None,
             text: text.to_owned(), caption: cfg.attribute("caption").map(str::to_owned),
             image, speaker_type: None, speaker_side: None, portrait_right, mirror: bool_attribute(cfg, "mirror", false),
             second_image: cfg.attribute("second_image").map(str::to_owned),
@@ -54,6 +96,20 @@ impl Message {
 }
 
 impl FixedMatch<'_> {
+    pub fn tutorial_print(&self) -> Option<&Node> { self.tutorial_print.as_ref() }
+
+    pub fn take_tutorial_undo_print(&mut self) -> Option<crate::wml::Value> {
+        self.tutorial_undo_print.take()
+    }
+
+    pub fn restore_tutorial_print(&mut self, text: crate::wml::Value) {
+        let mut print = Node::default();
+        print.attributes.insert("text".into(), text);
+        self.tutorial_print = Some(print);
+    }
+
+    pub fn tutorial_end_turn_denial(&self) -> Option<&Node> { self.tutorial_end_turn_denial.as_ref() }
+
     /// Show a prepared WML message using the ordinary speaker and audience checks.
     pub fn present_message(&mut self, config: &Node) {
         if let Some(message) = Message::read(config) { self.queue_dialogue(message, [None; 2]); }
@@ -61,7 +117,14 @@ impl FixedMatch<'_> {
 
     pub(super) fn queue_dialogue(&mut self, message: Message, event_units: [Option<u64>; 2]) {
         let mut line = message.line;
-        let speaker = if message.speaker == "narrator" {
+        let speaker = if line.image.as_deref() == Some("$unit.profile") {
+            let Some((position, unit)) = self.scenario.board.units()
+                .find(|(_, unit)| Some(unit.serial) == event_units[0]) else { return };
+            line.image = unit.portrait.clone();
+            line.speaker_type = Some(unit.unit_type.id.clone());
+            line.speaker_side = Some(unit.side);
+            Some((position, unit.side))
+        } else if message.speaker == "narrator" {
             None
         } else {
             let Some((position, unit)) = self.scenario.board.units().find(|(_, unit)| match message.speaker.as_str() {
@@ -83,13 +146,47 @@ impl FixedMatch<'_> {
                     || (self.effective_vision(*side).at(position) == Some(HexVisibility::Visible)
                     && self.unit_visible_on_known_hex(*side, position)))
         }).collect::<Vec<_>>();
-        if !audience.is_empty() { self.dialogue.push((audience, line)); }
+        let focus = message.focus.and_then(|(subject, only_if_offscreen)| {
+            let (hex, owner) = match subject {
+                Subject::Unit(id) => self.scenario.board.units().find(|(_, u)| u.id.as_ref() == Some(&id))
+                    .map(|(pos, u)| (pos, Some(u.side)))?,
+                Subject::Tile(hex) => (hex, None),
+            };
+            Some((DialogueFocus { hex, only_if_offscreen }, owner))
+        });
+        let zone = message.zone_unit.and_then(|id| self.scenario.board.units()
+            .find(|(_, u)| u.id.as_ref() == Some(&id)).map(|(hex, u)| (hex, u.side)));
+        if focus.is_none() && zone.is_none() {
+            if !audience.is_empty() { self.presentation.push((audience, Presentation::Dialogue(line))); }
+            return;
+        }
+        for side in audience {
+            let known = |hex, owner| {
+                let visibility = self.effective_vision(side).at(hex);
+                match owner {
+                    Some(owner) => owner == side || visibility == Some(HexVisibility::Visible)
+                        && self.unit_visible_on_known_hex(side, hex),
+                    None => matches!(visibility, Some(HexVisibility::Visible | HexVisibility::Fogged)),
+                }
+            };
+            let mut shown = line.clone();
+            shown.focus = focus.filter(|(f, owner)| known(f.hex, *owner)).map(|(f, _)| f);
+            shown.zone_center = zone.filter(|(hex, owner)| known(*hex, Some(*owner))).map(|(hex, _)| hex);
+            self.presentation.push((vec![side], Presentation::Dialogue(shown)));
+        }
     }
 
     /// Consume the last command's presentation queue for the local human view.
     pub fn take_dialogue(&mut self, viewer: usize) -> Vec<DialogueLine> {
-        std::mem::take(&mut self.dialogue).into_iter().filter_map(|(audience, line)|
-            audience.contains(&viewer).then_some(line)).collect()
+        self.take_presentation(viewer).into_iter().filter_map(|item| match item {
+            Presentation::Dialogue(line) => Some(line),
+            Presentation::TutorialHint(_) => None,
+        }).collect()
+    }
+
+    pub fn take_presentation(&mut self, viewer: usize) -> Vec<Presentation> {
+        std::mem::take(&mut self.presentation).into_iter().filter_map(|(audience, item)|
+            audience.contains(&viewer).then_some(item)).collect()
     }
 }
 

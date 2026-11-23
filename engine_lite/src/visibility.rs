@@ -15,7 +15,9 @@ pub fn sight_from(
     budget: u32,
     cost: impl Fn(&str) -> Option<NonZeroU32>,
 ) -> BTreeSet<Hex> {
-    sight_with_teleports(map, origin, budget, &[], cost)
+    let mut sight = sight_with_teleports(map, origin, budget, &[], cost);
+    sight.retain(|&at| map.is_playable(at));
+    sight
 }
 
 pub(crate) fn sight_with_teleports(
@@ -41,10 +43,21 @@ pub(crate) fn sight_with_teleports(
 
     let mut sight = BTreeSet::from([origin]);
     for hex in std::iter::once(origin).chain(reached.into_keys()) {
-        sight.extend(hex.neighbors().filter(|&next| map.is_playable(next)));
+        sight.extend(hex.neighbors());
         // Native vision_path includes every tunnel exit in the visible edge,
         // even when entering that village would exceed the sight budget.
         sight.extend(teleport_exits(villages, hex));
+    }
+    // Native clear_loc also uncovers these staggered corners when their edge
+    // tile enters the vision fringe. They cannot all be reached by adjacency.
+    let w = map.width();
+    let h = map.height();
+    let right = if w % 2 == 1 { (h - 1, h) } else { (0, -1) };
+    for (edge, corner) in [
+        (Hex { x: 0, y: h - 1 }, Hex { x: -1, y: h }),
+        (Hex { x: w - 1, y: right.0 }, Hex { x: w, y: right.1 }),
+    ] {
+        if sight.contains(&edge) { sight.insert(corner); }
     }
     sight
 }
@@ -119,7 +132,7 @@ impl VisibilityMask {
     /// Uncovers tiles while keeping earlier sight from this turn, including a moving unit's trail.
     pub fn add_sight(&mut self, sight: impl IntoIterator<Item = Hex>) {
         for hex in sight {
-            if self.is_playable(hex) {
+            if (-1..=self.width).contains(&hex.x) && (-1..=self.height).contains(&hex.y) {
                 if self.fog {
                     self.sight.insert(hex);
                 }
@@ -158,13 +171,17 @@ impl VisibilityMask {
         if !self.is_playable(hex) {
             return None;
         }
-        Some(if self.shroud && !self.explored.contains(&hex) {
+        Some(self.visibility(hex))
+    }
+
+    pub(crate) fn visibility(&self, hex: Hex) -> HexVisibility {
+        if self.shroud && !self.explored.contains(&hex) {
             HexVisibility::Shrouded
         } else if self.fog && !self.sight.contains(&hex) && !self.fog_override.contains(&hex) {
             HexVisibility::Fogged
         } else {
             HexVisibility::Visible
-        })
+        }
     }
 
     fn is_playable(&self, hex: Hex) -> bool {
@@ -175,11 +192,11 @@ impl VisibilityMask {
 fn read_cleared_tiles(data: &str, map: &ScenarioMap) -> BTreeSet<Hex> {
     let mut cleared = BTreeSet::new();
     // Each pipe starts a WML column. Column zero and row zero are border cells.
-    for (x, column) in data.split('|').skip(2).take(map.width() as usize).enumerate() {
+    for (x, column) in data.split('|').skip(1).take(map.width() as usize + 2).enumerate() {
         let bits = column.bytes().filter(|&b| matches!(b, b'0' | b'1'));
-        for (y, bit) in bits.skip(1).take(map.height() as usize).enumerate() {
+        for (y, bit) in bits.take(map.height() as usize + 2).enumerate() {
             if bit == b'1' {
-                cleared.insert(Hex { x: x as i32, y: y as i32 });
+                cleared.insert(Hex { x: x as i32 - 1, y: y as i32 - 1 });
             }
         }
     }
@@ -245,7 +262,9 @@ mod tests {
 [/side]
 "#).unwrap());
         let mask = VisibilityMask::from_side(&map, &sides[0]);
-        assert_eq!(mask.explored, BTreeSet::from([Hex { x: 0, y: 1 }, Hex { x: 1, y: 0 }]));
+        assert_eq!(mask.explored, [
+            (-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (0,2), (1,0), (2,-1), (2,0), (2,1),
+        ].into_iter().map(|(x,y)| Hex { x, y }).collect());
         assert_eq!(mask.at(Hex { x: 0, y: 1 }), Some(HexVisibility::Visible));
         assert_eq!(mask.at(Hex { x: 0, y: 0 }), Some(HexVisibility::Shrouded));
     }
