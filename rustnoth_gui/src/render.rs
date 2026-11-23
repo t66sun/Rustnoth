@@ -2,8 +2,8 @@ mod frame;
 mod surface;
 mod tutorial_print;
 pub(crate) use frame::StatusBox;
-mod minimap;
-pub(crate) use minimap::{save::save_preview, skirmish_preview};
+pub(crate) mod minimap;
+pub(crate) use minimap::save::save_preview;
 mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::Observation};
+use engine_lite::{fixed_match::{Action, MatchState}, hex::Hex, observation::{Observation, ObservedUnit}};
 use engine_lite::time_of_day::TimeOfDay;
 use macroquad::prelude::*;
 use rustnoth_gui::{
@@ -148,6 +148,7 @@ pub struct BoardArt {
     grid: GridArt,
     pub show_grid: bool,
     units: BTreeMap<String, BTreeMap<usize, Option<Texture2D>>>,
+    sprite_paths: SpriteTextures<Texture2D>,
     standing: HashMap<String, HashMap<usize, standing::Sprites>>,
     combat_pose: Option<combat_motion::Pose>,
     moving: HashMap<String, HashMap<usize, standing::Sprites>>,
@@ -162,6 +163,7 @@ pub struct BoardArt {
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
+    unit_order: UnitDrawOrder,
     hover: hover::Art,
     footsteps: footsteps::Art,
     poisoned: Option<Texture2D>,
@@ -201,7 +203,7 @@ impl BoardArt {
         self.moving.entry(type_id.to_owned()).or_default().entry(side).or_insert_with(|| {
             standing::Sprites::load(assets.movement_animations(type_id), |image| {
                 let path = assets.resolve_image(Path::new(image))?;
-                load_texture(&path, palette)
+                self.sprite_paths.texture(path, palette)
             })
         });
     }
@@ -209,8 +211,10 @@ impl BoardArt {
     pub fn start_observed_walk(&mut self, walk: engine_lite::fixed_match::walk::VisibleWalk, assets: &AssetCatalog) {
         self.load_movement(&walk.unit_type, walk.side, assets);
         if walk.visible_destination.is_none() {
+            let palette = self.team_colors.as_ref().map(|colors| (colors, walk.side));
             self.units.entry(walk.unit_type.clone()).or_default().entry(walk.side).or_insert_with(|| {
-                load_texture(&assets.unit_image(&walk.unit_type)?, self.team_colors.as_ref().map(|c| (c, walk.side)))
+                let path = assets.unit_image(&walk.unit_type)?;
+                self.sprite_paths.texture(path, palette)
             });
         }
         self.walk.start_observed(walk, (get_time() * 1000.0) as u64, self.animation_rate());
@@ -246,6 +250,7 @@ impl BoardArt {
             grid: GridArt::load(&terrain_dir),
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
+            sprite_paths: SpriteTextures::default(),
             standing: HashMap::new(),
             combat_pose: None,
             moving: HashMap::new(),
@@ -260,6 +265,7 @@ impl BoardArt {
             map_items: Vec::new(),
             tutorial_zone_image: Default::default(),
             unit_status: unit_status::StatusArt::load(wesnoth_root, palette_bytes.as_deref()),
+            unit_order: UnitDrawOrder::default(),
             footsteps: footsteps::Art::load(wesnoth_root),
             hover: hover::Art::load(wesnoth_root, palette_bytes.as_deref()),
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
@@ -304,9 +310,10 @@ impl BoardArt {
         self.cover = map_cover(observation);
         self.cover.extend_border(observation, &border);
         self.fog_edges.update(observation, &border, &self.cover.cells);
-        self.transitions.load(observation, assets);
         self.minimap.load(observation, assets);
-        self.rules.load(assets, observation, &border);
+        if self.rules.load(assets, observation, &border) {
+            self.transitions.load(observation, assets);
+        }
         for tile in &observation.tiles {
             self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
@@ -346,11 +353,11 @@ impl BoardArt {
                     });
                 }
             }
+            let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
             self.standing.entry(unit.type_id.clone()).or_default().entry(unit.side).or_insert_with(|| {
-                let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
                 standing::Sprites::load(assets.standing_animations(&unit.type_id), |image| {
                     let path = assets.resolve_image(Path::new(image))?;
-                    load_texture(&path, palette)
+                    self.sprite_paths.texture(path, palette)
                 })
             });
             self.units
@@ -359,10 +366,31 @@ impl BoardArt {
                 .entry(unit.side)
                 .or_insert_with(|| {
                     let path = assets.unit_image(&unit.type_id)?;
-                    let palette = self.team_colors.as_ref().map(|colors| (colors, unit.side));
-                    load_texture(&path, palette)
+                    self.sprite_paths.texture(path, palette)
                 });
         }
+    }
+}
+
+struct SpriteTextures<T>(HashMap<(PathBuf, Option<usize>), Option<T>>);
+
+impl<T> Default for SpriteTextures<T> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+impl SpriteTextures<Texture2D> {
+    fn texture(&mut self, path: PathBuf, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
+        self.load(path, palette.map(|(_, side)| side), |path| load_texture(path, palette))
+    }
+}
+
+impl<T: Clone> SpriteTextures<T> {
+    // Base sprites, standing frames and walking frames can share the same
+    // installed bitmap. Team recoloring is the only change at these call sites.
+    fn load(&mut self, path: PathBuf, side: Option<usize>, decode: impl FnOnce(&Path) -> Option<T>) -> Option<T> {
+        self.0.entry((path, side)).or_insert_with_key(|(path, _)| decode(path)).clone()
     }
 }
 
@@ -433,6 +461,7 @@ pub fn draw<T>(
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
     if let (Some(view), Some(layout)) = (observation, layout) {
+        art.unit_order.update(&view.units);
         draw_board(view, layout, art, &movement);
     }
     frame::draw(&frame, state, observation, layout, art, &movement);
@@ -579,6 +608,35 @@ impl BoardArt {
 // Odd columns are half a hex lower than even columns at the same map y.
 fn draw_row(hex: Hex) -> (i32, i32) { (hex.y, hex.x.rem_euclid(2)) }
 
+#[derive(Default)]
+struct UnitDrawOrder {
+    units: Vec<(usize, Hex)>,
+    #[cfg(test)]
+    sorts: usize,
+}
+
+impl UnitDrawOrder {
+    fn update(&mut self, units: &[ObservedUnit]) {
+        // Combat draws the opening positions even after the live view was refreshed.
+        if self.units.len() == units.len()
+            && self.units.iter().all(|&(index, at)| units[index].position == at)
+        {
+            return;
+        }
+        self.units.clear();
+        self.units.extend(units.iter().enumerate().map(|(index, unit)| (index, unit.position)));
+        self.units.sort_unstable_by_key(|&(_, at)| (draw_row(at), at.x));
+        #[cfg(test)]
+        {
+            self.sorts += 1;
+        }
+    }
+
+    fn standing<'a>(&'a self, units: &'a [ObservedUnit], moving: Option<Hex>) -> impl Iterator<Item = &'a ObservedUnit> {
+        self.units.iter().filter_map(move |&(index, at)| (Some(at) != moving).then(|| &units[index]))
+    }
+}
+
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
@@ -597,8 +655,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
     draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport, terrain_clip);
+    let observed_tile = |hex: Hex| {
+        view.tiles.binary_search_by_key(&(hex.y, hex.x), |tile| (tile.position.y, tile.position.x))
+            .ok().map(|i| &view.tiles[i])
+    };
     for (position, texture, use_time_color) in &art.map_items {
-        if *use_time_color { art.lighting.item(*position); } else { art.lighting.flat([0; 3]); }
+        let tile = if *use_time_color { observed_tile(*position) } else { None };
+        art.lighting.item(tile);
         let [x, y] = layout.tile_origin(*position);
         draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
     }
@@ -608,34 +671,38 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             load_texture(&path, None)
         })
     {
-        for hex in center.neighbors().filter(|hex| view.tiles.binary_search_by_key(
-            &(hex.y, hex.x), |tile| (tile.position.y, tile.position.x)).is_ok())
-        {
-            art.lighting.item(hex);
-            let [x, y] = layout.tile_origin(hex);
+        for tile in center.neighbors().filter_map(observed_tile) {
+            art.lighting.item(Some(tile));
+            let [x, y] = layout.tile_origin(tile.position);
             draw_centered(texture, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
     }
     art.lighting.flat([0; 3]);
-    let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
-        Action::Move { from, .. } => Some(*from),
-        Action::Attack(attack) => Some(attack.from),
-        _ => None,
-    }).collect();
-    let pointer: Vec2 = mouse_position().into();
-    let target = movement.menu.and_then(|menu| menu.target).or_else(|| {
-        (pointer.x >= viewport.x && pointer.x < viewport.x + viewport.width
-            && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
-            .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
-    });
     let enemies = movement.session.enemy_reach();
-    let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
+    let selected = movement.selected.filter(|_| enemies.is_none());
+    let cached = std::ptr::eq(movement.actions, movement.session.legal_actions())
+        .then(|| movement.session.action_hints(selected));
+    let custom;
+    let hints = if let Some(hints) = cached.as_deref() {
+        hints
+    } else {
+        // Replay, combat animation and the tutorial briefing supply their own view.
+        custom = rustnoth_gui::session::ActionHints::from_actions(selected, movement.actions);
+        &custom
+    };
     if let Some(mask) = art.unreachable.as_ref()
-        && (enemies.is_some() || own.is_some()) {
+        && (enemies.is_some() || selected.is_some()) {
         let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
+        let direct_target = selected.and_then(|_| {
+            movement.menu.and_then(|menu| menu.target).or_else(|| {
+                let (x, y) = mouse_position();
+                viewport.contains([x, y]).then(|| layout.hex_at([x, y])).flatten()
+            }).filter(|&at| hints.can_attack(at))
+        });
         for tile in view.tiles.iter().filter(|tile| {
-            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
-                && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
+            Some(tile.position) != attack_target && Some(tile.position) != direct_target
+                && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+                && !selected.is_some_and(|_| hints.is_reachable(tile.position))
         }) {
             let [x, y] = layout.tile_origin(tile.position);
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
@@ -647,10 +714,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
-    let terrain_at = |at: Hex| {
-        view.tiles.binary_search_by_key(&(at.y, at.x), |tile| (tile.position.y, tile.position.x))
-            .ok().map(|i| view.tiles[i].terrain.as_str())
-    };
+    let terrain_at = |at: Hex| observed_tile(at).map(|tile| tile.terrain.as_str());
     let raised = |kind: &str, from: Hex, to: Hex, offset: f32| {
         let mut point = Vec2::from_array(layout.tile_origin(from));
         let start = terrain_at(from).unwrap_or("");
@@ -717,11 +781,9 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     // Native unit_default precedes terrain_fg *within* each half-row. A rear
     // castle wall must already be in place when a raised unit overlaps it.
     let moving = walking.and_then(|p| p.unit);
-    let mut standing: Vec<_> = view.units.iter().filter(|u| Some(u.position) != moving).collect();
-    standing.sort_unstable_by_key(|u| (draw_row(u.position), u.position.x));
     let mut foreground = terrain_clip.rows(layout, &art.rules.foreground, |at| at.y)
         .iter().copied().peekable();
-    for unit in standing {
+    for unit in art.unit_order.standing(&view.units, moving) {
         while let Some(at) = foreground.next_if(|at| draw_row(*at) < draw_row(unit.position)) {
             draw_foreground(at);
         }
@@ -753,7 +815,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
-            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position), linger_side);
+            let orb = unit_status::orb_for(view, unit, hints.is_actionable(unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
@@ -813,6 +875,30 @@ fn ellipse_files(prefix: &str, leader: bool, zoc: bool, selected: bool) -> [Stri
     let zoc = if zoc { "" } else { "nozoc-" };
     let selected = if selected { "selected-" } else { "" };
     ["top", "bottom"].map(|half| format!("{prefix}-{leader}{zoc}{selected}{half}.png"))
+}
+
+#[cfg(test)]
+mod sprite_tests {
+    use super::SpriteTextures;
+    use std::{cell::Cell, path::Path};
+
+    #[test]
+    fn unit_art_uploads_a_shared_sprite_once_per_palette() {
+        let mut sprites = SpriteTextures::default();
+        let path = Path::new("units/elves-wood/fighter.png");
+        let calls = Cell::new(0);
+        let upload = |path: &Path| {
+            assert!(path.ends_with("fighter.png"));
+            calls.set(calls.get() + 1);
+            Some(calls.get())
+        };
+        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
+        assert_eq!(sprites.load(path.into(), Some(1), upload), Some(1));
+        assert_eq!(sprites.load(path.into(), Some(2), upload), Some(2));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
+        assert_eq!(sprites.load(path.into(), None, upload), Some(3));
+        assert_eq!(calls.get(), 3);
+    }
 }
 
 #[cfg(test)]
@@ -879,6 +965,33 @@ fn label(font: &Option<Font>, message: &str, x: f32, y: f32, size: u16, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_order_reuses_positions_until_the_drawn_view_changes() {
+        let unit = |x, y| ObservedUnit {
+            facing: None, position: Hex { x, y }, side: 1, type_id: "Fighter".into(),
+            can_recruit: false, emits_zoc: true, hitpoints: 30, max_hitpoints: 30,
+            full_action_points: Some(true), experience: 0, max_experience: 20,
+            poisoned: false, slowed: false, petrified: false, moves_left: Some(5), attacks_left: Some(1),
+        };
+        let mut live = [unit(0, 1), unit(1, 0), unit(4, 0), unit(2, 0)];
+        let mut order = UnitDrawOrder::default();
+        order.update(&live);
+        let standing = |order: &UnitDrawOrder, units: &[ObservedUnit], moving| {
+            order.standing(units, moving).map(|unit| unit.position.x).collect::<Vec<_>>()
+        };
+        assert_eq!(standing(&order, &live, None), [2, 4, 1, 0]);
+        live[3].hitpoints = 15;
+        order.update(&live);
+        assert_eq!(standing(&order, &live, Some(Hex { x: 4, y: 0 })), [2, 1, 0]);
+        assert_eq!(order.standing(&live, None).next().unwrap().hitpoints, 15);
+        assert_eq!(order.sorts, 1);
+
+        let opening = [unit(4, 0), unit(1, 0), unit(0, 0), unit(2, 1)];
+        order.update(&opening);
+        assert_eq!(standing(&order, &opening, None), [0, 4, 1, 2]);
+        assert_eq!(order.sorts, 2);
+    }
 
     #[test]
     fn cover_rows_skip_offscreen_masks_in_their_original_layer_order() {

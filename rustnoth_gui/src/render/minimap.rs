@@ -1,5 +1,6 @@
 //! Wesnoth's image-coded minimap, using the terrain symbol images from terrain.cfg.
 use super::{side_color, AssetCatalog, BoardLayout, Hex, MovementView, Observation, TeamColors, Viewport};
+use engine_lite::{map::ScenarioMap, observation::ObservedTile};
 use image::{imageops, Pixel, Rgba, RgbaImage};
 use macroquad::prelude::*;
 use crate::display_preferences::{MiniLayer, MiniLayers};
@@ -57,15 +58,76 @@ impl Geometry {
 }
 
 struct Symbol {
+    id: usize,
     pixels: Option<RgbaImage>,
     village: bool,
     flat: [u8; 3],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TerrainTile {
+    position: Hex,
+    symbol: usize,
+    visible: bool,
+    village_owner: usize,
+}
+
+#[derive(Default)]
+struct TerrainLayer {
+    size: (i32, i32),
+    side: usize,
+    allies: Vec<usize>,
+    tiles: Vec<TerrainTile>,
+    raster: Option<TerrainRaster>,
+}
+
+struct TerrainRaster {
+    size: Vec2,
+    reachable: HashSet<Hex>,
+    pixels: RgbaImage,
+}
+
+impl TerrainLayer {
+    fn load(&mut self, view: &Observation, symbols: &HashMap<String, Symbol>) {
+        let tiles = || view.tiles.iter().map(|tile| TerrainTile {
+            position: tile.position,
+            symbol: symbols[&tile.terrain].id,
+            visible: tile.visible,
+            village_owner: tile.village_owner.unwrap_or(0),
+        });
+        let size = (view.width, view.height);
+        if self.size == size && self.side == view.side && self.allies == view.allied_sides
+            && self.tiles.iter().copied().eq(tiles())
+        {
+            return;
+        }
+        self.size = size;
+        self.side = view.side;
+        self.allies.clone_from(&view.allied_sides);
+        self.tiles.clear();
+        self.tiles.extend(tiles());
+        self.raster = None;
+    }
+
+    fn pixels(
+        &mut self,
+        size: Vec2,
+        reachable: HashSet<Hex>,
+        paint: impl FnOnce(&HashSet<Hex>) -> RgbaImage,
+    ) -> RgbaImage {
+        if self.raster.as_ref().is_none_or(|raster| raster.size != size || raster.reachable != reachable) {
+            let pixels = paint(&reachable);
+            self.raster = Some(TerrainRaster { size, reachable, pixels });
+        }
+        self.raster.as_ref().unwrap().pixels.clone()
+    }
 }
 
 pub(crate) struct Art {
     mask: Option<RgbaImage>,
     symbols: HashMap<String, Symbol>,
     texture: Option<Texture2D>,
+    terrain: TerrainLayer,
     selected: Option<Hex>,
     pub(crate) layers: MiniLayers,
 }
@@ -74,18 +136,35 @@ impl Art {
     pub(crate) fn new(root: &Path) -> Self {
         let mask = image::open(root.join("data/core/images/terrain/alphamask.png"))
             .ok().map(|image| image.to_rgba8());
-        Self { mask, symbols: HashMap::new(), texture: None, selected: None, layers: MiniLayers::load() }
+        Self {
+            mask, symbols: HashMap::new(), texture: None, terrain: TerrainLayer::default(),
+            selected: None, layers: MiniLayers::load(),
+        }
     }
 
     pub(crate) fn toggle(&mut self, layer: MiniLayer) -> std::io::Result<()> {
         self.layers.toggle(layer, &crate::display_preferences::config_directory()?)?;
         self.texture = None;
+        if layer != MiniLayer::Units {
+            self.terrain.raster = None;
+        }
         Ok(())
     }
 
     pub(crate) fn load(&mut self, view: &Observation, assets: &AssetCatalog) {
+        // The upload includes the current units. The terrain beneath it can
+        // survive an action that leaves all of its painting inputs unchanged.
         self.texture = None;
+        self.load_symbols(view, assets);
+        self.terrain.load(view, &self.symbols);
+    }
+
+    fn load_symbols(&mut self, view: &Observation, assets: &AssetCatalog) {
         for tile in &view.tiles {
+            if self.symbols.contains_key(tile.terrain.as_str()) {
+                continue;
+            }
+            let id = self.symbols.len();
             self.symbols.entry(tile.terrain.clone()).or_insert_with(|| {
                 let (layers, village) = assets.minimap_terrain(&tile.terrain);
                 let mut layers = layers.iter().map(|path| image::open(path).ok().map(|img| img.to_rgba8()));
@@ -107,9 +186,35 @@ impl Art {
                         (x as f32 * dx) as u32, (y as f32 * dy) as u32,
                     ))
                 });
-                Symbol { pixels, village, flat: assets.minimap_color(&tile.terrain) }
+                Symbol { id, pixels, village, flat: assets.minimap_color(&tile.terrain) }
             });
         }
+    }
+
+    /// Build the create-game minimap from the public scenario map, before a match exists.
+    pub(crate) fn skirmish_preview(&mut self, assets: &AssetCatalog, map: &ScenarioMap, size: f32) -> Option<Texture2D> {
+        let pixels = self.skirmish_pixels(assets, map, size)?;
+        let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
+        texture.set_filter(FilterMode::Nearest);
+        Some(texture)
+    }
+
+    fn skirmish_pixels(&mut self, assets: &AssetCatalog, map: &ScenarioMap, size: f32) -> Option<RgbaImage> {
+        let width = map.width();
+        let height = map.height();
+        let geometry = Geometry::new(width, height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
+        let mut tiles = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let position = Hex { x, y };
+                let terrain = map.terrain_at(position)?.to_owned();
+                tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
+            }
+        }
+        let view = Observation { width, height, side: 1, gold: None,
+            allied_sides: vec![], tiles, units: vec![] };
+        self.load_symbols(&view, assets);
+        Some(raster(&view, &geometry, &self.symbols, None, &HashSet::new(), MiniLayers::default()))
     }
 
     pub(super) fn draw(&mut self, view: &Observation, area: Viewport, viewport: Viewport,
@@ -133,7 +238,10 @@ impl Art {
                     }
                 }
             }
-            let pixels = raster(view, &geometry, &self.symbols, colors, &reachable, self.layers);
+            let mut pixels = self.terrain.pixels(bounds.size(), reachable, |reachable| {
+                raster_terrain(view, &geometry, &self.symbols, colors, reachable, self.layers)
+            });
+            paint_units(&mut pixels, view, &geometry, colors, self.layers);
             let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
             texture.set_filter(FilterMode::Nearest);
             self.texture = Some(texture);
@@ -170,42 +278,24 @@ fn paint(image: &mut RgbaImage, rect: Rect, mut sample: impl FnMut(u32, u32) -> 
     }
 }
 
-/// Build the create-game minimap from the public scenario map, before a match exists.
-pub(crate) fn skirmish_preview(root: &Path, assets: &AssetCatalog, map: &engine_lite::map::ScenarioMap, size: f32) -> Option<Texture2D> {
-    use engine_lite::observation::ObservedTile;
-    let mut tiles = Vec::new();
-    for y in 0..map.height() {
-        for x in 0..map.width() {
-            let position = Hex { x, y };
-            let terrain = map.terrain_at(position)?.to_owned();
-            tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
-        }
-    }
-    let view = Observation { width: map.width(), height: map.height(), side: 1, gold: None,
-        allied_sides: vec![], tiles, units: vec![] };
-    observed_preview(root, assets, &view, size)
-}
-
-pub(crate) fn observed_preview(root: &Path, assets: &AssetCatalog, view: &Observation, size: f32) -> Option<Texture2D> {
-    let geometry = Geometry::new(view.width, view.height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
-    let mut art = Art::new(root);
-    art.load(view, assets);
-    let pixels = raster(view, &geometry, &art.symbols, None, &HashSet::new(), MiniLayers::default());
-    let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
-    texture.set_filter(FilterMode::Nearest);
-    Some(texture)
-}
-
 fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Symbol>,
           colors: Option<&TeamColors>, reachable: &HashSet<Hex>, layers: MiniLayers) -> RgbaImage {
+    let mut image = raster_terrain(view, geometry, symbols, colors, reachable, layers);
+    paint_units(&mut image, view, geometry, colors, layers);
+    image
+}
+
+fn marker(view: &Observation, colors: Option<&TeamColors>, layers: MiniLayers, side: usize, own_color: Rgba<u8>) -> Rgba<u8> {
+    if layers.enabled(MiniLayer::TeamColors) { Rgba(<[u8; 4]>::from(side_color(colors, side))) }
+    else if side == view.side { own_color }
+    else if view.allied_sides.contains(&side) { Rgba([0,164,255,255]) }
+    else { UNKNOWN }
+}
+
+fn raster_terrain(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Symbol>,
+                  colors: Option<&TeamColors>, reachable: &HashSet<Hex>, layers: MiniLayers) -> RgbaImage {
     let background = if layers.enabled(MiniLayer::Terrain) { UNKNOWN } else { Rgba([0;4]) };
     let mut image = RgbaImage::from_pixel(geometry.bounds.w as u32, geometry.bounds.h as u32, background);
-    let marker = |side, own_color| {
-        if layers.enabled(MiniLayer::TeamColors) { Rgba(<[u8; 4]>::from(side_color(colors, side))) }
-        else if side == view.side { own_color }
-        else if view.allied_sides.contains(&side) { Rgba([0,164,255,255]) }
-        else { UNKNOWN }
-    };
     for tile in &view.tiles {
         let rect = geometry.tile(tile.position);
         let Some(symbol) = symbols.get(&tile.terrain) else { continue };
@@ -228,11 +318,17 @@ fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Sym
         }
         if symbol.village && layers.enabled(MiniLayer::Villages) {
             let color = tile.village_owner.filter(|side| tile.visible && *side > 0)
-                .map(|side| marker(side, Rgba([140,255,0,255]))).unwrap_or(NEUTRAL_VILLAGE);
+                .map(|side| marker(view, colors, layers, side, Rgba([140,255,0,255])))
+                .unwrap_or(NEUTRAL_VILLAGE);
             paint(&mut image, Rect { w: rect.w * 0.75, ..rect }, |_, _| color);
         }
     }
-    if !layers.enabled(MiniLayer::Units) { return image; }
+    image
+}
+
+fn paint_units(image: &mut RgbaImage, view: &Observation, geometry: &Geometry,
+               colors: Option<&TeamColors>, layers: MiniLayers) {
+    if !layers.enabled(MiniLayer::Units) { return; }
     for unit in &view.units {
         let tile = geometry.tile(unit.position);
         // The native unit overlay is one full hex wide, offset from the terrain thumbnail.
@@ -241,10 +337,9 @@ fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Sym
         let orb = if unit.full_action_points == Some(true) { Rgba([140,255,0,255]) }
             else if unit.moves_left.unwrap_or(0) > 0 { Rgba([255,198,0,255]) }
             else { Rgba([255,0,0,255]) };
-        let color = marker(unit.side, orb);
-        paint(&mut image, rect, |_, _| color);
+        let color = marker(view, colors, layers, unit.side, orb);
+        paint(image, rect, |_, _| color);
     }
-    image
 }
 
 // Project each destination pixel into the unscaled composite before choosing a
@@ -275,7 +370,31 @@ fn paint_symbol(image: &mut RgbaImage, geometry: &Geometry, hex: Hex,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_lite::observation::ObservedTile;
+
+    #[test]
+    fn skirmish_previews_reuse_terrain_pixels_after_switching_maps() {
+        let dir = std::env::temp_dir().join(format!("rustnoth-skirmish-minimap-{}", std::process::id()));
+        let terrain = dir.join("data/core/images/terrain");
+        std::fs::create_dir_all(&terrain).unwrap();
+        let grass = terrain.join("grass.png");
+        let grass_pixel = Rgba([80, 130, 20, 255]);
+        RgbaImage::from_pixel(72, 72, grass_pixel).save(&grass).unwrap();
+        let assets = AssetCatalog::for_setup(
+            &dir,
+            b"[terrain_type]\nstring=Gg\nsymbol_image=grass\n[/terrain_type]",
+        ).unwrap();
+        let first = ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg,Gg").unwrap();
+        let second = ScenarioMap::parse("Gg,Gg,Gg,Gg\nGg,Gg,Gg,Gg\nGg,Gg,Gg,Gg").unwrap();
+        let mut reused = Art::new(&dir);
+        reused.skirmish_pixels(&assets, &first, 64.0).unwrap();
+        let reference = Art::new(&dir).skirmish_pixels(&assets, &second, 80.0).unwrap();
+        assert!(reference.pixels().any(|pixel| *pixel == grass_pixel));
+
+        std::fs::remove_file(&grass).unwrap();
+        assert_eq!(reused.skirmish_pixels(&assets, &second, 80.0), Some(reference.clone()));
+        assert_ne!(Art::new(&dir).skirmish_pixels(&assets, &second, 80.0), Some(reference));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn editor_camera_extends_into_the_minimap_letterbox_at_zero_scroll() {
@@ -300,8 +419,8 @@ mod tests {
         let geometry = Geometry::new(4, 2, area).unwrap();
         let grass = RgbaImage::from_pixel(SAMPLE, SAMPLE, Rgba([70, 100, 20, 255]));
         let symbols = HashMap::from([
-            ("Gg".into(), Symbol { pixels: Some(grass.clone()), village: false, flat:[115,151,63] }),
-            ("Gg^Vh".into(), Symbol { pixels: Some(grass), village: true, flat:[115,151,63] }),
+            ("Gg".into(), Symbol { id: 0, pixels: Some(grass.clone()), village: false, flat:[115,151,63] }),
+            ("Gg^Vh".into(), Symbol { id: 1, pixels: Some(grass), village: true, flat:[115,151,63] }),
         ]);
         let tile = |x, terrain: &str, visible, owner| ObservedTile {
             position: Hex { x, y: 0 }, terrain: terrain.into(), visible, village_owner: owner, time_color: [0; 3],
@@ -327,5 +446,63 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
         assert_eq!(geometry.world_point(vec2(53.0, 34.0)), Some([1.75, 1.5]));
         assert_eq!(geometry.world_point(vec2(5.0, 4.0)), None);
+    }
+
+    #[test]
+    fn moving_a_unit_reuses_the_terrain_raster_until_its_inputs_change() {
+        use engine_lite::observation::ObservedUnit;
+        use std::cell::Cell;
+
+        let area = Viewport { x: 0., y: 0., width: 96., height: 96. };
+        let geometry = Geometry::new(4, 3, area).unwrap();
+        let position = Hex { x: 1, y: 1 };
+        let tile = ObservedTile {
+            position, terrain: "Gg^Vh".into(), visible: true,
+            village_owner: Some(1), time_color: [0; 3],
+        };
+        let unit = ObservedUnit {
+            facing: None, position, side: 1, type_id: "Fighter".into(),
+            can_recruit: false, emits_zoc: true, hitpoints: 24, max_hitpoints: 24,
+            full_action_points: Some(true), experience: 0, max_experience: 30,
+            poisoned: false, slowed: false, petrified: false, moves_left: Some(5),
+            attacks_left: Some(1),
+        };
+        let mut view = Observation {
+            side: 1, allied_sides: vec![1], gold: None, width: 4, height: 3,
+            tiles: vec![tile], units: vec![unit],
+        };
+        let symbols = HashMap::from([("Gg^Vh".into(), Symbol {
+            id: 0,
+            pixels: Some(RgbaImage::from_pixel(SAMPLE, SAMPLE, Rgba([70, 100, 20, 127]))),
+            village: true,
+            flat: [115, 151, 63],
+        })]);
+        let layers = MiniLayers::default();
+        let draws = Cell::new(0);
+        let compose = |terrain: &mut TerrainLayer, view: &Observation, reachable: HashSet<Hex>| {
+            terrain.load(view, &symbols);
+            let mut pixels = terrain.pixels(geometry.bounds.size(), reachable.clone(), |reachable| {
+                draws.set(draws.get() + 1);
+                raster_terrain(view, &geometry, &symbols, None, reachable, layers)
+            });
+            paint_units(&mut pixels, view, &geometry, None, layers);
+            assert_eq!(pixels, raster(view, &geometry, &symbols, None, &reachable, layers));
+            pixels
+        };
+        let mut terrain = TerrainLayer::default();
+        let before = compose(&mut terrain, &view, HashSet::new());
+        view.units[0].position = Hex { x: 2, y: 1 };
+        let after = compose(&mut terrain, &view, HashSet::new());
+        assert_ne!(before, after);
+        assert_eq!(draws.get(), 1);
+
+        view.tiles[0].visible = false;
+        compose(&mut terrain, &view, HashSet::new());
+        view.tiles[0].visible = true;
+        compose(&mut terrain, &view, HashSet::new());
+        view.tiles[0].village_owner = Some(2);
+        compose(&mut terrain, &view, HashSet::new());
+        compose(&mut terrain, &view, HashSet::from([position]));
+        assert_eq!(draws.get(), 5);
     }
 }

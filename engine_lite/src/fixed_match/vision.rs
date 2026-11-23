@@ -11,10 +11,11 @@ impl FixedMatch<'_> {
     /// unexplored cells, just as observation_for omits unexplored map tiles.
     pub fn known_border(&self, side: usize) -> crate::map::KnownBorder<'_> {
         if side == 0 || side > self.vision.len() { return Default::default(); }
-        let sight = self.effective_vision(side);
+        let sides = &self.scenario.sides;
+        let sight = &self.vision[side - 1];
         let map = self.scenario.board.map();
         crate::map::border_positions(map.width(), map.height()).filter_map(|at| {
-            let visibility = sight.visibility(at);
+            let visibility = sight.visibility_with_allies(at, &sides[side - 1], sides.iter().zip(&self.vision));
             if visibility == HexVisibility::Shrouded { return None; }
             Some((at, (map.terrain_at(at)?, visibility == HexVisibility::Visible)))
         }).collect()
@@ -47,12 +48,11 @@ impl FixedMatch<'_> {
     pub(super) fn planned_route(&self, side: usize, from: Hex, to: Hex) -> Result<Vec<(Hex, u32)>, MoveError> {
         let board = &self.scenario.board;
         let unit = board.unit_at(from).ok_or(MoveError::MissingUnit(from))?;
-        let vision = self.effective_vision(side);
         let unit_type = unit.unit_type;
         let inherited = self.rules.movement.get(&unit_type.movement_type).map(|m| &m.defense);
         let sides = &self.scenario.sides;
-        let known = |hex| matches!(vision.at(hex), Some(HexVisibility::Visible | HexVisibility::Fogged));
-        let visible = |hex| vision.at(hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
+        let known = |hex| matches!(self.visibility_at(side, hex), Some(HexVisibility::Visible | HexVisibility::Fogged));
+        let visible = |hex| self.visibility_at(side, hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
         let villages = self.teleport_villages(from, unit, known, visible);
         board.walk_steps_in_view(side, from, to,
             |terrain| self.rules.walking_cost(unit_type, terrain),
@@ -60,6 +60,11 @@ impl FixedMatch<'_> {
             |other| sides[side - 1].is_enemy(&sides[other - 1]),
             known, visible, &villages,
         )
+    }
+
+    pub(super) fn visibility_at(&self, side: usize, hex: Hex) -> Option<HexVisibility> {
+        let sides = &self.scenario.sides;
+        self.vision[side - 1].at_with_allies(hex, &sides[side - 1], sides.iter().zip(&self.vision))
     }
 
     pub(super) fn effective_vision(&self, side: usize) -> VisibilityMask {
@@ -106,6 +111,8 @@ mod tests {
 
     #[test]
     fn battle_border_obeys_shroud_and_fog_without_expanding_the_policy_map() {
+        use crate::visibility::FULL_VISION_BUILDS;
+
         let bundle = Bundle::parse(br#"
 [units]
     [unit_type]
@@ -136,11 +143,15 @@ Gs^Fds,Gs^Fds,Hh,Hh,Hh,Ww,Ww,Ww"
         let north = Hex { x: 0, y: -1 };
         let remembered = Hex { x: 3, y: -1 };
         let unseen = Hex { x: 4, y: -1 };
+        let full_builds = FULL_VISION_BUILDS.get();
         let first = game.known_border(1);
         assert_eq!(first.get(&north), Some(&("Gs^Fds", true)));
         assert_eq!(first.get(&remembered), Some(&("Hh", false)));
         assert!(!first.contains_key(&unseen));
         assert_eq!(game.known_border(2).get(&north), Some(&("Gs^Fds", false)));
+        assert!(game.known_border(0).is_empty());
+        assert!(game.known_border(3).is_empty());
+        assert_eq!(FULL_VISION_BUILDS.get(), full_builds);
         let view = game.observation_for(1).unwrap();
         assert!(view.tiles.iter().all(|tile| !first.contains_key(&tile.position)
             && tile.position.x >= 0 && tile.position.y >= 0

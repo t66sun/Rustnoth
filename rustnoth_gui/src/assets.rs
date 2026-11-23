@@ -6,6 +6,7 @@ use std::{
 };
 
 use engine_lite::wml::{self, Node};
+use engine_lite::scenario_bundle::BundleSources;
 
 /// Original presentation data and local image paths indexed by WML identifier.
 #[derive(Debug, Default)]
@@ -88,20 +89,39 @@ impl AssetCatalog {
         Self::from_config(root, core, &[], false)
     }
 
+    /// Read the original desktop artwork from the shared board WML inputs.
+    pub fn from_board(wesnoth_root: &Path, sources: BundleSources<'_>) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_resolved(wesnoth_root, [sources.core, sources.bundle], sources.units, true)
+    }
+
     fn from_config(wesnoth_root: &Path, core: &[u8], bundle: &[u8], terrain_graphics: bool) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut sources = [wml::parse(core)?, wml::parse(bundle)?];
+        let mut units = Node::default();
+        for source in &mut sources {
+            source.children.retain_mut(|(tag, node)| {
+                if tag == "units" {
+                    units.children.append(&mut node.children);
+                    return false;
+                }
+                true
+            });
+        }
+        engine_lite::unit_type::resolve_base_units(&mut units)?;
+        let [core, bundle] = &mut sources;
+        Self::from_resolved(wesnoth_root, [core, bundle], &units, terrain_graphics)
+    }
+
+    fn from_resolved(wesnoth_root: &Path, mut sources: [&mut Node; 2], units: &Node, terrain_graphics: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut prefixes = BTreeSet::from([String::new(), "data/core".into()]);
         let mut catalog = Self::default();
-        let mut units = Node::default();
-        let mut document = Node::default();
         let mut core_graphics = Vec::new();
-        for (is_core, input) in [(true, core), (false, bundle)] {
-            for (tag, node) in wml::parse(input)?.children {
+        for (source, graphics) in sources.iter_mut().zip([&mut core_graphics, &mut catalog.terrain_rules]) {
+            source.children.retain_mut(|(tag, node)| {
                 match tag.as_str() {
-                    "units" => units.children.extend(node.children),
-                    "terrain_type" | "color_range" => document.children.push((tag, node)),
-                    "terrain_graphics" if !terrain_graphics => {},
-                    "terrain_graphics" if is_core => core_graphics.push(node),
-                    "terrain_graphics" => catalog.terrain_rules.push(node),
+                    "terrain_graphics" => {
+                        if terrain_graphics { graphics.push(std::mem::take(node)); }
+                        return false;
+                    }
                     "binary_path" => {
                         if let Some(path) = node.attribute("path").map(|s| s.trim_end_matches('/'))
                             && !path.contains("..") && safe_relative_path(Path::new(path))
@@ -111,22 +131,26 @@ impl AssetCatalog {
                     }
                     _ => {}
                 }
-            }
+                true
+            });
         }
         if terrain_graphics && core_graphics.is_empty() && wesnoth_root.join("data/core/terrain-graphics.cfg").is_file() {
             core_graphics = crate::terrain_wml::stock_rules(wesnoth_root)?;
         }
         catalog.terrain_rules.extend(core_graphics);
-        engine_lite::unit_type::resolve_base_units(&mut units)?;
-        document.children.push(("units".into(), units));
         catalog.image_dirs = prefixes.iter().map(|prefix| wesnoth_root.join(prefix).join("images")).collect();
         catalog.image_dirs.push(wesnoth_root.to_owned());
         catalog.fallback = wesnoth_root.join("data/core/images");
-        catalog.aliases = Some(engine_lite::terrain_aliases::TerrainAliases::from_wml(&document));
-        catalog.read_definitions(&document);
+        catalog.aliases = Some(engine_lite::terrain_aliases::TerrainAliases::from_wml_sources(
+            sources.iter().map(|node| &**node)
+        ));
+        for source in sources {
+            catalog.read_definitions(source.children.iter().map(|(tag, node)| (tag.as_str(), node)));
+        }
+        catalog.read_definitions([("units", units)]);
         if let Ok(bytes) = std::fs::read(wesnoth_root.join("data/core/team-colors.cfg"))
             && let Ok(colors) = wml::parse(bytes) {
-            catalog.read_definitions(&colors);
+            catalog.read_definitions(colors.children.iter().map(|(tag, node)| (tag.as_str(), node)));
         }
         Ok(catalog)
     }
@@ -275,9 +299,9 @@ impl AssetCatalog {
             .unwrap_or_else(|| self.fallback.join(path)))
     }
 
-    fn read_definitions(&mut self, document: &Node) {
-        for (tag, node) in &document.children {
-            match tag.as_str() {
+    fn read_definitions<'a>(&mut self, definitions: impl IntoIterator<Item = (&'a str, &'a Node)>) {
+        for (tag, node) in definitions {
+            match tag {
                 "color_range" => {
                     if let (Some(id), Some(rgb)) = (node.attribute("id"), node.attribute("rgb")) {
                         let mut values = rgb.split(',').map(str::trim);

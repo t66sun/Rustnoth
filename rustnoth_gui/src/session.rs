@@ -1,4 +1,7 @@
+mod action_hints;
 mod enemy_moves;
+
+pub use action_hints::ActionHints;
 
 use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
@@ -7,6 +10,12 @@ use engine_lite::{
     opponent::attack_or_approach,
     scenario_sides::SideController,
 };
+use std::cell::{Ref, RefCell};
+
+#[cfg(test)]
+std::thread_local! {
+    static REFRESH_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Players {
@@ -66,6 +75,7 @@ pub struct Session<'rules> {
     computer_action: Option<Action>,
     observation: Option<Observation>,
     legal_actions: Vec<Action>,
+    action_hints: RefCell<ActionHints>,
 }
 
 impl<'rules> Session<'rules> {
@@ -80,6 +90,7 @@ impl<'rules> Session<'rules> {
             enemy_moves: Default::default(),
             attack_cursor: Default::default(), hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
+            action_hints: RefCell::default(),
         };
         session.refresh();
         session
@@ -92,31 +103,32 @@ impl<'rules> Session<'rules> {
         self.route = None;
         self.computer_action = None;
         self.legal_actions.clear();
-        match self.game.decision() {
-            Some((view, mut actions)) => {
-                match self.players.controller(&self.game, view.side) {
-                    SideController::Human => {
-                        if self.game.tutorial_end_turn_denial().is_some() {
-                            actions.retain(|action| *action != Action::EndTurn);
+        self.action_hints.get_mut().invalidate();
+        match self.game.state() {
+            MatchState::Playing(turn) => {
+                let controller = self.players.controller(&self.game, turn.side);
+                if controller == SideController::Human {
+                    let (view, mut actions) = self.playing_decision();
+                    if self.game.tutorial_end_turn_denial().is_some() {
+                        actions.retain(|action| *action != Action::EndTurn);
+                    }
+                    self.observation = Some(view);
+                    self.legal_actions = actions;
+                } else {
+                    self.computer_action = Some(if controller == SideController::Ai {
+                        let (view, mut actions) = self.playing_decision();
+                        if self.players == Players::Campaign {
+                            self.game.restrict_guardian_moves(&view, &mut actions);
                         }
-                        self.observation = Some(view);
-                        self.legal_actions = actions;
-                    }
-                    controller => {
-                        self.computer_action = Some(if controller == SideController::Ai {
-                            if self.players == Players::Campaign {
-                                self.game.restrict_guardian_moves(&view, &mut actions);
-                            }
-                            computer_choice(&view, &actions)
-                        } else {
-                            Action::EndTurn
-                        });
-                        self.observation = self.players.viewing_side(&self.game, view.side)
-                            .and_then(|viewer| self.game.observation_for(viewer));
-                    }
+                        computer_choice(&view, &actions)
+                    } else {
+                        Action::EndTurn
+                    });
+                    self.observation = self.players.viewing_side(&self.game, turn.side)
+                        .and_then(|viewer| self.game.observation_for(viewer));
                 }
             }
-            None => {
+            _ => {
                 let last_side = self.observation.as_ref().map_or(1, |view| view.side);
                 self.observation = self.players.viewing_side(&self.game, last_side)
                     .and_then(|viewer| self.game.observation_for(viewer));
@@ -126,6 +138,12 @@ impl<'rules> Session<'rules> {
         if let Some(viewer) = self.observation.as_ref().map(|view| view.side) {
             self.collect_presentation(viewer, true);
         }
+    }
+
+    fn playing_decision(&self) -> (Observation, Vec<Action>) {
+        #[cfg(test)]
+        REFRESH_DECISIONS.set(REFRESH_DECISIONS.get() + 1);
+        self.game.decision().expect("playing side")
     }
 
     fn collect_presentation(&mut self, viewer: usize, record_dismissal: bool) {
@@ -387,6 +405,11 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn action_hints(&self, selected: Option<Hex>) -> Ref<'_, ActionHints> {
+        self.action_hints.borrow_mut().update(selected, &self.legal_actions);
+        self.action_hints.borrow()
+    }
+
     pub fn track_pointer(&mut self, endpoints: Option<(Hex, Hex)>, allow_move_attack: bool) {
         self.attack_cursor.update(endpoints, allow_move_attack, self.observation.as_ref(), &self.legal_actions, &self.game);
         let route = self.hovered_attack().map(|plan| (plan.origin, plan.staging)).or(endpoints);
@@ -424,7 +447,11 @@ impl<'rules> Session<'rules> {
 
     /// Limit the actions offered by the interface during a scripted tutorial step.
     pub fn retain_actions(&mut self, allowed: impl FnMut(&Action) -> bool) {
+        let previous_len = self.legal_actions.len();
         self.legal_actions.retain(allowed);
+        if self.legal_actions.len() != previous_len {
+            self.action_hints.get_mut().invalidate();
+        }
     }
 
     pub fn advancement_choices(&self, position: Hex) -> Vec<String> {
@@ -693,6 +720,46 @@ message=Human orders
         assert!(session.legal_actions().is_empty());
         assert_eq!(session.apply(Action::EndTurn), Err(MatchError::ActionUnavailable));
         assert_eq!(session.state(), MatchState::Playing(engine_lite::turn::Turn { round: 2, side: 1 }));
+    }
+
+    #[test]
+    fn a_reserved_campaign_turn_ends_without_building_its_decision() {
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+hitpoints=20
+movement=0
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv"
+[side]
+side=1
+controller=reserved
+type=Guard
+[/side]
+[side]
+side=2
+controller=human
+type=Guard
+gold=23
+[/side]
+[/scenario]"#).unwrap();
+        let before = REFRESH_DECISIONS.get();
+        let game = bundle.start_with_controllers(1, |_| unreachable!(), None, true).unwrap();
+        let mut session = Session::with_players(game, Players::Campaign);
+        let view = session.observation().unwrap();
+        assert_eq!(session.state(), MatchState::Playing(engine_lite::turn::Turn { round: 1, side: 1 }));
+        assert_eq!((view.side, view.gold), (2, Some(23)));
+        assert!(session.legal_actions().is_empty());
+        assert_eq!(REFRESH_DECISIONS.get(), before);
+
+        assert!(session.play_computer_action().unwrap());
+        assert_eq!(session.state(), MatchState::Playing(engine_lite::turn::Turn { round: 1, side: 2 }));
+        assert!(session.legal_actions().contains(&Action::EndTurn));
+        assert_eq!(REFRESH_DECISIONS.get(), before + 1);
     }
 
     #[test]
