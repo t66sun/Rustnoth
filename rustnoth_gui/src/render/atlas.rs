@@ -1,6 +1,10 @@
+use std::rc::Rc;
+
 use image::RgbaImage;
-use macroquad::prelude::{
-    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex, vec2,
+use macroquad::{
+    miniquad::{TextureAccess, TextureParams, TextureSource},
+    models::Vertex,
+    prelude::{Color, DrawMode, FilterMode, Image, Rect, Texture2D, Vec2, get_internal_gl, vec2},
 };
 
 const PAGE_SIDE: u16 = 2048;
@@ -9,7 +13,7 @@ const CHANNELS: usize = 4;
 
 #[derive(Default)]
 pub(super) struct Atlas {
-    pages: Vec<Texture2D>,
+    pages: Vec<Rc<PageTexture>>,
     layout: PageLayout,
 }
 
@@ -30,30 +34,29 @@ impl Atlas {
             let len = usize::from(width) * usize::from(height) * CHANNELS;
             let texture = linear_texture(width, height, &pixels.as_raw()[..len]);
             return Some(AtlasSprite {
-                texture,
-                source: None,
+                texture: SpriteTexture::Standalone(texture),
+                uv: Rect::new(0.0, 0.0, 1.0, 1.0),
                 size,
             });
         };
 
         if slot.page == self.pages.len() {
-            let side = self.layout.side;
-            let len = usize::from(side).pow(2) * CHANNELS;
-            self.pages
-                .push(linear_texture(side, side, &vec![0; len]));
+            self.pages.push(Rc::new(PageTexture::new(self.layout.side)));
         }
-        let texture = &self.pages[slot.page];
+        let page = &self.pages[slot.page];
         let image = pad_edges(pixels, width, height);
-        texture.update_part(
+        page.0.update_part(
             &image,
             i32::from(slot.x),
             i32::from(slot.y),
             i32::from(image.width),
             i32::from(image.height),
         );
+        let source = slot.source(width, height);
+        let dimensions = page.0.size();
         Some(AtlasSprite {
-            texture: texture.clone(),
-            source: Some(slot.source(width, height)),
+            texture: SpriteTexture::Page(Rc::clone(page)),
+            uv: Rect::new(source.x / dimensions.x, source.y / dimensions.y, source.w / dimensions.x, source.h / dimensions.y),
             size,
         })
     }
@@ -64,10 +67,55 @@ impl Atlas {
     }
 }
 
+struct PageTexture(Texture2D);
+
+impl PageTexture {
+    fn new(side: u16) -> Self {
+        let (source, params) = page_storage(side);
+        // A padded slot is uploaded before any sprite can refer to it.
+        let raw = unsafe { get_internal_gl() }
+            .quad_context
+            .new_texture(TextureAccess::Static, source, params);
+        Self(Texture2D::from_miniquad_texture(raw))
+    }
+}
+
+impl Drop for PageTexture {
+    fn drop(&mut self) {
+        let raw = self.0.raw_miniquad_id();
+        // Queued draws refer to the raw handle without owning the page.
+        unsafe {
+            let mut gl = get_internal_gl();
+            gl.flush();
+            gl.quad_context.delete_texture(raw);
+        }
+    }
+}
+
+fn page_storage(side: u16) -> (TextureSource<'static>, TextureParams) {
+    let side = u32::from(side);
+    (TextureSource::Empty, TextureParams { width: side, height: side, ..Default::default() })
+}
+
+#[derive(Clone)]
+enum SpriteTexture {
+    Page(Rc<PageTexture>),
+    Standalone(Texture2D),
+}
+
+impl SpriteTexture {
+    fn get(&self) -> &Texture2D {
+        match self {
+            Self::Page(page) => &page.0,
+            Self::Standalone(texture) => texture,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct AtlasSprite {
-    texture: Texture2D,
-    source: Option<Rect>,
+    texture: SpriteTexture,
+    uv: Rect,
     size: Vec2,
 }
 
@@ -77,32 +125,40 @@ impl AtlasSprite {
     }
 
     pub(super) fn draw(&self, dst: Rect, tint: Color, flip_x: bool) {
-        self.draw_region(dst, tint, self.source, (flip_x, false));
+        self.draw_region(dst, tint, self.uv, (flip_x, false));
     }
 
-    pub(super) fn draw_part(&self, dst: Rect, tint: Color, mut source: Rect, flip: (bool, bool)) {
-        if let Some(sprite) = self.source {
-            source.x += sprite.x;
-            source.y += sprite.y;
-        }
-        self.draw_region(dst, tint, Some(source), flip);
-    }
-
-    fn draw_region(&self, dst: Rect, tint: Color, source: Option<Rect>, (flip_x, flip_y): (bool, bool)) {
-        draw_texture_ex(
-            &self.texture,
-            dst.x,
-            dst.y,
-            tint,
-            DrawTextureParams {
-                dest_size: Some(vec2(dst.w, dst.h)),
-                source,
-                flip_x,
-                flip_y,
-                ..Default::default()
-            },
+    pub(super) fn draw_part(&self, dst: Rect, tint: Color, source: Rect, flip: (bool, bool)) {
+        let pixel = self.uv.size() / self.size;
+        let uv = Rect::new(
+            self.uv.x + source.x * pixel.x,
+            self.uv.y + source.y * pixel.y,
+            source.w * pixel.x,
+            source.h * pixel.y,
         );
+        self.draw_region(dst, tint, uv, flip);
     }
+
+    fn draw_region(&self, dst: Rect, tint: Color, uv: Rect, flip: (bool, bool)) {
+        let vertices = quad(dst, uv, tint, flip);
+        // The borrowed queue belongs to the render thread. Geometry is appended
+        // to the active camera/material without flushing preceding primitives.
+        let gl = unsafe { get_internal_gl() }.quad_gl;
+        gl.texture(Some(self.texture.get()));
+        gl.draw_mode(DrawMode::Triangles);
+        gl.geometry(&vertices, &[0, 1, 2, 0, 2, 3]);
+    }
+}
+
+fn quad(dst: Rect, uv: Rect, tint: Color, (flip_x, flip_y): (bool, bool)) -> [Vertex; 4] {
+    let (first_u, last_u) = if flip_x { (uv.right(), uv.x) } else { (uv.x, uv.right()) };
+    let (first_v, last_v) = if flip_y { (uv.bottom(), uv.y) } else { (uv.y, uv.bottom()) };
+    [
+        Vertex::new(dst.x, dst.y, 0.0, first_u, first_v, tint),
+        Vertex::new(dst.right(), dst.y, 0.0, last_u, first_v, tint),
+        Vertex::new(dst.right(), dst.bottom(), 0.0, last_u, last_v, tint),
+        Vertex::new(dst.x, dst.bottom(), 0.0, first_u, last_v, tint),
+    ]
 }
 
 fn linear_texture(width: u16, height: u16, rgba: &[u8]) -> Texture2D {
@@ -205,6 +261,33 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_quads_flip_only_the_horizontal_uv_and_keep_tint_and_corners() {
+        let dst = Rect::new(10.5, 5.25, 12.0, 10.0);
+        let uv = Rect::new(0.25, 0.5, 0.125, 0.25);
+        let tint = Color::from_rgba(5, 60, 200, 144);
+        let plain = quad(dst, uv, tint, (false, false));
+        let flipped = quad(dst, uv, tint, (true, false));
+        assert_eq!(plain.map(|v| v.position.to_array()), [
+            [10.5, 5.25, 0.0], [22.5, 5.25, 0.0], [22.5, 15.25, 0.0], [10.5, 15.25, 0.0],
+        ]);
+        assert_eq!(flipped.map(|v| v.position), plain.map(|v| v.position));
+        assert_eq!(plain.map(|v| v.uv.to_array()), [[0.25, 0.5], [0.375, 0.5], [0.375, 0.75], [0.25, 0.75]]);
+        assert_eq!(flipped.map(|v| v.uv.to_array()), [[0.375, 0.5], [0.25, 0.5], [0.25, 0.75], [0.375, 0.75]]);
+        assert_eq!(quad(dst, uv, tint, (false, true)).map(|v| v.uv.y), [0.75, 0.75, 0.5, 0.5]);
+        assert_eq!(flipped.map(|v| v.color), [Vertex::new(0., 0., 0., 0., 0., tint).color; 4]);
+    }
+
+    #[test]
+    fn atlas_page_storage_has_no_initial_pixel_upload() {
+        let (source, params) = page_storage(PAGE_SIDE);
+        assert!(matches!(source, TextureSource::Empty));
+        assert_eq!((params.width, params.height), (2048, 2048));
+        assert_eq!(params.format, macroquad::miniquad::TextureFormat::RGBA8);
+        assert_eq!(params.min_filter, FilterMode::Linear);
+        assert_eq!(params.mag_filter, FilterMode::Linear);
+    }
 
     #[test]
     fn padding_extrudes_all_edges_and_corners_with_straight_alpha() {

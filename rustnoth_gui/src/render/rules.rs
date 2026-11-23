@@ -6,8 +6,8 @@ mod compile;
 pub(super) mod pattern;
 mod plan;
 
-use super::{AssetCatalog, Hex, Observation, draw_centered};
-use macroquad::prelude::{Texture2D, Vec2};
+use super::{AssetCatalog, Hex, Observation, atlas::AtlasSprite, atlas_extent, draw_atlas_centered};
+use macroquad::prelude::Vec2;
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
@@ -18,12 +18,33 @@ pub(crate) struct Rules {
     bounds: (i32, i32),
     tiles: HashMap<Hex, Drawing>,
     pub(super) foreground: Vec<Hex>,
+    #[cfg(test)]
+    drawing_lookups: std::cell::Cell<usize>,
 }
 
 struct Drawing {
     base: bool,
-    layers: Vec<(bool, Vec<Animation>)>,
+    layers: DrawLayers<Animation>,
 }
+
+struct DrawLayers<T> {
+    ordered: Vec<Vec<T>>,
+    foreground_start: usize,
+}
+
+impl<T> DrawLayers<T> {
+    fn new(mut background: Vec<Vec<T>>, foreground: Vec<Vec<T>>) -> Self {
+        let foreground_start = background.len();
+        background.extend(foreground);
+        Self { ordered: background, foreground_start }
+    }
+
+    fn for_pass(&self, foreground: bool) -> &[Vec<T>] {
+        let (back, front) = self.ordered.split_at(self.foreground_start);
+        if foreground { front } else { back }
+    }
+}
+
 struct Animation {
     sequence: Rc<Sequence>,
     offset: u32,
@@ -31,8 +52,45 @@ struct Animation {
 
 struct Sequence {
     periods: Vec<String>,
-    frames: Vec<(Option<Texture2D>, u32)>,
-    duration: u32,
+    frames: Frames<AtlasSprite>,
+}
+
+enum Frames<T> {
+    Fixed(T),
+    Timed { frames: Vec<(Option<T>, u32)>, duration: u32 },
+}
+
+impl<T> Frames<T> {
+    fn load(choices: &[(usize, u32)], mut sprite: impl FnMut(usize) -> Option<T>) -> Option<Self> {
+        if let [(id, _)] = choices {
+            return sprite(*id).map(Self::Fixed);
+        }
+
+        let mut duration = 0u32;
+        let frames: Vec<_> = choices.iter().map(|&(id, time)| {
+            duration = duration.saturating_add(time);
+            (sprite(id), duration)
+        }).collect();
+        frames.iter().any(|(sprite, _)| sprite.is_some()).then_some(Self::Timed { frames, duration })
+    }
+
+    fn offset(&self, random: i32, seed: u32) -> u32 {
+        match (self, random) {
+            (Self::Fixed(_), _) | (_, 0) => 0,
+            (_, n) if n > 0 => seed % n as u32,
+            (Self::Timed { duration, .. }, _) => seed % *duration,
+        }
+    }
+
+    fn at(&self, ms: u64, offset: u32) -> Option<&T> {
+        match self {
+            Self::Fixed(sprite) => Some(sprite),
+            Self::Timed { frames, duration } => {
+                let phase = ((ms + u64::from(offset)) % u64::from(*duration)) as u32;
+                frames.iter().find(|(_, end)| phase < *end).and_then(|(sprite, _)| sprite.as_ref())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,7 +126,7 @@ impl Rules {
         self.build(assets, |catalog| plan::battlefield(catalog, view, border));
         self.foreground = view.tiles.iter().map(|t| t.position)
             .chain(engine_lite::map::border_positions(view.width, view.height))
-            .filter(|hex| self.tiles.get(hex).is_some_and(|t| t.layers.iter().any(|(front, _)| *front)))
+            .filter(|hex| self.tiles.get(hex).is_some_and(|t| !t.layers.for_pass(true).is_empty()))
             .collect();
         self.foreground.sort_unstable_by_key(|hex| (super::draw_row(*hex), hex.x));
         true
@@ -87,7 +145,8 @@ impl Rules {
         let tiles = plan(catalog);
         let mut sequences = Sequences::default();
         for (hex, tile) in tiles {
-            let mut layers = Vec::new();
+            let mut background = Vec::new();
+            let mut foreground = Vec::new();
             for part in &tile.layers {
                 let mut animations = Vec::new();
                 for (variant_index, variant) in catalog.images[part.image].variants.iter().enumerate() {
@@ -97,38 +156,27 @@ impl Rules {
                     let choice = (part.seed / 7919) as usize % variant.choices.len();
                     let key = SequenceKey { image: part.image, variant: variant_index, choice, cut: part.cut };
                     let Some(sequence) = sequences.load(key, || {
-                        let mut duration = 0u32;
-                        let frames: Vec<_> = variant.choices[choice].iter().map(|&(id, time)| {
-                            duration = duration.saturating_add(time);
-                            (self.bitmaps.frame(catalog, id, part.cut), duration)
-                        }).collect();
-                        frames.iter().any(|(image, _)| image.is_some()).then(|| Sequence {
-                            periods: variant.periods.clone(),
-                            frames,
-                            duration,
-                        })
+                        let frames = Frames::load(&variant.choices[choice], |id| self.bitmaps.frame(catalog, id, part.cut))?;
+                        Some(Sequence { periods: variant.periods.clone(), frames })
                     }) else {
                         continue;
                     };
-                    let offset = match variant.random {
-                        0 => 0,
-                        n if n > 0 => part.seed % n as u32,
-                        _ => part.seed % sequence.duration,
-                    };
+                    let offset = sequence.frames.offset(variant.random, part.seed);
                     animations.push(Animation { sequence, offset });
                 }
                 if !animations.is_empty() {
-                    layers.push((
-                        part.layer > 0 || part.layer == 0 && part.y >= 54,
-                        animations,
-                    ));
+                    if part.layer > 0 || part.layer == 0 && part.y >= 54 {
+                        foreground.push(animations);
+                    } else {
+                        background.push(animations);
+                    }
                 }
             }
             self.tiles.insert(
                 hex,
                 Drawing {
                     base: tile.has_flag(compile::Flag::BASE),
-                    layers,
+                    layers: DrawLayers::new(background, foreground),
                 },
             );
         }
@@ -136,11 +184,40 @@ impl Rules {
     }
 
     pub(super) fn has_base(&self, hex: Hex) -> bool {
-        self.tiles.get(&hex).is_some_and(|t| t.base)
+        self.drawing_at(hex).is_some_and(|drawing| drawing.base)
+    }
+
+    fn drawing_at(&self, hex: Hex) -> Option<&Drawing> {
+        #[cfg(test)]
+        self.drawing_lookups.set(self.drawing_lookups.get() + 1);
+        self.tiles.get(&hex)
     }
 
     pub(super) fn texture_extent(&self) -> Vec2 {
-        super::texture_extent(self.bitmaps.frames())
+        atlas_extent(self.bitmaps.frames())
+    }
+
+    pub(super) fn add_terrain_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
+        self.bitmaps.add_sprite(pixels)
+    }
+
+    pub(super) fn draw_background(
+        &self,
+        hex: Hex,
+        center: Vec2,
+        size: f32,
+        tod: &str,
+        ms: u64,
+        clip: Option<super::Viewport>,
+        draw_fallback: impl FnOnce(),
+    ) {
+        let drawing = self.drawing_at(hex);
+        if !drawing.is_some_and(|drawing| drawing.base) {
+            draw_fallback();
+        }
+        if let Some(drawing) = drawing {
+            drawing.draw(center, size, false, tod, ms, clip);
+        }
     }
 
     pub(crate) fn draw(
@@ -153,21 +230,31 @@ impl Rules {
         ms: u64,
         clip: Option<super::Viewport>,
     ) {
-        let Some(tile) = self.tiles.get(&hex) else {
-            return;
-        };
-        for (_, variants) in tile.layers.iter().filter(|(front, _)| *front == foreground) {
+        if let Some(drawing) = self.drawing_at(hex) {
+            drawing.draw(center, size, foreground, tod, ms, clip);
+        }
+    }
+}
+
+impl Drawing {
+    fn draw(
+        &self,
+        center: Vec2,
+        size: f32,
+        foreground: bool,
+        tod: &str,
+        ms: u64,
+        clip: Option<super::Viewport>,
+    ) {
+        for variants in self.layers.for_pass(foreground) {
             let Some(animation) = variants
                 .iter()
                 .find(|a| a.sequence.periods.is_empty() || a.sequence.periods.iter().any(|p| p == tod))
             else {
                 continue;
             };
-            let sequence = &animation.sequence;
-            let phase = ((ms + u64::from(animation.offset)) % u64::from(sequence.duration)) as u32;
-            if let Some((Some(texture), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
-            {
-                draw_centered(texture, center, size, clip);
+            if let Some(sprite) = animation.sequence.frames.at(ms, animation.offset) {
+                draw_atlas_centered(sprite, center, size, clip);
             }
         }
     }
@@ -179,13 +266,59 @@ mod tests {
     use engine_lite::{observation::ObservedTile, wml};
 
     #[test]
+    fn foreground_and_background_keep_contiguous_spans_in_painter_order() {
+        let layers = DrawLayers::new(vec![vec![0, 1], vec![3]], vec![vec![2], vec![4, 5]]);
+        assert_eq!(layers.ordered, [vec![0, 1], vec![3], vec![2], vec![4, 5]]);
+        assert_eq!(layers.for_pass(false), &layers.ordered[..2]);
+        assert_eq!(layers.for_pass(true), &layers.ordered[2..]);
+        assert!(DrawLayers::<u32>::new(Vec::new(), Vec::new()).for_pass(true).is_empty());
+    }
+
+    #[test]
+    fn one_frame_resolves_to_a_fixed_sprite_while_animations_preserve_blank_time() {
+        let fixed = Frames::load(&[(7, 60)], Some).unwrap();
+        assert!(matches!(fixed, Frames::Fixed(7)));
+        assert_eq!(fixed.offset(-1, 113), 0);
+        assert_eq!(fixed.offset(30, 113), 0);
+        assert_eq!(fixed.at(u64::MAX, 0), Some(&7));
+        assert!(Frames::<usize>::load(&[(7, 60)], |_| None).is_none());
+
+        let timed = Frames::load(&[(7, 30), (8, 20), (9, 50)], |id| (id != 8).then_some(id)).unwrap();
+        assert_eq!(timed.offset(-1, 113), 13);
+        assert_eq!(timed.offset(30, 113), 23);
+        assert_eq!(timed.at(29, 0), Some(&7));
+        assert_eq!(timed.at(30, 0), None);
+        assert_eq!(timed.at(49, 0), None);
+        assert_eq!(timed.at(27, 23), Some(&9));
+        assert_eq!(timed.at(100, 0), Some(&7));
+        assert!(Frames::<usize>::load(&[(7, 30), (8, 20)], |_| None).is_none());
+    }
+
+    #[test]
+    fn background_draw_looks_up_each_hex_once_and_only_falls_back_without_a_base() {
+        let based = Hex { x: 0, y: 0 };
+        let overlay_only = Hex { x: 1, y: 0 };
+        let absent = Hex { x: 2, y: 0 };
+        let mut rules = Rules::default();
+        let drawing = |base| Drawing { base, layers: DrawLayers::new(Vec::new(), Vec::new()) };
+        rules.tiles.insert(based, drawing(true));
+        rules.tiles.insert(overlay_only, drawing(false));
+
+        let mut fallback = Vec::new();
+        for hex in [based, overlay_only, absent] {
+            rules.draw_background(hex, Vec2::ZERO, 72.0, "", 0, None, || fallback.push(hex));
+        }
+        assert_eq!(rules.drawing_lookups.get(), 3);
+        assert_eq!(fallback, [overlay_only, absent]);
+    }
+
+    #[test]
     fn same_variant_reuses_frames_until_its_choice_or_crop_changes() {
         let mut sequences = Sequences::default();
         let key = SequenceKey { image: 0, variant: 0, choice: 0, cut: None };
         let prepare = || Some(Sequence {
             periods: vec!["dawn".into()],
-            frames: vec![(None, 60), (None, 120)],
-            duration: 120,
+            frames: Frames::Timed { frames: vec![(None, 60), (None, 120)], duration: 120 },
         });
 
         let first = sequences.load(key, prepare).unwrap();

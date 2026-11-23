@@ -64,8 +64,7 @@ fn topic(root: &Path, assets: &AssetCatalog, rules: &Bundle, unit: &UnitType,
 pub(crate) async fn show_unit(data: &BoardData, view: &Observation, selected: &str,
     locale: &mut Locale) -> Result<(), Box<dyn Error>> {
     let root = &data.wesnoth_root;
-    let board = Texture2D::from_image(&get_screen_data());
-    board.set_filter(FilterMode::Nearest);
+    let board = crate::dialog::Backdrop::capture(FilterMode::Nearest);
     let mut book = Book::read(&data.core)?;
     let mut textures = HashMap::new();
     let terrain = view.tiles.iter().map(|tile| tile.terrain.as_str()).collect();
@@ -88,7 +87,7 @@ pub(crate) async fn show_unit(data: &BoardData, view: &Observation, selected: &s
     let page = PageArt { font: font.as_ref(), italic: italic.as_ref(), logo: &logo, logo_shadow: &logo_shadow };
     next_frame().await;
     browse(root, book, current, &page, textures,
-        |w, h| draw_texture_ex(&board, 0., 0., WHITE, DrawTextureParams {
+        |w, h| draw_texture_ex(board.texture(), 0., 0., WHITE, DrawTextureParams {
             dest_size: Some(vec2(w,h)), flip_y: true, ..Default::default()
         }),
         |r, label, hover, pressed| ButtonBacking::button(&buttons, font.as_ref(), r, locale.ui(label), hover, pressed)

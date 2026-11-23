@@ -156,7 +156,7 @@ pub(super) async fn show(data: &BoardData, options: &[ActionOption], side: usize
     let mut first = 0usize;
     let mut editing = false;
     let mut last_click = None;
-    let backdrop = Texture2D::from_image(&get_screen_data());
+    let backdrop = dialog::Backdrop::capture(FilterMode::Linear);
     next_frame().await;
     loop {
         let scale = (screen_width() / 680.0)
@@ -165,7 +165,7 @@ pub(super) async fn show(data: &BoardData, options: &[ActionOption], side: usize
         let (w, h) = (screen_width() / scale, screen_height() / scale);
         set_camera(&dialog::setup_camera(w, h));
         draw_texture_ex(
-            &backdrop,
+            backdrop.texture(),
             0.0,
             0.0,
             WHITE,

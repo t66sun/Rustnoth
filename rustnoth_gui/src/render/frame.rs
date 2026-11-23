@@ -103,27 +103,38 @@ impl FrameArt {
     }
 }
 
-pub(crate) struct StatusBox([Texture; 9]);
+pub(crate) struct StatusBox([Option<AtlasSprite>; 9]);
 
 impl StatusBox {
     pub(crate) fn load(root: &Path) -> Self {
         let dir = root.join("data/core/images/themes/status_box");
+        let mut atlas = Atlas::with_page_side(256);
         Self([
-                "border-topleft", "border-top", "border-topright", "border-left", "background",
-                "border-right", "border-botleft", "border-bottom", "border-botright",
-            ].map(|name| load_texture(&dir.join(format!("status_box-{name}.png")), None)))
+            "border-topleft", "border-top", "border-topright", "border-left", "background",
+            "border-right", "border-botleft", "border-bottom", "border-botright",
+        ].map(|name| {
+            let pixels = recolored_pixels(&dir.join(format!("status_box-{name}.png")), None)?;
+            atlas.add(&pixels)
+        }))
     }
 
     pub(crate) fn draw(&self, bounds: Rect, scale: f32) {
-        let border = 3.0 * scale;
-        let xs = [bounds.x, bounds.x + border, bounds.right() - border, bounds.right()];
-        let ys = [bounds.y, bounds.y + border, bounds.bottom() - border, bounds.bottom()];
-        for (row, ys) in ys.windows(2).enumerate() {
-            for (col, xs) in xs.windows(2).enumerate() {
-                paint(&self.0[row * 3 + col], Rect::new(xs[0], ys[0], xs[1] - xs[0], ys[1] - ys[0]));
+        for (sprite, rect) in self.0.iter().zip(status_box_cells(bounds, scale)) {
+            if let Some(sprite) = sprite {
+                sprite.draw(rect, WHITE, false);
             }
         }
     }
+}
+
+fn status_box_cells(bounds: Rect, scale: f32) -> [Rect; 9] {
+    let border = 3.0 * scale;
+    let xs = [bounds.x, bounds.x + border, bounds.right() - border, bounds.right()];
+    let ys = [bounds.y, bounds.y + border, bounds.bottom() - border, bounds.bottom()];
+    std::array::from_fn(|index| {
+        let (row, col) = (index / 3, index % 3);
+        Rect::new(xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row])
+    })
 }
 
 fn paint(texture: &Texture, bounds: Rect) {
@@ -275,6 +286,21 @@ fn draw_reports(frame: &BattlefieldFrame, state: MatchState, view: Option<&Obser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_box_atlas_cells_match_the_original_row_major_layout() {
+        assert_eq!(status_box_cells(Rect::new(10.0, 20.0, 40.0, 20.0), 0.5), [
+            Rect::new(10.0, 20.0, 1.5, 1.5),
+            Rect::new(11.5, 20.0, 37.0, 1.5),
+            Rect::new(48.5, 20.0, 1.5, 1.5),
+            Rect::new(10.0, 21.5, 1.5, 17.0),
+            Rect::new(11.5, 21.5, 37.0, 17.0),
+            Rect::new(48.5, 21.5, 1.5, 17.0),
+            Rect::new(10.0, 38.5, 1.5, 1.5),
+            Rect::new(11.5, 38.5, 37.0, 1.5),
+            Rect::new(48.5, 38.5, 1.5, 1.5),
+        ]);
+    }
 
     #[test]
     fn terrain_report_searches_known_rows_without_scanning_the_map() {
