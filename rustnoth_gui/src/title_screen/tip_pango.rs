@@ -1,6 +1,6 @@
 //! Windows installations supply the Pango, Cairo and FreeType stack used by Wesnoth.
 mod dialogue;
-use std::{ffi::{CString, c_char, c_void}, os::windows::ffi::OsStrExt, path::Path, ptr};
+use std::{ffi::{CString, c_char, c_void}, os::windows::ffi::OsStrExt, path::Path, ptr, rc::Rc};
 
 type Handle = *mut c_void;
 #[link(name = "kernel32")]
@@ -111,7 +111,7 @@ api! {
 }
 
 pub(crate) struct Text {
-    api: Api,
+    api: Rc<Api>,
     layout: Handle,
     map: Handle,
     font: Handle,
@@ -130,7 +130,13 @@ impl Drop for Text {
 impl Text {
     pub(crate) fn load(assets: &Path, family: &str) -> Option<Self> {
         // Asset paths supplied on the command line are data only. Resolve DLLs through Steam.
-        let api = crate::desktop::steam_game_roots().iter().find_map(|dir| Api::load(dir))?;
+        // Keep Pango loaded between renderers. GObject can retain its process-wide
+        // type registrations after an individual Pango DLL has been unloaded.
+        thread_local! {
+            static INSTALLED_API: Option<Rc<Api>> = crate::desktop::steam_game_roots()
+                .iter().find_map(|dir| Api::load(dir)).map(Rc::new);
+        }
+        let api = INSTALLED_API.with(Clone::clone)?;
         let fonts = assets.join("fonts");
         let font_dir = CString::new(fonts.to_str()?).ok()?;
         let font_conf = CString::new(fonts.join("fonts.conf").to_str()?).ok()?;
@@ -274,7 +280,26 @@ fn straight_rgba(bytes: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::straight_rgba;
+    use super::{Text, straight_rgba};
+    use std::rc::Rc;
+
+    #[test]
+    #[ignore = "requires the installed Wesnoth Windows libraries and fonts"]
+    fn pango_libraries_stay_loaded_between_renderers() {
+        let root = crate::desktop::steam_game_roots().into_iter()
+            .find(|root| root.join("fonts/fonts.conf").is_file())
+            .expect("installed Wesnoth fonts");
+        let first = Text::load(&root, "Lato").expect("first native text renderer");
+        let api = Rc::downgrade(&first.api);
+        let width = first.text_width("Battlefield", 15);
+        drop(first);
+
+        let pinned = api.strong_count();
+        assert!(pinned > 0, "Pango was unloaded with the last text renderer");
+        let second = Text::load(&root, "Lato").expect("second native text renderer");
+        assert!(Rc::ptr_eq(&api.upgrade().unwrap(), &second.api));
+        assert_eq!(second.text_width("Battlefield", 15), width);
+    }
 
     #[test]
     fn antialiased_tip_edges_use_the_native_integer_inverse_alpha() {
