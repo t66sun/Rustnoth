@@ -860,11 +860,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         // LAYER_LINGER_OVERLAY is painted after unit bars, fog and shroud.
         // Its coverage only depends on the public map dimensions.
         art.lighting.flat(color);
-        for x in -1..=view.width {
-            for y in -1..=view.height {
-                let center = Vec2::from_array(layout.tile_origin(Hex { x, y })) + Vec2::splat(size / 2.0);
-                draw_centered(texture, center, size, Some(viewport));
-            }
+        let dimensions = (view.width, view.height);
+        for hex in terrain_clip::linger_anchors(layout, dimensions, viewport, texture.size()) {
+            let center = Vec2::from_array(layout.tile_origin(hex)) + Vec2::splat(size / 2.0);
+            draw_centered(texture, center, size, Some(viewport));
         }
         art.lighting.flat([0; 3]);
     }
