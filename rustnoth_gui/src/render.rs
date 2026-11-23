@@ -6,6 +6,7 @@ pub(crate) use frame::StatusBox;
 pub(crate) mod minimap;
 pub(crate) use minimap::save::save_preview;
 mod lighting;
+use atlas::AtlasSprite;
 use frame::{BattlefieldFrame, FrameArt};
 
 use std::{
@@ -140,7 +141,8 @@ pub struct BoardArt {
     minimap: minimap::Art,
     lighting: lighting::Lighting,
     paths: HashMap<PathBuf, Option<Texture2D>>,
-    terrain: BTreeMap<String, Vec<Texture2D>>,
+    terrain: BTreeMap<String, Vec<AtlasSprite>>,
+    terrain_paths: SpriteTextures<AtlasSprite>,
     terrain_texture_extent: Vec2,
     transitions: transitions::Transitions,
     ground: ground::Ground,
@@ -243,6 +245,7 @@ impl BoardArt {
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
             paths: HashMap::new(),
             terrain: BTreeMap::new(),
+            terrain_paths: SpriteTextures::default(),
             terrain_texture_extent: Vec2::ZERO,
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
@@ -313,10 +316,17 @@ impl BoardArt {
         self.fog_edges.update(observation, &border, &self.cover.cells);
         self.minimap.load(observation, assets);
         if self.rules.load(assets, observation, &border) {
-            self.transitions.load(observation, assets);
+            self.transitions.load(observation, assets, &mut self.rules, &mut self.terrain_paths);
+            for tile in &observation.tiles {
+                if self.rules.has_base(tile.position) { continue; }
+                let mut texture = |path| self.terrain_paths.terrain(path, &mut self.rules);
+                self.ground.load(&tile.terrain, assets, &mut texture);
+                self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
+                    assets.terrain_images(&tile.terrain).into_iter().filter_map(texture).collect()
+                });
+            }
         }
         for tile in &observation.tiles {
-            self.ground.load(&tile.terrain, assets, &mut self.paths);
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()
                 && colors.marker_color(owner).is_some()
@@ -326,19 +336,12 @@ impl BoardArt {
                     load_texture(&path, Some((colors, owner)))
                 }));
             }
-            self.terrain.entry(tile.terrain.clone()).or_insert_with(|| {
-                assets
-                    .terrain_images(&tile.terrain)
-                    .into_iter()
-                    .filter_map(|path| get_texture(&mut self.paths, path))
-                    .collect()
-            });
         }
         self.terrain_texture_extent = texture_extent(
-            self.terrain.values().flatten()
-                .chain(self.flags.values().flatten().flatten())
+            self.flags.values().flatten().flatten()
                 .chain(self.grid.0.iter().flatten()),
         )
+        .max(atlas_extent(self.terrain.values().flatten()))
         .max(self.ground.texture_extent())
         .max(self.transitions.texture_extent())
         .max(self.rules.texture_extent());
@@ -384,6 +387,20 @@ impl<T> Default for SpriteTextures<T> {
 impl SpriteTextures<Texture2D> {
     fn texture(&mut self, path: PathBuf, palette: Option<(&TeamColors, usize)>) -> Option<Texture2D> {
         self.load(path, palette.map(|(_, side)| side), |path| load_texture(path, palette))
+    }
+}
+
+impl SpriteTextures<AtlasSprite> {
+    fn terrain(&mut self, path: PathBuf, rules: &mut rules::Rules) -> Option<AtlasSprite> {
+        self.load(path, None, |path| {
+            let bytes = fs::read(path)
+                .map_err(|error| eprintln!("{} ({error})", path.display()))
+                .ok()?;
+            let pixels = crate::artwork::rgba(&bytes)
+                .map_err(|error| eprintln!("{} ({error})", path.display()))
+                .ok()?;
+            rules.add_fallback_sprite(&pixels)
+        })
     }
 }
 
@@ -507,44 +524,39 @@ pub fn draw<T>(
     result
 }
 
-fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {
+fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: (usize, [i32; 3]), tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {
     let now = (get_time() * 1000.0) as u64;
     let size = layout.tile_size();
     for tile in clip.rows(layout, &view.tiles, |tile| tile.position.y) {
         let [x, y] = layout.tile_origin(tile.position);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         if !clip.contains(center) { continue; }
-        if flag_frame.is_some() { art.lighting.terrain(tile.position, x, y, size); }
-        if flag_frame.is_none() || !art.rules.has_base(tile.position) {
-        let layers = &art.terrain[&tile.terrain];
-        let ground = flag_frame.and_then(|_| art.ground.texture(&tile.terrain, tile.position));
-        if let Some(base) = ground.or_else(|| layers.first()) {
-            draw_centered(base, center, size, Some(viewport));
-        } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
-            draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
-        }
-        if flag_frame.is_some() {
+        art.lighting.terrain(tile.position, x, y, size);
+        if !art.rules.has_base(tile.position) {
+            let layers = &art.terrain[&tile.terrain];
+            let ground = art.ground.texture(&tile.terrain, tile.position);
+            if let Some(base) = ground.or_else(|| layers.first()) {
+                draw_atlas_centered(base, center, size, Some(viewport));
+            } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
+                draw_poly(center.x, center.y, 6, size / 2.0, 0.0, UNKNOWN_TERRAIN);
+            }
             art.transitions.draw(tile.position, center, size, viewport);
-        }
-        for overlay in layers.iter().skip(1) {
-            draw_centered(overlay, center, size, Some(viewport));
-        }
-        }
-        if flag_frame.is_some() {
-            art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
-            if art.show_grid {
-                if let Some((_, color)) = flag_frame { art.lighting.flat(color); }
-                art.grid.draw(center, size, Some(viewport));
+            for overlay in layers.iter().skip(1) {
+                draw_atlas_centered(overlay, center, size, Some(viewport));
             }
         }
+        art.rules.draw(tile.position, center, size, false, tod, now, Some(viewport));
+        if art.show_grid {
+            art.lighting.flat(flag_frame.1);
+            art.grid.draw(center, size, Some(viewport));
+        }
         if let Some(owner) = tile.village_owner {
-            if let Some((_, global_color)) = flag_frame { art.lighting.flat(global_color); }
-            if let Some(flag) = flag_frame.and_then(|(index, _)| art.flags.get(&owner)?[index].as_ref()) {
+            art.lighting.flat(flag_frame.1);
+            if let Some(flag) = art.flags.get(&owner).and_then(|frames| frames[flag_frame.0].as_ref()) {
                 draw_centered(flag, center, size, Some(viewport));
                 continue;
             }
-            let min_marker = if flag_frame.is_some() { 2.0 } else { 0.0 };
-            let (offset, radius) = terrain_clip::village_marker(size, min_marker);
+            let (offset, radius) = terrain_clip::village_marker(size, 2.0);
             let marker = center + offset;
             if !visible_rect(viewport, marker - Vec2::splat(radius), Vec2::splat(2. * radius)) { continue; }
             draw_circle(
@@ -655,7 +667,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
     let global_color = movement.global_time.map_or([0; 3], |time| time.color);
-    draw_terrain(view, layout, art, Some((frame, global_color)), period, viewport, terrain_clip);
+    draw_terrain(view, layout, art, (frame, global_color), period, viewport, terrain_clip);
     let observed_tile = |hex: Hex| {
         view.tiles.binary_search_by_key(&(hex.y, hex.x), |tile| (tile.position.y, tile.position.x))
             .ok().map(|i| &view.tiles[i])
@@ -921,6 +933,16 @@ fn draw_centered(texture: &Texture2D, center: Vec2, hex_size: f32, clip: Option<
 
 fn texture_extent<'a>(textures: impl Iterator<Item = &'a Texture2D>) -> Vec2 {
     textures.map(Texture2D::size).fold(Vec2::ZERO, Vec2::max)
+}
+
+fn atlas_extent<'a>(sprites: impl Iterator<Item = &'a AtlasSprite>) -> Vec2 {
+    sprites.map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max)
+}
+
+fn draw_atlas_centered(sprite: &AtlasSprite, center: Vec2, hex_size: f32, clip: Option<Viewport>) {
+    if let Some(rect) = sprite_rect(center, sprite.size(), hex_size, clip) {
+        sprite.draw(rect, WHITE, false);
+    }
 }
 
 fn visible_rect(view: Viewport, top: Vec2, size: Vec2) -> bool {

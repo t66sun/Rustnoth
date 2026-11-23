@@ -55,6 +55,10 @@ fn apply_opacity(image: &mut RgbaImage, argument: &str) {
 }
 
 impl Bitmaps {
+    pub(super) fn add_sprite(&mut self, pixels: &RgbaImage) -> Option<AtlasSprite> {
+        self.atlas.add(pixels)
+    }
+
     pub(super) fn frames(&self) -> impl Iterator<Item = &AtlasSprite> {
         self.cropped.values().flatten()
     }
