@@ -1,13 +1,14 @@
 use super::compile::{Catalog, Cut};
 use super::pattern;
+use crate::render::atlas::{Atlas, AtlasSprite};
 use image::{RgbaImage, imageops};
-use macroquad::prelude::{FilterMode, Texture2D};
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
 pub(super) struct Bitmaps {
     sources: HashMap<String, Rc<RgbaImage>>,
-    cropped: HashMap<(usize, Option<Cut>), Option<Texture2D>>,
+    cropped: HashMap<(usize, Option<Cut>), Option<AtlasSprite>>,
+    atlas: Atlas,
 }
 
 fn operations(expression: &str) -> Vec<&str> {
@@ -54,7 +55,11 @@ fn apply_opacity(image: &mut RgbaImage, argument: &str) {
 }
 
 impl Bitmaps {
-    pub(super) fn frames(&self) -> impl Iterator<Item = &Texture2D> {
+    pub(super) fn add_sprite(&mut self, pixels: &RgbaImage) -> Option<AtlasSprite> {
+        self.atlas.add(pixels)
+    }
+
+    pub(super) fn frames(&self) -> impl Iterator<Item = &AtlasSprite> {
         self.cropped.values().flatten()
     }
 
@@ -153,19 +158,11 @@ impl Bitmaps {
         catalog: &Catalog,
         id: usize,
         part: Option<Cut>,
-    ) -> Option<Texture2D> {
-        if let Some(texture) = self.cropped.get(&(id, part)) {
-            return texture.clone();
+    ) -> Option<AtlasSprite> {
+        if let Some(sprite) = self.cropped.get(&(id, part)) {
+            return sprite.clone();
         }
-        let result = self.pixels(catalog, id, part).and_then(|tile| {
-            let texture = Texture2D::from_rgba8(
-                tile.width().try_into().ok()?,
-                tile.height().try_into().ok()?,
-                tile.as_raw(),
-            );
-            texture.set_filter(FilterMode::Linear);
-            Some(texture)
-        });
+        let result = self.pixels(catalog, id, part).and_then(|tile| self.atlas.add(&tile));
         self.cropped.insert((id, part), result.clone());
         result
     }
@@ -227,6 +224,23 @@ mod tests {
         let frame = bitmaps.pixels(&catalog, 0, None).unwrap();
         assert_eq!(frame.get_pixel(0, 0)[3], 0);
         assert_eq!(frame.get_pixel(35, 35).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn transparent_crops_keep_distinct_cache_entries_without_allocating_a_page() {
+        let mut catalog = super::super::compile::compile(&[], &[]);
+        let name = "transparent.png";
+        catalog.names.push(name.into());
+        let mut bitmaps = Bitmaps::default();
+        bitmaps.sources.insert(name.into(), Rc::new(RgbaImage::new(144, 72)));
+
+        for x in [0, 72] {
+            let cut = Some(Cut { x, y: 0, center: None });
+            assert!(bitmaps.frame(&catalog, 0, cut).is_none());
+            assert!(bitmaps.cropped.contains_key(&(0, cut)));
+        }
+        assert_eq!(bitmaps.cropped.len(), 2);
+        assert!(bitmaps.atlas.is_empty());
     }
 
     #[test]

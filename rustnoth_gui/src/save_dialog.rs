@@ -10,7 +10,7 @@ pub fn save_pressed() -> bool {
 use crate::dialog::Skin;
 
 pub(super) async fn name(root: &Path, default_name: &str) -> Option<String> {
-    let background = Texture2D::from_image(&get_screen_data());
+    let background = dialog::Backdrop::capture(FilterMode::Linear);
     // Consume the menu click after retaining this frame of the completed board.
     next_frame().await;
     let skin = Skin::load(root);
@@ -18,7 +18,7 @@ pub(super) async fn name(root: &Path, default_name: &str) -> Option<String> {
     let mut replace = true;
     while get_char_pressed().is_some() {}
     let answer = loop {
-        let (r, p) = skin.frame("Save Game", 500.0, 188.0, &background);
+        let (r, p) = skin.frame("Save Game", 500.0, 188.0, background.texture());
         let input = Rect::new(r.x + 92.0, r.y + 63.0, r.w - 110.0, 33.0);
         dialog::text(
             skin.font.as_ref(),
