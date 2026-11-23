@@ -793,7 +793,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             continue;
         }
         if let Some(window) = attack_dialog && let Some(choices) = menu.as_mut() {
-            confirmed_action = window.choose(choices, &data.assets, &art).await;
+            confirmed_action = window.choose(choices, &data.assets).await;
             if let Some(Action::Attack(choice)) = confirmed_action.as_ref()
                 && let Some(plan) = session.hovered_attack().filter(|plan| plan.origin != plan.staging)
                 && let Some(preview) = plan.weapons.iter().find(|row| row.choice == *choice) {

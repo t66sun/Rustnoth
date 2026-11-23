@@ -1,5 +1,4 @@
 mod frame;
-mod surface;
 mod tutorial_print;
 pub(crate) use frame::StatusBox;
 pub(crate) mod minimap;
@@ -134,7 +133,6 @@ impl GridArt {
 }
 
 pub struct BoardArt {
-    surface: surface::Surface,
     frame: FrameArt,
     minimap: minimap::Art,
     lighting: lighting::Lighting,
@@ -236,7 +234,6 @@ impl BoardArt {
                 .ok()
         };
         Ok(Self {
-            surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root, locale),
             minimap: minimap::Art::new(wesnoth_root),
             lighting: lighting::Lighting::new(&terrain_dir.join("light"))?,
@@ -456,7 +453,7 @@ pub fn draw<T>(
     movement: MovementView<'_>,
     overlay: impl FnOnce(&mut BoardArt) -> T,
 ) -> T {
-    art.surface.begin();
+    set_default_camera();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
@@ -501,9 +498,7 @@ pub fn draw<T>(
             }
         }
     }
-    let result = overlay(art);
-    art.surface.present();
-    result
+    overlay(art)
 }
 
 fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_frame: Option<(usize, [i32; 3])>, tod: &str, viewport: Viewport, clip: terrain_clip::TerrainClip) {

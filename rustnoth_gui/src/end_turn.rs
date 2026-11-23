@@ -60,7 +60,7 @@ pub(super) fn modifier_down() -> bool {
 }
 
 pub(super) async fn confirm(root: &Path, locale: &Locale, prompt: &str) -> bool {
-    let background = Texture2D::from_image(&get_screen_data());
+    let background = dialog::Backdrop::capture(FilterMode::Linear);
     let skin = dialog::Skin::load(root);
     let font = skin.font.as_ref();
     let text = locale.game(prompt);
@@ -70,7 +70,7 @@ pub(super) async fn confirm(root: &Path, locale: &Locale, prompt: &str) -> bool 
     let mut yes_selected = true;
     next_frame().await;
     loop {
-        let (r, mouse) = skin.frame("", width, height, &background);
+        let (r, mouse) = skin.frame("", width, height, background.texture());
         for (i, line) in lines.iter().enumerate() {
             dialog::text(font, line, r.x + 22.0, r.y + 33.0 + i as f32 * 21.0, 16, dialog::PALE);
         }
