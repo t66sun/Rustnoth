@@ -2,6 +2,7 @@
 use super::*;
 mod unit_report;
 mod end_button;
+mod clock;
 
 pub(super) struct BattlefieldFrame {
     pub map: Viewport,
@@ -71,6 +72,7 @@ pub(super) struct FrameArt {
     minimap_buttons: crate::minimap_buttons::Buttons,
     end_button: end_button::Art,
     reports: [Texture; 5],
+    clock: clock::Clock,
     side_flags: BTreeMap<usize, Texture>,
     unit_report: unit_report::Art,
     status: StatusBox,
@@ -88,6 +90,7 @@ impl FrameArt {
             minimap: [theme("classic/minimap.png"), theme("classic/minimap-800.png")],
             minimap_buttons: crate::minimap_buttons::Buttons::load(root),
             end_button: end_button::Art::load(root),
+            clock: clock::Clock::new(root),
             side_flags: BTreeMap::new(),
             unit_report: unit_report::Art::new(root, locale),
             reports: ["gold.png", "villages.png", "units.png", "upkeep.png", "income.png"].map(theme),
@@ -160,6 +163,7 @@ pub fn draw(
     let s = frame.scale;
     if s <= 0.0 { return; }
     draw_reports(frame, state, observation, movement.session.economy(), art);
+    art.frame.clock.draw(frame, art.dialogue_font.as_ref(), #[cfg(windows)] art.dialogue_text.renderer());
     paint(&art.frame.minimap[usize::from(frame.compact)], frame.minimap_frame);
     if let Some(view) = observation {
         art.minimap.draw(view, frame.minimap, frame.map, board, art.team_colors.as_ref(), movement);
