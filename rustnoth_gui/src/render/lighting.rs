@@ -1,5 +1,5 @@
 //! Wesnoth's additive terrain light and directional regional-time masks.
-use std::{cell::Cell, collections::HashMap, fs, path::Path};
+use std::{cell::Cell, collections::HashMap, fs, num::NonZeroUsize, path::Path};
 
 use engine_lite::{hex::{Direction, Hex}, observation::{Observation, ObservedTile}};
 use macroquad::{miniquad::{BlendFactor, BlendState, BlendValue, Equation}, prelude::*};
@@ -48,9 +48,15 @@ pub(super) struct Lighting {
 enum TerrainLighting {
     Uniform(Shift),
     Regional {
-        colors: HashMap<Hex, Shift>,
-        edges: HashMap<Hex, [Shift; 6]>,
+        tiles: HashMap<Hex, TileLighting>,
+        boundaries: Vec<[Vec3; 8]>,
     },
+}
+
+struct TileLighting {
+    shift: Shift,
+    // One-based index into the packed boundary uniforms.
+    boundary: Option<NonZeroUsize>,
 }
 
 impl Default for TerrainLighting {
@@ -67,27 +73,39 @@ impl TerrainLighting {
             return;
         }
 
-        let (mut colors, mut edges) = match std::mem::take(self) {
-            Self::Uniform(_) => (HashMap::new(), HashMap::new()),
-            Self::Regional { colors, edges } => (colors, edges),
+        let (mut tiles, mut boundaries) = match std::mem::take(self) {
+            Self::Uniform(_) => (HashMap::new(), Vec::new()),
+            Self::Regional { tiles, boundaries } => (tiles, boundaries),
         };
-        colors.clear();
-        colors.extend(view.tiles.iter().map(|tile| (tile.position, terrain_shift(tile.time_color))));
-        edges.clear();
-        for (&hex, &color) in &colors {
+        tiles.clear();
+        tiles.extend(view.tiles.iter().map(|tile| {
+            (tile.position, TileLighting { shift: terrain_shift(tile.time_color), boundary: None })
+        }));
+        boundaries.clear();
+        for tile in &view.tiles {
+            let hex = tile.position;
+            let color = tiles[&hex].shift;
             let neighbors = Direction::CLOCKWISE.map(|dir| hex.neighbor(dir)
-                .and_then(|pos| colors.get(&pos)).copied().unwrap_or(color));
+                .and_then(|pos| tiles.get(&pos)).map_or(color, |tile| tile.shift));
             if neighbors.iter().any(|other| *other != color) {
-                edges.insert(hex, neighbors);
+                let [north, northeast, southeast, south, southwest, northwest] = neighbors.map(normalized);
+                // The shader walks each adjacent pair, including northwest to north.
+                boundaries.push([
+                    normalized(color), north, northeast, southeast, south, southwest, northwest, north,
+                ]);
+                tiles.get_mut(&hex).unwrap().boundary = NonZeroUsize::new(boundaries.len());
             }
         }
-        *self = Self::Regional { colors, edges };
+        *self = Self::Regional { tiles, boundaries };
     }
 
-    fn shade(&self, hex: Hex) -> (Shift, Option<&[Shift; 6]>) {
+    fn shade(&self, hex: Hex) -> (Shift, Option<&[Vec3; 8]>) {
         match self {
             Self::Uniform(color) => (*color, None),
-            Self::Regional { colors, edges } => (colors[&hex], edges.get(&hex)),
+            Self::Regional { tiles, boundaries } => {
+                let tile = &tiles[&hex];
+                (tile.shift, tile.boundary.map(|index| &boundaries[index.get() - 1]))
+            }
         }
     }
 }
@@ -102,7 +120,7 @@ impl Lighting {
             },
             uniforms: vec![UniformDesc::new("Shift", UniformType::Float3),
                 UniformDesc::new("HexBox", UniformType::Float3),
-                UniformDesc::new("Adjacent", UniformType::Float3).array(7)],
+                UniformDesc::new("BoundaryColors", UniformType::Float3).array(8)],
             textures: vec!["Masks".into()],
         })?;
         material.set_texture("Masks", mask_atlas(directory));
@@ -126,14 +144,12 @@ impl Lighting {
     }
 
     pub(super) fn terrain(&self, hex: Hex, left: f32, top: f32, size: f32) {
-        let (color, neighbors) = self.terrain.shade(hex);
-        if let Some(neighbors) = neighbors {
+        let (color, boundary) = self.terrain.shade(hex);
+        if let Some(boundary) = boundary {
             self.active_flat.set(None);
             gl_use_material(&self.material);
-            self.material.set_uniform("Shift", normalized(color));
             self.material.set_uniform("HexBox", vec3(left, top, size));
-            let adjacent: [Vec3; 7] = std::array::from_fn(|i| normalized(neighbors[i % 6]));
-            self.material.set_uniform_array("Adjacent", &adjacent);
+            self.material.set_uniform_array("BoundaryColors", boundary);
         } else {
             self.flat(color);
         }
@@ -166,7 +182,7 @@ uniform sampler2D Texture;
 uniform sampler2D Masks;
 uniform vec3 Shift;
 uniform vec3 HexBox;
-uniform vec3 Adjacent[7];
+uniform vec3 BoundaryColors[8];
 varying mediump vec2 uv;
 varying mediump vec2 world;
 varying lowp vec4 color;
@@ -177,15 +193,17 @@ vec4 mask_sample(float direction, float row, vec2 p) {
 void main() {
     vec3 adjustment = Shift;
     if (HexBox.z > 0.0) {
+        vec3 base = BoundaryColors[0];
+        adjustment = base;
         vec2 p = (world - HexBox.xy) / HexBox.z;
         for (int group = 0; group < 3; ++group) {
             // Native order: concave, first convex edge, second convex edge.
             for (int d = 0; d < 6; ++d) {
-                vec3 a = Adjacent[d];
-                vec3 b = Adjacent[d + 1];
-                bool concave = all(equal(a,b)) && any(notEqual(a,Shift));
-                bool first = any(notEqual(a,b)) && any(notEqual(a,Shift));
-                bool second = any(notEqual(a,b)) && any(notEqual(b,Shift));
+                vec3 a = BoundaryColors[d + 1];
+                vec3 b = BoundaryColors[d + 2];
+                bool concave = all(equal(a,b)) && any(notEqual(a,base));
+                bool first = any(notEqual(a,b)) && any(notEqual(a,base));
+                bool second = any(notEqual(a,b)) && any(notEqual(b,base));
                 if ((group == 0 && concave) || (group == 1 && first) || (group == 2 && second)) {
                     vec4 mask = mask_sample(float(d), float(group), p);
                     vec3 lit = clamp(mask.rgb + (group == 2 ? b : a) * 0.5, 0.0, 1.0);
@@ -229,12 +247,15 @@ mod tests {
 
         view.tiles[1].time_color = [26, 10, 0];
         terrain.update(&view);
-        let (shift, neighbors) = terrain.shade(north);
+        let (shift, boundary) = terrain.shade(north);
         assert_eq!(shift, night);
-        let expected = Direction::CLOCKWISE.map(|dir| {
-            if dir == Direction::South { [26, 10, 0] } else { night }
-        });
-        assert_eq!(neighbors, Some(&expected));
+        let dark = normalized(night);
+        let dawn = normalized([26, 10, 0]);
+        assert_eq!(boundary, Some(&[dark, dark, dark, dark, dawn, dark, dark, dark]));
+        assert_eq!(
+            terrain.shade(south),
+            ([26, 10, 0], Some(&[dawn, dark, dawn, dawn, dawn, dawn, dawn, dark])),
+        );
 
         view.tiles.pop();
         terrain.update(&view);
