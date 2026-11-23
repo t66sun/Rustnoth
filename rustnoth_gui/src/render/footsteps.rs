@@ -50,6 +50,7 @@ fn halves(steps: &[(Hex, u32)], i: usize) -> [Option<Print>; 2] {
 pub(super) struct Art {
     speeds: Vec<[[Option<Texture2D>; 3]; 2]>,
     teleports: [Option<Texture2D>; 2],
+    attack: [[Option<Texture2D>; 6]; 2],
     marks: [Option<Texture2D>; 3],
     colors: Vec<Color>,
 }
@@ -95,6 +96,8 @@ impl Art {
         Self {
             speeds,
             teleports,
+            attack: ["src", "dst"].map(|end| ["n", "ne", "se", "s", "sw", "nw"].map(|dir|
+                load_texture(&folder.join(format!("misc/attack-indicator-{end}-{dir}.png")), None))),
             marks,
             colors,
         }
@@ -135,6 +138,17 @@ impl Art {
                         },
                     );
                 }
+            }
+        }
+    }
+
+    pub(super) fn draw_attack(&self, layout: &BoardLayout, from: Hex, to: Hex, viewport: super::Viewport) {
+        let Some(dir) = Direction::CLOCKWISE.iter().position(|&dir| from.direction_to(to) == Some(dir)) else { return };
+        let size = layout.tile_size();
+        for (at, textures) in [from, to].into_iter().zip(&self.attack) {
+            if let Some(image) = &textures[dir] {
+                let center = Vec2::from_array(layout.tile_origin(at)) + Vec2::splat(size / 2.0);
+                super::draw_centered(image, center, size, Some(viewport));
             }
         }
     }
