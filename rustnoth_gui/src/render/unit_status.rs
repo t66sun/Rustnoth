@@ -1,4 +1,4 @@
-use super::{ART_HEX_SIZE, load_recolored, load_texture};
+use super::{ART_HEX_SIZE, atlas::{Atlas, AtlasSprite}, recolored_pixels};
 use engine_lite::observation::{Observation, ObservedUnit};
 use macroquad::prelude::*;
 use rustnoth_gui::{assets::UnitBars, team_colors::TeamColors};
@@ -31,19 +31,24 @@ fn own_orb(full: bool, actionable: bool, no_attacks: bool) -> Orb {
 }
 
 pub(super) struct StatusArt {
-    orbs: HashMap<Orb, Texture2D>,
-    crown: Option<Texture2D>,
+    orbs: HashMap<Orb, AtlasSprite>,
+    crown: Option<AtlasSprite>,
+    solid: AtlasSprite,
 }
 
 impl StatusArt {
     pub(super) fn load(root: &Path, colors: Option<&[u8]>) -> Self {
         let dir = root.join("images/misc");
         let mut orbs = HashMap::new();
+        let mut atlas = Atlas::with_page_side(256);
+        let solid = atlas.add(&::image::RgbaImage::from_pixel(1, 1, ::image::Rgba([255; 4])))
+            .expect("solid status texel fits the page");
         if let Some(colors) = colors {
             for (orb, color) in [(Orb::Ally, "lightblue"), (Orb::Moved, "red"),
                 (Orb::Partial, "brightorange"), (Orb::Unmoved, "brightgreen")] {
                 let Ok(palette) = TeamColors::named_range(colors, "magenta", color) else { continue };
-                if let Some(texture) = load_texture(&dir.join("orb.png"), Some((&palette, 1))) {
+                if let Some(texture) = recolored_pixels(&dir.join("orb.png"), [(&palette, 1)])
+                    .and_then(|pixels| atlas.add(&pixels)) {
                     orbs.insert(orb, texture);
                 }
                 let (split_orb, ring_color) = match orb {
@@ -52,13 +57,16 @@ impl StatusArt {
                     _ => continue,
                 };
                 if let Ok(ring) = TeamColors::named_range(colors, "ellipse_red", ring_color)
-                    && let Some(texture) = load_recolored(&dir.join("orb-two-color.png"), [(&ring, 1), (&palette, 1)])
+                    && let Some(texture) = recolored_pixels(&dir.join("orb-two-color.png"), [(&ring, 1), (&palette, 1)])
+                        .and_then(|pixels| atlas.add(&pixels))
                 {
                     orbs.insert(split_orb, texture);
                 }
             }
         }
-        Self { orbs, crown: load_texture(&dir.join("leader-crown.png"), None) }
+        let crown = recolored_pixels(&dir.join("leader-crown.png"), None)
+            .and_then(|pixels| atlas.add(&pixels));
+        Self { orbs, crown, solid }
     }
 
     pub(super) fn draw(&self, unit: &ObservedUnit, style: UnitBars, tile: Vec2, size: f32,
@@ -70,23 +78,21 @@ impl StatusArt {
         let origin = tile + offset;
         let orb = orb.and_then(|orb| self.orbs.get(&orb));
         let crown = self.crown.as_ref().filter(|_| unit.can_recruit);
-        for texture in [orb, crown].into_iter().flatten() {
-            if !super::visible_rect(viewport, origin, texture.size() * zoom) { continue; }
-            draw_texture_ex(texture, origin.x, origin.y, WHITE, DrawTextureParams {
-                dest_size: Some(vec2(texture.width(), texture.height()) * zoom),
-                ..Default::default()
-            });
+        for sprite in [orb, crown].into_iter().flatten() {
+            let size = sprite.size() * zoom;
+            if !super::visible_rect(viewport, origin, size) { continue; }
+            sprite.draw(Rect::new(origin.x, origin.y, size.x, size.y), WHITE, false);
         }
 
         let alpha = if highlighted { 255 } else { 204 };
         if unit.max_hitpoints > 0 {
             let ratio = unit.hitpoints as f32 / unit.max_hitpoints as f32;
-            draw_bar(origin - vec2((5.0 * zoom).trunc(), 0.), zoom,
+            draw_bar(&self.solid, origin - vec2((5.0 * zoom).trunc(), 0.), zoom,
                 unit.max_hitpoints as f32 * style.hp_scale, ratio, hp_color(ratio), alpha, viewport);
         }
         if unit.experience > 0 && unit.max_experience > 0 && let Some(major) = style.advancement {
             let ratio = unit.experience as f32 / unit.max_experience as f32;
-            draw_bar(origin, zoom, unit.max_experience as f32 * style.xp_scale / style.level.max(1) as f32,
+            draw_bar(&self.solid, origin, zoom, unit.max_experience as f32 * style.xp_scale / style.level.max(1) as f32,
                 ratio, xp_color(unit.max_experience.saturating_sub(unit.experience), major), alpha, viewport);
         }
     }
@@ -110,7 +116,7 @@ pub(super) fn xp_color(remaining: i32, major: bool) -> [u8; 3] {
     thresholds[match remaining { ..=8 => 0, 9..=16 => 1, 17..=24 => 2, _ => 3 }]
 }
 
-fn draw_bar(origin: Vec2, zoom: f32, height: f32, ratio: f32, [r,g,b]: [u8; 3], alpha: u8, viewport: super::Viewport) {
+fn draw_bar(solid: &AtlasSprite, origin: Vec2, zoom: f32, height: f32, ratio: f32, [r,g,b]: [u8; 3], alpha: u8, viewport: super::Viewport) {
     let x = origin.x + (19.0 * zoom).trunc();
     let dy = (13.0 * zoom).trunc();
     let y = origin.y + dy;
@@ -119,14 +125,38 @@ fn draw_bar(origin: Vec2, zoom: f32, height: f32, ratio: f32, [r,g,b]: [u8; 3], 
     if width < 1.0 || height < 1.0 { return; }
     if !super::visible_rect(viewport, vec2(x, y) - Vec2::ONE, vec2(width, height) + Vec2::splat(2.)) { return; }
     let unfilled = (height * (1.0 - ratio.clamp(0.0, 1.0))).trunc();
-    draw_rectangle(x, y, width, height, Color::from_rgba(0, 0, 0, 80));
-    draw_rectangle(x, y + unfilled, width, height - unfilled, Color::from_rgba(r, g, b, alpha));
-    draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(213, 213, 213, 200));
+    solid.draw(Rect::new(x, y, width, height), Color::from_rgba(0, 0, 0, 80), false);
+    solid.draw(Rect::new(x, y + unfilled, width, height - unfilled), Color::from_rgba(r, g, b, alpha), false);
+    for edge in bar_outline(Rect::new(x, y, width, height)) {
+        solid.draw(edge, Color::from_rgba(213, 213, 213, 200), false);
+    }
+}
+
+fn bar_outline(rect: Rect) -> [Rect; 4] {
+    let half = 0.5;
+    let between = rect.h - 2.0 * half;
+    [
+        Rect::new(rect.x, rect.y, rect.w, half),
+        Rect::new(rect.x, rect.bottom() - half, rect.w, half),
+        Rect::new(rect.x, rect.y + half, half, between),
+        Rect::new(rect.right() - half, rect.y + half, half, between),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tinted_bar_edges_cover_the_inside_frame_without_blending_corners_twice() {
+        let rect = Rect::new(10.25, 20.25, 4.0, 6.0);
+        assert_eq!(bar_outline(rect), [
+            Rect::new(10.25, 20.25, 4.0, 0.5),
+            Rect::new(10.25, 25.75, 4.0, 0.5),
+            Rect::new(10.25, 20.75, 0.5, 5.0),
+            Rect::new(13.75, 20.75, 0.5, 5.0),
+        ]);
+    }
 
     #[test]
     fn defaults_distinguish_full_health_level_advancement_and_amla() {
