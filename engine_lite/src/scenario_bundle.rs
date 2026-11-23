@@ -21,45 +21,84 @@ pub struct Bundle {
     unit_types: BTreeMap<String, UnitType>,
 }
 
+/// Inputs shared with a desktop board's presentation catalog during loading.
+pub struct BundleSources<'a> {
+    pub scenario: &'a Node,
+    /// Root metadata and remaining source definitions after the rules are read.
+    pub bundle: &'a mut Node,
+    pub core: &'a mut Node,
+    pub units: &'a Node,
+}
+
 impl Bundle {
     /// Parse the terrain definitions, one units block, and one scenario block.
     pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::parse_bundle(bytes, None)
+        Self::parse_bundle(bytes, None, |input| wml::parse(input), |_, _, _, _| Ok(()))
+            .map(|(bundle, ())| bundle)
     }
 
     /// Load the original preprocessed core catalogs and a scenario with optional custom definitions.
     /// Core terrain codes, movetype names and unit type IDs take precedence.
     pub fn parse_with_core(scenario_bytes: &[u8], core_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::parse_bundle(scenario_bytes, Some(core_bytes))
+        Self::parse_with_core_and(scenario_bytes, core_bytes, |_| Ok(())).map(|(bundle, ())| bundle)
     }
 
-    fn parse_bundle(bytes: &[u8], core_bytes: Option<&[u8]>) -> Result<Self, Box<dyn Error>> {
-        let mut bundle = wml::parse(bytes)?;
+    /// Read both WML inputs once and project presentation data from the same
+    /// resolved unit definitions before the rules loader consumes them.
+    pub fn parse_with_core_and<T>(
+        scenario_bytes: &[u8],
+        core_bytes: &[u8],
+        project: impl FnOnce(BundleSources<'_>) -> Result<T, Box<dyn Error>>,
+    ) -> Result<(Self, T), Box<dyn Error>> {
+        Self::parse_bundle(
+            scenario_bytes,
+            Some(core_bytes),
+            |input| wml::parse(input),
+            |scenario, bundle, core, units| {
+                project(BundleSources {
+                    scenario,
+                    bundle,
+                    core: core.expect("core configuration was supplied"),
+                    units,
+                })
+            },
+        )
+    }
+
+    fn parse_bundle<T>(
+        bytes: &[u8],
+        core_bytes: Option<&[u8]>,
+        mut parse: impl FnMut(&[u8]) -> Result<Node, wml::ParseError>,
+        project: impl FnOnce(&Node, &mut Node, Option<&mut Node>, &Node) -> Result<T, Box<dyn Error>>,
+    ) -> Result<(Self, T), Box<dyn Error>> {
+        let mut bundle = parse(bytes)?;
         let units = take_block(&mut bundle, "units")?;
         let mut scenario = take_block(&mut bundle, "scenario")?.ok_or("missing [scenario] block")?;
-        if let Some(mode) = bundle.attributes.remove("random_mode") {
-            scenario.attributes.insert("random_mode".into(), mode);
-        }
-        let (config, mut units) = if let Some(bytes) = core_bytes {
-            let mut core = wml::parse(bytes)?;
+        let mut core = core_bytes.map(parse).transpose()?;
+        let mut units = if let Some(core) = &mut core {
             let mut core_units =
-                take_block(&mut core, "units")?.ok_or("missing [units] block in core catalog")?;
-            core.children.extend(bundle.children);
+                take_block(core, "units")?.ok_or("missing [units] block in core catalog")?;
             if let Some(units) = units {
                 core_units.children.extend(units.children);
             }
-            (core, core_units)
+            core_units
         } else {
-            (bundle, units.ok_or("missing [units] block")?)
+            units.ok_or("missing [units] block")?
         };
         crate::unit_type::resolve_base_units(&mut units)?;
-        Ok(Self {
+        let terrain = TerrainAliases::from_wml_sources(core.iter().chain([&bundle]));
+        let mode = bundle.attributes.get("random_mode").cloned();
+        let presentation = project(&scenario, &mut bundle, core.as_mut(), &units)?;
+        if let Some(mode) = mode {
+            scenario.attributes.insert("random_mode".into(), mode);
+        }
+        Ok((Self {
             scenario,
-            terrain: TerrainAliases::from_wml(&config),
+            terrain,
             movement: read_movement_types(&units),
             resistance: read_resistance(&units),
             unit_types: read_unit_types(units),
-        })
+        }, presentation))
     }
 
     /// Public unit-type data used by the recruit preview for a legal recruit.
@@ -161,6 +200,40 @@ fn read_resistance(units: &Node) -> BTreeMap<String, DamageTable> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn board_presentation_and_rules_share_one_parse_per_input() {
+        let core = b"[terrain_type]\nid=core_grass\nstring=Gg\n[/terrain_type]\n\
+            [units]\n[unit_type]\nid=Guard\nimage=guard.png\nhitpoints=36\n[/unit_type]\n[/units]";
+        let source = b"random_mode=biased\n[scenario]\nname=Battle\n[/scenario]\n\
+            [terrain_type]\nid=custom_grass\nstring=Gg\n[/terrain_type]\n\
+            [units]\n[unit_type]\nid=Veteran\n[base_unit]\nid=Guard\n[/base_unit]\n[/unit_type]\n[/units]";
+        let mut expected_inputs = [source.as_slice(), core.as_slice()].into_iter();
+
+        let (bundle, sprite) = super::Bundle::parse_bundle(
+            source,
+            Some(core),
+            |input| {
+                assert_eq!(expected_inputs.next(), Some(input));
+                super::wml::parse(input)
+            },
+            |scenario, bundle, core, units| {
+                assert_eq!(scenario.attribute("name"), Some("Battle"));
+                assert_eq!(bundle.attribute("random_mode"), Some("biased"));
+                let (_, veteran) = units.children.iter()
+                    .find(|(_, unit)| unit.attribute("id") == Some("Veteran"))
+                    .unwrap();
+                core.unwrap().children.clear();
+                Ok(veteran.attribute("image").unwrap().to_owned())
+            },
+        ).unwrap();
+
+        assert!(expected_inputs.next().is_none());
+        assert_eq!(sprite, "guard.png");
+        assert_eq!(bundle.unit_type("Veteran").unwrap().hitpoints, 36);
+        assert_eq!(bundle.scenario.attribute("random_mode"), Some("biased"));
+        assert_eq!(bundle.terrain.terrain_id("Gg"), Some("core_grass"));
+    }
+
     use super::*;
     use crate::fixed_match::Action;
 

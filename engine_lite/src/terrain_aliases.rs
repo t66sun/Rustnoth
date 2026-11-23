@@ -106,8 +106,13 @@ impl TerrainAliases {
     /// Load the `[terrain_type]` children of a preprocessed configuration.
     /// The first definition of each terrain code wins.
     pub fn from_wml(config: &Node) -> Self {
+        Self::from_wml_sources([config])
+    }
+
+    /// Load terrain definitions across sources in their precedence order.
+    pub fn from_wml_sources<'a>(sources: impl IntoIterator<Item = &'a Node>) -> Self {
         let mut definitions = HashMap::new();
-        for (tag, terrain) in &config.children {
+        for (tag, terrain) in sources.into_iter().flat_map(|source| &source.children) {
             if tag != "terrain_type" {
                 continue;
             }
