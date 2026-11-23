@@ -15,6 +15,7 @@ mod load_game;
 mod credits;
 mod community;
 mod achievements;
+pub(crate) use achievements::tutorial_progress;
 pub(crate) use achievements::icons::pixels as icon_pixels;
 mod addons;
 pub(crate) mod profile;

@@ -57,6 +57,7 @@ impl Hero {
 enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, FighterAttack, Practice, Complete }
 
 pub(super) struct Lesson {
+    pub(super) victory_award: Option<crate::title_screen::tutorial_progress::Award>,
     end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
@@ -74,8 +75,8 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
-        Self { attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(victory_award: Option<crate::title_screen::tutorial_progress::Award>, mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
+        Self { victory_award, attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 

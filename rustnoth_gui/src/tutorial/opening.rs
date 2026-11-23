@@ -62,6 +62,7 @@ fn first_enemy_refresh(scenario: &Node) -> Option<Node> {
 /// In particular the original Lua character selection, adjacent-unit filter and MOVE_UNIT
 /// macro must be resolved before handing the scenario to the fixed-match event reader.
 pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn Error>> {
+    let victory_award = crate::title_screen::tutorial_progress::Award::from_victory(scenario);
     let student = scenario.children.iter_mut().find(|(tag, side)| tag == "side" && side.attribute("id") == Some("student"))
         .ok_or("tutorial has no student")?;
     if hero == Hero::Lisar {
@@ -152,7 +153,7 @@ pub(super) fn prepare(scenario: &mut Node, hero: Hero) -> Result<Lesson, Box<dyn
     let recruiting = recruiting::Exercise::read(scenario, hero, &mut events)?;
     let weapons = weapons::Exercise::read(scenario, hero)?;
     let instructions = [healing::Line::Message(introduction), healing::Line::Hint(hint)];
-    let mut lesson = Lesson::new(mentor_hex, hero, instructions, undo_prompt, healing, recruiting, reasons, weapons);
+    let mut lesson = Lesson::new(victory_award, mentor_hex, hero, instructions, undo_prompt, healing, recruiting, reasons, weapons);
     if let Some(prompt) = gender_command(start, hero, "print").and_then(|cmd| cmd.attribute("text")) {
         lesson.select_prompt = prompt.into();
     }

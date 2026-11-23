@@ -319,8 +319,10 @@ impl<'rules> Session<'rules> {
         self.game.next_scenario_after_victory()
     }
 
+    pub fn human_won(&self) -> bool { self.game.human_won() }
+
     pub fn final_victory_ready(&self, report_shown: bool) -> bool {
-        self.game.human_won() && self.next_scenario().is_none() && self.dialogue().is_none()
+        self.human_won() && self.next_scenario().is_none() && self.dialogue().is_none()
             && (report_shown || !self.show_end_report())
     }
 
