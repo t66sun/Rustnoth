@@ -1,6 +1,9 @@
 use super::*;
 use engine_lite::fixed_match::dialogue::DialogueLine;
 
+#[cfg(windows)]
+pub(super) mod native;
+
 const MAX_TEXT_WIDTH: f32 = 675.0;
 const TITLE: Color = Color::from_rgba(186, 172, 125, 255);
 const BODY: Color = Color::from_rgba(215, 215, 215, 255);
@@ -163,7 +166,37 @@ pub fn draw_dialogue(line: &DialogueLine, assets: &AssetCatalog, art: &mut Board
     let layout = PortraitLayout::for_message(line, image);
     let (left, width) = text_column(view, layout);
     let caption = line.caption.as_deref().or_else(|| kind.and_then(|id| assets.unit_name(id)).or(kind))
-        .filter(|s| !s.is_empty()).map(plain_text);
+        .filter(|s| !s.is_empty());
+    let bottom = view.y + view.height;
+    let max_height = (bottom - 30.0).max(1.0);
+    #[cfg(windows)]
+    let native = art.dialogue_text.labels(caption.unwrap_or(""), &line.text, width as u16, max_height as u16, page);
+    #[cfg(windows)]
+    let last_page = if let Some(labels) = native {
+        let height = labels.height(max_height);
+        let top = bottom - height;
+        draw_message_panel(view, top, height, art, assets);
+        labels.draw(left, top, height, width, &art.dialogue_font)
+    } else {
+        draw_plain(line, caption, view, left, width, page, art, assets)
+    };
+    #[cfg(not(windows))]
+    let last_page = draw_plain(line, caption, view, left, width, page, art, assets);
+    // GUI2 composites the foreground after the text, so tall portraits extend up over the map.
+    if let Some(portrait) = Portrait::load(image, line.mirror, kind.zip(line.speaker_side), assets, art) {
+        portrait.draw(view, layout, layout == PortraitLayout::Right);
+    }
+    if let Some(second) = &line.second_image
+        && let Some(portrait) = Portrait::load(second, line.second_mirror, None, assets, art)
+    {
+        portrait.draw(view, layout, true);
+    }
+    last_page
+}
+
+fn draw_plain(line: &DialogueLine, caption: Option<&str>, view: Viewport, left: f32, width: f32, page: usize,
+    art: &mut BoardArt, assets: &AssetCatalog) -> bool {
+    let caption = caption.map(plain_text);
     let title_height = if caption.is_some() { 37.0 } else { 10.0 };
     let lines = wrap(&plain_text(&line.text), width, |s|
         measure_text(s, art.dialogue_font.as_ref(), FONT_SIZE, 1.0).width);
@@ -199,15 +232,6 @@ pub fn draw_dialogue(line: &DialogueLine, assets: &AssetCatalog, art: &mut Board
     if overflow {
         let label_width = measure_text("OK", art.dialogue_font.as_ref(), FONT_SIZE, 1.0).width;
         label(&art.dialogue_font, "OK", left + (width - label_width) / 2.0, bottom - 18.0, FONT_SIZE, TITLE);
-    }
-    // GUI2 composites the foreground after the text, so tall portraits extend up over the map.
-    if let Some(portrait) = Portrait::load(image, line.mirror, kind.zip(line.speaker_side), assets, art) {
-        portrait.draw(view, layout, layout == PortraitLayout::Right);
-    }
-    if let Some(second) = &line.second_image
-        && let Some(portrait) = Portrait::load(second, line.second_mirror, None, assets, art)
-    {
-        portrait.draw(view, layout, true);
     }
     page + 1 == pages
 }

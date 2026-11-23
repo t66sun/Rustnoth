@@ -132,7 +132,7 @@ pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
     art.load(view, &data.assets, &session);
     let mut camera = BoardCamera::default();
     camera.update(render::board_viewport(), view, false);
-    camera.center_world([0.75*keep.x as f32+0.5, keep.y as f32+0.5*keep.x.rem_euclid(2) as f32+0.5]);
+    camera.open_at(Some(keep));
     let menus = map_menus::State::default();
     let menu_art = map_menus::Art::new(root);
     let mut picker = Picker::load(root)?;
@@ -146,7 +146,7 @@ pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
         }, |art| {
             menus.draw(&menu_art, art.font.as_ref(), &[]);
             if let Some(r) = render::end_turn_button(screen_width(), screen_height(), true) {
-                render::draw_turn_button(r, false, art, &picker.end_turn);
+                render::draw_turn_button(r, false, false, art, &picker.end_turn);
             }
             if introduction { (render::draw_dialogue(opening, &data.assets, art, page), None) }
             else { (false, picker.draw(art.font.as_ref())) }

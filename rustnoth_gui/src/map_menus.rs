@@ -144,6 +144,20 @@ fn row(button: Rect, i: usize, scale: f32) -> Rect {
 }
 
 impl State {
+    pub fn vertical_edge_scroll(&self, pointer: Vec2, canvas: Vec2, threshold: f32) -> i32 {
+        // Macroquad's initial position is (0, 0) until the first pointer event.
+        if self.open.is_some() || pointer == Vec2::ZERO || pointer.x < 0.0 || pointer.x >= canvas.x
+            || pointer.y < 0.0 || pointer.y >= canvas.y
+        {
+            return 0;
+        }
+        let direction = (pointer.y < threshold) as i32 - (pointer.y > canvas.y - threshold) as i32;
+        if direction != 0 && geometry(canvas.x, canvas.y).0.iter().any(|b| b.contains(pointer)) {
+            return 0;
+        }
+        direction
+    }
+
     fn anchor(&self, group: Group, buttons: [Rect; 2]) -> Rect {
         match group {
             Group::Menu => buttons[0],
@@ -316,6 +330,23 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_edges_use_the_native_threshold_and_release_over_menus() {
+        let mut state = State::default();
+        let canvas = vec2(1200.0, 820.0);
+        let edge = |menu: &State, x, y| menu.vertical_edge_scroll(vec2(x, y), canvas, 10.0);
+        assert_eq!(edge(&state, 600.0, 0.0), 1);
+        assert_eq!(edge(&state, 600.0, 9.0), 1);
+        assert_eq!(edge(&state, 600.0, 10.0), 0);
+        assert_eq!(edge(&state, 600.0, 810.0), 0);
+        assert_eq!(edge(&state, 600.0, 811.0), -1);
+        assert_eq!(edge(&state, 600.0, 820.0), 0);
+        assert_eq!(edge(&state, 40.0, 5.0), 0);
+        assert_eq!(edge(&state, 145.0, 5.0), 0);
+        assert_eq!(state.vertical_edge_scroll(vec2(600.0, 819.0), canvas, 0.0), 0);
+        state.open = Some(Group::Context);
+        assert_eq!(edge(&state, 600.0, 819.0), 0);
+    }
 
     #[test]
     fn recruit_context_uses_the_clicked_castle_hex() {
