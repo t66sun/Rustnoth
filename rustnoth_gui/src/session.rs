@@ -1,3 +1,5 @@
+mod enemy_moves;
+
 use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
     hex::Hex,
@@ -58,6 +60,7 @@ pub struct Session<'rules> {
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
     attack_cursor: crate::attack_route::Cursor,
+    enemy_moves: enemy_moves::Display,
     hovered_move: Option<(Hex, Hex)>,
     route: Option<engine_lite::fixed_match::move_preview::MovePreview>,
     computer_action: Option<Action>,
@@ -74,6 +77,7 @@ impl<'rules> Session<'rules> {
         let mut session = Self {
             economy: None, tutorial_hint: String::new(), tutorial_undo: None,
             animate_combat: false, live_attack_seed: None, last_combat: None,
+            enemy_moves: Default::default(),
             attack_cursor: Default::default(), hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
@@ -83,6 +87,7 @@ impl<'rules> Session<'rules> {
 
     fn refresh(&mut self) {
         self.attack_cursor = Default::default();
+        self.clear_enemy_moves();
         self.hovered_move = None;
         self.route = None;
         self.computer_action = None;

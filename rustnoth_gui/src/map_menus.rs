@@ -16,6 +16,7 @@ pub(super) enum Command {
     Save,
     Quit,
     NextUnit,
+    ShowEnemyMoves,
     Recruit,
     RecruitAt(Hex),
     Recall,
@@ -29,6 +30,7 @@ impl Command {
             Self::Save => "Save Game",
             Self::Quit => "Quit to Main Menu",
             Self::NextUnit => "Next Unit",
+            Self::ShowEnemyMoves => "Show Enemy Moves",
             Self::Recruit | Self::RecruitAt(_) => "Recruit",
             Self::Recall => "Recall",
             Self::Undo => "Undo",
@@ -123,13 +125,23 @@ pub(super) fn available(objectives: bool, units: bool, actions: &[Action]) -> Ve
     }
     commands
 }
+pub(super) fn enemy_moves_hotkey() -> bool {
+    let modifier = if cfg!(target_os = "macos") {
+        is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
+    } else {
+        is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+    };
+    modifier && is_key_pressed(KeyCode::V)
+        && ![KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftAlt, KeyCode::RightAlt].into_iter().any(is_key_down)
+}
+
 fn items(group: Group, commands: &[Command]) -> Vec<Command> {
     commands
         .iter()
         .copied()
         .filter(|c| match group {
             Group::Menu => matches!(c, Command::Objectives | Command::UnitList | Command::Save | Command::Quit),
-            Group::Actions => matches!(c, Command::NextUnit | Command::Recruit | Command::Recall | Command::Undo),
+            Group::Actions => matches!(c, Command::NextUnit | Command::Recruit | Command::Recall | Command::Undo | Command::ShowEnemyMoves),
             Group::Context => *c == Command::Undo,
         })
         .collect()

@@ -595,10 +595,15 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
             .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
     });
+    let enemies = movement.session.enemy_reach();
+    let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
     if let Some(mask) = art.unreachable.as_ref()
-        && let Some(reachable) = reach::reachable(movement.selected, movement.actions, target) {
+        && (enemies.is_some() || own.is_some()) {
         let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
-        for tile in view.tiles.iter().filter(|tile| Some(tile.position) != attack_target && !reachable.contains(&tile.position)) {
+        for tile in view.tiles.iter().filter(|tile| {
+            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+                && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
+        }) {
             let [x, y] = layout.tile_origin(tile.position);
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
         }
@@ -615,7 +620,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let center = origin(unit.position) + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
-            let selected = movement.selected == Some(unit.position);
+            let selected = movement.selected == Some(unit.position)
+                || enemies.is_some_and(|reach| reach.threatening.contains(&unit.position));
             let key = (unit.side, unit.can_recruit, unit.emits_zoc, selected);
             if let Some(halves) = art.ellipses.get(prefix).and_then(|variants| variants.get(&key)) {
                 for texture in halves.iter().flatten() { draw_centered(texture, center, size, Some(viewport)); }
@@ -705,6 +711,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     draw_cover(layout, art, viewport);
     art.fog_edges.draw(layout, viewport);
     art.lighting.flat([0; 3]);
+    if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
     if let Some(plan) = movement.session.hovered_attack() {
         art.footsteps.draw_attack(layout, plan.staging, plan.target, viewport);
