@@ -143,7 +143,7 @@ impl Rules {
         atlas_extent(self.bitmaps.frames())
     }
 
-    pub(super) fn add_fallback_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
+    pub(super) fn add_terrain_sprite(&mut self, pixels: &image::RgbaImage) -> Option<AtlasSprite> {
         self.bitmaps.add_sprite(pixels)
     }
 

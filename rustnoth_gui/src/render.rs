@@ -121,16 +121,18 @@ fn map_cover(view: &Observation) -> CoverTiles {
     CoverTiles { cells: cover, fog_end, playable_end }
 }
 
-pub(crate) struct GridArt([Option<Texture2D>; 2]);
+pub(crate) struct GridArt([Option<AtlasSprite>; 2]);
 
 impl GridArt {
-    pub(crate) fn load(terrain_dir: &Path) -> Self {
-        Self(["grid-top.png", "grid-bottom.png"].map(|name| load_texture(&terrain_dir.join(name), None)))
+    pub(crate) fn load(terrain_dir: &Path, rules: &mut rules::Rules) -> Self {
+        Self(["grid-top.png", "grid-bottom.png"].map(|name| {
+            rules.add_terrain_sprite(&recolored_pixels(&terrain_dir.join(name), None)?)
+        }))
     }
 
     pub(crate) fn draw(&self, center: Vec2, size: f32, clip: Option<Viewport>) {
         for grid in self.0.iter().flatten() {
-            draw_centered(grid, center, size, clip);
+            draw_atlas_centered(grid, center, size, clip);
         }
     }
 }
@@ -162,7 +164,7 @@ pub struct BoardArt {
     ellipses: HashMap<String, HashMap<(usize, bool, bool, bool), [Option<Texture2D>; 2]>>,
     flag_dir: PathBuf,
     flag_colors: Option<TeamColors>,
-    flags: BTreeMap<usize, [Option<Texture2D>; FLAG_FRAMES]>,
+    flags: BTreeMap<usize, [Option<AtlasSprite>; FLAG_FRAMES]>,
     map_items: Vec<(Hex, Texture2D, bool)>,
     tutorial_zone_image: std::cell::OnceCell<Option<Texture2D>>,
     unit_status: unit_status::StatusArt,
@@ -238,6 +240,8 @@ impl BoardArt {
                 .map_err(|error| eprintln!("{} ({error})", palette_path.display()))
                 .ok()
         };
+        let mut rules = rules::Rules::default();
+        let grid = GridArt::load(&terrain_dir, &mut rules);
         Ok(Self {
             surface: surface::Surface::new()?,
             frame: FrameArt::load(wesnoth_root, locale),
@@ -249,9 +253,9 @@ impl BoardArt {
             terrain_texture_extent: Vec2::ZERO,
             transitions: transitions::Transitions::default(),
             ground: ground::Ground::new(wesnoth_root),
-            rules: rules::Rules::default(),
+            rules,
             border_background: load_texture(&terrain_dir.join("off-map/background.png"), None),
-            grid: GridArt::load(&terrain_dir),
+            grid,
             show_grid: crate::display_preferences::grid().unwrap_or(false),
             units: BTreeMap::new(),
             sprite_paths: SpriteTextures::default(),
@@ -333,11 +337,11 @@ impl BoardArt {
             {
                 self.flags.entry(owner).or_insert_with(|| std::array::from_fn(|i| {
                     let path = self.flag_dir.join(format!("flag-{}.png", i + 1));
-                    load_texture(&path, Some((colors, owner)))
+                    self.rules.add_terrain_sprite(&recolored_pixels(&path, Some((colors, owner)))?)
                 }));
             }
         }
-        self.terrain_texture_extent = texture_extent(
+        self.terrain_texture_extent = atlas_extent(
             self.flags.values().flatten().flatten()
                 .chain(self.grid.0.iter().flatten()),
         )
@@ -393,13 +397,7 @@ impl SpriteTextures<Texture2D> {
 impl SpriteTextures<AtlasSprite> {
     fn terrain(&mut self, path: PathBuf, rules: &mut rules::Rules) -> Option<AtlasSprite> {
         self.load(path, None, |path| {
-            let bytes = fs::read(path)
-                .map_err(|error| eprintln!("{} ({error})", path.display()))
-                .ok()?;
-            let pixels = crate::artwork::rgba(&bytes)
-                .map_err(|error| eprintln!("{} ({error})", path.display()))
-                .ok()?;
-            rules.add_fallback_sprite(&pixels)
+            rules.add_terrain_sprite(&recolored_pixels(path, None)?)
         })
     }
 }
@@ -424,18 +422,23 @@ pub(super) fn load_texture(path: &Path, palette: Option<(&TeamColors, usize)>) -
 }
 
 fn load_recolored<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamColors, usize)>) -> Option<Texture2D> {
+    let pixels = recolored_pixels(path, palettes)?;
+    let texture = Texture2D::from_rgba8(pixels.width().try_into().ok()?, pixels.height().try_into().ok()?, pixels.as_raw());
+    texture.set_filter(FilterMode::Linear);
+    Some(texture)
+}
+
+fn recolored_pixels<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a TeamColors, usize)>) -> Option<::image::RgbaImage> {
     let bytes = fs::read(path)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
-    let mut image = crate::artwork::image(&bytes)
+    let mut pixels = crate::artwork::rgba(&bytes)
         .map_err(|error| eprintln!("{} ({error})", path.display()))
         .ok()?;
     for (colors, side) in palettes {
-        colors.recolor(side, &mut image.bytes);
+        colors.recolor(side, pixels.as_mut());
     }
-    let texture = Texture2D::from_image(&image);
-    texture.set_filter(FilterMode::Linear);
-    Some(texture)
+    Some(pixels)
 }
 
 pub struct MovementView<'a> {
@@ -553,7 +556,7 @@ fn draw_terrain(view: &Observation, layout: &BoardLayout, art: &BoardArt, flag_f
         if let Some(owner) = tile.village_owner {
             art.lighting.flat(flag_frame.1);
             if let Some(flag) = art.flags.get(&owner).and_then(|frames| frames[flag_frame.0].as_ref()) {
-                draw_centered(flag, center, size, Some(viewport));
+                draw_atlas_centered(flag, center, size, Some(viewport));
                 continue;
             }
             let (offset, radius) = terrain_clip::village_marker(size, 2.0);
@@ -1062,6 +1065,17 @@ mod tests {
     fn village_flag_cycles_through_four_original_frames_every_600ms() {
         assert_eq!([0, 149, 150, 300, 450, 599, 600].map(village_flag_frame),
                    [0, 0, 1, 2, 3, 3, 0]);
+    }
+
+    #[test]
+    fn terrain_overlays_hold_atlas_sprites() {
+        // Guard against restoring separate GPU textures for these interleaved layers.
+        let _: fn(&BoardArt, usize, usize) -> Option<&AtlasSprite> =
+            |board, side, frame| board.flags.get(&side)?[frame].as_ref();
+        let grid_layer: fn(&GridArt, usize) -> Option<&AtlasSprite> =
+            |grid, layer| grid.0[layer].as_ref();
+        let missing_grid = GridArt([None, None]);
+        assert!((0..2).all(|layer| grid_layer(&missing_grid, layer).is_none()));
     }
 
     #[test]
