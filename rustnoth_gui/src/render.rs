@@ -575,25 +575,31 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         }
     }
     art.lighting.flat([0; 3]);
-    let actionable: HashSet<_> = movement.actions.iter().filter_map(|action| match action {
-        Action::Move { from, .. } => Some(*from),
-        Action::Attack(attack) => Some(attack.from),
-        _ => None,
-    }).collect();
-    let pointer: Vec2 = mouse_position().into();
-    let target = movement.menu.and_then(|menu| menu.target).or_else(|| {
-        (pointer.x >= viewport.x && pointer.x < viewport.x + viewport.width
-            && pointer.y >= viewport.y && pointer.y < viewport.y + viewport.height)
-            .then(|| layout.hex_at([pointer.x, pointer.y])).flatten()
-    });
     let enemies = movement.session.enemy_reach();
-    let own = if enemies.is_none() { reach::reachable(movement.selected, movement.actions, target) } else { None };
+    let selected = movement.selected.filter(|_| enemies.is_none());
+    let cached = std::ptr::eq(movement.actions, movement.session.legal_actions())
+        .then(|| movement.session.action_hints(selected));
+    let custom;
+    let hints = if let Some(hints) = cached.as_deref() {
+        hints
+    } else {
+        // Replay, combat animation and the tutorial briefing supply their own view.
+        custom = rustnoth_gui::session::ActionHints::from_actions(selected, movement.actions);
+        &custom
+    };
     if let Some(mask) = art.unreachable.as_ref()
-        && (enemies.is_some() || own.is_some()) {
+        && (enemies.is_some() || selected.is_some()) {
         let attack_target = movement.session.hovered_attack().map(|plan| plan.target);
+        let direct_target = selected.and_then(|_| {
+            movement.menu.and_then(|menu| menu.target).or_else(|| {
+                let (x, y) = mouse_position();
+                viewport.contains([x, y]).then(|| layout.hex_at([x, y])).flatten()
+            }).filter(|&at| hints.can_attack(at))
+        });
         for tile in view.tiles.iter().filter(|tile| {
-            Some(tile.position) != attack_target && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
-                && !own.as_ref().is_some_and(|reach| reach.contains(&tile.position))
+            Some(tile.position) != attack_target && Some(tile.position) != direct_target
+                && !enemies.is_some_and(|reach| reach.counts.contains_key(&tile.position))
+                && !selected.is_some_and(|_| hints.is_reachable(tile.position))
         }) {
             let [x, y] = layout.tile_origin(tile.position);
             draw_centered(mask, vec2(x + size / 2.0, y + size / 2.0), size, Some(viewport));
@@ -708,7 +714,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, Texture2D::width);
-            let orb = unit_status::orb_for(view, unit, actionable.contains(&unit.position), linger_side);
+            let orb = unit_status::orb_for(view, unit, hints.is_actionable(unit.position), linger_side);
             let highlighted = [hover, movement.selected].contains(&Some(unit.position));
             let origin = origin(unit);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
