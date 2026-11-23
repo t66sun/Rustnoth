@@ -171,9 +171,7 @@ pub struct BoardArt {
     poisoned: Option<Texture2D>,
     slowed: Option<Texture2D>,
     petrified: Option<Texture2D>,
-    fog_edges: fog_edges::Edges,
-    fog: Vec<Texture2D>,
-    shroud: Option<Texture2D>,
+    visibility_art: fog_edges::Art,
     unreachable: Option<Texture2D>,
     linger: Option<Texture2D>,
     pub(super) linger_color: Option<[i32; 3]>,
@@ -273,9 +271,7 @@ impl BoardArt {
             poisoned: load_texture(&wesnoth_root.join("images/misc/poisoned.png"), None),
             slowed: load_texture(&wesnoth_root.join("images/misc/slowed.png"), None),
             petrified: load_texture(&wesnoth_root.join("images/misc/petrified.png"), None),
-            fog_edges: fog_edges::Edges::load(&terrain_dir),
-            fog: (1..=3).filter_map(|i| load_texture(&terrain_dir.join(format!("fog/fog{i}.png")), None)).collect(),
-            shroud: load_texture(&terrain_dir.join("void/void.png"), None),
+            visibility_art: fog_edges::Art::load(&terrain_dir),
             unreachable: load_texture(&terrain_dir.join("darken.png"), None),
             linger: load_texture(&terrain_dir.join("darken-linger.png"), None),
             linger_color: None,
@@ -311,7 +307,7 @@ impl BoardArt {
         let border = session.known_border();
         self.cover = map_cover(observation);
         self.cover.extend_border(observation, &border);
-        self.fog_edges.update(observation, &border, &self.cover.cells);
+        self.visibility_art.update(observation, &border, &self.cover.cells);
         self.minimap.load(observation, assets);
         if self.rules.load(assets, observation, &border) {
             self.transitions.load(observation, assets);
@@ -595,19 +591,13 @@ pub fn minimap_point(view: &Observation, pointer: Vec2) -> Option<[f32; 2]> {
 
 fn draw_cover(layout: &BoardLayout, art: &BoardArt, viewport: Viewport) {
     let size = layout.tile_size();
-    let extent = texture_extent(art.fog.iter().chain(art.shroud.iter()));
-    let clip = terrain_clip::TerrainClip::new(viewport, size, extent);
+    let clip = terrain_clip::TerrainClip::new(viewport, size, art.visibility_art.fill_extent());
     for &(hex, ref cover) in art.cover.rows(layout, clip) {
         let [x, y] = layout.tile_origin(hex);
         let center = vec2(x + size * 0.5, y + size * 0.5);
         if !clip.contains(center) { continue; }
-        let texture = match cover {
-            Cover::Fog if !art.fog.is_empty() => Some(&art.fog[(hex.x + hex.y).rem_euclid(art.fog.len() as i32) as usize]),
-            Cover::Fog => None,
-            Cover::Shroud => art.shroud.as_ref(),
-        };
-        if let Some(texture) = texture {
-            draw_centered(texture, center, size, Some(viewport));
+        if let Some(sprite) = art.visibility_art.fill(hex, cover) {
+            fog_edges::draw_sprite(sprite, center, size, viewport);
         } else if visible_rect(viewport, vec2(x, y), Vec2::splat(size)) {
             let color = match cover {
                 Cover::Fog => Color::from_rgba(70, 91, 111, 165),
@@ -881,7 +871,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     }
     art.lighting.flat(global_color);
     draw_cover(layout, art, viewport);
-    art.fog_edges.draw(layout, viewport);
+    art.visibility_art.draw_edges(layout, viewport);
     art.lighting.flat([0; 3]);
     if let Some(reach) = enemies { reach::draw_counts(reach, layout, viewport, art.font.as_ref()); }
     if let Some(focus) = &hover_art { focus.draw(layout, true); }
