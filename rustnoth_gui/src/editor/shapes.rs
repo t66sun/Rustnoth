@@ -1,5 +1,5 @@
 use super::{Art, History, palette::Brush};
-use engine_lite::{hex::Hex, map::{ScenarioMap, editor::EditableMap}, wml::{self, Node}};
+use engine_lite::{hex::Hex, map::editor::EditableMap, wml::{self, Node}};
 use macroquad::prelude::*;
 use rustnoth_gui::assets::AssetCatalog;
 use std::{collections::BTreeSet, error::Error, fs, io, path::Path};
@@ -21,6 +21,8 @@ struct Shape {
 pub(super) struct Shapes {
     definitions: Vec<Shape>,
     selected: usize,
+    footprint_key: Option<(usize, Hex)>,
+    footprint: Vec<Hex>,
 }
 
 impl Shapes {
@@ -60,15 +62,28 @@ impl Shapes {
         if definitions.is_empty() {
             definitions.push(Shape { id: "brush-1".into(), relative: vec![ORIGIN] });
         }
-        Self { definitions, selected: 0 }
+        Self { definitions, selected: 0, footprint_key: None, footprint: Vec::new() }
     }
 
-    pub fn footprint(&self, map: &ScenarioMap, center: Hex) -> Vec<Hex> {
-        self.definitions[self.selected].relative.iter().map(|delta| Hex {
-            x: center.x + delta.x,
-            // Wesnoth map_location::vector_sum carries one row for two odd columns.
-            y: center.y + delta.y + (center.x & delta.x & 1),
-        }).filter(|at| map.terrain_at(*at).is_some()).collect()
+    pub fn clear_footprint(&mut self) {
+        self.footprint_key = None;
+    }
+
+    /// Reuse the clipped brush while its center, shape, and map geometry agree.
+    pub fn footprint(&mut self, center: Hex, mut is_stored: impl FnMut(Hex) -> bool) -> &[Hex] {
+        let key = (self.selected, center);
+        if self.footprint_key != Some(key) {
+            self.footprint.clear();
+            let offsets = &self.definitions[self.selected].relative;
+            let cells = offsets.iter().map(|delta| Hex {
+                x: center.x + delta.x,
+                // Wesnoth map_location::vector_sum carries one row for two odd columns.
+                y: center.y + delta.y + (center.x & delta.x & 1),
+            });
+            self.footprint.extend(cells.filter(|&at| is_stored(at)));
+            self.footprint_key = Some(key);
+        }
+        &self.footprint
     }
 
     pub fn keys(&mut self) {
@@ -135,22 +150,40 @@ mod tests {
         let palette = Palette::new(&cfg, &Default::default()).unwrap();
         let mut doc = new_map();
         let mut history = History::default();
-        let first = shapes.footprint(doc.map(), Hex { x: 1, y: 2 });
+        let present = |at| doc.map().terrain_at(at).is_some();
+        let first = shapes.footprint(Hex { x: 1, y: 2 }, present).to_vec();
         assert_eq!(first, [Hex { x: 0, y: 2 }, Hex { x: 1, y: 2 }, Hex { x: 2, y: 3 }]);
-        let second = shapes.footprint(doc.map(), Hex { x: 2, y: 3 });
+        let second = shapes.footprint(Hex { x: 2, y: 3 }, present);
         assert_eq!(second[0], first[1]);
-        for cells in [&first, &second] {
+        for cells in [first.as_slice(), second] {
             paint(&mut doc, &mut history, cells, &palette.brushes[0], false);
         }
         assert!(history.finish());
-        assert!(first.iter().chain(&second).all(|at| doc.map().terrain_at(*at) == Some("Ww")));
+        assert!(first.iter().chain(second).all(|at| doc.map().terrain_at(*at) == Some("Ww")));
         assert_eq!(doc.map().terrain_at(Hex { x: 2, y: 2 }), Some("Gg"));
         assert!(history.apply(&mut doc, true));
         assert!(!doc.dirty());
         assert!(!history.apply(&mut doc, true));
         shapes.selected = 1;
-        assert_eq!(shapes.footprint(doc.map(), Hex { x: 3, y: 3 }).len(), 19);
-        let edge = shapes.footprint(doc.map(), Hex { x: -1, y: -1 });
+        let present = |at| doc.map().terrain_at(at).is_some();
+        assert_eq!(shapes.footprint(Hex { x: 3, y: 3 }, present).len(), 19);
+        let edge = shapes.footprint(Hex { x: -1, y: -1 }, present);
         assert!(edge.len() < 19 && edge.contains(&Hex { x: -1, y: -1 }));
+    }
+
+    #[test]
+    fn stationary_brush_reuses_footprint_until_shape_or_map_changes() {
+        let cfg = wml::parse("[brush]\nid=brush-1\n[relative]\nx=0\n[/relative]\n[/brush]\n\
+            [brush]\nid=brush-2\nradius=1\n[/brush]").unwrap();
+        let mut shapes = Shapes::from_config(&cfg);
+        let center = Hex { x: 3, y: 3 };
+
+        assert_eq!(shapes.footprint(center, |_| true), [center]);
+        assert_eq!(shapes.footprint(center, |_| panic!("unchanged footprint was recomputed")), [center]);
+        shapes.selected = 1;
+        assert_eq!(shapes.footprint(center, |_| true).len(), 7);
+
+        shapes.clear_footprint();
+        assert_eq!(shapes.footprint(center, |at| at == center), [center]);
     }
 }

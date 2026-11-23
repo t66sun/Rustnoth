@@ -459,6 +459,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         let documents::Document { map: doc, history, camera, locations, .. } = current;
         if rebuild {
             region.clear();
+            shapes.clear_footprint();
             view = render::map_observation(doc.map());
             rules.load_editor(&assets, &view, doc.map());
             villages.update(&view, &assets);
@@ -515,12 +516,16 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         } else {
             None
         };
-        let footprint = match (at, tool) {
-            (Some(hex), Tool::Paste) if !modal => clipboard.translated(hex)
-                .map(|(dest, _)| dest).filter(|dest| doc.map().terrain_at(*dest).is_some()).collect(),
+        let paste_footprint;
+        let footprint: &[Hex] = match (at, tool) {
+            (Some(hex), Tool::Paste) if !modal => {
+                paste_footprint = clipboard.translated(hex)
+                    .map(|(dest, _)| dest).filter(|dest| doc.map().terrain_at(*dest).is_some()).collect::<Vec<_>>();
+                &paste_footprint
+            }
             (Some(hex), Tool::Paint | Tool::Select) if !modal && (tool == Tool::Paint || !shift) =>
-                shapes.footprint(doc.map(), hex),
-            _ => Vec::new(),
+                shapes.footprint(hex, |at| doc.map().terrain_at(at).is_some()),
+            _ => &[],
         };
         region.follow(doc.map(), at.filter(|_| !modal && (tool == Tool::Fill || tool == Tool::Select && shift)));
         if tool == Tool::Location && !modal {
@@ -539,7 +544,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                     if shift {
                         for at in region.hexes() { history.select(at, !ctrl); }
                     } else {
-                        for &at in &footprint { history.select(at, !ctrl); }
+                        for &at in footprint { history.select(at, !ctrl); }
                     }
                     history.finish_selection_step();
                     last_selection = Some((hex, ctrl, shift));
@@ -569,7 +574,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 } else {
                     palette.bg
                 };
-                shapes::paint(doc, history, &footprint, &palette.brushes[i], shift);
+                shapes::paint(doc, history, footprint, &palette.brushes[i], shift);
             }
         }
         if let Some(btn) = drawing
@@ -597,7 +602,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
                 &mut art,
                 &assets,
             );
-            for &hex in &footprint {
+            for &hex in footprint {
                 let [x, y] = layout.tile_origin(hex);
                 art.image(&assets, "editor/brush.png", Rect::new(x, y, layout.tile_size(), layout.tile_size()));
             }
