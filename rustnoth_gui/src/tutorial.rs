@@ -8,6 +8,8 @@ use rustnoth_gui::{save_replay::Event, session::Session};
 use crate::{desktop, dialog, render};
 
 mod opening;
+mod checkpoint;
+pub(crate) use checkpoint::SavedHints;
 mod introduction;
 pub(super) use introduction::choose as choose_on_map;
 mod healing;
@@ -19,6 +21,7 @@ mod advice;
 mod ending;
 mod second;
 mod briefing;
+pub(crate) use briefing::localize_round_hints;
 mod reinforcements;
 pub(super) use ending::prepare_campaign;
 
@@ -57,6 +60,10 @@ impl Hero {
 enum Step { Approach, Attack, EndFirst, WaitSecond, ToVillage, EndSecond, WaitThird, ToKeep, Recruit, EndThird, WaitFourth, FighterAttack, Practice, Complete }
 
 pub(super) struct Lesson {
+    pub(super) victory_award: Option<crate::title_screen::tutorial_progress::Award>,
+    // The projected scenario no longer contains the Lua-driven lesson instructions.
+    authored: Node,
+    hero: Hero,
     end_turn_reasons: end_turn::Reasons,
     step: Step,
     mentor: Hex,
@@ -74,14 +81,20 @@ pub(super) struct Lesson {
 }
 
 impl Lesson {
-    fn new(mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
-        Self { attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
+    fn new(authored: Node, mentor: Hex, hero: Hero, attack_instructions: [healing::Line; 2], undo_prompt: String, healing: healing::Exercises, recruiting: recruiting::Exercise, end_turn_reasons: end_turn::Reasons, weapons: weapons::Exercise) -> Self {
+        let victory_award = crate::title_screen::tutorial_progress::Award::from_victory(&authored);
+        Self { victory_award, authored, hero, attack_instructions, end_turn_reasons, step: Step::Approach, mentor, select_prompt: format!("Click on {}", hero.name()),
             movement_prompt: format!("Move {} next to Delfador", hero.name()), undo_prompt, show_undo_prompt: false, selection_hint: None, healing, recruiting, weapons, advice: Default::default(), before_healing: None }
     }
 
     pub(super) fn finished(&self) -> bool { self.step == Step::Complete }
 
-    pub(super) fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+    pub(super) fn start(&mut self, session: &mut Session<'_>, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
+        self.localize_attack_instructions(root, locale);
+        self.restrict(session);
+    }
+
+    fn localize_attack_instructions(&mut self, root: &Path, locale: &mut crate::title_screen::locale::Locale) {
         for line in &mut self.attack_instructions {
             let cfg = match line {
                 healing::Line::Message(cfg) | healing::Line::Hint(cfg) => cfg,
@@ -99,13 +112,15 @@ impl Lesson {
         self.weapons.selected(at, session);
     }
 
-    pub(super) fn weapon_hint(&self, session: &Session<'_>, action: &Action) -> Option<usize> {
+    pub(super) fn weapon_hint(&self, session: &Session<'_>, action: &Action) -> Option<(usize, Hex)> {
         if !matches!(self.step, Step::FighterAttack | Step::Practice) { return None; }
-        self.weapons.weapon(session, action)
+        let Action::Attack(attack) = action else { return None };
+        self.weapons.weapon(session, action).map(|hint| (hint, attack.from))
     }
 
-    pub(super) fn explain_weapon(&mut self, hint: usize, from: Hex, session: &mut Session<'_>) {
-        self.weapons.explain(hint, from, session);
+    pub(super) fn after_player(&mut self, session: &mut Session<'_>, weapon_hint: Option<(usize, Hex)>) {
+        if let Some((hint, from)) = weapon_hint { self.weapons.explain(hint, from, session); }
+        self.advance(session);
     }
 
     pub(super) fn select_student(&mut self, session: &mut Session<'_>) -> bool {
@@ -139,6 +154,10 @@ impl Lesson {
             Step::FighterAttack | Step::Practice if self.weapons.prompting => &self.weapons.prompt,
             Step::WaitSecond | Step::WaitThird | Step::WaitFourth | Step::FighterAttack | Step::Practice | Step::Complete => return None,
         })
+    }
+
+    pub(super) fn permits_move_attack(&self) -> bool {
+        matches!(self.step, Step::EndThird | Step::FighterAttack | Step::Practice)
     }
 
     pub(super) fn restrict(&self, session: &mut Session<'_>) {

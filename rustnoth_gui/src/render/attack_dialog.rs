@@ -117,6 +117,7 @@ fn image(texture: Option<&Texture2D>, rect: Rect, contain: bool, mirror: bool) {
 impl AttackDialog {
     pub(crate) fn new(
         view: &Observation,
+        origin: engine_lite::hex::Hex,
         previews: Vec<AttackPreview>,
         assets: &AssetCatalog,
         art: &mut BoardArt,
@@ -124,7 +125,7 @@ impl AttackDialog {
     ) -> Option<Self> {
         let choice = previews.first()?.choice;
         let unit_at = |hex| view.units.iter().find(|unit| unit.position == hex);
-        let (attacker, defender) = (unit_at(choice.from)?, unit_at(choice.to)?);
+        let (attacker, defender) = (unit_at(origin)?, unit_at(choice.to)?);
         let units = [
             UnitPane::new(attacker, assets, art),
             UnitPane::new(defender, assets, art),

@@ -1,3 +1,5 @@
+mod enemy_moves;
+
 use engine_lite::{
     fixed_match::{Action, FixedMatch, MatchError, MatchState, RecallInfo},
     hex::Hex,
@@ -57,6 +59,8 @@ pub struct Session<'rules> {
     players: Players,
     history: Vec<crate::save_replay::Event>,
     economy: Option<engine_lite::income::EconomyReport>,
+    attack_cursor: crate::attack_route::Cursor,
+    enemy_moves: enemy_moves::Display,
     hovered_move: Option<(Hex, Hex)>,
     route: Option<engine_lite::fixed_match::move_preview::MovePreview>,
     computer_action: Option<Action>,
@@ -73,7 +77,8 @@ impl<'rules> Session<'rules> {
         let mut session = Self {
             economy: None, tutorial_hint: String::new(), tutorial_undo: None,
             animate_combat: false, live_attack_seed: None, last_combat: None,
-            hovered_move: None, route: None,
+            enemy_moves: Default::default(),
+            attack_cursor: Default::default(), hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
         };
         session.refresh();
@@ -81,6 +86,8 @@ impl<'rules> Session<'rules> {
     }
 
     fn refresh(&mut self) {
+        self.attack_cursor = Default::default();
+        self.clear_enemy_moves();
         self.hovered_move = None;
         self.route = None;
         self.computer_action = None;
@@ -147,6 +154,14 @@ impl<'rules> Session<'rules> {
         if let Some(pending) = self.dialogue.pop_front() {
             if pending.record_dismissal { self.history.push(crate::save_replay::Event::Dismiss); }
             if let Some(hint) = pending.hint_after { self.tutorial_hint = hint; }
+        }
+    }
+
+    /// Manual tutorial saves are made on the map after local lesson dialogue closes.
+    /// Only scenario-generated dismissals have a corresponding replay event.
+    pub fn dismiss_local_dialogue(&mut self) {
+        while self.dialogue.front().is_some_and(|pending| !pending.record_dismissal) {
+            self.dismiss_dialogue();
         }
     }
 
@@ -294,6 +309,8 @@ impl<'rules> Session<'rules> {
 
     pub fn show_end_report(&self) -> bool { self.game.show_end_report() }
 
+    pub fn playing_side(&self) -> usize { self.game.playing_side() }
+
     pub fn linger_color(&self, end_report_shown: bool) -> Option<[i32; 3]> {
         if self.dialogue().is_some() || self.show_end_report() && !end_report_shown {
             return None;
@@ -310,8 +327,10 @@ impl<'rules> Session<'rules> {
         self.game.next_scenario_after_victory()
     }
 
+    pub fn human_won(&self) -> bool { self.game.human_won() }
+
     pub fn final_victory_ready(&self, report_shown: bool) -> bool {
-        self.game.human_won() && self.next_scenario().is_none() && self.dialogue().is_none()
+        self.human_won() && self.next_scenario().is_none() && self.dialogue().is_none()
             && (report_shown || !self.show_end_report())
     }
 
@@ -364,6 +383,16 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn track_pointer(&mut self, endpoints: Option<(Hex, Hex)>, allow_move_attack: bool) {
+        self.attack_cursor.update(endpoints, allow_move_attack, self.observation.as_ref(), &self.legal_actions, &self.game);
+        let route = self.hovered_attack().map(|plan| (plan.origin, plan.staging)).or(endpoints);
+        self.track_hovered_move(route);
+    }
+
+    pub fn hovered_attack(&self) -> Option<&crate::attack_route::AttackRoute> {
+        self.attack_cursor.attack.as_ref()
+    }
+
     pub fn track_hovered_move(&mut self, endpoints: Option<(Hex, Hex)>) {
         if self.hovered_move == endpoints { return; }
         self.hovered_move = endpoints;
@@ -379,6 +408,10 @@ impl<'rules> Session<'rules> {
 
     pub fn unit_report(&self, position: Hex, pointer: Hex) -> Option<engine_lite::fixed_match::unit_report::UnitReport> {
         self.game.unit_report(self.observation.as_ref()?.side, position, pointer)
+    }
+
+    pub fn can_finish_attack(&self, preview: &engine_lite::fixed_match::attack_preview::AttackPreview) -> bool {
+        self.legal_actions.contains(&Action::Attack(preview.choice)) && preview.matches_current(&self.game)
     }
 
     pub fn attack_previews(&self, from: Hex, to: Hex) -> Vec<engine_lite::fixed_match::attack_preview::AttackPreview> {

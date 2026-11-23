@@ -23,7 +23,7 @@ fn outline(r: Rect, color: Color) {
     draw_rectangle(r.right() - 1., r.y + 1., 1., r.h - 2., color);
 }
 
-pub(super) fn window(r: Rect, tile: &Texture2D) {
+pub(crate) fn window(r: Rect, tile: &Texture2D) {
     outline(r, EDGE);
     outline(inset(r, 1.), DARK_BORDER);
     super::super::preferences::tiled(inset(r, 2.), tile);
