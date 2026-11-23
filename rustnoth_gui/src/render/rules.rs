@@ -6,8 +6,8 @@ mod compile;
 pub(super) mod pattern;
 mod plan;
 
-use super::{AssetCatalog, Hex, Observation, draw_centered};
-use macroquad::prelude::{Texture2D, Vec2};
+use super::{AssetCatalog, Hex, Observation, atlas::AtlasSprite, sprite_rect};
+use macroquad::prelude::{Vec2, WHITE};
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ struct Animation {
 
 struct Sequence {
     periods: Vec<String>,
-    frames: Vec<(Option<Texture2D>, u32)>,
+    frames: Vec<(Option<AtlasSprite>, u32)>,
     duration: u32,
 }
 
@@ -140,7 +140,7 @@ impl Rules {
     }
 
     pub(super) fn texture_extent(&self) -> Vec2 {
-        super::texture_extent(self.bitmaps.frames())
+        self.bitmaps.frames().map(AtlasSprite::size).fold(Vec2::ZERO, Vec2::max)
     }
 
     pub(crate) fn draw(
@@ -165,9 +165,10 @@ impl Rules {
             };
             let sequence = &animation.sequence;
             let phase = ((ms + u64::from(animation.offset)) % u64::from(sequence.duration)) as u32;
-            if let Some((Some(texture), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
+            if let Some((Some(sprite), _)) = sequence.frames.iter().find(|(_, end)| phase < *end)
+                && let Some(rect) = sprite_rect(center, sprite.size(), size, clip)
             {
-                draw_centered(texture, center, size, clip);
+                sprite.draw(rect, WHITE, false);
             }
         }
     }
