@@ -65,10 +65,10 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
 
 pub(super) async fn save_error(root: &Path, error: &io::Error) {
     let skin = dialog::Skin::load(root);
-    let backdrop = Texture2D::from_image(&get_screen_data());
+    let backdrop = dialog::Backdrop::capture(FilterMode::Linear);
     next_frame().await;
     loop {
-        let (r,mouse) = skin.frame("Could not save scenario replay", 530., 195., &backdrop);
+        let (r,mouse) = skin.frame("Could not save scenario replay", 530., 195., backdrop.texture());
         dialog::wrap(skin.font.as_ref(), &error.to_string(), r.x+18.,r.y+77.,r.w-36.);
         let done = skin.button(Rect::new(r.right()-125.,r.bottom()-46.,106.,30.), mouse, "Continue", true)
             || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape);

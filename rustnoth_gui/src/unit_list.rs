@@ -99,7 +99,7 @@ pub(super) async fn show(
             .resolve_image(std::path::Path::new(&format!("misc/{name}.png")))
             .and_then(|path| load_texture(&path, None))
     });
-    let back = Texture2D::from_image(&get_screen_data());
+    let back = dialog::Backdrop::capture(FilterMode::Linear);
     let mut cursor = rows
         .iter()
         .position(|r| Some(r.at) == selected)
@@ -109,7 +109,7 @@ pub(super) async fn show(
     let mut previous = None;
     next_frame().await;
     loop {
-        let (r, point) = skin.frame("Unit List", 1090.0, 538.0, &back);
+        let (r, point) = skin.frame("Unit List", 1090.0, 538.0, back.texture());
         let click = is_mouse_button_pressed(MouseButton::Left);
         let table = Rect::new(r.x + 262.0, r.y + 65.0, r.w - 278.0, r.h - 126.0);
         let preview = Rect::new(r.x + 12.0, table.y, 240.0, table.h);

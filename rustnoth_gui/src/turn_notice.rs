@@ -23,8 +23,8 @@ pub(super) async fn show(root: &Path, font: Option<&Font>, message: &str) {
 }
 
 pub(super) async fn over_board(root: &Path, font: Option<&Font>, message: &str) {
-    let background = Texture2D::from_image(&get_screen_data());
-    show_on(root, font, message, &background).await;
+    let background = dialog::Backdrop::capture(FilterMode::Linear);
+    show_on(root, font, message, background.texture()).await;
 }
 
 async fn show_on(root: &Path, font: Option<&Font>, message: &str, background: &Texture2D) {
