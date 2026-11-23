@@ -20,6 +20,7 @@ impl Veteran {
         if u.guardian { n.set_literal("ai_special", "guardian"); }
         n.set_literal("variation", &u.variation);
         n.set_literal("experience", u.experience);
+        if let Some(female) = u.female { n.set_literal("gender", if female { "female" } else { "male" }); }
         n.set_literal("earned_amlas", self.earned_amlas);
         for (key, value) in [("id",&u.id), ("name",&u.display_name), ("profile",&u.portrait),
                 ("undead_variation",&u.undead_variation)] {
@@ -68,6 +69,7 @@ impl Veteran {
                 side: unit.side, id: unit.id.clone(), type_id: unit.unit_type.id.clone(),
                 variation: unit.unit_type.variation_id.clone(), position: None,
                 display_name: unit.display_name.clone(), portrait: unit.portrait.clone(),
+                female: Some(unit.female),
                 facing: unit.facing,
                 can_recruit: unit.can_recruit, extra_recruits: unit.extra_recruits.clone(),
                 upkeep: unit.upkeep_override, recall_cost: Some(unit.recall_cost), recall_filter: None,

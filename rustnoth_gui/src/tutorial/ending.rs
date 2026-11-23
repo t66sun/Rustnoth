@@ -142,6 +142,7 @@ amount=1
             assert!(!session.final_victory_ready(true));
             session.apply(Action::EndTurn).unwrap();
             assert!(session.next_scenario().is_none());
+            assert_eq!(session.human_won(), victim != "student");
             if victim == "student" {
                 assert!(session.dialogue().is_none());
                 assert!(!session.final_victory_ready(true));
@@ -173,7 +174,7 @@ amount=1
                 set_second_hero(&mut first, hero).unwrap();
                 put(&mut first, "victory_when_enemies_defeated", "no");
                 put(&mut first, "next_scenario", "2_Tutorial");
-                let script = wml::parse("[event]\nname=enemies defeated\n[message]\nspeaker=student\nmessage=Onwards, Konrad\nfemale_message=female^Onwards, Li’sar\n[/message]\n\
+                let script = wml::parse("[event]\nname=enemies defeated\n[message]\nspeaker=student\nmessage=\"Onwards, Konrad\"\nfemale_message=\"female^Onwards, Li’sar\"\n[/message]\n\
                     [endlevel]\nresult=victory\ncarryover_report=no\ncarryover_percentage=0\ncarryover_add=yes\n[/endlevel]\n[/event]\n\
                     [event]\nname=victory\n[hint_message]\ncaption=Victory\nmessage=Click End Scenario\n[/hint_message]\n[/event]\n\
                     [event]\nname=last_breath\n[filter]\nid=student\n[/filter]\n[message]\nspeaker=unit\nmessage=Too much for me\n[/message]\n[/event]\n\
