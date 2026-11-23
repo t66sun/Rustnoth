@@ -282,8 +282,8 @@ impl AttackDialog {
         &self,
         menu: &mut Menu,
         assets: &AssetCatalog,
-        art: &BoardArt,
     ) -> Option<Action> {
+        let backdrop = dialog::Backdrop::capture(FilterMode::Nearest);
         let count = self.rows.len();
         let visible = count.min(5);
         let height = 252.0 + visible as f32 * ROW_HEIGHT;
@@ -293,12 +293,22 @@ impl AttackDialog {
         let mut opening = true;
         let mut last_click: Option<(usize, f64)> = None;
         loop {
-            art.surface.present();
             let scale = (screen_width() / (PANEL_WIDTH + 12.0))
                 .min(screen_height() / (height + 12.0))
                 .clamp(0.01, 1.0);
             let (w, h) = (screen_width() / scale, screen_height() / scale);
             set_camera(&dialog::setup_camera(w, h));
+            draw_texture_ex(
+                backdrop.texture(),
+                0.0,
+                0.0,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(w, h)),
+                    flip_y: true,
+                    ..Default::default()
+                },
+            );
             let p = Vec2::from(mouse_position()) / scale;
             let bounds = Rect::new(
                 (w - PANEL_WIDTH) * 0.5,

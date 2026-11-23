@@ -1,5 +1,5 @@
 //! Stock NEW:BASE and NEW:BASE_P rules for the ground under terrain overlays.
-use super::{AssetCatalog, Hex, HashMap, Path, PathBuf, Texture2D, get_texture};
+use super::{AssetCatalog, AtlasSprite, Hex, HashMap, Path, PathBuf, atlas_extent};
 use std::fs;
 
 #[derive(Default)]
@@ -9,7 +9,7 @@ pub(super) struct Ground {
 }
 
 struct Variants {
-    textures: Vec<Texture2D>,
+    textures: Vec<AtlasSprite>,
     varied: u32,
     plain: u32,
     probability: Option<u32>,
@@ -43,7 +43,7 @@ impl Ground {
         Self { rules: ground_rules(&source), loaded: HashMap::new() }
     }
 
-    pub(super) fn load(&mut self, terrain: &str, catalog: &AssetCatalog, cache: &mut HashMap<PathBuf, Option<Texture2D>>) {
+    pub(super) fn load(&mut self, terrain: &str, catalog: &AssetCatalog, mut texture: impl FnMut(PathBuf) -> Option<AtlasSprite>) {
         let code = base_code(terrain);
         if self.loaded.contains_key(code) { return; }
         let variants = self.rules.get(code).and_then(|(stem, probability)| {
@@ -51,7 +51,7 @@ impl Ground {
             for suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"] {
                 let name = format!("terrain/{stem}{suffix}.png");
                 let Some(path) = catalog.resolve_image(Path::new(&name)).filter(|p| p.is_file()) else { break };
-                let Some(texture) = get_texture(cache, path) else { break };
+                let Some(texture) = texture(path) else { break };
                 textures.push(texture);
             }
             (!textures.is_empty()).then(|| Variants {
@@ -64,13 +64,13 @@ impl Ground {
         self.loaded.insert(code.to_owned(), variants);
     }
 
-    pub(super) fn texture(&self, terrain: &str, hex: Hex) -> Option<&Texture2D> {
+    pub(super) fn texture(&self, terrain: &str, hex: Hex) -> Option<&AtlasSprite> {
         let set = self.loaded.get(base_code(terrain))?.as_ref()?;
         set.textures.get(variation(hex, set.textures.len(), set.varied, set.plain, set.probability))
     }
 
     pub(super) fn texture_extent(&self) -> super::Vec2 {
-        super::texture_extent(self.loaded.values().flatten().flat_map(|variants| &variants.textures))
+        atlas_extent(self.loaded.values().flatten().flat_map(|variants| &variants.textures))
     }
 }
 

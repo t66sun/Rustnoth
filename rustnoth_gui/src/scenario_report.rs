@@ -45,7 +45,7 @@ pub(super) async fn show(root: &Path, session: &Session<'_>, campaign: bool) -> 
         return false;
     };
     let retained = campaign.then(|| session.retained_gold()).flatten();
-    let background = Texture2D::from_image(&get_screen_data());
+    let background = dialog::Backdrop::capture(FilterMode::Linear);
     let skin = Skin::load(root);
     next_frame().await;
     loop {
@@ -53,7 +53,7 @@ pub(super) async fn show(root: &Path, session: &Session<'_>, campaign: bool) -> 
             title,
             540.0,
             if retained.is_some() { 238.0 } else { 181.0 },
-            &background,
+            background.texture(),
         );
         dialog::text(
             skin.font.as_ref(),
