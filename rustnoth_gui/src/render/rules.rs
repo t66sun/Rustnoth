@@ -17,6 +17,7 @@ pub(crate) struct Rules {
     known: Vec<(Hex, String)>,
     bounds: (i32, i32),
     tiles: HashMap<Hex, Drawing>,
+    pub(super) foreground: Vec<Hex>,
 }
 
 struct Drawing {
@@ -43,6 +44,11 @@ impl Rules {
         self.bounds = (view.width, view.height);
         self.known = known().map(|(at, code)| (at, code.to_owned())).collect();
         self.build(assets, |catalog| plan::battlefield(catalog, view, border));
+        self.foreground = view.tiles.iter().map(|t| t.position)
+            .chain(engine_lite::map::border_positions(view.width, view.height))
+            .filter(|hex| self.tiles.get(hex).is_some_and(|t| t.layers.iter().any(|(front, _)| *front)))
+            .collect();
+        self.foreground.sort_unstable_by_key(|hex| (super::draw_row(*hex), hex.x));
     }
 
     pub(crate) fn load_editor(&mut self, assets: &AssetCatalog, view: &Observation, map: &engine_lite::map::ScenarioMap) {

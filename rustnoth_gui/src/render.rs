@@ -551,6 +551,9 @@ impl BoardArt {
     }
 }
 
+// Odd columns are half a hex lower than even columns at the same map y.
+fn draw_row(hex: Hex) -> (i32, i32) { (hex.y, hex.x.rem_euclid(2)) }
+
 fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
@@ -561,7 +564,6 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         let [x,y] = layout.tile_origin(hex);
         let center = vec2(x + size / 2.0, y + size / 2.0);
         art.rules.draw(hex, center, size, false, border_period, now, Some(viewport));
-        art.rules.draw(hex, center, size, true, border_period, now, Some(viewport));
     }
     let frame = village_flag_frame(now);
     let period = movement.global_time.map_or("", |t| t.id.as_str());
@@ -636,7 +638,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             || raised(&unit.type_id, unit.position, unit.position, 0.0),
             |p| raised(&unit.type_id, p.from, p.to, p.fraction))
     };
-    for unit in &view.units {
+    let draw_unit = |unit: &engine_lite::observation::ObservedUnit| {
+        art.lighting.flat([0; 3]);
         let center = origin(unit) + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
@@ -670,6 +673,33 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
         } else if visible_rect(viewport, center - Vec2::splat(size * 0.23), Vec2::splat(size * 0.46)) {
             draw_circle(center.x, center.y, size * 0.23, marker);
         }
+    };
+
+    let draw_foreground = |at: Hex| {
+        let [x, y] = layout.tile_origin(at);
+        if (0..view.width).contains(&at.x) && (0..view.height).contains(&at.y) {
+            art.lighting.terrain(at, x, y, size);
+        } else {
+            art.lighting.flat(global_color);
+        }
+        art.rules.draw(at, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now, Some(viewport));
+    };
+    // Native unit_default precedes terrain_fg *within* each half-row. A rear
+    // castle wall must already be in place when a raised unit overlaps it.
+    let moving = walking.and_then(|p| p.unit);
+    let mut standing: Vec<_> = view.units.iter().filter(|u| Some(u.position) != moving).collect();
+    standing.sort_unstable_by_key(|u| (draw_row(u.position), u.position.x));
+    let mut foreground = art.rules.foreground.iter().copied().peekable();
+    for unit in standing {
+        while let Some(at) = foreground.next_if(|at| draw_row(*at) < draw_row(unit.position)) {
+            draw_foreground(at);
+        }
+        draw_unit(unit);
+    }
+    foreground.for_each(draw_foreground);
+    art.lighting.flat([0; 3]);
+    if let Some(unit) = moving.and_then(|at| view.units.iter().find(|u| u.position == at)) {
+        draw_unit(unit);
     }
 
     // An observer can watch the visible portion of a walk that ends back in fog.
@@ -718,11 +748,6 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
                 ..DrawTextureParams::default()
             });
         }
-    }
-    for tile in &view.tiles {
-        let [x, y] = layout.tile_origin(tile.position);
-        art.lighting.terrain(tile.position, x, y, size);
-        art.rules.draw(tile.position, vec2(x + size / 2.0, y + size / 2.0), size, true, period, now, Some(viewport));
     }
     art.lighting.flat(global_color);
     draw_cover(layout, art, viewport);
