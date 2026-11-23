@@ -3,7 +3,7 @@ use super::{
     art::{Art, GOLD, LABEL, edge, fill, image},
     metadata,
 };
-use crate::dialog::setup_camera;
+use crate::{dialog::setup_camera, render::minimap};
 use engine_lite::map::ScenarioMap;
 use macroquad::prelude::*;
 use rustnoth_gui::{assets::AssetCatalog, session::Players};
@@ -34,7 +34,7 @@ struct Picker {
 struct MapPreview {
     index: usize,
     size: f32,
-    dimensions: (i32, i32),
+    dimensions: Option<(i32, i32)>,
     texture: Option<Texture2D>,
 }
 
@@ -50,6 +50,7 @@ pub(super) struct SetupView {
     search: String,
     editing: bool,
     picker: Option<Picker>,
+    preview_art: minimap::Art,
     preview: Option<MapPreview>,
     lobby_first: usize,
 }
@@ -102,6 +103,7 @@ impl SetupView {
             search: String::new(),
             editing: false,
             picker: None,
+            preview_art: minimap::Art::new(root),
             preview: None,
             lobby_first: 0,
         })
@@ -274,17 +276,17 @@ impl SetupView {
             .as_ref()
             .is_none_or(|p| p.index != setup.map || p.size != size)
         {
-            self.preview = setup.maps[setup.map]
+            let map = setup.maps[setup.map]
                 .board
                 .as_ref()
                 .ok()
-                .and_then(|(text, _)| ScenarioMap::parse(text).ok())
-                .map(|map| MapPreview {
-                    index: setup.map,
-                    size,
-                    dimensions: (map.width(), map.height()),
-                    texture: crate::render::skirmish_preview(&setup.root, &self.assets, &map, size),
-                });
+                .and_then(|(text, _)| ScenarioMap::parse(text).ok());
+            self.preview = Some(MapPreview {
+                index: setup.map,
+                size,
+                dimensions: map.as_ref().map(|map| (map.width(), map.height())),
+                texture: map.as_ref().and_then(|map| self.preview_art.skirmish_preview(&self.assets, map, size)),
+            });
         }
         let r = Rect::new(area.x + 3.0, area.y + 37.0, size + 4.0, size + 4.0);
         fill(r, Color::from_rgba(12, 15, 20, 230));
@@ -294,17 +296,16 @@ impl SetupView {
                 let xy = (r.center() - tex.size() * 0.5).round();
                 draw_texture(tex, xy.x, xy.y, WHITE);
             }
-            self.art.label(
-                &format!(
-                    "Map size:   {} × {}",
-                    preview.dimensions.0, preview.dimensions.1
-                ),
-                area.x + 4.0,
-                r.bottom() + 59.0,
-                17,
-                LABEL,
-                area.w - 8.0,
-            );
+            if let Some((width, height)) = preview.dimensions {
+                self.art.label(
+                    &format!("Map size:   {width} × {height}"),
+                    area.x + 4.0,
+                    r.bottom() + 59.0,
+                    17,
+                    LABEL,
+                    area.w - 8.0,
+                );
+            }
         }
         self.art.label(
             &format!("Players:     {}", setup.sides.len()),

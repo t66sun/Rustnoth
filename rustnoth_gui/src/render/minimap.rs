@@ -1,5 +1,6 @@
 //! Wesnoth's image-coded minimap, using the terrain symbol images from terrain.cfg.
 use super::{side_color, AssetCatalog, BoardLayout, Hex, MovementView, Observation, TeamColors, Viewport};
+use engine_lite::{map::ScenarioMap, observation::ObservedTile};
 use image::{imageops, Pixel, Rgba, RgbaImage};
 use macroquad::prelude::*;
 use crate::display_preferences::{MiniLayer, MiniLayers};
@@ -190,6 +191,32 @@ impl Art {
         }
     }
 
+    /// Build the create-game minimap from the public scenario map, before a match exists.
+    pub(crate) fn skirmish_preview(&mut self, assets: &AssetCatalog, map: &ScenarioMap, size: f32) -> Option<Texture2D> {
+        let pixels = self.skirmish_pixels(assets, map, size)?;
+        let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
+        texture.set_filter(FilterMode::Nearest);
+        Some(texture)
+    }
+
+    fn skirmish_pixels(&mut self, assets: &AssetCatalog, map: &ScenarioMap, size: f32) -> Option<RgbaImage> {
+        let width = map.width();
+        let height = map.height();
+        let geometry = Geometry::new(width, height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
+        let mut tiles = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let position = Hex { x, y };
+                let terrain = map.terrain_at(position)?.to_owned();
+                tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
+            }
+        }
+        let view = Observation { width, height, side: 1, gold: None,
+            allied_sides: vec![], tiles, units: vec![] };
+        self.load_symbols(&view, assets);
+        Some(raster(&view, &geometry, &self.symbols, None, &HashSet::new(), MiniLayers::default()))
+    }
+
     pub(super) fn draw(&mut self, view: &Observation, area: Viewport, viewport: Viewport,
                        layout: Option<&BoardLayout>, colors: Option<&TeamColors>, movement: &MovementView<'_>) {
         self.draw_map(view, area, viewport, layout, colors, movement.selected, movement.actions);
@@ -249,32 +276,6 @@ fn paint(image: &mut RgbaImage, rect: Rect, mut sample: impl FnMut(u32, u32) -> 
             image.get_pixel_mut(x, y).blend(&sample(sx.min(SAMPLE - 1), sy.min(SAMPLE - 1)));
         }
     }
-}
-
-/// Build the create-game minimap from the public scenario map, before a match exists.
-pub(crate) fn skirmish_preview(root: &Path, assets: &AssetCatalog, map: &engine_lite::map::ScenarioMap, size: f32) -> Option<Texture2D> {
-    use engine_lite::observation::ObservedTile;
-    let mut tiles = Vec::new();
-    for y in 0..map.height() {
-        for x in 0..map.width() {
-            let position = Hex { x, y };
-            let terrain = map.terrain_at(position)?.to_owned();
-            tiles.push(ObservedTile { position, terrain, visible: true, village_owner: None, time_color: [0; 3] });
-        }
-    }
-    let view = Observation { width: map.width(), height: map.height(), side: 1, gold: None,
-        allied_sides: vec![], tiles, units: vec![] };
-    observed_preview(root, assets, &view, size)
-}
-
-pub(crate) fn observed_preview(root: &Path, assets: &AssetCatalog, view: &Observation, size: f32) -> Option<Texture2D> {
-    let geometry = Geometry::new(view.width, view.height, Viewport { x: 0.0, y: 0.0, width: size, height: size })?;
-    let mut art = Art::new(root);
-    art.load_symbols(view, assets);
-    let pixels = raster(view, &geometry, &art.symbols, None, &HashSet::new(), MiniLayers::default());
-    let texture = Texture2D::from_rgba8(pixels.width() as u16, pixels.height() as u16, pixels.as_raw());
-    texture.set_filter(FilterMode::Nearest);
-    Some(texture)
 }
 
 fn raster(view: &Observation, geometry: &Geometry, symbols: &HashMap<String, Symbol>,
@@ -369,7 +370,31 @@ fn paint_symbol(image: &mut RgbaImage, geometry: &Geometry, hex: Hex,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_lite::observation::ObservedTile;
+
+    #[test]
+    fn skirmish_previews_reuse_terrain_pixels_after_switching_maps() {
+        let dir = std::env::temp_dir().join(format!("rustnoth-skirmish-minimap-{}", std::process::id()));
+        let terrain = dir.join("data/core/images/terrain");
+        std::fs::create_dir_all(&terrain).unwrap();
+        let grass = terrain.join("grass.png");
+        let grass_pixel = Rgba([80, 130, 20, 255]);
+        RgbaImage::from_pixel(72, 72, grass_pixel).save(&grass).unwrap();
+        let assets = AssetCatalog::for_setup(
+            &dir,
+            b"[terrain_type]\nstring=Gg\nsymbol_image=grass\n[/terrain_type]",
+        ).unwrap();
+        let first = ScenarioMap::parse("Gg,Gg,Gg\nGg,Gg,Gg\nGg,Gg,Gg").unwrap();
+        let second = ScenarioMap::parse("Gg,Gg,Gg,Gg\nGg,Gg,Gg,Gg\nGg,Gg,Gg,Gg").unwrap();
+        let mut reused = Art::new(&dir);
+        reused.skirmish_pixels(&assets, &first, 64.0).unwrap();
+        let reference = Art::new(&dir).skirmish_pixels(&assets, &second, 80.0).unwrap();
+        assert!(reference.pixels().any(|pixel| *pixel == grass_pixel));
+
+        std::fs::remove_file(&grass).unwrap();
+        assert_eq!(reused.skirmish_pixels(&assets, &second, 80.0), Some(reference.clone()));
+        assert_ne!(Art::new(&dir).skirmish_pixels(&assets, &second, 80.0), Some(reference));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn editor_camera_extends_into_the_minimap_letterbox_at_zero_scroll() {

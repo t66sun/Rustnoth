@@ -2,8 +2,8 @@ mod frame;
 mod surface;
 mod tutorial_print;
 pub(crate) use frame::StatusBox;
-mod minimap;
-pub(crate) use minimap::{save::save_preview, skirmish_preview};
+pub(crate) mod minimap;
+pub(crate) use minimap::save::save_preview;
 mod lighting;
 use frame::{BattlefieldFrame, FrameArt};
 
