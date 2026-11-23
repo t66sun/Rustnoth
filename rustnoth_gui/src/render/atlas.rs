@@ -72,6 +72,18 @@ impl AtlasSprite {
     }
 
     pub(super) fn draw(&self, dst: Rect, tint: Color, flip_x: bool) {
+        self.draw_region(dst, tint, self.source, (flip_x, false));
+    }
+
+    pub(super) fn draw_part(&self, dst: Rect, tint: Color, mut source: Rect, flip: (bool, bool)) {
+        if let Some(sprite) = self.source {
+            source.x += sprite.x;
+            source.y += sprite.y;
+        }
+        self.draw_region(dst, tint, Some(source), flip);
+    }
+
+    fn draw_region(&self, dst: Rect, tint: Color, source: Option<Rect>, (flip_x, flip_y): (bool, bool)) {
         draw_texture_ex(
             &self.texture,
             dst.x,
@@ -79,8 +91,9 @@ impl AtlasSprite {
             tint,
             DrawTextureParams {
                 dest_size: Some(vec2(dst.w, dst.h)),
-                source: self.source,
+                source,
                 flip_x,
+                flip_y,
                 ..Default::default()
             },
         );
