@@ -32,6 +32,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
         if is_key_pressed(KeyCode::Space) { playing = !playing; }
         render::draw(session.state(),session.observation(),camera.layout(),art,render::MovementView {
             session, global_time: session.global_time_of_day(), route: None, selected: None,
+            hold_map_hover: camera.dragging(),
             actions: &[], message: Some(&status), assets: &data.assets, menu: None,
         }, |art| {
             if let Some(tex) = &panel {
