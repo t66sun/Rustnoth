@@ -65,7 +65,12 @@ impl Buttons {
     }
 
     pub(crate) fn input(&mut self, frame: Rect, point: Vec2, camera: &mut BoardCamera, mini: &mut EditorMinimap) -> io::Result<bool> {
-        let clicked = is_mouse_button_pressed(MouseButton::Left).then(|| hit(frame, point)).flatten();
+        let pressed = is_mouse_button_pressed(MouseButton::Left).then_some(point);
+        self.input_press(frame, pressed, camera, mini)
+    }
+
+    pub(crate) fn input_press(&mut self, frame: Rect, pressed: Option<Vec2>, camera: &mut BoardCamera, mini: &mut EditorMinimap) -> io::Result<bool> {
+        let clicked = pressed.and_then(|point| hit(frame, point));
         let zoom_key = is_key_pressed(KeyCode::Key0) && ![
             KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftAlt, KeyCode::RightAlt,
             KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftSuper, KeyCode::RightSuper,

@@ -3,6 +3,7 @@ use super::{side_color, AssetCatalog, BoardLayout, Hex, MovementView, Observatio
 use engine_lite::{map::ScenarioMap, observation::ObservedTile};
 use image::{imageops, Pixel, Rgba, RgbaImage};
 use macroquad::prelude::*;
+use crate::camera::PointerEvent;
 use crate::display_preferences::{MiniLayer, MiniLayers};
 pub(crate) mod save;
 use std::{collections::{HashMap, HashSet}, path::Path};
@@ -35,6 +36,45 @@ impl Drag {
 
     pub(crate) fn cancel(&mut self) {
         self.active = None;
+    }
+
+    pub(crate) fn release_if_unheld(&mut self, held: impl FnOnce(MouseButton) -> bool) {
+        if self.active.is_some_and(|(button, _)| !held(button)) {
+            self.cancel();
+        }
+    }
+
+    pub(crate) fn pointer_event(
+        &mut self,
+        event: PointerEvent,
+        world_point: impl FnOnce(Vec2) -> Option<[f32; 2]>,
+        center: impl FnOnce([f32; 2]),
+    ) -> bool {
+        let (button, point, previous, held) = match event {
+            PointerEvent::Press(button @ (MouseButton::Left | MouseButton::Middle), point) => {
+                (button, point, None, true)
+            }
+            PointerEvent::Move(point) => {
+                let Some((button, last)) = self.active else { return false; };
+                (button, point, Some(last), true)
+            }
+            PointerEvent::Release(button, point) => {
+                let Some((held, last)) = self.active else { return false; };
+                if held != button { return false; }
+                (button, point, Some(last), false)
+            }
+            PointerEvent::Cancel => {
+                self.cancel();
+                return false;
+            }
+            _ => return false,
+        };
+        let next = world_point(Vec2::from_array(point));
+        self.active = if held { next.map(|world| (button, world)) } else { None };
+        if let Some(world) = next && previous != Some(world) {
+            center(world);
+        }
+        next.is_some() || previous.is_some()
     }
 }
 
@@ -438,6 +478,42 @@ mod tests {
                      |x, y| Rgba([x as u8, y as u8, 0, 255]));
         assert_eq!(*image.get_pixel(0, 0), Rgba([6, 12, 0, 255]));
         assert_eq!(*image.get_pixel(1, 1), Rgba([10, 16, 0, 255]));
+    }
+
+    #[test]
+    fn ordered_minimap_drag_keeps_its_press_origin_and_last_valid_position() {
+        use MouseButton::{Left, Middle};
+        use PointerEvent::{Move, Press, Release};
+
+        let area = Viewport { x: 1040., y: 10., width: 160., height: 210. };
+        let geometry = Geometry::new(48, 36, area).unwrap();
+        let first = [1060., 60.];
+        let second = [1150., 130.];
+        let board = [980., 130.];
+        let zoom_control = [1045., 230.];
+        let expected = [first, second].map(|point| geometry.world_point(Vec2::from_array(point)).unwrap());
+
+        for button in [Left, Middle] {
+            let mut drag = Drag::default();
+            let mut centers = Vec::new();
+            let mut handle = |event| {
+                drag.pointer_event(event, |point| geometry.world_point(point), |world| centers.push(world))
+            };
+
+            assert!(!handle(Press(button, board)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+            assert!(!handle(Press(button, zoom_control)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+
+            assert!(handle(Press(button, first)));
+            assert!(handle(Move(second)));
+            assert!(handle(Move(board)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+            assert_eq!(centers, expected);
+        }
     }
 
     #[test]

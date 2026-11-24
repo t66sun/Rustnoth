@@ -7,6 +7,14 @@ use macroquad::window::next_frame;
 
 use super::BoardCamera;
 
+#[derive(Clone, Copy)]
+pub(crate) enum PointerEvent {
+    Press(MouseButton, [f32; 2]),
+    Move([f32; 2]),
+    Release(MouseButton, [f32; 2]),
+    Cancel,
+}
+
 #[cfg(windows)]
 mod windows_capture;
 #[cfg(windows)]
@@ -23,11 +31,10 @@ pub(crate) fn start_drag_input() {
     let subscription = utils::register_input_subscriber();
     SUBSCRIPTION.set(Some(subscription));
     start_coroutine(async move {
-        let mut discard = DragReceiver { camera: None, coordinate_scale: 1.0 };
         loop {
             // Macroquad polls coroutines after the scene future. Discard events
             // on frames where the active scene has no map camera.
-            utils::repeat_all_miniquad_input(&mut discard, subscription);
+            utils::repeat_all_miniquad_input(&mut DragReceiver::new(None, 1.0), subscription);
             #[cfg(windows)]
             windows_capture::release_unused(FRAME.get());
             FRAME.set(FRAME.get().wrapping_add(1));
@@ -38,6 +45,15 @@ pub(crate) fn start_drag_input() {
 
 impl BoardCamera {
     pub(crate) fn drag_input(&mut self, allowed: bool, ui_scale: f32) {
+        self.pointer_input(allowed, ui_scale, |_, _| false);
+    }
+
+    pub(crate) fn pointer_input(
+        &mut self,
+        allowed: bool,
+        ui_scale: f32,
+        mut route: impl FnMut(&mut BoardCamera, PointerEvent) -> bool,
+    ) {
         let frame = FRAME.get();
         #[cfg(windows)]
         let allowed = {
@@ -49,10 +65,11 @@ impl BoardCamera {
         #[cfg(not(windows))]
         let capture_continues = true;
         self.begin_drag_frame(frame, allowed, capture_continues);
-        let mut receiver = DragReceiver {
-            camera: allowed.then_some(&mut *self),
-            coordinate_scale: miniquad::window::dpi_scale() * ui_scale,
-        };
+        let mut receiver = DragReceiver::new(
+            allowed.then_some(&mut *self),
+            miniquad::window::dpi_scale() * ui_scale,
+        );
+        receiver.route = Some(&mut route);
         let subscription = SUBSCRIPTION.get().expect("desktop drag input is registered at launch");
         utils::repeat_all_miniquad_input(&mut receiver, subscription);
         if self.dragging() && !is_mouse_button_down(MouseButton::Middle) {
@@ -82,7 +99,7 @@ impl BoardCamera {
         self.last_drag_frame = Some(frame);
     }
 
-    pub(super) fn cancel_drag(&mut self) {
+    pub(crate) fn cancel_drag(&mut self) {
         self.drag_position = None;
         #[cfg(windows)]
         {
@@ -98,9 +115,43 @@ impl BoardCamera {
     }
 }
 
+type PointerRoute<'a> = dyn FnMut(&mut BoardCamera, PointerEvent) -> bool + 'a;
+
 struct DragReceiver<'a> {
     camera: Option<&'a mut BoardCamera>,
     coordinate_scale: f32,
+    route: Option<&'a mut PointerRoute<'a>>,
+}
+
+impl<'a> DragReceiver<'a> {
+    fn new(camera: Option<&'a mut BoardCamera>, coordinate_scale: f32) -> Self {
+        Self { camera, coordinate_scale, route: None }
+    }
+
+    fn point(&self, x: f32, y: f32) -> [f32; 2] {
+        [x / self.coordinate_scale, y / self.coordinate_scale]
+    }
+
+    fn dispatch(&mut self, event: PointerEvent) {
+        let Some(camera) = &mut self.camera else { return; };
+        if self.route.as_mut().is_some_and(|route| route(camera, event)) {
+            camera.cancel_drag();
+            return;
+        }
+        match event {
+            PointerEvent::Press(MouseButton::Middle, point) => {
+                camera.cancel_drag();
+                camera.drag_position = camera.contains(point).then_some(point);
+            }
+            PointerEvent::Move(point) => camera.drag_to(point),
+            PointerEvent::Release(MouseButton::Middle, point) => {
+                camera.drag_to(point);
+                camera.cancel_drag();
+            }
+            PointerEvent::Cancel => camera.cancel_drag(),
+            _ => {}
+        }
+    }
 }
 
 impl EventHandler for DragReceiver<'_> {
@@ -109,30 +160,19 @@ impl EventHandler for DragReceiver<'_> {
     fn draw(&mut self) {}
 
     fn mouse_button_down_event(&mut self, button: MouseButton, x: f32, y: f32) {
-        if button == MouseButton::Middle && let Some(camera) = &mut self.camera {
-            let point = [x / self.coordinate_scale, y / self.coordinate_scale];
-            camera.cancel_drag();
-            camera.drag_position = camera.contains(point).then_some(point);
-        }
+        self.dispatch(PointerEvent::Press(button, self.point(x, y)));
     }
 
     fn mouse_motion_event(&mut self, x: f32, y: f32) {
-        if let Some(camera) = &mut self.camera {
-            camera.drag_to([x / self.coordinate_scale, y / self.coordinate_scale]);
-        }
+        self.dispatch(PointerEvent::Move(self.point(x, y)));
     }
 
     fn mouse_button_up_event(&mut self, button: MouseButton, x: f32, y: f32) {
-        if button == MouseButton::Middle && let Some(camera) = &mut self.camera {
-            camera.drag_to([x / self.coordinate_scale, y / self.coordinate_scale]);
-            camera.cancel_drag();
-        }
+        self.dispatch(PointerEvent::Release(button, self.point(x, y)));
     }
 
     fn window_minimized_event(&mut self) {
-        if let Some(camera) = &mut self.camera {
-            camera.cancel_drag();
-        }
+        self.dispatch(PointerEvent::Cancel);
     }
 
     // The backend can forward simulated mouse events through its own mouse
@@ -161,7 +201,7 @@ mod tests {
     fn middle_drag_keeps_motion_after_press_and_before_release_in_the_same_frame() {
         let mut camera = zoomed_camera();
         camera.begin_drag_frame(1, true, true);
-        let mut input = DragReceiver { camera: Some(&mut camera), coordinate_scale: 2.0 };
+        let mut input = DragReceiver::new(Some(&mut camera), 2.0);
 
         input.mouse_button_down_event(MouseButton::Middle, 38.0, 312.0);
         input.mouse_motion_event(176.0, 272.0);
@@ -183,7 +223,7 @@ mod tests {
     fn middle_drag_stops_after_an_inactive_frame_or_focus_loss() {
         let mut camera = zoomed_camera();
         camera.begin_drag_frame(1, true, true);
-        let mut input = DragReceiver { camera: Some(&mut camera), coordinate_scale: 1.0 };
+        let mut input = DragReceiver::new(Some(&mut camera), 1.0);
         input.mouse_button_down_event(MouseButton::Middle, 108.0, 156.0);
         assert!(input.camera.as_ref().unwrap().dragging());
         input.window_minimized_event();
@@ -200,7 +240,7 @@ mod tests {
     fn motion_after_capture_loss_requires_a_new_press() {
         let mut camera = zoomed_camera();
         camera.begin_drag_frame(1, true, true);
-        let mut input = DragReceiver { camera: Some(&mut camera), coordinate_scale: 1.0 };
+        let mut input = DragReceiver::new(Some(&mut camera), 1.0);
         input.mouse_button_down_event(MouseButton::Middle, 108.0, 156.0);
         assert!(camera.dragging());
 

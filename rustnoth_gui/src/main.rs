@@ -517,22 +517,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
             if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
             if !reset && !input_blocked {
-                match art.minimap_input(pointer, &mut camera) {
+                camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
+                match art.drag_minimap(&mut minimap_drag, observation, &mut camera) {
                     Ok(handled) => minimap_action = handled,
                     Err(error) => { message = Some(error.to_string()); minimap_action = true; }
                 }
-                if minimap_action {
-                    minimap_drag.cancel();
-                } else {
-                    let pressed = [MouseButton::Left, MouseButton::Middle]
-                        .into_iter().find(|&button| is_mouse_button_pressed(button));
-                    if let Some(point) = minimap_drag.update(pressed, is_mouse_button_down,
-                        || render::minimap_point(observation, pointer)) {
-                        camera.center_world(point);
-                    }
-                }
-                camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
-                camera.drag_input(!minimap_action, 1.0);
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
                 let edge = if menu.is_none() && !is_mouse_button_down(MouseButton::Middle) {
