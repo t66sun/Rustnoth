@@ -38,7 +38,7 @@ impl Drag {
     }
 }
 
-pub(super) struct Geometry {
+pub(crate) struct Geometry {
     bounds: Rect,
     scale: Vec2,
     // Source pixels per display pixel in Wesnoth's 24-pixel minimap surface.
@@ -46,7 +46,7 @@ pub(super) struct Geometry {
 }
 
 impl Geometry {
-    pub(super) fn new(cols: i32, rows: i32, area: Viewport) -> Option<Self> {
+    pub(crate) fn new(cols: i32, rows: i32, area: Viewport) -> Option<Self> {
         if cols <= 0 || rows <= 0 || area.width < 1.0 || area.height < 1.0 { return None; }
         let extent = vec2(cols as f32 * 0.75, rows as f32);
         let ratio = (area.width / extent.x).min(area.height / extent.y);
@@ -60,7 +60,7 @@ impl Geometry {
         })
     }
 
-    pub(super) fn world_point(&self, point: Vec2) -> Option<[f32; 2]> {
+    pub(crate) fn world_point(&self, point: Vec2) -> Option<[f32; 2]> {
         self.bounds.contains(point).then(|| {
             let local = (point - self.bounds.point()) / self.scale;
             [local.x + 0.25, local.y + 0.5]
