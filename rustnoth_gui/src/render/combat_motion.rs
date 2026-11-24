@@ -458,6 +458,7 @@ pub(crate) async fn show(
                     session,
                     global_time: session.global_time_of_day(),
                     route: None,
+                    hold_map_hover: false,
                     selected: None,
                     actions: &[],
                     message: None,

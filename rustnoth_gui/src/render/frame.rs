@@ -180,7 +180,7 @@ fn terrain_for_report(tiles: &[ObservedTile], hex: Hex) -> Option<&str> {
 
 pub fn draw(
     frame: &BattlefieldFrame, state: MatchState, observation: Option<&Observation>,
-    board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>,
+    board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>, hovered: Option<Hex>,
 ) {
     fill(frame.bar, PANEL);
     fill(frame.sidebar, PANEL);
@@ -205,10 +205,6 @@ pub fn draw(
         let left = frame.sidebar.x + 7.0 * s;
         let top = frame.minimap_frame.bottom();
         let rect = |x, y, w, h| Rect::new(left + x * s, top + y * s, w * s, h * s);
-        let (x, y) = mouse_position();
-        let hovered = art.briefing_highlight.or_else(|| {
-            board.filter(|_| frame.map.contains([x, y])).and_then(|b| b.hex_at([x, y]))
-        });
         let position = hovered.or(movement.selected);
         art.frame.status.draw(rect(0.0, 0.0, 171.0, 21.0), s);
         art.frame.status.draw(rect(0.0, 19.0, 171.0, 21.0), s);

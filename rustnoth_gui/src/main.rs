@@ -756,6 +756,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 session: &session,
                 global_time: session.global_time_of_day(),
                 route: session.hovered_move(),
+                hold_map_hover: camera.dragging(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
