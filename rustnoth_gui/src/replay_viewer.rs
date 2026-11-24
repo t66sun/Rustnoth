@@ -25,7 +25,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
         if let Some(view) = session.observation() {
             camera.update(viewport, view, is_key_pressed(KeyCode::Home));
             camera.scroll([point.x,point.y], mouse_wheel().1);
-            camera.drag([point.x,point.y], is_mouse_button_pressed(MouseButton::Middle), is_mouse_button_down(MouseButton::Middle));
+            camera.drag_input(true, 1.0);
         }
         let status = format!("Replay {cursor}/{}   ·   Space: play/pause   ·   Right: next move   ·   Esc: close",events.len());
         let mut step = is_key_pressed(KeyCode::Right);

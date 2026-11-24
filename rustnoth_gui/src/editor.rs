@@ -483,11 +483,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         update_editor_camera(camera, area, &view, is_key_pressed(KeyCode::Home));
         camera.scroll(p, mouse_wheel().1);
-        camera.drag(
-            p,
-            is_mouse_button_pressed(MouseButton::Middle),
-            is_mouse_button_down(MouseButton::Middle),
-        );
+        camera.drag_input(true, scale);
         let palette_menu = palette.group_menu_open();
         let modal = chrome.menu.is_some() || palette_menu;
         if !modal && !ctrl {

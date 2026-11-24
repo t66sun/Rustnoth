@@ -93,6 +93,7 @@ fn main() -> ExitCode {
         ..Conf::default()
     };
     Window::from_config(sprite_batches(configuration, uncapped), async move {
+        camera::start_drag_input();
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
@@ -524,11 +525,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     camera.center_world(point);
                 }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
-                camera.drag(
-                    [mouse_x, mouse_y],
-                    is_mouse_button_pressed(MouseButton::Middle),
-                    is_mouse_button_down(MouseButton::Middle),
-                );
+                camera.drag_input(!minimap_action, 1.0);
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
                 let edge = if menu.is_none() && !is_mouse_button_down(MouseButton::Middle) {
@@ -538,6 +535,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 };
                 let distance = speed.pan_distance(get_frame_time());
                 camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
+            } else {
+                camera.drag_input(false, 1.0);
             }
         }
         let input_blocked = input_blocked || minimap_action;
