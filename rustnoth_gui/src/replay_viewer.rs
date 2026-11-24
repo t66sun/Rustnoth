@@ -1,4 +1,4 @@
-use crate::{BoardCamera, BoardData, dialog, render};
+use crate::{BoardCamera, BoardData, camera::PointerEvent, dialog, render};
 use macroquad::prelude::*;
 use rustnoth_gui::{save_replay::Event, session::Session};
 use std::{error::Error, io, path::Path};
@@ -24,21 +24,26 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
         viewport.y += 41.;
         viewport.height -= 41.;
         let controls = [7., 41., 177.].map(|x| Rect::new(viewport.x + x, top + 5., 30., 30.));
-        if let Some(view) = session.observation() {
-            let fit = is_key_pressed(KeyCode::Home);
+        let view = session.observation();
+        let fit = is_key_pressed(KeyCode::Home);
+        if let Some(view) = view {
             camera.update(viewport, view, fit);
-            let pressed = [MouseButton::Left, MouseButton::Middle]
-                .into_iter().find(|&button| is_mouse_button_pressed(button));
-            pan_minimap(camera, &mut minimap_drag, pressed, is_mouse_button_down, || {
-                if fit || controls.iter().any(|bounds| bounds.contains(point)) { return None; }
+            camera.scroll([point.x,point.y], mouse_wheel().1);
+        }
+        let map_input = view.is_some() && !fit;
+        if !map_input {
+            minimap_drag.cancel();
+            camera.cancel_drag();
+        }
+        let mut playback_button = None;
+        camera.pointer_input(true, 1.0, |camera, event| {
+            let handled = route_pointer(camera, &mut minimap_drag, &controls, &mut playback_button, event, |point| {
+                let view = view.filter(|_| map_input)?;
                 render::minimap_point(view, point)
             });
-            camera.scroll([point.x,point.y], mouse_wheel().1);
-            camera.drag_input(!fit, 1.0);
-        } else {
-            minimap_drag.cancel();
-            camera.drag_input(false, 1.0);
-        }
+            handled || !map_input
+        });
+        minimap_drag.release_if_unheld(is_mouse_button_down);
         let status = format!("Replay {cursor}/{}   ·   Space: play/pause   ·   Right: next move   ·   Esc: close",events.len());
         let mut step = is_key_pressed(KeyCode::Right);
         if is_key_pressed(KeyCode::Space) { playing = !playing; }
@@ -59,11 +64,14 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
             for (index, r) in controls.into_iter().enumerate() {
                 if let Some(tex) = &frame { draw_texture(tex,r.x,r.y,WHITE); }
                 if let Some(tex) = &icons[index] { draw_texture(tex,r.x,r.y,WHITE); }
-                if r.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
-                    match index { 0 => playing = true, 1 => playing = false, _ => step = true }
-                }
             }
         });
+        match playback_button {
+            Some(0) => playing = true,
+            Some(1) => playing = false,
+            Some(2) => step = true,
+            _ => {}
+        }
         if (step || playing && get_time() >= next) && let Some(event) = events.get(cursor) {
             event.apply(session)?;
             cursor += 1;
@@ -75,16 +83,26 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
     }
 }
 
-fn pan_minimap(
+fn route_pointer(
     camera: &mut BoardCamera,
     drag: &mut render::minimap::Drag,
-    pressed: Option<MouseButton>,
-    is_held: impl FnOnce(MouseButton) -> bool,
-    world_point: impl FnOnce() -> Option<[f32; 2]>,
-) {
-    if let Some(point) = drag.update(pressed, is_held, world_point) {
-        camera.center_world(point);
+    controls: &[Rect; 3],
+    playback_button: &mut Option<usize>,
+    event: PointerEvent,
+    world_point: impl FnOnce(Vec2) -> Option<[f32; 2]>,
+) -> bool {
+    if let PointerEvent::Press(MouseButton::Left, point) = event
+        && let Some(index) = controls.iter().position(|rect| rect.contains(Vec2::from_array(point)))
+    {
+        *playback_button = Some(index);
+        drag.cancel();
+        return true;
     }
+    if camera.dragging() { return false; }
+    drag.pointer_event(event, |point| {
+        if controls.iter().any(|rect| rect.contains(point)) { return None; }
+        world_point(point)
+    }, |world| camera.center_world(world))
 }
 
 pub(super) async fn save_error(root: &Path, error: &io::Error) {
@@ -109,7 +127,7 @@ mod tests {
     use rustnoth_gui::layout::Viewport;
 
     #[test]
-    fn replay_centers_on_each_minimap_motion_before_the_viewport_is_drawn() {
+    fn replay_routes_motion_and_toolbar_actions_by_the_original_press() {
         let observation = Observation {
             side: 1, allied_sides: vec![], gold: None, width: 40, height: 30,
             tiles: vec![], units: vec![],
@@ -119,17 +137,28 @@ mod tests {
         camera.update(viewport, &observation, false);
         let original = camera.checkpoint().unwrap();
         let mut drag = render::minimap::Drag::default();
-        let mut update = |pressed, point| {
-            pan_minimap(&mut camera, &mut drag, pressed, |button| button == MouseButton::Middle, || point);
-            camera.checkpoint().unwrap()
+        let controls = [7., 41., 177.].map(|x| Rect::new(x, 32.0, 30.0, 30.0));
+        let mut button = None;
+        let mut route = |event| {
+            let handled = route_pointer(&mut camera, &mut drag, &controls, &mut button, event, |point| {
+                (point.x > 400.0).then_some([point.x - 400.0, point.y])
+            });
+            (handled, button, camera.checkpoint().unwrap())
         };
+        assert_eq!(route(PointerEvent::Press(MouseButton::Middle, [125.0, 140.0])), (false, None, original));
+        assert_eq!(route(PointerEvent::Move([416.5, 16.5])), (false, None, original));
 
-        let first = update(Some(MouseButton::Middle), Some([8.5, 8.5]));
-        let second = update(None, Some([16.5, 16.5]));
-        assert_ne!(first, original);
-        assert!(second[0] > first[0] && second[1] > first[1]);
-        assert_eq!(second[2], original[2]);
-        assert_eq!(update(None, None), second);
-        assert_eq!(update(None, Some([8.5, 8.5])), second);
+        let (handled, _, first) = route(PointerEvent::Press(MouseButton::Middle, [408.5, 8.5]));
+        assert!(handled);
+        let (_, _, moved) = route(PointerEvent::Move([416.5, 16.5]));
+        let (_, _, released) = route(PointerEvent::Release(MouseButton::Middle, [420.5, 20.5]));
+        assert!(moved[0] > first[0] && moved[1] > first[1]);
+        assert!(released[0] > moved[0] && released[1] > moved[1]);
+        assert_eq!(released[2], original[2]);
+        assert_eq!(route(PointerEvent::Move([408.5, 8.5])), (false, None, released));
+        assert_eq!(route(PointerEvent::Move([45.0, 45.0])), (false, None, released));
+
+        assert_eq!(route(PointerEvent::Press(MouseButton::Left, [45.0, 45.0])), (true, Some(1), released));
+        assert_eq!(route(PointerEvent::Move([408.5, 8.5])), (false, Some(1), released));
     }
 }
