@@ -1,0 +1,159 @@
+use std::cell::Cell;
+
+use macroquad::experimental::coroutines::start_coroutine;
+use macroquad::input::{is_mouse_button_down, utils};
+use macroquad::miniquad::{self, EventHandler, MouseButton, TouchPhase};
+use macroquad::window::next_frame;
+
+use super::BoardCamera;
+
+thread_local! {
+    static SUBSCRIPTION: Cell<Option<usize>> = const { Cell::new(None) };
+    static FRAME: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn start_drag_input() {
+    let subscription = utils::register_input_subscriber();
+    SUBSCRIPTION.set(Some(subscription));
+    start_coroutine(async move {
+        let mut discard = DragReceiver { camera: None, coordinate_scale: 1.0 };
+        loop {
+            // Macroquad polls coroutines after the scene future. Discard events
+            // on frames where the active scene has no map camera.
+            utils::repeat_all_miniquad_input(&mut discard, subscription);
+            FRAME.set(FRAME.get().wrapping_add(1));
+            next_frame().await;
+        }
+    });
+}
+
+impl BoardCamera {
+    pub(crate) fn drag_input(&mut self, allowed: bool, ui_scale: f32) {
+        self.begin_drag_frame(FRAME.get(), allowed);
+        let mut receiver = DragReceiver {
+            camera: allowed.then_some(&mut *self),
+            coordinate_scale: miniquad::window::dpi_scale() * ui_scale,
+        };
+        let subscription = SUBSCRIPTION.get().expect("desktop drag input is registered at launch");
+        utils::repeat_all_miniquad_input(&mut receiver, subscription);
+        if self.dragging() && !is_mouse_button_down(MouseButton::Middle) {
+            self.drag_position = None;
+        }
+    }
+
+    fn begin_drag_frame(&mut self, frame: usize, allowed: bool) {
+        // A modal or another camera can own intervening frames. Require a new
+        // press on return so their discarded events cannot continue this drag.
+        let continued = self.last_drag_frame
+            .is_some_and(|last| last == frame || last == frame.wrapping_sub(1));
+        if !allowed || !continued {
+            self.drag_position = None;
+        }
+        self.last_drag_frame = Some(frame);
+    }
+
+    fn drag_to(&mut self, point: [f32; 2]) {
+        if let Some([x, y]) = self.drag_position {
+            self.pan([point[0] - x, point[1] - y]);
+            self.drag_position = Some(point);
+        }
+    }
+}
+
+struct DragReceiver<'a> {
+    camera: Option<&'a mut BoardCamera>,
+    coordinate_scale: f32,
+}
+
+impl EventHandler for DragReceiver<'_> {
+    fn update(&mut self) {}
+
+    fn draw(&mut self) {}
+
+    fn mouse_button_down_event(&mut self, button: MouseButton, x: f32, y: f32) {
+        if button == MouseButton::Middle && let Some(camera) = &mut self.camera {
+            let point = [x / self.coordinate_scale, y / self.coordinate_scale];
+            camera.drag_position = camera.contains(point).then_some(point);
+        }
+    }
+
+    fn mouse_motion_event(&mut self, x: f32, y: f32) {
+        if let Some(camera) = &mut self.camera {
+            camera.drag_to([x / self.coordinate_scale, y / self.coordinate_scale]);
+        }
+    }
+
+    fn mouse_button_up_event(&mut self, button: MouseButton, x: f32, y: f32) {
+        if button == MouseButton::Middle && let Some(camera) = &mut self.camera {
+            camera.drag_to([x / self.coordinate_scale, y / self.coordinate_scale]);
+            camera.drag_position = None;
+        }
+    }
+
+    fn window_minimized_event(&mut self) {
+        if let Some(camera) = &mut self.camera {
+            camera.drag_position = None;
+        }
+    }
+
+    // The backend can forward simulated mouse events through its own mouse
+    // callbacks. A separate touch event cannot take over an active middle drag.
+    fn touch_event(&mut self, _: TouchPhase, _: u64, _: f32, _: f32) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_lite::hex::Hex;
+    use rustnoth_gui::layout::Viewport;
+
+    const FIRST: Hex = Hex { x: 0, y: 0 };
+
+    fn zoomed_camera() -> BoardCamera {
+        let viewport = Viewport { x: 20.0, y: 68.0, width: 240.0, height: 200.0 };
+        let mut camera = BoardCamera::default();
+        camera.fit(viewport, 6, 6, false);
+        camera.scroll([140.0, 168.0], super::super::WHEEL_STEP * 12.0);
+        camera.pan([2000.0, 2000.0]);
+        camera
+    }
+
+    #[test]
+    fn middle_drag_keeps_motion_after_press_and_before_release_in_the_same_frame() {
+        let mut camera = zoomed_camera();
+        camera.begin_drag_frame(1, true);
+        let mut input = DragReceiver { camera: Some(&mut camera), coordinate_scale: 2.0 };
+
+        input.mouse_button_down_event(MouseButton::Middle, 38.0, 312.0);
+        input.mouse_motion_event(176.0, 272.0);
+        assert_eq!(input.camera.as_ref().unwrap().layout().unwrap().tile_origin(FIRST), [74.0, 140.0]);
+        input.mouse_button_up_event(MouseButton::Middle, 176.0, 272.0);
+
+        input.mouse_button_down_event(MouseButton::Middle, 216.0, 312.0);
+        input.mouse_motion_event(176.0, 272.0);
+        assert_eq!(input.camera.as_ref().unwrap().layout().unwrap().tile_origin(FIRST), [54.0, 120.0]);
+        assert!(input.camera.as_ref().unwrap().dragging());
+
+        input.mouse_button_up_event(MouseButton::Middle, 156.0, 252.0);
+        input.mouse_motion_event(136.0, 232.0);
+        assert_eq!(camera.layout().unwrap().tile_origin(FIRST), [44.0, 110.0]);
+        assert!(!camera.dragging());
+    }
+
+    #[test]
+    fn middle_drag_stops_after_an_inactive_frame_or_focus_loss() {
+        let mut camera = zoomed_camera();
+        camera.begin_drag_frame(1, true);
+        let mut input = DragReceiver { camera: Some(&mut camera), coordinate_scale: 1.0 };
+        input.mouse_button_down_event(MouseButton::Middle, 108.0, 156.0);
+        assert!(input.camera.as_ref().unwrap().dragging());
+        input.window_minimized_event();
+        assert!(!input.camera.as_ref().unwrap().dragging());
+        input.mouse_button_down_event(MouseButton::Middle, 108.0, 156.0);
+
+        camera.begin_drag_frame(3, true);
+        camera.drag_to([88.0, 136.0]);
+        assert_eq!(camera.layout().unwrap().tile_origin(FIRST), [74.0, 140.0]);
+        assert!(!camera.dragging());
+    }
+}
