@@ -309,6 +309,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
+    let mut minimap_drag = render::minimap::Drag::default();
     let speed = display_preferences::speed::Speed::load()?;
     let mouse_scroll_threshold = title_screen::profile::mouse_scroll_threshold(
         &title_screen::profile::read_profile().unwrap_or_default(),
@@ -367,6 +368,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let dialogue_open = !walking && session.dialogue().is_some();
         if notify_turn && !walking && !dialogue_open
             && let Some(turn) = turn_notice::new_turn(session.state(), !session.legal_actions().is_empty(), notified) {
+            minimap_drag.cancel();
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
             let message = locale.game("It is now $name|’s turn").replace("$name|", name);
@@ -519,10 +521,15 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     Ok(handled) => minimap_action = handled,
                     Err(error) => { message = Some(error.to_string()); minimap_action = true; }
                 }
-                if !minimap_action && is_mouse_button_pressed(MouseButton::Left)
-                    && let Some(point) = render::minimap_point(observation, pointer)
-                {
-                    camera.center_world(point);
+                if minimap_action {
+                    minimap_drag.cancel();
+                } else {
+                    let pressed = [MouseButton::Left, MouseButton::Middle]
+                        .into_iter().find(|&button| is_mouse_button_pressed(button));
+                    if let Some(point) = minimap_drag.update(pressed, is_mouse_button_down,
+                        || render::minimap_point(observation, pointer)) {
+                        camera.center_world(point);
+                    }
                 }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
                 camera.drag_input(!minimap_action, 1.0);
@@ -537,7 +544,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
             } else {
                 camera.drag_input(false, 1.0);
+                minimap_drag.cancel();
             }
+        } else {
+            minimap_drag.cancel();
         }
         let input_blocked = input_blocked || minimap_action;
         let mut ai_walk = None;
