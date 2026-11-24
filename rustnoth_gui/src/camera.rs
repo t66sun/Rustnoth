@@ -151,6 +151,10 @@ impl BoardCamera {
         }
     }
 
+    pub fn dragging(&self) -> bool {
+        self.drag_position.is_some()
+    }
+
     pub fn layout(&self) -> Option<&BoardLayout> {
         self.layout.as_ref()
     }
