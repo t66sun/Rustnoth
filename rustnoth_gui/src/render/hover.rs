@@ -1,8 +1,5 @@
 //! The two halves of the mouseover hex straddle a visible unit in the native drawer.
-use super::{
-    BoardLayout, Hex, Observation, TeamColors, Texture2D, Vec2, Viewport, draw_centered,
-    load_texture,
-};
+use super::{BoardLayout, Hex, Observation, TeamColors, Texture2D, Vec2, draw_centered, load_texture};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +21,7 @@ fn relation(side: usize, allies: &[usize], occupant: Option<usize>) -> Relation 
 
 pub(super) struct Art {
     halves: [[Option<Texture2D>; 2]; 4],
+    pointer_hex: Option<Hex>,
 }
 
 impl Art {
@@ -45,26 +43,14 @@ impl Art {
                 )
             })
         });
-        Self { halves }
+        Self { halves, pointer_hex: None }
     }
 
-    pub(super) fn focus(
-        &self,
-        view: &Observation,
-        layout: &BoardLayout,
-        viewport: Viewport,
-        x: f32,
-        y: f32,
-    ) -> Option<Focus<'_>> {
-        if x < viewport.x
-            || x >= viewport.x + viewport.width
-            || y < viewport.y
-            || y >= viewport.y + viewport.height
-        {
-            return None;
+    pub(super) fn sample_pointer(&mut self, hold: bool, locate: impl FnOnce() -> Option<Hex>) -> Option<Hex> {
+        if !hold {
+            self.pointer_hex = locate();
         }
-        let hex = layout.hex_at([x, y])?;
-        Some(self.at(view, hex))
+        self.pointer_hex
     }
 
     pub(super) fn at(&self, view: &Observation, hex: Hex) -> Focus<'_> {
@@ -109,6 +95,19 @@ impl Focus<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_keeps_the_last_visual_hex_and_release_samples_the_pointer() {
+        let mut hover = Art { halves: Default::default(), pointer_hex: None };
+        let initial = Some(Hex { x: 3, y: 4 });
+        let released = Some(Hex { x: 7, y: 8 });
+
+        assert_eq!(hover.sample_pointer(false, || initial), initial);
+        assert_eq!(hover.sample_pointer(true, || panic!("drag must hold the settled hover")), initial);
+        assert_eq!(hover.sample_pointer(false, || released), released);
+        assert_eq!(hover.sample_pointer(false, || None), None);
+    }
+
     #[test]
     fn the_visible_occupant_controls_the_stock_mouseover_color() {
         assert_eq!(relation(2, &[2, 3], None), Relation::Empty);

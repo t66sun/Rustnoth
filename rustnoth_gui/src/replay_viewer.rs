@@ -34,15 +34,17 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
                 render::minimap_point(view, point)
             });
             camera.scroll([point.x,point.y], mouse_wheel().1);
-            camera.drag([point.x,point.y], is_mouse_button_pressed(MouseButton::Middle), is_mouse_button_down(MouseButton::Middle));
+            camera.drag_input(!fit, 1.0);
         } else {
             minimap_drag.cancel();
+            camera.drag_input(false, 1.0);
         }
         let status = format!("Replay {cursor}/{}   ·   Space: play/pause   ·   Right: next move   ·   Esc: close",events.len());
         let mut step = is_key_pressed(KeyCode::Right);
         if is_key_pressed(KeyCode::Space) { playing = !playing; }
         render::draw(session.state(),session.observation(),camera.layout(),art,render::MovementView {
             session, global_time: session.global_time_of_day(), route: None, selected: None,
+            hold_map_hover: camera.dragging(),
             actions: &[], message: Some(&status), assets: &data.assets, menu: None,
         }, |art| {
             if let Some(tex) = &panel {

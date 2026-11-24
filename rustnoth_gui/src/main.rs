@@ -93,6 +93,7 @@ fn main() -> ExitCode {
         ..Conf::default()
     };
     Window::from_config(sprite_batches(configuration, uncapped), async move {
+        camera::start_drag_input();
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
@@ -531,11 +532,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     }
                 }
                 camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
-                camera.drag(
-                    [mouse_x, mouse_y],
-                    is_mouse_button_pressed(MouseButton::Middle),
-                    is_mouse_button_down(MouseButton::Middle),
-                );
+                camera.drag_input(!minimap_action, 1.0);
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
                 let edge = if menu.is_none() && !is_mouse_button_down(MouseButton::Middle) {
@@ -547,9 +544,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
             } else {
                 minimap_drag.cancel();
+                camera.drag_input(false, 1.0);
             }
         } else {
             minimap_drag.cancel();
+            camera.drag_input(false, 1.0);
         }
         let input_blocked = input_blocked || minimap_action;
         let mut ai_walk = None;
@@ -570,8 +569,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 message = None;
             }
         }
-        let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
-            .filter(|_| !input_blocked && !computer_acted && menu.is_none());
+        let follows_pointer = pointer_previews_follow(camera.dragging(), clicked);
+        let under_mouse = if follows_pointer && !input_blocked {
+            camera.hex_at([mouse_x, mouse_y])
+        } else {
+            None
+        };
+        let hovered = selection.unit().zip(under_mouse)
+            .filter(|_| !computer_acted && menu.is_none());
         let allow_move_attack = data.lesson.as_ref().is_none_or(tutorial::Lesson::permits_move_attack);
         session.track_pointer(hovered, allow_move_attack);
         let can_end = session.legal_actions().contains(&Action::EndTurn);
@@ -642,7 +647,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             menu_action
         } else if clicked
             && let Some(observation) = session.observation()
-            && let Some(position) = camera.hex_at([mouse_x, mouse_y])
+            && let Some(position) = under_mouse
         {
             let movement = select_move(&mut selection, position, observation, session.legal_actions());
             selected_student = data.lesson.is_some() && selection.unit() == Some(position)
@@ -683,7 +688,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             menu = None;
         }
         if clicked && let Some(selected) = selection.unit()
-            && camera.hex_at([mouse_x, mouse_y]) == Some(selected) && let Some(lesson) = &mut data.lesson {
+            && under_mouse == Some(selected) && let Some(lesson) = &mut data.lesson {
             lesson.selected(selected, &mut session);
         }
         if let Some(action) = requested {
@@ -734,10 +739,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
                 |art| draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled)).await;
         }
-        let under_mouse = camera.hex_at([mouse_x, mouse_y]);
         if clicked && under_mouse.is_some() {
             session.dismiss_enemy_moves(under_mouse);
-        } else if !input_blocked && menu.is_none() && session.dialogue().is_none()
+        } else if follows_pointer && !input_blocked && menu.is_none() && session.dialogue().is_none()
             && !is_mouse_button_pressed(MouseButton::Right) {
             session.hover_enemy_moves(under_mouse, selection.unit().is_some());
         }
@@ -768,6 +772,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 session: &session,
                 global_time: session.global_time_of_day(),
                 route: session.hovered_move(),
+                hold_map_hover: camera.dragging(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
@@ -873,6 +878,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     }
 }
 
+fn pointer_previews_follow(dragging: bool, clicked: bool) -> bool {
+    // Track the settled pointer after a pan or the target of a deliberate click.
+    !dragging || clicked
+}
+
 fn select_move(
     selection: &mut Selection,
     position: Hex,
@@ -892,6 +902,14 @@ fn select_move(
 mod tests {
     use super::*;
     use engine_lite::observation::ObservedUnit;
+
+    #[test]
+    fn drag_suspends_passive_previews_only_until_release() {
+        assert!(pointer_previews_follow(false, false));
+        assert!(!pointer_previews_follow(true, false));
+        assert!(pointer_previews_follow(true, true));
+        assert!(pointer_previews_follow(false, true));
+    }
 
     #[test]
     fn textured_batches_fit_the_largest_board_primitive_without_reserving_a_full_mesh() {
