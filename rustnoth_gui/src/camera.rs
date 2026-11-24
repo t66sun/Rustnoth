@@ -3,7 +3,7 @@ use engine_lite::fixed_match::dialogue::DialogueFocus;
 use rustnoth_gui::layout::{BoardLayout, Viewport};
 
 mod drag_input;
-pub(crate) use drag_input::start_drag_input;
+pub(crate) use drag_input::{PointerEvent, start_drag_input};
 
 const ZOOM_PER_STEP: f32 = 1.25;
 // Miniquad forwards raw Windows wheel deltas and unit steps from X11.
