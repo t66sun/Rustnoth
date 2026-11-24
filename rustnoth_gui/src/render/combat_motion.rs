@@ -1,13 +1,15 @@
 //! Play the committed strikes once, using only the board as seen by the spectator.
 use super::{BoardArt, BoardLayout, standing};
+use crate::camera::BoardCamera;
 use engine_lite::{
     combat::ResolvedBlow,
     fixed_match::combat_display::{DisplayWeapon, VisibleCombat},
     hex::{Direction, Hex},
+    observation::Observation,
     wml::Node,
 };
 use macroquad::prelude::*;
-use rustnoth_gui::{assets::AssetCatalog, session::Session, team_colors::TeamColors};
+use rustnoth_gui::{assets::AssetCatalog, layout::Viewport, session::Session, team_colors::TeamColors};
 use std::{collections::HashMap, path::Path};
 
 struct Animation {
@@ -321,10 +323,10 @@ impl Pose {
 pub(crate) async fn show(
     mut fight: VisibleCombat,
     session: &Session<'_>,
-    layout: &BoardLayout,
+    camera: &mut BoardCamera,
     art: &mut BoardArt,
     assets: &AssetCatalog,
-    mut draw_controls: impl FnMut(&mut BoardArt),
+    mut draw_controls: impl FnMut(&mut BoardArt, Option<&BoardLayout>),
 ) {
     let mut textures = HashMap::<(usize, String), Option<Texture2D>>::new();
     let [Some(attacker), Some(defender)] = fight
@@ -405,6 +407,10 @@ pub(crate) async fn show(
             if is_key_pressed(KeyCode::Escape) {
                 break 'combat;
             }
+            // The main battlefield loop is suspended until the playback returns.
+            update_playback_camera(camera, super::board_viewport(), &fight.opening, |camera| {
+                camera.drag_input(true, 1.0);
+            });
             if time >= end {
                 break;
             }
@@ -449,22 +455,25 @@ pub(crate) async fn show(
                 damage: damage_label(&blow, time, end),
                 missile: projectile,
             });
+            let hold_map_hover = camera.dragging();
+            let layout = camera.layout();
             super::draw(
                 session.state(),
                 Some(&fight.opening),
-                Some(layout),
+                layout,
                 art,
                 super::MovementView {
                     session,
                     global_time: session.global_time_of_day(),
                     route: None,
+                    hold_map_hover,
                     selected: None,
                     actions: &[],
                     message: None,
                     assets,
                     menu: None,
                 },
-                &mut draw_controls,
+                |art| draw_controls(art, layout),
             );
             next_frame().await;
         }
@@ -475,6 +484,16 @@ pub(crate) async fn show(
     art.combat_pose = None;
 }
 
+fn update_playback_camera(
+    camera: &mut BoardCamera,
+    viewport: Viewport,
+    visible: &Observation,
+    apply_drag: impl FnOnce(&mut BoardCamera),
+) {
+    camera.update(viewport, visible, false);
+    apply_drag(camera);
+}
+
 fn damage_label(blow: &ResolvedBlow, time: i64, end: i64) -> Option<(u32, f32)> {
     (time >= 0 && blow.hit && blow.lost_hp > 0).then(|| (blow.lost_hp, time as f32 / end as f32))
 }
@@ -482,6 +501,32 @@ fn damage_label(blow: &ResolvedBlow, time: i64, end: i64) -> Option<(u32, f32)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_uses_manual_pan_on_the_frame_it_arrives() {
+        let mut camera = BoardCamera::default();
+        let viewport = Viewport { x: 0.0, y: 27.0, width: 600.0, height: 573.0 };
+        let visible = Observation {
+            side: 1,
+            allied_sides: vec![1],
+            gold: None,
+            width: 40,
+            height: 40,
+            tiles: vec![],
+            units: vec![],
+        };
+        let actor = Hex { x: 20, y: 20 };
+        camera.update(viewport, &visible, false);
+        camera.open_at(Some(actor));
+        let start = camera.layout().unwrap().tile_origin(actor);
+
+        update_playback_camera(&mut camera, viewport, &visible, |camera| camera.pan([48.0, 0.0]));
+        assert_eq!(camera.layout().unwrap().tile_origin(actor), [start[0] + 48.0, start[1]]);
+
+        update_playback_camera(&mut camera, viewport, &visible, |camera| camera.pan([-16.0, 24.0]));
+        assert_eq!(camera.layout().unwrap().tile_origin(actor), [start[0] + 32.0, start[1] + 24.0]);
+    }
+
     #[test]
     fn directional_weapon_art_and_offsets_follow_the_actual_hit() {
         let doc=engine_lite::wml::parse("[attack_anim]\nstart_time=-100\ndirection=sw,se\noffset=0~0.5:100,0.5~0:100\n[filter_attack]\nname=spear\n[/filter_attack]\n[frame]\nimage=units/spear-[1,2].png:100\n[/frame]\n[/attack_anim]").unwrap();

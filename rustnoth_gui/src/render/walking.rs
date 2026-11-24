@@ -11,6 +11,7 @@ pub(crate) struct Walk {
     pub(super) transient_sprite: Option<(String, usize)>,
     started: u64,
     rate: f32,
+    camera_taken: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -30,6 +31,7 @@ impl Walk {
         self.transient_sprite = None;
         self.started = now;
         self.rate = rate;
+        self.camera_taken = false;
     }
 
     pub(super) fn start_observed(&mut self, walk: engine_lite::fixed_match::walk::VisibleWalk, now: u64, rate: f32) {
@@ -38,6 +40,7 @@ impl Walk {
         self.transient_sprite = self.unit.is_none().then_some((walk.unit_type, walk.side));
         self.started = now;
         self.rate = rate;
+        self.camera_taken = false;
     }
 
     pub(crate) fn active(&self) -> bool {
@@ -53,8 +56,12 @@ impl Walk {
         was_active
     }
 
-    pub(crate) fn next_hex(&self, now: u64) -> Option<Hex> {
-        self.pose(now).map(|p|p.to)
+    pub(crate) fn camera_target(&mut self, now: u64, drag_takes_camera: bool) -> Option<Hex> {
+        self.camera_taken |= drag_takes_camera;
+        if self.camera_taken {
+            return None;
+        }
+        self.pose(now).map(|pose| pose.to)
     }
 
     pub(super) fn pose(&self, now: u64) -> Option<Pose> {
@@ -72,6 +79,30 @@ impl Walk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_middle_drag_takes_camera_follow_until_the_next_walk() {
+        let a = Hex { x: 0, y: 0 };
+        let b = Hex { x: 1, y: 0 };
+        let c = Hex { x: 2, y: 0 };
+        let mut walk = Walk::default();
+
+        walk.start(vec![a, b, c], 0, 1.0);
+        assert_eq!(walk.camera_target(10, false), Some(b));
+        assert_eq!(walk.camera_target(30, true), None);
+        assert_eq!(walk.camera_target(250, false), None);
+        assert_eq!(walk.pose(250).unwrap().to, c);
+
+        walk.start_observed(engine_lite::fixed_match::walk::VisibleWalk {
+            unit_type: "Scout".into(), side: 2, visible_destination: Some(c), edges: vec![(b, c)],
+        }, 400, 1.0);
+        assert_eq!(walk.camera_target(410, false), Some(c));
+        assert_eq!(walk.camera_target(430, true), None);
+
+        walk.start(vec![b, a], 600, 1.0);
+        assert_eq!(walk.camera_target(610, false), Some(a));
+    }
+
     #[test]
     fn an_observer_never_interpolates_across_unseen_steps() {
         let at = |x| Hex { x, y: 0 };

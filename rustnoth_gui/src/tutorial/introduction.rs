@@ -162,6 +162,7 @@ pub(crate) async fn choose(document: &Node, core: &[u8], maps: &Path, root: &Pat
         camera.update(render::board_viewport(), view, false);
         let (last, choice) = render::draw(session.state(), Some(view), camera.layout(), &mut art, render::MovementView {
             session: &session, global_time: session.global_time_of_day(), route: None, selected: None,
+            hold_map_hover: false,
             actions: &[], message: None, assets: &data.assets, menu: None,
         }, |art| {
             menus.draw(&menu_art, art.font.as_ref(), &[]);
