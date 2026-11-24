@@ -455,6 +455,7 @@ pub(crate) async fn show(
                 damage: damage_label(&blow, time, end),
                 missile: projectile,
             });
+            let hold_map_hover = camera.dragging();
             let layout = camera.layout();
             super::draw(
                 session.state(),
@@ -465,6 +466,7 @@ pub(crate) async fn show(
                     session,
                     global_time: session.global_time_of_day(),
                     route: None,
+                    hold_map_hover,
                     selected: None,
                     actions: &[],
                     message: None,

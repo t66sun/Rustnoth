@@ -3,6 +3,7 @@ use super::{side_color, AssetCatalog, BoardLayout, Hex, MovementView, Observatio
 use engine_lite::{map::ScenarioMap, observation::ObservedTile};
 use image::{imageops, Pixel, Rgba, RgbaImage};
 use macroquad::prelude::*;
+use crate::camera::PointerEvent;
 use crate::display_preferences::{MiniLayer, MiniLayers};
 pub(crate) mod save;
 use std::{collections::{HashMap, HashSet}, path::Path};
@@ -11,7 +12,73 @@ const SAMPLE: u32 = 24;
 const UNKNOWN: Rgba<u8> = Rgba([0, 0, 0, 255]);
 const NEUTRAL_VILLAGE: Rgba<u8> = Rgba([30, 30, 30, 255]); // stock "white" range minimum
 
-pub(super) struct Geometry {
+#[derive(Default)]
+pub(crate) struct Drag {
+    active: Option<(MouseButton, [f32; 2])>,
+}
+
+impl Drag {
+    pub(crate) fn update(
+        &mut self,
+        pressed: Option<MouseButton>,
+        is_held: impl FnOnce(MouseButton) -> bool,
+        world_point: impl FnOnce() -> Option<[f32; 2]>,
+    ) -> Option<[f32; 2]> {
+        let previous = self.active.take();
+        let button = pressed.or_else(|| previous.map(|(button, _)| button))?;
+        let held = is_held(button);
+        if !held && pressed.is_none() { return None; }
+
+        let point = world_point()?;
+        self.active = held.then_some((button, point));
+        (pressed.is_some() || previous.map(|(_, last)| last) != Some(point)).then_some(point)
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.active = None;
+    }
+
+    pub(crate) fn release_if_unheld(&mut self, held: impl FnOnce(MouseButton) -> bool) {
+        if self.active.is_some_and(|(button, _)| !held(button)) {
+            self.cancel();
+        }
+    }
+
+    pub(crate) fn pointer_event(
+        &mut self,
+        event: PointerEvent,
+        world_point: impl FnOnce(Vec2) -> Option<[f32; 2]>,
+        center: impl FnOnce([f32; 2]),
+    ) -> bool {
+        let (button, point, previous, held) = match event {
+            PointerEvent::Press(button @ (MouseButton::Left | MouseButton::Middle), point) => {
+                (button, point, None, true)
+            }
+            PointerEvent::Move(point) => {
+                let Some((button, last)) = self.active else { return false; };
+                (button, point, Some(last), true)
+            }
+            PointerEvent::Release(button, point) => {
+                let Some((held, last)) = self.active else { return false; };
+                if held != button { return false; }
+                (button, point, Some(last), false)
+            }
+            PointerEvent::Cancel => {
+                self.cancel();
+                return false;
+            }
+            _ => return false,
+        };
+        let next = world_point(Vec2::from_array(point));
+        self.active = if held { next.map(|world| (button, world)) } else { None };
+        if let Some(world) = next && previous != Some(world) {
+            center(world);
+        }
+        next.is_some() || previous.is_some()
+    }
+}
+
+pub(crate) struct Geometry {
     bounds: Rect,
     scale: Vec2,
     // Source pixels per display pixel in Wesnoth's 24-pixel minimap surface.
@@ -19,7 +86,7 @@ pub(super) struct Geometry {
 }
 
 impl Geometry {
-    pub(super) fn new(cols: i32, rows: i32, area: Viewport) -> Option<Self> {
+    pub(crate) fn new(cols: i32, rows: i32, area: Viewport) -> Option<Self> {
         if cols <= 0 || rows <= 0 || area.width < 1.0 || area.height < 1.0 { return None; }
         let extent = vec2(cols as f32 * 0.75, rows as f32);
         let ratio = (area.width / extent.x).min(area.height / extent.y);
@@ -33,7 +100,7 @@ impl Geometry {
         })
     }
 
-    pub(super) fn world_point(&self, point: Vec2) -> Option<[f32; 2]> {
+    pub(crate) fn world_point(&self, point: Vec2) -> Option<[f32; 2]> {
         self.bounds.contains(point).then(|| {
             let local = (point - self.bounds.point()) / self.scale;
             [local.x + 0.25, local.y + 0.5]
@@ -411,6 +478,71 @@ mod tests {
                      |x, y| Rgba([x as u8, y as u8, 0, 255]));
         assert_eq!(*image.get_pixel(0, 0), Rgba([6, 12, 0, 255]));
         assert_eq!(*image.get_pixel(1, 1), Rgba([10, 16, 0, 255]));
+    }
+
+    #[test]
+    fn ordered_minimap_drag_keeps_its_press_origin_and_last_valid_position() {
+        use MouseButton::{Left, Middle};
+        use PointerEvent::{Move, Press, Release};
+
+        let area = Viewport { x: 1040., y: 10., width: 160., height: 210. };
+        let geometry = Geometry::new(48, 36, area).unwrap();
+        let first = [1060., 60.];
+        let second = [1150., 130.];
+        let board = [980., 130.];
+        let zoom_control = [1045., 230.];
+        let expected = [first, second].map(|point| geometry.world_point(Vec2::from_array(point)).unwrap());
+
+        for button in [Left, Middle] {
+            let mut drag = Drag::default();
+            let mut centers = Vec::new();
+            let mut handle = |event| {
+                drag.pointer_event(event, |point| geometry.world_point(point), |world| centers.push(world))
+            };
+
+            assert!(!handle(Press(button, board)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+            assert!(!handle(Press(button, zoom_control)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+
+            assert!(handle(Press(button, first)));
+            assert!(handle(Move(second)));
+            assert!(handle(Move(board)));
+            assert!(!handle(Move(first)));
+            assert!(!handle(Release(button, first)));
+            assert_eq!(centers, expected);
+        }
+    }
+
+    #[test]
+    fn minimap_drag_tracks_new_positions_until_the_initiating_button_releases_or_exits() {
+        use MouseButton::{Left, Middle};
+
+        let area = Viewport { x: 1040., y: 10., width: 160., height: 210. };
+        let geometry = Geometry::new(48, 36, area).unwrap();
+        let first = vec2(1060., 60.);
+        let second = vec2(1150., 130.);
+        let letterbox = vec2(1060., 20.);
+        let first_world = geometry.world_point(first).unwrap();
+        let second_world = geometry.world_point(second).unwrap();
+        let mut drag = Drag::default();
+        let mut update = |pointer, pressed, held| {
+            drag.update(pressed, |button| Some(button) == held, || geometry.world_point(pointer))
+        };
+
+        assert_eq!(update(first, None, Some(Middle)), None);
+        assert_eq!(update(first, Some(Middle), Some(Middle)), Some(first_world));
+        assert_eq!(update(second, None, Some(Middle)), Some(second_world));
+        assert_eq!(update(second, None, Some(Middle)), None);
+        assert_eq!(update(first, None, Some(Left)), None);
+        assert_eq!(update(first, None, Some(Middle)), None);
+
+        assert_eq!(update(second, Some(Left), Some(Left)), Some(second_world));
+        assert_eq!(update(letterbox, None, Some(Left)), None);
+        assert_eq!(update(first, None, Some(Left)), None);
+        assert_eq!(update(first, Some(Left), None), Some(first_world));
     }
 
     #[test]
