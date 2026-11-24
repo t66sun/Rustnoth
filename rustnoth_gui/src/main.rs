@@ -49,7 +49,7 @@ rustnoth_gui --title [<campaign.cfg> <maps-dir>] <core.cfg> <seed> [--wesnoth-ro
 rustnoth_gui --screenshot <map> <output.png> [--wesnoth-root <directory>]\n\
 Scroll over the board to zoom. Pan with a middle-button drag or the arrow keys.\n\
 Press Home to fit the board.\n\
-Put --uncapped before the launch arguments to render without waiting for vertical sync.";
+Put --uncapped before the launch arguments to measure rendering without frame pacing.";
 
 fn main() -> ExitCode {
     let (args, uncapped) = launch_arguments(env::args_os().skip(1).collect());
@@ -92,7 +92,26 @@ fn main() -> ExitCode {
         window_resizable: true,
         ..Conf::default()
     };
-    Window::from_config(sprite_batches(configuration, uncapped), async move {
+    let configuration = sprite_batches(configuration, uncapped);
+    #[cfg(windows)]
+    let configuration = {
+        let mut configuration = configuration;
+        if !uncapped { desktop::frame_pacing::adjust(&mut configuration); }
+        configuration
+    };
+    Window::from_config(configuration, async move {
+        #[cfg(windows)]
+        let _timer = if uncapped {
+            None
+        } else {
+            match desktop::frame_pacing::FrameTicker::start() {
+                Ok(timer) => Some(timer),
+                Err(error) => {
+                    eprintln!("Could not schedule desktop frames: {error}");
+                    std::process::exit(1);
+                }
+            }
+        };
         camera::start_drag_input();
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
