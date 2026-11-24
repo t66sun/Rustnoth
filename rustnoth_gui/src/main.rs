@@ -11,7 +11,7 @@ use engine_lite::{
     fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle,
 };
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::{Players, Session}};
+use rustnoth_gui::{assets::AssetCatalog, choices::options_at, layout::BoardLayout, selection::Selection, session::{Players, Session}};
 
 use camera::BoardCamera;
 
@@ -705,8 +705,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 Err(error) => { after_walk = None; message = Some(error.to_string()); menu = None; }
             }
         }
-        let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>, enabled: bool| {
-            if let Some(lesson) = &data.lesson { lesson.draw_labels(art, camera.layout()); }
+        let draw_controls = |art: &mut render::BoardArt, layout: Option<&BoardLayout>, prompt: &str, turn: Option<&str>, enabled: bool| {
+            if let Some(lesson) = &data.lesson { lesson.draw_labels(art, layout); }
             if !prompt.is_empty() {
                 art.draw_tutorial_print(prompt, &data.wesnoth_root);
             }
@@ -718,9 +718,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
             top_menu.draw(&top_art, art.font.as_ref(), &commands);
         };
-        if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
-            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
-                |art| draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled)).await;
+        if let Some(fight) = session.take_combat() && camera.layout().is_some() {
+            render::combat_motion::show(fight, &session, &mut camera, &mut art, &data.assets,
+                |art, layout| draw_controls(art, layout, &visible_prompt, visible_turn_label, turn_enabled)).await;
         }
         let under_mouse = camera.hex_at([mouse_x, mouse_y]);
         if clicked && under_mouse.is_some() {
@@ -763,7 +763,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 menu: menu.as_ref().filter(|menu| attack_dialog.is_none() && !menu.offers_recruit()),
             },
             |art| {
-                draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled);
+                draw_controls(art, camera.layout(), &visible_prompt, visible_turn_label, turn_enabled);
                 session.dialogue().filter(|_| !briefing_scroll && !art.walk.active())
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
