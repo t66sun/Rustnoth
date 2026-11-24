@@ -2,6 +2,7 @@ use engine_lite::hex::Hex;
 
 const COLUMN_SPACING: f32 = 0.75;
 const ODD_COLUMN_SHIFT: f32 = 0.5;
+const NATIVE_TILE_SIZE: f32 = 72.0;
 const MAX_TILE_SIZE: f32 = 144.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,6 +26,7 @@ pub struct BoardLayout {
     height: i32,
     viewport: Viewport,
     origin: [f32; 2],
+    screen_origin: [f32; 2],
     tile_size: f32,
     fitted_tile_size: f32,
     border: f32,
@@ -63,14 +65,16 @@ impl BoardLayout {
         if tile_size <= 0.0 {
             return None;
         }
+        let origin = [
+            x + (available_width - board_width * tile_size) / 2.0,
+            y + (available_height - board_height * tile_size) / 2.0,
+        ];
         Some(Self {
             width,
             height,
             viewport,
-            origin: [
-                x + (available_width - board_width * tile_size) / 2.0,
-                y + (available_height - board_height * tile_size) / 2.0,
-            ],
+            origin,
+            screen_origin: snap_origin(origin, tile_size),
             tile_size,
             fitted_tile_size: tile_size,
             border,
@@ -81,9 +85,7 @@ impl BoardLayout {
     pub fn native_scale(&self, focus: Option<Hex>) -> Self {
         let viewport = self.viewport;
         let center = [viewport.x + viewport.width / 2.0, viewport.y + viewport.height / 2.0];
-        let mut layout = *self;
-        layout.origin = [0.0, 0.0];
-        layout.tile_size = 72.0;
+        let mut layout = self.with_projection([0.0, 0.0], NATIVE_TILE_SIZE);
         layout.fitted_tile_size = self.fitted_tile_size.min(layout.tile_size);
         let focus = focus.unwrap_or(Hex { x: self.width / 2, y: self.height / 2 });
         let [left, top] = layout.tile_origin(focus);
@@ -93,13 +95,12 @@ impl BoardLayout {
     /// Reapply Wesnoth's scroll bounds at the current zoom when the map area changes size.
     pub fn resized(&self, viewport: Viewport) -> Option<Self> {
         let mut layout = Self::fit_with_border(self.width, self.height, viewport, self.border)?;
-        layout.tile_size = self.tile_size;
         layout.fitted_tile_size = layout.fitted_tile_size.min(self.tile_size);
-        layout.origin = [
+        let origin = [
             viewport.x + (self.origin[0] - self.viewport.x),
             viewport.y + (self.origin[1] - self.viewport.y),
         ];
-        Some(layout.panned([0.0, 0.0]))
+        Some(layout.with_pan(origin, self.tile_size, [0.0, 0.0]))
     }
 
     /// Scales around a screen point, between the fitted size and 144 pixels per tile.
@@ -113,23 +114,33 @@ impl BoardLayout {
         }
         let scale = tile_size / self.tile_size;
         let [left, top] = self.origin;
-        Self {
-            origin: [x + (left - x) * scale, y + (top - y) * scale],
-            tile_size,
-            ..*self
-        }
+        self.with_projection([x + (left - x) * scale, y + (top - y) * scale], tile_size)
     }
 
     /// Translates the board within the fitted viewport, centering any axis that fits.
-    pub fn panned(&self, [dx, dy]: [f32; 2]) -> Self {
+    pub fn panned(&self, delta: [f32; 2]) -> Self {
+        self.with_pan(self.origin, self.tile_size, delta)
+    }
+
+    fn with_pan(self, [x, y]: [f32; 2], size: f32, [dx, dy]: [f32; 2]) -> Self {
         let [width, height] = board_extent(self.width, self.height);
         let viewport = self.viewport;
+        let origin = [
+            pan_axis(
+                x + dx, viewport.x, viewport.width, width * size,
+                size * COLUMN_SPACING * self.border,
+            ),
+            pan_axis(y + dy, viewport.y, viewport.height, height * size, size * self.border),
+        ];
+        self.with_projection(origin, size)
+    }
+
+    fn with_projection(self, origin: [f32; 2], tile_size: f32) -> Self {
         Self {
-            origin: [
-                pan_axis(self.origin[0] + dx, viewport.x, viewport.width, width * self.tile_size, self.tile_size * COLUMN_SPACING * self.border),
-                pan_axis(self.origin[1] + dy, viewport.y, viewport.height, height * self.tile_size, self.tile_size * self.border),
-            ],
-            ..*self
+            origin,
+            screen_origin: snap_origin(origin, tile_size),
+            tile_size,
+            ..self
         }
     }
 
@@ -138,18 +149,12 @@ impl BoardLayout {
         self.tile_size
     }
 
-    fn screen_origin(&self) -> [f32; 2] {
-        // At the stock 72px zoom, SDL blits the original sprite to whole pixels.
-        // Retain the fractional camera position so slow scrolling still accumulates.
-        if self.tile_size == 72.0 { self.origin.map(f32::floor) } else { self.origin }
-    }
-
     /// Screen coordinates of the top-left corner of a hex's sprite.
     pub fn tile_origin(&self, hex: Hex) -> [f32; 2] {
-        let origin = self.screen_origin();
+        let [left, top] = self.screen_origin;
         [
-            origin[0] + hex.x as f32 * COLUMN_SPACING * self.tile_size,
-            origin[1]
+            left + hex.x as f32 * COLUMN_SPACING * self.tile_size,
+            top
                 + (hex.y as f32 + hex.x.rem_euclid(2) as f32 * ODD_COLUMN_SHIFT) * self.tile_size,
         ]
     }
@@ -165,9 +170,9 @@ impl BoardLayout {
     }
 
     fn hit_test(&self, [x, y]: [f32; 2], border: i32) -> Option<Hex> {
-        let origin = self.screen_origin();
-        let x = (x - origin[0]) / self.tile_size;
-        let y = (y - origin[1]) / self.tile_size;
+        let [left, top] = self.screen_origin;
+        let x = (x - left) / self.tile_size;
+        let y = (y - top) / self.tile_size;
         let margin = border as f32;
         if !(-margin..self.width as f32 + 1.0 + margin).contains(&x)
             || !(-margin..self.height as f32 + 0.5 + margin).contains(&y)
@@ -201,6 +206,12 @@ impl BoardLayout {
         }
         Some(Hex { x: column as i32, y: row as i32 })
     }
+}
+
+fn snap_origin(origin: [f32; 2], tile_size: f32) -> [f32; 2] {
+    // At the stock 72px zoom, SDL blits the original sprite to whole pixels.
+    // Retain the fractional camera position so slow scrolling still accumulates.
+    if tile_size == NATIVE_TILE_SIZE { origin.map(f32::floor) } else { origin }
 }
 
 fn pan_axis(position: f32, start: f32, viewport: f32, board: f32, margin: f32) -> f32 {
@@ -296,6 +307,34 @@ mod tests {
         for _ in 0..4 { map = map.panned([0.25, 0.25]); }
         assert_eq!(map.tile_origin(focus), [474.0, 388.0]);
         assert_eq!(map.hex_at([510.0, 424.0]), Some(focus));
+    }
+
+    #[test]
+    fn camera_changes_prepare_the_origin_used_by_tiles_and_hit_testing() {
+        let fitted_viewport = Viewport { x: 0.5, y: -0.25, width: 450.0, height: 396.0 };
+        let fitted = BoardLayout::fit(8, 5, fitted_viewport).unwrap();
+        assert_eq!(fitted.screen_origin, [0.0, -1.0]);
+
+        let viewport = Viewport { x: 0.5, y: 0.25, width: 400.0, height: 300.0 };
+        let native = BoardLayout::battlefield(20, 20, viewport)
+            .unwrap()
+            .native_scale(Some(Hex { x: 5, y: 5 }));
+        assert_eq!(native.screen_origin, [-106.0, -282.0]);
+
+        let first = native.panned([0.25, 0.25]);
+        assert_eq!(first.screen_origin, native.screen_origin);
+        let shifted = first.panned([0.5, 0.5]);
+        assert_eq!(shifted.screen_origin, [-105.0, -281.0]);
+        let border = Hex { x: -1, y: -1 };
+        assert_eq!(shifted.tile_origin(border), [-159.0, -317.0]);
+        assert_eq!(shifted.editor_hex_at([-123.0, -281.0]), Some(border));
+
+        let larger_viewport = Viewport { x: 8.75, y: 4.75, width: 420.0, height: 340.0 };
+        let resized = shifted.resized(larger_viewport).unwrap();
+        assert_eq!(resized.screen_origin, [-97.0, -277.0]);
+        let zoomed = resized.zoomed_at([0.0, 0.0], 1.25);
+        assert_eq!(zoomed.screen_origin, [-120.625, -345.625]);
+        assert_eq!(zoomed.tile_origin(Hex { x: 0, y: 0 }), zoomed.screen_origin);
     }
 
     #[test]
