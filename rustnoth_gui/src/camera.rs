@@ -17,6 +17,8 @@ pub struct BoardCamera {
     last_fit: Option<(Viewport, i32, i32)>,
     layout: Option<BoardLayout>,
     drag_position: Option<[f32; 2]>,
+    #[cfg(windows)]
+    drag_capture: Option<drag_input::Capture>,
     last_drag_frame: Option<usize>,
     briefing_velocity: f32,
 }
@@ -50,7 +52,7 @@ impl BoardCamera {
         // A minimized window has no drawable map area. Keep its previous scroll position.
         let Some(layout) = layout else { return };
         self.last_fit = Some(fit);
-        self.drag_position = None;
+        self.cancel_drag();
         self.layout = Some(layout);
     }
 
