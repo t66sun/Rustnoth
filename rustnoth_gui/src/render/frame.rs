@@ -59,9 +59,53 @@ impl BattlefieldFrame {
 }
 
 impl BoardArt {
-    pub(crate) fn minimap_input(&mut self, point: Vec2, camera: &mut crate::camera::BoardCamera) -> std::io::Result<bool> {
+    pub(crate) fn drag_minimap(
+        &mut self,
+        drag: &mut minimap::Drag,
+        observation: &Observation,
+        camera: &mut crate::camera::BoardCamera,
+    ) -> std::io::Result<bool> {
+        use crate::camera::PointerEvent;
+
         let frame = BattlefieldFrame::new(screen_width(), screen_height());
-        self.frame.minimap_buttons.input(frame.minimap_frame, point, camera, &mut self.minimap)
+        let mut control = |pressed, camera: &mut crate::camera::BoardCamera| {
+            self.frame.minimap_buttons.input_press(frame.minimap_frame, pressed, camera, &mut self.minimap)
+        };
+        if !is_mouse_button_pressed(MouseButton::Left) {
+            let shortcut = control(None, camera);
+            if !matches!(shortcut, Ok(false)) {
+                drag.cancel();
+                camera.drag_input(false, 1.0);
+                return shortcut;
+            }
+        }
+
+        let geometry = std::cell::OnceCell::new();
+        let mut control_result = Ok(false);
+        let mut left_press_consumed = false;
+        camera.pointer_input(true, 1.0, |camera, event| {
+            if !matches!(control_result, Ok(false)) { return true; }
+            let left_press = if let PointerEvent::Press(MouseButton::Left, point) = event {
+                control_result = control(Some(Vec2::from_array(point)), camera);
+                if !matches!(control_result, Ok(false)) {
+                    drag.cancel();
+                    return true;
+                }
+                true
+            } else {
+                false
+            };
+            if camera.dragging() { return false; }
+            let handled = drag.pointer_event(event, |point| {
+                geometry.get_or_init(|| {
+                    minimap::Geometry::new(observation.width, observation.height, frame.minimap)
+                }).as_ref()?.world_point(point)
+            }, |world| camera.center_world(world));
+            left_press_consumed |= left_press && handled;
+            handled
+        });
+        drag.release_if_unheld(is_mouse_button_down);
+        control_result.map(|handled| handled || left_press_consumed)
     }
 }
 
@@ -180,7 +224,7 @@ fn terrain_for_report(tiles: &[ObservedTile], hex: Hex) -> Option<&str> {
 
 pub fn draw(
     frame: &BattlefieldFrame, state: MatchState, observation: Option<&Observation>,
-    board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>,
+    board: Option<&BoardLayout>, art: &mut BoardArt, movement: &MovementView<'_>, hovered: Option<Hex>,
 ) {
     fill(frame.bar, PANEL);
     fill(frame.sidebar, PANEL);
@@ -205,10 +249,6 @@ pub fn draw(
         let left = frame.sidebar.x + 7.0 * s;
         let top = frame.minimap_frame.bottom();
         let rect = |x, y, w, h| Rect::new(left + x * s, top + y * s, w * s, h * s);
-        let (x, y) = mouse_position();
-        let hovered = art.briefing_highlight.or_else(|| {
-            board.filter(|_| frame.map.contains([x, y])).and_then(|b| b.hex_at([x, y]))
-        });
         let position = hovered.or(movement.selected);
         art.frame.status.draw(rect(0.0, 0.0, 171.0, 21.0), s);
         art.frame.status.draw(rect(0.0, 19.0, 171.0, 21.0), s);

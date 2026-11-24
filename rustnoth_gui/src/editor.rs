@@ -16,10 +16,11 @@ mod terrain_report;
 mod village_report;
 
 use crate::{
-    camera::BoardCamera,
+    camera::{BoardCamera, PointerEvent},
     dialog,
     render::{self, EditorMinimap, EditorTerrain},
 };
+use render::minimap::{Drag as MinimapDrag, Geometry as MinimapGeometry};
 use engine_lite::{hex::Hex, map::editor::EditableMap, observation::Observation, wml};
 use macroquad::prelude::*;
 use palette::{Art, Palette};
@@ -399,6 +400,34 @@ fn minimap_panel(w: f32, h: f32) -> (Rect, Viewport, &'static str) {
     (frame, Viewport { x: frame.x + left, y: frame.y + top, width: frame.w - left - 8.0, height }, image)
 }
 
+#[derive(Default)]
+struct MinimapGesture {
+    drag: MinimapDrag,
+    left_captured: bool,
+}
+
+impl MinimapGesture {
+    fn cancel(&mut self) {
+        self.drag.cancel();
+        self.left_captured = false;
+    }
+
+    fn route(
+        &mut self,
+        camera: &mut BoardCamera,
+        event: PointerEvent,
+        world_point: impl FnOnce(Vec2) -> Option<[f32; 2]>,
+    ) -> bool {
+        let handled = self.drag.pointer_event(event, world_point, |world| camera.center_world(world));
+        match event {
+            PointerEvent::Press(MouseButton::Left, _) => self.left_captured = handled,
+            PointerEvent::Release(MouseButton::Left, _) | PointerEvent::Cancel => self.left_captured = false,
+            _ => {}
+        }
+        handled
+    }
+}
+
 fn add_minimap_border(view: &mut Observation, doc: &EditableMap) {
     // getMinimap starts at (0, 0), including the last column and row of
     // border terrain whose symbol images overlap the edge of the canvas.
@@ -428,6 +457,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut view = render::map_observation(documents.list[0].map.map());
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
+    let mut minimap_drag = MinimapGesture::default();
     let mut reports = terrain_report::Reports::new(root);
     let mut villages = village_report::Villages::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::load(root);
@@ -481,13 +511,9 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             || is_key_down(KeyCode::LeftSuper)
             || is_key_down(KeyCode::RightSuper);
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-        update_editor_camera(camera, area, &view, is_key_pressed(KeyCode::Home));
+        let fit = is_key_pressed(KeyCode::Home);
+        update_editor_camera(camera, area, &view, fit);
         camera.scroll(p, mouse_wheel().1);
-        camera.drag(
-            p,
-            is_mouse_button_pressed(MouseButton::Middle),
-            is_mouse_button_down(MouseButton::Middle),
-        );
         let palette_menu = palette.group_menu_open();
         let modal = chrome.menu.is_some() || palette_menu;
         if !modal && !ctrl {
@@ -507,11 +533,50 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             selecting = false;
             last_selection = None;
         }
+        let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
+        let minimap_allowed = !modal && !fit && drawing.is_none() && !selecting;
+        let mut left_consumed = minimap_drag.left_captured;
+        if !minimap_allowed {
+            minimap_drag.cancel();
+        }
+        let mut buttons = Ok(false);
+        if !modal && !is_mouse_button_pressed(MouseButton::Left) {
+            buttons = mini_buttons.input_press(mini_frame, None, camera, &mut mini);
+            if !matches!(buttons, Ok(false)) { minimap_drag.cancel(); }
+        }
+        let geometry = std::cell::OnceCell::new();
+        camera.pointer_input(true, scale, |camera, event| {
+            if modal { return false; }
+            if !matches!(buttons, Ok(false)) { return true; }
+            if let PointerEvent::Press(MouseButton::Left, point) = event {
+                buttons = mini_buttons.input_press(mini_frame, Some(Vec2::from_array(point)), camera, &mut mini);
+                if !matches!(buttons, Ok(false)) {
+                    minimap_drag.cancel();
+                    minimap_drag.left_captured = true;
+                    left_consumed = true;
+                    return true;
+                }
+            }
+            if !minimap_allowed || camera.dragging() { return false; }
+            let handled = minimap_drag.route(camera, event, |point| {
+                geometry.get_or_init(|| MinimapGeometry::new(view.width, view.height, mini_area))
+                    .as_ref()?.world_point(point)
+            });
+            left_consumed |= minimap_drag.left_captured;
+            handled
+        });
+        minimap_drag.drag.release_if_unheld(is_mouse_button_down);
+        if !is_mouse_button_down(MouseButton::Left) {
+            minimap_drag.left_captured = false;
+        }
+        if let Err(error) = buttons { status = error.to_string(); }
+        // A press consumed by the minimap can finish this frame over the map or a tool.
+        let point = if left_consumed { vec2(-1.0, -1.0) } else { point };
         if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
             && !is_key_down(KeyCode::RightAlt) && matches!(tool, Tool::Paint | Tool::Select) {
             shapes.keys();
         }
-        let at = if area.contains(p) {
+        let at = if !left_consumed && area.contains(p) {
             camera.layout().and_then(|layout| layout.editor_hex_at(p))
         } else {
             None
@@ -642,25 +707,12 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             selection,
         );
         villages.draw(w, &mut art, &assets, form.font.as_ref());
-        let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
         art.image(&assets, mini_background, mini_frame);
         mini.draw_map(&view, mini_area, area, camera.layout(), None, None, &[]);
         reports.draw(w, h, at, doc, &palette, &assets, form.font.as_ref());
         let zoom = camera.layout().map_or(72., |layout| layout.tile_size());
         if let Some(tip) = mini_buttons.draw(mini_frame, (!modal).then_some(point), zoom, mini.layers) {
             chrome.tip = Some(tip);
-        }
-        if !modal && let Err(error) = mini_buttons.input(mini_frame, point, camera, &mut mini) {
-            status = error.to_string();
-        }
-        let mini_rect = Rect::new(mini_area.x, mini_area.y, mini_area.width, mini_area.height);
-        if mini_rect.contains(point) && is_mouse_button_pressed(MouseButton::Left) {
-            let map_w = view.width as f32 * 0.75;
-            let map_h = view.height as f32;
-            let zoom = (mini_area.width / map_w).min(mini_area.height / map_h);
-            let origin = mini_rect.center() - vec2(map_w, map_h) * zoom / 2.0;
-            let world = (point - origin) / zoom;
-            camera.center_world([world.x + 0.25, world.y + 0.5]);
         }
         let compact = w < 1024.0 || h < 768.0;
         let tools = if compact { Rect::new(w - sidebar, 219., sidebar, 92.) }
@@ -765,6 +817,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         }
         if let Some(cmd) = command.filter(|&cmd| selection.enabled(cmd)) {
             if !matches!(cmd, Command::ToggleGrid | Command::ToggleHelp | Command::Coordinates | Command::TerrainCodes) {
+                minimap_drag.cancel();
                 drawing = None;
                 selecting = false;
                 last_selection = None;
@@ -962,6 +1015,39 @@ mod tests {
         assert_eq!(canvas, Viewport { x: 1032.0, y: 11.0, width: 160.0, height: 212.0 });
         let (_, compact, _) = minimap_panel(800.0, 600.0);
         assert_eq!(compact, Viewport { x: 662.0, y: 10.0, width: 130.0, height: 158.0 });
+    }
+
+    #[test]
+    fn editor_minimap_routes_press_motion_and_release_before_canvas_tools() {
+        let doc = new_map();
+        let view = render::map_observation(doc.map());
+        let (_, canvas, _) = minimap_panel(1200.0, 820.0);
+        let geometry = MinimapGeometry::new(view.width, view.height, canvas).unwrap();
+        let mut camera = BoardCamera::default();
+        update_editor_camera(&mut camera, map_viewport(1200.0, 820.0), &view, false);
+        let opening = camera.checkpoint().unwrap();
+        let mut drag = MinimapGesture::default();
+        let mut input = |event| {
+            let handled = drag.route(&mut camera, event, |point| geometry.world_point(point));
+            (handled, drag.left_captured, camera.checkpoint().unwrap())
+        };
+        let letterbox = [1100.0, 20.0];
+        let first = [1080.0, 75.0];
+        let second = [1146.0, 130.0];
+        let board = [700.0, 200.0];
+        assert_eq!(input(PointerEvent::Press(MouseButton::Left, letterbox)), (false, false, opening));
+        assert_eq!(input(PointerEvent::Move(first)), (false, false, opening));
+
+        let (handled, captured, after_press) = input(PointerEvent::Press(MouseButton::Left, first));
+        assert!(handled && captured);
+        assert_ne!(after_press, opening);
+        let (handled, captured, after_drag) = input(PointerEvent::Move(second));
+        assert!(handled && captured);
+        assert!(after_drag[0] > after_press[0] && after_drag[1] > after_press[1]);
+        assert_eq!(after_drag[2], opening[2]);
+        assert_eq!(input(PointerEvent::Move(board)), (true, true, after_drag));
+        assert_eq!(input(PointerEvent::Move(first)), (false, true, after_drag));
+        assert_eq!(input(PointerEvent::Release(MouseButton::Left, board)), (false, false, after_drag));
     }
 
     #[test]

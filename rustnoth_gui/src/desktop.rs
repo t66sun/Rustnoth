@@ -1,5 +1,7 @@
 //! Locate original artwork at desktop startup and prepare game data on first use.
 pub(super) mod window;
+#[cfg(windows)]
+pub(crate) mod frame_pacing;
 
 use std::{
     collections::hash_map::DefaultHasher,

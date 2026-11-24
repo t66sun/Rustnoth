@@ -464,6 +464,7 @@ fn recolored_pixels<'a>(path: &Path, palettes: impl IntoIterator<Item = (&'a Tea
 
 pub struct MovementView<'a> {
     pub route: Option<&'a engine_lite::fixed_match::move_preview::MovePreview>,
+    pub hold_map_hover: bool,
     pub session: &'a rustnoth_gui::session::Session<'a>,
     pub global_time: Option<&'a TimeOfDay>,
     pub selected: Option<Hex>,
@@ -501,12 +502,19 @@ pub fn draw<T>(
     set_default_camera();
     clear_background(BACKGROUND);
     let frame = BattlefieldFrame::new(screen_width(), screen_height());
+    let pointer_hex = art.hover.sample_pointer(movement.hold_map_hover, || {
+        let board = layout?;
+        let (x, y) = mouse_position();
+        let point = [x, y];
+        frame.map.contains(point).then(|| board.hex_at(point)).flatten()
+    });
+    let hovered = art.briefing_highlight.or(pointer_hex);
     if let Some(texture) = &art.border_background { border::backdrop(texture, frame.map); }
     if let (Some(view), Some(layout)) = (observation, layout) {
         art.unit_order.update(&view.units);
-        draw_board(view, layout, art, &movement);
+        draw_board(view, layout, art, &movement, hovered);
     }
-    frame::draw(&frame, state, observation, layout, art, &movement);
+    frame::draw(&frame, state, observation, layout, art, &movement, hovered);
     art.tutorial_hint.draw(movement.session.tutorial_hint(), frame.map, art.dialogue_font.as_ref());
     if let Some(menu) = movement.menu {
         let area = menu_area();
@@ -671,7 +679,7 @@ impl UnitDrawOrder {
     }
 }
 
-fn draw_board(view: &Observation, layout: &BoardLayout, art: &mut BoardArt, movement: &MovementView<'_>) {
+fn draw_board(view: &Observation, layout: &BoardLayout, art: &mut BoardArt, movement: &MovementView<'_>, hovered: Option<Hex>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
     let viewport = board_viewport();
@@ -745,9 +753,7 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &mut BoardArt, move
         }
     }
     if let Some(route) = movement.route { art.footsteps.draw_steps(layout, route, viewport); }
-    let (pointer_x, pointer_y) = mouse_position();
-    let hover_art = art.briefing_highlight.map(|hex| art.hover.at(view, hex))
-        .or_else(|| art.hover.focus(view, layout, viewport, pointer_x, pointer_y));
+    let hover_art = hovered.map(|hex| art.hover.at(view, hex));
     if let Some(focus) = &hover_art { focus.draw(layout, false); }
     let walking = art.walk.pose(now);
     let terrain_at = |at: Hex| observed_tile(at).map(|tile| tile.terrain.as_str());
@@ -849,15 +855,13 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &mut BoardArt, move
     }
 
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
-    let (mx, my) = mouse_position();
-    let hover = art.briefing_highlight.or_else(|| layout.hex_at([mx, my]));
     let linger_side = art.linger_color.map(|_| movement.session.playing_side());
     for (unit, &origin) in view.units.iter().zip(&art.unit_order.origins) {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, |sprite| sprite.size().x);
             let orb = unit_status::orb_for(view, unit, hints.is_actionable(unit.position), linger_side);
-            let highlighted = [hover, movement.selected].contains(&Some(unit.position));
+            let highlighted = [hovered, movement.selected].contains(&Some(unit.position));
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
         }
         let icons = [
