@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    ffi::c_void,
     io,
     sync::{Arc, atomic::{AtomicBool, Ordering}},
     thread::{self, JoinHandle},
@@ -15,29 +16,29 @@ const DRAG_BUTTONS: usize = 0x0001 | 0x0010;
 const VREFRESH: i32 = 116;
 const DRAG_PERIOD: Duration = Duration::from_millis(3);
 
-type Subclass = unsafe extern "system" fn(isize, u32, usize, isize, usize, usize) -> isize;
+type Window = *mut c_void;
+type Subclass = unsafe extern "system" fn(Window, u32, usize, isize, usize, usize) -> isize;
 
 #[link(name = "opengl32")]
 unsafe extern "system" {
-    fn wglGetCurrentDC() -> isize;
+    fn wglGetCurrentDC() -> *mut c_void;
 }
 
 #[link(name = "user32")]
 unsafe extern "system" {
-    fn WindowFromDC(dc: isize) -> isize;
-    fn PostMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> i32;
+    fn PostMessageW(window: Window, message: u32, wparam: usize, lparam: isize) -> i32;
 }
 
 #[link(name = "gdi32")]
 unsafe extern "system" {
-    fn GetDeviceCaps(dc: isize, index: i32) -> i32;
+    fn GetDeviceCaps(dc: *mut c_void, index: i32) -> i32;
 }
 
 #[link(name = "comctl32")]
 unsafe extern "system" {
-    fn SetWindowSubclass(window: isize, callback: Subclass, id: usize, data: usize) -> i32;
-    fn RemoveWindowSubclass(window: isize, callback: Subclass, id: usize) -> i32;
-    fn DefSubclassProc(window: isize, message: u32, wparam: usize, lparam: isize) -> isize;
+    fn SetWindowSubclass(window: Window, callback: Subclass, id: usize, data: usize) -> i32;
+    fn RemoveWindowSubclass(window: Window, callback: Subclass, id: usize) -> i32;
+    fn DefSubclassProc(window: Window, message: u32, wparam: usize, lparam: isize) -> isize;
 }
 
 struct State {
@@ -51,7 +52,7 @@ struct WindowEvents {
 }
 
 pub(crate) struct FrameTicker {
-    window: isize,
+    window: Window,
     events: Box<WindowEvents>,
     timer: Option<JoinHandle<()>>,
 }
@@ -71,20 +72,21 @@ pub(crate) fn adjust(config: &mut macroquad::conf::Conf) {
 
 impl FrameTicker {
     pub(crate) fn start() -> io::Result<Self> {
-        let dc = unsafe { wglGetCurrentDC() };
-        let window = unsafe { WindowFromDC(dc) };
-        let refresh = unsafe { GetDeviceCaps(dc, VREFRESH) };
+        let window = super::window::native_handle()
+            .ok_or_else(|| io::Error::other("the renderer has no desktop window"))?.as_ptr();
+        let refresh = unsafe { GetDeviceCaps(wglGetCurrentDC(), VREFRESH) };
         let state = Arc::new(State {
             running: AtomicBool::new(true),
             posted: AtomicBool::new(false),
         });
         let events = Box::new(WindowEvents { state, latest_drag_wake: Cell::new(None) });
         let data = &*events as *const WindowEvents as usize;
-        if window == 0 || unsafe { SetWindowSubclass(window, notify, 0, data) } == 0 {
+        if unsafe { SetWindowSubclass(window, notify, 0, data) } == 0 {
             return Err(io::Error::other("could not attach frame scheduling to the Rustnoth window"));
         }
         let mut ticker = Self { window, events, timer: None };
         let clock_state = Arc::clone(&ticker.events.state);
+        let window_id = window as usize;
         ticker.timer = Some(thread::Builder::new().name("frame timer".into()).spawn(move || {
             let mut deadline = Instant::now();
             let period = frame_period(refresh);
@@ -96,7 +98,7 @@ impl FrameTicker {
                 }
                 // At most one wake is pending during a slow frame or a window resize.
                 if !clock_state.posted.swap(true, Ordering::AcqRel)
-                    && unsafe { PostMessageW(window, FRAME_MESSAGE, 0, 0) } == 0
+                    && unsafe { PostMessageW(window_id as Window, FRAME_MESSAGE, 0, 0) } == 0
                 {
                     break;
                 }
@@ -142,7 +144,7 @@ fn drag_wake(latest: &Cell<Option<Instant>>, buttons: usize, now: Instant) -> bo
     true
 }
 
-unsafe extern "system" fn notify(window: isize, message: u32, wparam: usize, lparam: isize, _: usize, data: usize) -> isize {
+unsafe extern "system" fn notify(window: Window, message: u32, wparam: usize, lparam: isize, _: usize, data: usize) -> isize {
     // The GUI owns this stable allocation until the callback is removed.
     let events = unsafe { &*(data as *const WindowEvents) };
     if message == FRAME_MESSAGE {

@@ -2,6 +2,9 @@ use engine_lite::hex::Hex;
 use engine_lite::fixed_match::dialogue::DialogueFocus;
 use rustnoth_gui::layout::{BoardLayout, Viewport};
 
+mod drag_input;
+pub(crate) use drag_input::{PointerEvent, start_drag_input};
+
 const ZOOM_PER_STEP: f32 = 1.25;
 // Miniquad forwards raw Windows wheel deltas and unit steps from X11.
 #[cfg(windows)]
@@ -14,6 +17,9 @@ pub struct BoardCamera {
     last_fit: Option<(Viewport, i32, i32)>,
     layout: Option<BoardLayout>,
     drag_position: Option<[f32; 2]>,
+    #[cfg(windows)]
+    drag_capture: Option<drag_input::Capture>,
+    last_drag_frame: Option<usize>,
     briefing_velocity: f32,
 }
 
@@ -46,7 +52,7 @@ impl BoardCamera {
         // A minimized window has no drawable map area. Keep its previous scroll position.
         let Some(layout) = layout else { return };
         self.last_fit = Some(fit);
-        self.drag_position = None;
+        self.cancel_drag();
         self.layout = Some(layout);
     }
 
@@ -140,15 +146,8 @@ impl BoardCamera {
         }
     }
 
-    pub fn drag(&mut self, point: [f32; 2], pressed: bool, held: bool) {
-        if !held {
-            self.drag_position = None;
-        } else if pressed {
-            self.drag_position = self.contains(point).then_some(point);
-        } else if let Some([x, y]) = self.drag_position {
-            self.pan([point[0] - x, point[1] - y]);
-            self.drag_position = Some(point);
-        }
+    pub(crate) fn dragging(&self) -> bool {
+        self.drag_position.is_some()
     }
 
     pub fn layout(&self) -> Option<&BoardLayout> {
@@ -272,16 +271,8 @@ mod tests {
         camera.pan([2_000.0, 2_000.0]);
         assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 140.0]);
 
-        camera.drag([19.0, 156.0], true, true);
-        camera.drag([88.0, 136.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [74.0, 140.0]);
-        camera.drag([108.0, 156.0], true, true);
-        camera.drag([88.0, 136.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [54.0, 120.0]);
+        camera.pan([-20.0, -20.0]);
         assert_eq!(camera.hex_at([88.0, 136.0]), Some(first));
-        camera.drag([88.0, 136.0], false, false);
-        camera.drag([68.0, 116.0], false, true);
-        assert_eq!(camera.layout().unwrap().tile_origin(first), [54.0, 120.0]);
 
         camera.pan([-2_000.0, -2_000.0]);
         let [x, y] = camera.layout().unwrap().tile_origin(last);

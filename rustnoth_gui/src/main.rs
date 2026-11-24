@@ -11,7 +11,7 @@ use engine_lite::{
     fixed_match::Action, hex::Hex, observation::Observation, scenario_bundle::Bundle,
 };
 use macroquad::{Window, miniquad::conf::Conf, prelude::*};
-use rustnoth_gui::{assets::AssetCatalog, choices::options_at, selection::Selection, session::{Players, Session}};
+use rustnoth_gui::{assets::AssetCatalog, choices::options_at, layout::BoardLayout, selection::Selection, session::{Players, Session}};
 
 use camera::BoardCamera;
 
@@ -112,6 +112,7 @@ fn main() -> ExitCode {
                 }
             }
         };
+        camera::start_drag_input();
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
@@ -327,6 +328,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
+    let mut minimap_drag = render::minimap::Drag::default();
     let speed = display_preferences::speed::Speed::load()?;
     let mouse_scroll_threshold = title_screen::profile::mouse_scroll_threshold(
         &title_screen::profile::read_profile().unwrap_or_default(),
@@ -385,6 +387,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         let dialogue_open = !walking && session.dialogue().is_some();
         if notify_turn && !walking && !dialogue_open
             && let Some(turn) = turn_notice::new_turn(session.state(), !session.legal_actions().is_empty(), notified) {
+            minimap_drag.cancel();
             notified = Some(turn);
             let name = data.turn_names.get(turn.side - 1).map(String::as_str).unwrap_or("");
             let message = locale.game("It is now $name|’s turn").replace("$name|", name);
@@ -531,23 +534,13 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 briefing_scroll = camera.scroll_briefing(focus, get_frame_time(), speed.scroll, art.animation_rate());
                 if !briefing_scroll { art.briefing_highlight = Some(focus.hex); }
             }
-            if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
+            let mut walk_camera_taken = false;
             if !reset && !input_blocked {
-                match art.minimap_input(pointer, &mut camera) {
+                camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
+                match art.drag_minimap(&mut minimap_drag, observation, &mut camera) {
                     Ok(handled) => minimap_action = handled,
                     Err(error) => { message = Some(error.to_string()); minimap_action = true; }
                 }
-                if !minimap_action && is_mouse_button_pressed(MouseButton::Left)
-                    && let Some(point) = render::minimap_point(observation, pointer)
-                {
-                    camera.center_world(point);
-                }
-                camera.scroll([mouse_x, mouse_y], mouse_wheel().1);
-                camera.drag(
-                    [mouse_x, mouse_y],
-                    is_mouse_button_pressed(MouseButton::Middle),
-                    is_mouse_button_down(MouseButton::Middle),
-                );
                 let horizontal = is_key_down(KeyCode::Left) as i32 - is_key_down(KeyCode::Right) as i32;
                 let vertical = is_key_down(KeyCode::Up) as i32 - is_key_down(KeyCode::Down) as i32;
                 let edge = if menu.is_none() && !is_mouse_button_down(MouseButton::Middle) {
@@ -557,7 +550,24 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 };
                 let distance = speed.pan_distance(get_frame_time());
                 camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
+            } else if walking && !reset && menu.is_none()
+                && session.dialogue().is_none() && !session.has_objective_notice()
+            {
+                minimap_drag.cancel();
+                let before_drag = camera.checkpoint();
+                camera.drag_input(true, 1.0);
+                // A complete drag can move the camera and release in one frame.
+                walk_camera_taken = camera.dragging() || camera.checkpoint() != before_drag;
+            } else {
+                minimap_drag.cancel();
+                camera.drag_input(false, 1.0);
             }
+            if walking && let Some(next) = art.walk.camera_target(now, walk_camera_taken) {
+                camera.show_movement_hex(next);
+            }
+        } else {
+            minimap_drag.cancel();
+            camera.drag_input(false, 1.0);
         }
         let input_blocked = input_blocked || minimap_action;
         let mut ai_walk = None;
@@ -578,8 +588,14 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 message = None;
             }
         }
-        let hovered = selection.unit().zip(camera.hex_at([mouse_x, mouse_y]))
-            .filter(|_| !input_blocked && !computer_acted && menu.is_none());
+        let follows_pointer = pointer_previews_follow(camera.dragging(), clicked);
+        let under_mouse = if follows_pointer && !input_blocked {
+            camera.hex_at([mouse_x, mouse_y])
+        } else {
+            None
+        };
+        let hovered = selection.unit().zip(under_mouse)
+            .filter(|_| !computer_acted && menu.is_none());
         let allow_move_attack = data.lesson.as_ref().is_none_or(tutorial::Lesson::permits_move_attack);
         session.track_pointer(hovered, allow_move_attack);
         let can_end = session.legal_actions().contains(&Action::EndTurn);
@@ -650,7 +666,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             menu_action
         } else if clicked
             && let Some(observation) = session.observation()
-            && let Some(position) = camera.hex_at([mouse_x, mouse_y])
+            && let Some(position) = under_mouse
         {
             let movement = select_move(&mut selection, position, observation, session.legal_actions());
             selected_student = data.lesson.is_some() && selection.unit() == Some(position)
@@ -691,7 +707,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             menu = None;
         }
         if clicked && let Some(selected) = selection.unit()
-            && camera.hex_at([mouse_x, mouse_y]) == Some(selected) && let Some(lesson) = &mut data.lesson {
+            && under_mouse == Some(selected) && let Some(lesson) = &mut data.lesson {
             lesson.selected(selected, &mut session);
         }
         if let Some(action) = requested {
@@ -725,8 +741,8 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 Err(error) => { after_walk = None; message = Some(error.to_string()); menu = None; }
             }
         }
-        let draw_controls = |art: &mut render::BoardArt, prompt: &str, turn: Option<&str>, enabled: bool| {
-            if let Some(lesson) = &data.lesson { lesson.draw_labels(art, camera.layout()); }
+        let draw_controls = |art: &mut render::BoardArt, layout: Option<&BoardLayout>, prompt: &str, turn: Option<&str>, enabled: bool| {
+            if let Some(lesson) = &data.lesson { lesson.draw_labels(art, layout); }
             if !prompt.is_empty() {
                 art.draw_tutorial_print(prompt, &data.wesnoth_root);
             }
@@ -738,14 +754,13 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             }
             top_menu.draw(&top_art, art.font.as_ref(), &commands);
         };
-        if let Some(fight) = session.take_combat() && let Some(layout) = camera.layout() {
-            render::combat_motion::show(fight, &session, layout, &mut art, &data.assets,
-                |art| draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled)).await;
+        if let Some(fight) = session.take_combat() && camera.layout().is_some() {
+            render::combat_motion::show(fight, &session, &mut camera, &mut art, &data.assets,
+                |art, layout| draw_controls(art, layout, &visible_prompt, visible_turn_label, turn_enabled)).await;
         }
-        let under_mouse = camera.hex_at([mouse_x, mouse_y]);
         if clicked && under_mouse.is_some() {
             session.dismiss_enemy_moves(under_mouse);
-        } else if !input_blocked && menu.is_none() && session.dialogue().is_none()
+        } else if follows_pointer && !input_blocked && menu.is_none() && session.dialogue().is_none()
             && !is_mouse_button_pressed(MouseButton::Right) {
             session.hover_enemy_moves(under_mouse, selection.unit().is_some());
         }
@@ -776,6 +791,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 session: &session,
                 global_time: session.global_time_of_day(),
                 route: session.hovered_move(),
+                hold_map_hover: camera.dragging(),
                 selected: selection.unit(),
                 actions: session.legal_actions(),
                 message: message.as_deref(),
@@ -783,7 +799,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 menu: menu.as_ref().filter(|menu| attack_dialog.is_none() && !menu.offers_recruit()),
             },
             |art| {
-                draw_controls(art, &visible_prompt, visible_turn_label, turn_enabled);
+                draw_controls(art, camera.layout(), &visible_prompt, visible_turn_label, turn_enabled);
                 session.dialogue().filter(|_| !briefing_scroll && !art.walk.active())
                     .map(|line| render::draw_dialogue(line, &data.assets, art, dialogue_page))
             },
@@ -881,6 +897,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     }
 }
 
+fn pointer_previews_follow(dragging: bool, clicked: bool) -> bool {
+    // Track the settled pointer after a pan or the target of a deliberate click.
+    !dragging || clicked
+}
+
 fn select_move(
     selection: &mut Selection,
     position: Hex,
@@ -900,6 +921,14 @@ fn select_move(
 mod tests {
     use super::*;
     use engine_lite::observation::ObservedUnit;
+
+    #[test]
+    fn drag_suspends_passive_previews_only_until_release() {
+        assert!(pointer_previews_follow(false, false));
+        assert!(!pointer_previews_follow(true, false));
+        assert!(pointer_previews_follow(true, true));
+        assert!(pointer_previews_follow(false, true));
+    }
 
     #[test]
     fn textured_batches_fit_the_largest_board_primitive_without_reserving_a_full_mesh() {
