@@ -6,6 +6,24 @@ pub(crate) fn initial_size() -> (i32, i32) {
 }
 
 #[cfg(windows)]
+pub(crate) fn native_handle() -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+    use std::{ffi::c_void, ptr::NonNull};
+
+    #[link(name = "opengl32")]
+    unsafe extern "system" {
+        fn wglGetCurrentDC() -> *mut c_void;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn WindowFromDC(dc: *mut c_void) -> *mut c_void;
+    }
+
+    // The renderer's DC identifies this thread's own application window.
+    let dc = NonNull::new(unsafe { wglGetCurrentDC() })?;
+    NonNull::new(unsafe { WindowFromDC(dc.as_ptr()) })
+}
+
+#[cfg(windows)]
 pub(crate) fn initial_size() -> (i32, i32) {
     use std::ffi::c_void;
 
