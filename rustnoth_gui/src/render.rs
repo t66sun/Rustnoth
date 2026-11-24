@@ -647,6 +647,7 @@ fn draw_row(hex: Hex) -> (i32, i32) { (hex.y, hex.x.rem_euclid(2)) }
 #[derive(Default)]
 struct UnitDrawOrder {
     units: Vec<(usize, Hex)>,
+    origins: Vec<Vec2>,
     #[cfg(test)]
     sorts: usize,
 }
@@ -668,12 +669,17 @@ impl UnitDrawOrder {
         }
     }
 
-    fn standing<'a>(&'a self, units: &'a [ObservedUnit], moving: Option<Hex>) -> impl Iterator<Item = &'a ObservedUnit> {
-        self.units.iter().filter_map(move |&(index, at)| (Some(at) != moving).then(|| &units[index]))
+    fn project_origins(&mut self, units: &[ObservedUnit], origin: impl FnMut(&ObservedUnit) -> Vec2) {
+        self.origins.clear();
+        self.origins.extend(units.iter().map(origin));
+    }
+
+    fn standing<'a>(&'a self, units: &'a [ObservedUnit], moving: Option<Hex>) -> impl Iterator<Item = (usize, &'a ObservedUnit)> {
+        self.units.iter().filter_map(move |&(index, at)| (Some(at) != moving).then(|| (index, &units[index])))
     }
 }
 
-fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement: &MovementView<'_>, hovered: Option<Hex>) {
+fn draw_board(view: &Observation, layout: &BoardLayout, art: &mut BoardArt, movement: &MovementView<'_>, hovered: Option<Hex>) {
     let size = layout.tile_size();
     let now = (get_time() * 1000.0) as u64;
     let viewport = board_viewport();
@@ -766,9 +772,10 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             || raised(&unit.type_id, unit.position, unit.position, 0.0),
             |p| raised(&unit.type_id, p.from, p.to, p.fraction))
     };
-    let draw_unit = |unit: &engine_lite::observation::ObservedUnit| {
+    art.unit_order.project_origins(&view.units, origin);
+    let draw_unit = |unit: &ObservedUnit, origin: Vec2| {
         art.lighting.flat([0; 3]);
-        let center = origin(unit) + Vec2::splat(size / 2.0);
+        let center = origin + Vec2::splat(size / 2.0);
         let marker = side_color(art.team_colors.as_ref(), unit.side);
         if let Some(prefix) = movement.assets.ellipse_prefix(&unit.type_id) {
             let selected = movement.selected == Some(unit.position)
@@ -823,16 +830,16 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
     let moving = walking.and_then(|p| p.unit);
     let mut foreground = terrain_clip.rows(layout, &art.rules.foreground, |at| at.y)
         .iter().copied().peekable();
-    for unit in art.unit_order.standing(&view.units, moving) {
+    for (index, unit) in art.unit_order.standing(&view.units, moving) {
         while let Some(at) = foreground.next_if(|at| draw_row(*at) < draw_row(unit.position)) {
             draw_foreground(at);
         }
-        draw_unit(unit);
+        draw_unit(unit, art.unit_order.origins[index]);
     }
     foreground.for_each(draw_foreground);
     art.lighting.flat([0; 3]);
-    if let Some(unit) = moving.and_then(|at| view.units.iter().find(|u| u.position == at)) {
-        draw_unit(unit);
+    if let Some(index) = moving.and_then(|at| view.units.iter().position(|unit| unit.position == at)) {
+        draw_unit(&view.units[index], art.unit_order.origins[index]);
     }
 
     // An observer can watch the visible portion of a walk that ends back in fog.
@@ -849,13 +856,12 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
 
     // Draw above every sprite so a tall neighboring unit cannot hide the indicators.
     let linger_side = art.linger_color.map(|_| movement.session.playing_side());
-    for unit in &view.units {
+    for (unit, &origin) in view.units.iter().zip(&art.unit_order.origins) {
         if let Some(style) = movement.assets.unit_bars(&unit.type_id) {
             let width = art.units.get(&unit.type_id).and_then(|sides| sides.get(&unit.side))
                 .and_then(Option::as_ref).map_or(ART_HEX_SIZE, |sprite| sprite.size().x);
             let orb = unit_status::orb_for(view, unit, hints.is_actionable(unit.position), linger_side);
             let highlighted = [hovered, movement.selected].contains(&Some(unit.position));
-            let origin = origin(unit);
             art.unit_status.draw(unit, style, origin, size, width, orb, highlighted, viewport);
         }
         let icons = [
@@ -864,7 +870,8 @@ fn draw_board(view: &Observation, layout: &BoardLayout, art: &BoardArt, movement
             art.petrified.as_ref().filter(|_| unit.petrified),
         ];
         let count = icons.iter().flatten().count();
-        let [x, y] = origin(unit).to_array();
+        if count == 0 { continue; }
+        let [x, y] = origin.to_array();
         let spacing = (size * 0.30).max(10.0).min(size * 0.37);
         for (index, icon) in icons.into_iter().flatten().enumerate() {
             let slot = index as f32 + 0.5 - count as f32 * 0.5;
@@ -1034,19 +1041,51 @@ mod tests {
         let mut order = UnitDrawOrder::default();
         order.update(&live);
         let standing = |order: &UnitDrawOrder, units: &[ObservedUnit], moving| {
-            order.standing(units, moving).map(|unit| unit.position.x).collect::<Vec<_>>()
+            order.standing(units, moving).map(|(_, unit)| unit.position.x).collect::<Vec<_>>()
         };
         assert_eq!(standing(&order, &live, None), [2, 4, 1, 0]);
         live[3].hitpoints = 15;
         order.update(&live);
         assert_eq!(standing(&order, &live, Some(Hex { x: 4, y: 0 })), [2, 1, 0]);
-        assert_eq!(order.standing(&live, None).next().unwrap().hitpoints, 15);
+        assert_eq!(order.standing(&live, None).next().unwrap().1.hitpoints, 15);
         assert_eq!(order.sorts, 1);
 
         let opening = [unit(4, 0), unit(1, 0), unit(0, 0), unit(2, 1)];
         order.update(&opening);
         assert_eq!(standing(&order, &opening, None), [0, 4, 1, 2]);
         assert_eq!(order.sorts, 2);
+    }
+
+    #[test]
+    fn unit_origins_are_projected_once_in_view_order_each_frame() {
+        let unit = |x, y| ObservedUnit {
+            facing: None, position: Hex { x, y }, side: 1, type_id: "Fighter".into(),
+            can_recruit: false, emits_zoc: true, hitpoints: 30, max_hitpoints: 30,
+            full_action_points: Some(true), experience: 0, max_experience: 20,
+            poisoned: false, slowed: false, petrified: false, moves_left: Some(5), attacks_left: Some(1),
+        };
+        let units = [unit(2, 1), unit(1, 0), unit(0, 0)];
+        let moving = units[1].position;
+        let mut order = UnitDrawOrder::default();
+        order.update(&units);
+        let mut projections = 0;
+        let origins = [vec2(108., 72.), vec2(27., 18.), Vec2::ZERO];
+        order.project_origins(&units, |_| {
+            let origin = origins[projections];
+            projections += 1;
+            origin
+        });
+
+        let standing: Vec<_> = order.standing(&units, Some(moving))
+            .map(|(index, _)| order.origins[index]).collect();
+        assert_eq!(standing, [origins[2], origins[0]]);
+        assert_eq!(order.origins, origins);
+        assert_eq!(projections, units.len());
+
+        let previous = order.origins.as_ptr();
+        order.project_origins(&units, |_| vec2(-7., 12.));
+        assert_eq!(order.origins, [vec2(-7., 12.); 3]);
+        assert_eq!(order.origins.as_ptr(), previous);
     }
 
     #[test]
