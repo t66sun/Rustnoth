@@ -11,6 +11,33 @@ const SAMPLE: u32 = 24;
 const UNKNOWN: Rgba<u8> = Rgba([0, 0, 0, 255]);
 const NEUTRAL_VILLAGE: Rgba<u8> = Rgba([30, 30, 30, 255]); // stock "white" range minimum
 
+#[derive(Default)]
+pub(crate) struct Drag {
+    active: Option<(MouseButton, [f32; 2])>,
+}
+
+impl Drag {
+    pub(crate) fn update(
+        &mut self,
+        pressed: Option<MouseButton>,
+        is_held: impl FnOnce(MouseButton) -> bool,
+        world_point: impl FnOnce() -> Option<[f32; 2]>,
+    ) -> Option<[f32; 2]> {
+        let previous = self.active.take();
+        let button = pressed.or_else(|| previous.map(|(button, _)| button))?;
+        let held = is_held(button);
+        if !held && pressed.is_none() { return None; }
+
+        let point = world_point()?;
+        self.active = held.then_some((button, point));
+        (pressed.is_some() || previous.map(|(_, last)| last) != Some(point)).then_some(point)
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.active = None;
+    }
+}
+
 pub(super) struct Geometry {
     bounds: Rect,
     scale: Vec2,
@@ -411,6 +438,35 @@ mod tests {
                      |x, y| Rgba([x as u8, y as u8, 0, 255]));
         assert_eq!(*image.get_pixel(0, 0), Rgba([6, 12, 0, 255]));
         assert_eq!(*image.get_pixel(1, 1), Rgba([10, 16, 0, 255]));
+    }
+
+    #[test]
+    fn minimap_drag_tracks_new_positions_until_the_initiating_button_releases_or_exits() {
+        use MouseButton::{Left, Middle};
+
+        let area = Viewport { x: 1040., y: 10., width: 160., height: 210. };
+        let geometry = Geometry::new(48, 36, area).unwrap();
+        let first = vec2(1060., 60.);
+        let second = vec2(1150., 130.);
+        let letterbox = vec2(1060., 20.);
+        let first_world = geometry.world_point(first).unwrap();
+        let second_world = geometry.world_point(second).unwrap();
+        let mut drag = Drag::default();
+        let mut update = |pointer, pressed, held| {
+            drag.update(pressed, |button| Some(button) == held, || geometry.world_point(pointer))
+        };
+
+        assert_eq!(update(first, None, Some(Middle)), None);
+        assert_eq!(update(first, Some(Middle), Some(Middle)), Some(first_world));
+        assert_eq!(update(second, None, Some(Middle)), Some(second_world));
+        assert_eq!(update(second, None, Some(Middle)), None);
+        assert_eq!(update(first, None, Some(Left)), None);
+        assert_eq!(update(first, None, Some(Middle)), None);
+
+        assert_eq!(update(second, Some(Left), Some(Left)), Some(second_world));
+        assert_eq!(update(letterbox, None, Some(Left)), None);
+        assert_eq!(update(first, None, Some(Left)), None);
+        assert_eq!(update(first, Some(Left), None), Some(first_world));
     }
 
     #[test]
