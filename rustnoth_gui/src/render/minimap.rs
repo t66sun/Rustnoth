@@ -18,22 +18,6 @@ pub(crate) struct Drag {
 }
 
 impl Drag {
-    pub(crate) fn update(
-        &mut self,
-        pressed: Option<MouseButton>,
-        is_held: impl FnOnce(MouseButton) -> bool,
-        world_point: impl FnOnce() -> Option<[f32; 2]>,
-    ) -> Option<[f32; 2]> {
-        let previous = self.active.take();
-        let button = pressed.or_else(|| previous.map(|(button, _)| button))?;
-        let held = is_held(button);
-        if !held && pressed.is_none() { return None; }
-
-        let point = world_point()?;
-        self.active = held.then_some((button, point));
-        (pressed.is_some() || previous.map(|(_, last)| last) != Some(point)).then_some(point)
-    }
-
     pub(crate) fn cancel(&mut self) {
         self.active = None;
     }
@@ -519,30 +503,35 @@ mod tests {
     #[test]
     fn minimap_drag_tracks_new_positions_until_the_initiating_button_releases_or_exits() {
         use MouseButton::{Left, Middle};
+        use PointerEvent::{Move, Press, Release};
 
         let area = Viewport { x: 1040., y: 10., width: 160., height: 210. };
         let geometry = Geometry::new(48, 36, area).unwrap();
-        let first = vec2(1060., 60.);
-        let second = vec2(1150., 130.);
-        let letterbox = vec2(1060., 20.);
-        let first_world = geometry.world_point(first).unwrap();
-        let second_world = geometry.world_point(second).unwrap();
+        let first = [1060., 60.];
+        let second = [1150., 130.];
+        let letterbox = [1060., 20.];
+        let Some(first_world) = geometry.world_point(Vec2::from_array(first)) else { panic!("first point is on the map") };
+        let Some(second_world) = geometry.world_point(Vec2::from_array(second)) else { panic!("second point is on the map") };
         let mut drag = Drag::default();
-        let mut update = |pointer, pressed, held| {
-            drag.update(pressed, |button| Some(button) == held, || geometry.world_point(pointer))
+        let mut update = |event| {
+            let mut center = None;
+            drag.pointer_event(event, |point| geometry.world_point(point), |point| center = Some(point));
+            center
         };
 
-        assert_eq!(update(first, None, Some(Middle)), None);
-        assert_eq!(update(first, Some(Middle), Some(Middle)), Some(first_world));
-        assert_eq!(update(second, None, Some(Middle)), Some(second_world));
-        assert_eq!(update(second, None, Some(Middle)), None);
-        assert_eq!(update(first, None, Some(Left)), None);
-        assert_eq!(update(first, None, Some(Middle)), None);
+        assert_eq!(update(Move(first)), None);
+        assert_eq!(update(Press(Middle, first)), Some(first_world));
+        assert_eq!(update(Move(second)), Some(second_world));
+        assert_eq!(update(Move(second)), None);
+        assert_eq!(update(Release(Left, first)), None);
+        assert_eq!(update(Release(Middle, second)), None);
+        assert_eq!(update(Move(first)), None);
 
-        assert_eq!(update(second, Some(Left), Some(Left)), Some(second_world));
-        assert_eq!(update(letterbox, None, Some(Left)), None);
-        assert_eq!(update(first, None, Some(Left)), None);
-        assert_eq!(update(first, Some(Left), None), Some(first_world));
+        assert_eq!(update(Press(Left, second)), Some(second_world));
+        assert_eq!(update(Move(letterbox)), None);
+        assert_eq!(update(Move(first)), None);
+        assert_eq!(update(Press(Left, first)), Some(first_world));
+        assert_eq!(update(Release(Left, first)), None);
     }
 
     #[test]
