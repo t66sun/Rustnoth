@@ -513,7 +513,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 briefing_scroll = camera.scroll_briefing(focus, get_frame_time(), speed.scroll, art.animation_rate());
                 if !briefing_scroll { art.briefing_highlight = Some(focus.hex); }
             }
-            if let Some(next) = art.walk.next_hex(now) { camera.show_movement_hex(next); }
+            let mut walk_camera_taken = false;
             if !reset && !input_blocked {
                 match art.minimap_input(pointer, &mut camera) {
                     Ok(handled) => minimap_action = handled,
@@ -535,8 +535,18 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                 };
                 let distance = speed.pan_distance(get_frame_time());
                 camera.pan([horizontal as f32 * distance, (vertical + edge) as f32 * distance]);
+            } else if walking && !reset && menu.is_none()
+                && session.dialogue().is_none() && !session.has_objective_notice()
+            {
+                let before_drag = camera.checkpoint();
+                camera.drag_input(true, 1.0);
+                // A complete drag can move the camera and release in one frame.
+                walk_camera_taken = camera.dragging() || camera.checkpoint() != before_drag;
             } else {
                 camera.drag_input(false, 1.0);
+            }
+            if walking && let Some(next) = art.walk.camera_target(now, walk_camera_taken) {
+                camera.show_movement_hex(next);
             }
         }
         let input_blocked = input_blocked || minimap_action;
