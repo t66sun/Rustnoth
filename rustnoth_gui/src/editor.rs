@@ -16,7 +16,7 @@ mod terrain_report;
 mod village_report;
 
 use crate::{
-    camera::BoardCamera,
+    camera::{BoardCamera, PointerEvent},
     dialog,
     render::{self, EditorMinimap, EditorTerrain},
 };
@@ -400,19 +400,31 @@ fn minimap_panel(w: f32, h: f32) -> (Rect, Viewport, &'static str) {
     (frame, Viewport { x: frame.x + left, y: frame.y + top, width: frame.w - left - 8.0, height }, image)
 }
 
-fn pan_editor_minimap(
-    drag: &mut MinimapDrag,
-    camera: &mut BoardCamera,
-    view: &Observation,
-    area: Viewport,
-    point: Vec2,
-    pressed: Option<MouseButton>,
-    is_held: impl FnOnce(MouseButton) -> bool,
-) {
-    if let Some(world) = drag.update(pressed, is_held, || {
-        MinimapGeometry::new(view.width, view.height, area)?.world_point(point)
-    }) {
-        camera.center_world(world);
+#[derive(Default)]
+struct MinimapGesture {
+    drag: MinimapDrag,
+    left_captured: bool,
+}
+
+impl MinimapGesture {
+    fn cancel(&mut self) {
+        self.drag.cancel();
+        self.left_captured = false;
+    }
+
+    fn route(
+        &mut self,
+        camera: &mut BoardCamera,
+        event: PointerEvent,
+        world_point: impl FnOnce(Vec2) -> Option<[f32; 2]>,
+    ) -> bool {
+        let handled = self.drag.pointer_event(event, world_point, |world| camera.center_world(world));
+        match event {
+            PointerEvent::Press(MouseButton::Left, _) => self.left_captured = handled,
+            PointerEvent::Release(MouseButton::Left, _) | PointerEvent::Cancel => self.left_captured = false,
+            _ => {}
+        }
+        handled
     }
 }
 
@@ -445,7 +457,7 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
     let mut view = render::map_observation(documents.list[0].map.map());
     let mut rules = EditorTerrain::default();
     let mut mini = EditorMinimap::new(root);
-    let mut minimap_drag = MinimapDrag::default();
+    let mut minimap_drag = MinimapGesture::default();
     let mut reports = terrain_report::Reports::new(root);
     let mut villages = village_report::Villages::new(root);
     let mut mini_buttons = minimap_buttons::Buttons::load(root);
@@ -502,7 +514,6 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
         let fit = is_key_pressed(KeyCode::Home);
         update_editor_camera(camera, area, &view, fit);
         camera.scroll(p, mouse_wheel().1);
-        camera.drag_input(true, scale);
         let palette_menu = palette.group_menu_open();
         let modal = chrome.menu.is_some() || palette_menu;
         if !modal && !ctrl {
@@ -523,26 +534,49 @@ pub(super) async fn run(root: &Path, core: &[u8], font_family: &str) -> Result<(
             last_selection = None;
         }
         let (mini_frame, mini_area, mini_background) = minimap_panel(w, h);
-        if modal {
+        let minimap_allowed = !modal && !fit && drawing.is_none() && !selecting;
+        let mut left_consumed = minimap_drag.left_captured;
+        if !minimap_allowed {
             minimap_drag.cancel();
-        } else {
-            let buttons_handled = match mini_buttons.input(mini_frame, point, camera, &mut mini) {
-                Ok(handled) => handled,
-                Err(error) => { status = error.to_string(); true }
-            };
-            if buttons_handled || fit || drawing.is_some() || selecting {
-                minimap_drag.cancel();
-            } else {
-                let pressed = [MouseButton::Left, MouseButton::Middle]
-                    .into_iter().find(|&button| is_mouse_button_pressed(button));
-                pan_editor_minimap(&mut minimap_drag, camera, &view, mini_area, point, pressed, is_mouse_button_down);
-            }
         }
+        let mut buttons = Ok(false);
+        if !modal && !is_mouse_button_pressed(MouseButton::Left) {
+            buttons = mini_buttons.input_press(mini_frame, None, camera, &mut mini);
+            if !matches!(buttons, Ok(false)) { minimap_drag.cancel(); }
+        }
+        let geometry = std::cell::OnceCell::new();
+        camera.pointer_input(true, scale, |camera, event| {
+            if modal { return false; }
+            if !matches!(buttons, Ok(false)) { return true; }
+            if let PointerEvent::Press(MouseButton::Left, point) = event {
+                buttons = mini_buttons.input_press(mini_frame, Some(Vec2::from_array(point)), camera, &mut mini);
+                if !matches!(buttons, Ok(false)) {
+                    minimap_drag.cancel();
+                    minimap_drag.left_captured = true;
+                    left_consumed = true;
+                    return true;
+                }
+            }
+            if !minimap_allowed || camera.dragging() { return false; }
+            let handled = minimap_drag.route(camera, event, |point| {
+                geometry.get_or_init(|| MinimapGeometry::new(view.width, view.height, mini_area))
+                    .as_ref()?.world_point(point)
+            });
+            left_consumed |= minimap_drag.left_captured;
+            handled
+        });
+        minimap_drag.drag.release_if_unheld(is_mouse_button_down);
+        if !is_mouse_button_down(MouseButton::Left) {
+            minimap_drag.left_captured = false;
+        }
+        if let Err(error) = buttons { status = error.to_string(); }
+        // A press consumed by the minimap can finish this frame over the map or a tool.
+        let point = if left_consumed { vec2(-1.0, -1.0) } else { point };
         if !modal && !ctrl && !shift && !is_key_down(KeyCode::LeftAlt)
             && !is_key_down(KeyCode::RightAlt) && matches!(tool, Tool::Paint | Tool::Select) {
             shapes.keys();
         }
-        let at = if area.contains(p) {
+        let at = if !left_consumed && area.contains(p) {
             camera.layout().and_then(|layout| layout.editor_hex_at(p))
         } else {
             None
@@ -984,32 +1018,36 @@ mod tests {
     }
 
     #[test]
-    fn editor_minimap_centers_each_held_position_inside_the_drawn_map() {
+    fn editor_minimap_routes_press_motion_and_release_before_canvas_tools() {
         let doc = new_map();
         let view = render::map_observation(doc.map());
         let (_, canvas, _) = minimap_panel(1200.0, 820.0);
+        let geometry = MinimapGeometry::new(view.width, view.height, canvas).unwrap();
         let mut camera = BoardCamera::default();
         update_editor_camera(&mut camera, map_viewport(1200.0, 820.0), &view, false);
-        let mut drag = MinimapDrag::default();
-        let mut input = |point, pressed, held| {
-            pan_editor_minimap(&mut drag, &mut camera, &view, canvas, point, pressed,
-                |button| held && button == MouseButton::Left);
-            camera.checkpoint().unwrap()
+        let opening = camera.checkpoint().unwrap();
+        let mut drag = MinimapGesture::default();
+        let mut input = |event| {
+            let handled = drag.route(&mut camera, event, |point| geometry.world_point(point));
+            (handled, drag.left_captured, camera.checkpoint().unwrap())
         };
-        let letterbox = vec2(1100.0, 20.0);
-        let first = vec2(1080.0, 75.0);
-        let second = vec2(1146.0, 130.0);
-        let opening = input(first, None, false);
-        assert_eq!(input(letterbox, Some(MouseButton::Left), true), opening);
-        assert_eq!(input(first, None, true), opening);
-        let after_press = input(first, Some(MouseButton::Left), true);
+        let letterbox = [1100.0, 20.0];
+        let first = [1080.0, 75.0];
+        let second = [1146.0, 130.0];
+        let board = [700.0, 200.0];
+        assert_eq!(input(PointerEvent::Press(MouseButton::Left, letterbox)), (false, false, opening));
+        assert_eq!(input(PointerEvent::Move(first)), (false, false, opening));
+
+        let (handled, captured, after_press) = input(PointerEvent::Press(MouseButton::Left, first));
+        assert!(handled && captured);
         assert_ne!(after_press, opening);
-        let after_drag = input(second, None, true);
+        let (handled, captured, after_drag) = input(PointerEvent::Move(second));
+        assert!(handled && captured);
         assert!(after_drag[0] > after_press[0] && after_drag[1] > after_press[1]);
         assert_eq!(after_drag[2], opening[2]);
-        assert_eq!(input(letterbox, None, true), after_drag);
-        assert_eq!(input(first, None, true), after_drag);
-        assert_eq!(input(first, None, false), after_drag);
+        assert_eq!(input(PointerEvent::Move(board)), (true, true, after_drag));
+        assert_eq!(input(PointerEvent::Move(first)), (false, true, after_drag));
+        assert_eq!(input(PointerEvent::Release(MouseButton::Left, board)), (false, false, after_drag));
     }
 
     #[test]
