@@ -8,6 +8,7 @@ use engine_lite::observation::Observation;
 use std::{collections::HashMap, num::NonZeroUsize};
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Layer {
     pub layer: i32,
     pub y: i32,
@@ -17,6 +18,7 @@ pub(super) struct Layer {
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Tile {
     pub layers: Vec<Layer>,
     flags: Vec<Flag>,
@@ -32,6 +34,97 @@ impl Tile {
     fn set_flag(&mut self, flag: Flag) {
         if let Err(index) = self.flags.binary_search(&flag) {
             self.flags.insert(index, flag);
+        }
+    }
+}
+
+struct Grid {
+    width: usize,
+    height: usize,
+}
+
+impl Grid {
+    fn index(&self, hex: Hex) -> Option<usize> {
+        // The planner includes two cells west/north and east/south of the board.
+        let x = usize::try_from(i64::from(hex.x) + 2).ok()?;
+        let y = usize::try_from(i64::from(hex.y) + 2).ok()?;
+        if x < self.width && y < self.height {
+            Some(y * self.width + x)
+        } else {
+            None
+        }
+    }
+
+    fn position(&self, index: usize) -> Hex {
+        Hex {
+            x: ((index % self.width) as i64 - 2) as i32,
+            y: ((index / self.width) as i64 - 2) as i32,
+        }
+    }
+}
+
+enum RuleTiles {
+    Dense { grid: Grid, slots: Vec<Option<Tile>> },
+    Sparse(HashMap<Hex, Tile>),
+}
+
+impl RuleTiles {
+    fn for_view(view: &Observation) -> Self {
+        Self::dense(view).unwrap_or_else(|| Self::Sparse(HashMap::new()))
+    }
+
+    fn dense(view: &Observation) -> Option<Self> {
+        let width = usize::try_from(view.width).ok()?;
+        let height = usize::try_from(view.height).ok()?;
+        let playable = width.checked_mul(height)?;
+        // Reserve a full grid once at least three quarters of its playable cells are known.
+        if view.tiles.len() < playable - playable / 4 {
+            return None;
+        }
+        let grid = Grid { width: width.checked_add(4)?, height: height.checked_add(4)? };
+        let capacity = grid.width.checked_mul(grid.height)?;
+        if view.tiles.iter().any(|tile| grid.index(tile.position).is_none()) {
+            return None;
+        }
+        let slots = std::iter::repeat_with(|| None).take(capacity).collect();
+        Some(Self::Dense { grid, slots })
+    }
+
+    fn insert(&mut self, hex: Hex, tile: Tile) {
+        match self {
+            Self::Dense { grid, slots } => slots[grid.index(hex).unwrap()] = Some(tile),
+            Self::Sparse(tiles) => { tiles.insert(hex, tile); }
+        }
+    }
+
+    fn clear_fringe_flags(&mut self, hex: Hex) {
+        let tile = match self {
+            Self::Dense { grid, slots } => slots[grid.index(hex).unwrap()].get_or_insert_with(Tile::default),
+            Self::Sparse(tiles) => tiles.entry(hex).or_default(),
+        };
+        tile.flags.clear();
+    }
+
+    fn get(&self, hex: Hex) -> Option<&Tile> {
+        match self {
+            Self::Dense { grid, slots } => slots[grid.index(hex)?].as_ref(),
+            Self::Sparse(tiles) => tiles.get(&hex),
+        }
+    }
+
+    fn get_mut(&mut self, hex: Hex) -> Option<&mut Tile> {
+        match self {
+            Self::Dense { grid, slots } => slots[grid.index(hex)?].as_mut(),
+            Self::Sparse(tiles) => tiles.get_mut(&hex),
+        }
+    }
+
+    fn into_map(self) -> HashMap<Hex, Tile> {
+        match self {
+            Self::Dense { grid, slots } => slots.into_iter().enumerate()
+                .filter_map(|(index, slot)| slot.map(|tile| (grid.position(index), tile)))
+                .collect(),
+            Self::Sparse(tiles) => tiles,
         }
     }
 }
@@ -84,6 +177,15 @@ fn apply<'a>(
     view: &'a Observation,
     border: impl Fn(Hex) -> Option<&'a str>,
 ) -> HashMap<Hex, Tile> {
+    apply_with_tiles(catalog, view, border, RuleTiles::for_view(view))
+}
+
+fn apply_with_tiles<'a>(
+    catalog: &Catalog,
+    view: &'a Observation,
+    border: impl Fn(Hex) -> Option<&'a str>,
+    mut tiles: RuleTiles,
+) -> HashMap<Hex, Tile> {
     let mut groups: HashMap<&str, Vec<Hex>> = HashMap::new();
     for tile in &view.tiles {
         groups.entry(&tile.terrain).or_default().push(tile.position);
@@ -126,26 +228,22 @@ fn apply<'a>(
                 .sum()
         })
         .collect();
-    let mut tiles: HashMap<Hex, Tile> = groups
-        .iter()
-        .enumerate()
-        .flat_map(|(index, (_, hexes))| {
-            let terrain_group = NonZeroUsize::new(index + 1);
-            hexes.iter().map(move |&hex| {
-                let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
-                let mut tile = Tile { terrain_group, ..Tile::default() };
-                tile.set_flag(if inside { Flag::BOARD } else { Flag::BORDER });
-                (hex, tile)
-            })
-        })
-        .collect();
+    for (index, (_, hexes)) in groups.iter().enumerate() {
+        let terrain_group = NonZeroUsize::new(index + 1);
+        for &hex in hexes {
+            let inside = hex.x >= 0 && hex.y >= 0 && hex.x < view.width && hex.y < view.height;
+            let mut tile = Tile { terrain_group, ..Tile::default() };
+            tile.set_flag(if inside { Flag::BOARD } else { Flag::BORDER });
+            tiles.insert(hex, tile);
+        }
+    }
     // Only anchors through (width,height) enter the terrain index. Multi-hex
     // rules can still read and set flags one row and column beyond that index.
     for y in -2..=view.height + 1 {
-        tiles.entry(Hex { x: view.width + 1, y }).or_default().flags.clear();
+        tiles.clear_fringe_flags(Hex { x: view.width + 1, y });
     }
     for x in -2..=view.width {
-        tiles.entry(Hex { x, y: view.height + 1 }).or_default().flags.clear();
+        tiles.clear_fringe_flags(Hex { x, y: view.height + 1 });
     }
     for rule in &catalog.rules {
         let Some(anchor) = rule.cells.iter().min_by_key(|c| counts[c.filter]) else {
@@ -175,7 +273,7 @@ fn apply<'a>(
                 let Some(seed) = winning_seed(rule.probability, || noise(origin, rule.hash), || {
                     rule.cells.iter().all(|cell| {
                         let at = translate(origin, cell.offset);
-                        let Some(tile) = tiles.get(&at) else {
+                        let Some(tile) = tiles.get(at) else {
                             return false;
                         };
                         let terrain_matches = tile.terrain_group.map_or(matches_empty[cell.filter], |group| {
@@ -189,7 +287,7 @@ fn apply<'a>(
                 };
                 for cell in &rule.cells {
                     let at = translate(origin, cell.offset);
-                    let tile = tiles.get_mut(&at).unwrap();
+                    let tile = tiles.get_mut(at).unwrap();
                     for &flag in &cell.set {
                         tile.set_flag(flag);
                     }
@@ -204,7 +302,7 @@ fn apply<'a>(
             }
         }
     }
-    tiles
+    tiles.into_map()
 }
 
 fn winning_seed(probability: u32, noise: impl FnOnce() -> u32, matches: impl FnOnce() -> bool) -> Option<u32> {
@@ -220,6 +318,61 @@ fn winning_seed(probability: u32, noise: impl FnOnce() -> u32, matches: impl FnO
 mod tests {
     use super::*;
     use engine_lite::{observation::ObservedTile, wml};
+
+    #[test]
+    fn dense_terrain_planning_matches_sparse_layers_flags_and_fringe() {
+        let rule = wml::parse(br#"
+[tile]
+x,y=0,0
+type=Gg
+set_flag=joined
+[image]
+name=grass/green.png
+[/image]
+[/tile]
+[tile]
+x,y=0,1
+type=Gs
+[/tile]
+"#).unwrap();
+        let catalog = super::super::compile::compile_files(&[rule], HashMap::from([
+            ("grass/green.png".into(), "grass/green.png".into()),
+        ]));
+        let mut view = Observation {
+            side: 1,
+            allied_sides: vec![1],
+            gold: None,
+            width: 3,
+            height: 2,
+            tiles: vec![],
+            units: vec![],
+        };
+        let hidden = Hex { x: 1, y: 1 };
+        for (x, y, terrain) in [(0, 0, "Gg"), (1, 0, "Gg"), (2, 0, "Gg"), (0, 1, "Gs"), (2, 1, "Gg")] {
+            view.tiles.push(ObservedTile {
+                position: Hex { x, y },
+                terrain: terrain.into(),
+                visible: true,
+                village_owner: None,
+                time_color: [0; 3],
+            });
+        }
+
+        let border = |at| (at == (Hex { x: 3, y: 1 })).then_some("Gs");
+        assert!(matches!(RuleTiles::for_view(&view), RuleTiles::Dense { .. }));
+        let dense = apply(&catalog, &view, border);
+        let sparse = apply_with_tiles(&catalog, &view, border, RuleTiles::Sparse(HashMap::new()));
+        assert_eq!(dense, sparse);
+        let origin = &dense[&Hex { x: 0, y: 0 }];
+        assert!(origin.has_flag(catalog.flag("joined")));
+        assert_eq!(origin.layers.len(), 1);
+        assert!(!dense.contains_key(&hidden));
+        assert!(dense[&Hex { x: -2, y: -2 }].has_flag(Flag::BORDER));
+        assert!(dense[&Hex { x: 4, y: 3 }].terrain_group.is_none());
+
+        view.tiles.truncate(2);
+        assert!(matches!(RuleTiles::for_view(&view), RuleTiles::Sparse(_)));
+    }
 
     #[test]
     fn terrain_fringe_preserves_column_order_and_scales_with_the_perimeter() {
