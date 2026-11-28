@@ -86,8 +86,10 @@ impl Veteran {
 
 impl Battlefield<'_> {
     pub(crate) fn surviving_veterans(&self, side: usize) -> Vec<Veteran> {
-        self.units.values().filter(|u| u.side == side)
-            .chain(self.recall_roster(side)).filter(|u| u.hitpoints > 0).map(Veteran::snapshot).collect()
+        // game_board::write_config writes the unit map in underlying ID order, then the recall list.
+        let mut deployed: Vec<_> = self.units.values().filter(|unit| unit.side == side).collect();
+        deployed.sort_unstable_by_key(|unit| unit.serial);
+        deployed.into_iter().chain(self.recall_roster(side)).filter(|u| u.hitpoints > 0).map(Veteran::snapshot).collect()
     }
 
     pub(crate) fn restore_veterans(&mut self, side: usize, veterans: &[Veteran]) -> Result<(), BoardError> {
