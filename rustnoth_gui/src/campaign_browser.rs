@@ -25,6 +25,12 @@ pub(super) struct Browser {
 }
 
 impl Browser {
+    pub(super) fn saved_descriptor(&self) -> Option<&wml::Node> {
+        let mut campaigns = self.campaign.children.iter().filter(|(tag, _)| tag == "campaign");
+        let (_, descriptor) = campaigns.next()?;
+        campaigns.next().is_none().then_some(descriptor)
+    }
+
     pub(super) fn load(file: &Path, maps: PathBuf, core: Vec<u8>, root: PathBuf, seed: u32)
         -> Result<Self, Box<dyn Error>>
     {
@@ -80,7 +86,7 @@ impl Browser {
         archive.children.push(("campaign_document".into(), source));
         archive.children.extend(self.modifications.iter().cloned().map(|node| ("modification".into(), node)));
         let mut output = std::io::BufWriter::new(fs::File::create(file)?);
-        wml_emit::write_config(&mut output, &archive)?;
+        wml_emit::write_translatable_config(&mut output, &archive)?;
         std::io::Write::flush(&mut output)
     }
 
