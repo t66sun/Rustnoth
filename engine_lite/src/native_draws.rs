@@ -222,6 +222,32 @@ pub fn parse_recruits(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String>
     Ok(recruits)
 }
 
+/// Original synchronized windows associated with the actions in a referee capture.
+pub fn for_actions(log: &str, actions: &[crate::fixed_match::Action]) -> Result<BTreeMap<usize, AttackDraws>, String> {
+    let mut draws = parse(log)?;
+    for (step, window) in parse_moves(log)? {
+        if !matches!(actions.get(step - 1), Some(crate::fixed_match::Action::Move { .. })) || draws.insert(step, window).is_some() {
+            return Err(format!("unexpected native movement RNG at step {step}"));
+        }
+    }
+    let mut recruits = parse_recruits(log)?;
+    for (index, action) in actions.iter().enumerate() {
+        let step = index + 1;
+        if matches!(action, crate::fixed_match::Action::Recruit { .. }) {
+            let recruit = recruits
+                .remove(&step)
+                .ok_or_else(|| format!("native recruit trait RNG is missing at step {step}"))?;
+            if draws.insert(step, recruit).is_some() {
+                return Err(format!("native attack RNG was also recorded at recruit step {step}"));
+            }
+        }
+    }
+    if let Some((&step, _)) = recruits.first_key_value() {
+        return Err(format!("native recruit trait RNG recorded at non-recruit step {step}"));
+    }
+    Ok(draws)
+}
+
 fn parse_marker(marker: &str) -> Option<(&str, usize)> {
     let (kind, step) = marker.split_once(' ')?;
     Some((kind, parse_step(step)?))

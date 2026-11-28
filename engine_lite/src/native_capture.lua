@@ -67,7 +67,7 @@ local function capture_views()
     local map = wesnoth.current.map
     for side = 1, #wesnoth.sides do
         local team = wesnoth.sides[side]
-        if team.fog or team.shroud then
+        if capture.full_visibility or team.fog or team.shroud then
             for y = 1, map.playable_height do
                 local tiles = {}
                 for x = 1, map.playable_width do
@@ -97,6 +97,7 @@ end
 
 -- Call after an action or at side-turn refresh, inside the referee only.
 function capture.snapshot(step, time_over, campaign_result)
+    if capture.on_snapshot then capture.on_snapshot(step) end
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
     if step == 0 then
