@@ -141,8 +141,10 @@ impl Rules {
         let catalog = self
             .catalog
             .get_or_insert_with(|| compile::compile(assets.terrain_rules(), assets.image_roots()));
+        crate::frame_trace::mark("terrain_catalog_ready");
         self.tiles.clear();
         let tiles = plan(catalog);
+        crate::frame_trace::mark("terrain_layout_ready");
         let mut sequences = Sequences::default();
         for (hex, tile) in tiles {
             let mut background = Vec::new();
@@ -181,6 +183,7 @@ impl Rules {
             );
         }
         self.bitmaps.release_sources();
+        crate::frame_trace::finish_assets();
     }
 
     pub(super) fn has_base(&self, hex: Hex) -> bool {

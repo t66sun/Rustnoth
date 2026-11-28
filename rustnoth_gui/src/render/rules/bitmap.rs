@@ -72,7 +72,8 @@ impl Bitmaps {
             .next()?
             .strip_prefix("terrain/")
             .unwrap_or_else(|| expression.split('~').next().unwrap_or(""));
-        let mut data = image::open(catalog.files.get(name)?).ok()?.into_rgba8();
+        let path = catalog.files.get(name)?;
+        let mut data = crate::frame_trace::time_asset("terrain_decode_us", || image::open(path).ok().map(|im| im.into_rgba8()))?;
         for modifier in pieces {
             let (command, body) = modifier.split_once('(')?;
             let args = pattern::split(body.strip_suffix(')')?);
@@ -162,7 +163,8 @@ impl Bitmaps {
         if let Some(sprite) = self.cropped.get(&(id, part)) {
             return sprite.clone();
         }
-        let result = self.pixels(catalog, id, part).and_then(|tile| self.atlas.add(&tile));
+        let result = crate::frame_trace::time_asset("terrain_pixels_us", || self.pixels(catalog, id, part))
+            .and_then(|tile| crate::frame_trace::time_asset("terrain_upload_us", || self.atlas.add(&tile)));
         self.cropped.insert((id, part), result.clone());
         result
     }

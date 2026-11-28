@@ -97,6 +97,7 @@ pub(super) async fn show(root: &Path, session: &Session<'_>, campaign: bool) -> 
         );
         let map = skin.button(inspect, mouse, "View Map", true);
         set_default_camera();
+        crate::frame_trace::ready("victory_ready");
         if next || is_key_pressed(KeyCode::Enter) {
             next_frame().await;
             return true;

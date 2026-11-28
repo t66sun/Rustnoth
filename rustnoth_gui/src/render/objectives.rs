@@ -106,6 +106,7 @@ pub async fn show(objectives: &ScenarioObjectives, title: &str, locale: &Locale,
         title.draw(title_pos, 0., (r.h - 33.).max(0.), font);
         body.draw(body_pos, scroll, visible, font);
         set_default_camera();
+        if !opening { crate::frame_trace::ready("objectives_ready"); }
         if !opening && is_mouse_button_pressed(MouseButton::Left) { click_armed = true; }
         let dismissed = !opening && (hotkey() || is_key_pressed(KeyCode::Escape)
             || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)

@@ -314,7 +314,9 @@ impl BoardArt {
         self.cover.extend_border(observation, &border);
         self.visibility_art.update(observation, &border, &self.cover.cells);
         self.minimap.load(observation, assets);
+        crate::frame_trace::mark("terrain_rules_begin");
         if self.rules.load(assets, observation, &border) {
+            crate::frame_trace::mark("terrain_rules_ready");
             self.transitions.load(observation, assets, &mut self.rules, &mut self.terrain_paths);
             for tile in &observation.tiles {
                 if self.rules.has_base(tile.position) { continue; }
@@ -325,6 +327,7 @@ impl BoardArt {
                 });
             }
         }
+        crate::frame_trace::mark("terrain_ready");
         for tile in &observation.tiles {
             if let Some(owner) = tile.village_owner
                 && let Some(colors) = self.flag_colors.as_ref()

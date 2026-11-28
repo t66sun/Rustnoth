@@ -66,3 +66,5 @@ $env:APPDATA = "$out/desktop-profile"
 从 Campaigns 选择 The South Guard 和 Civilian。第一回合将 Moreth 从 (14,5) 移到 (12,8)、Deoran 从 (15,5) 经 (10,7) 移到 (9,9)，再将 Moreth 移到 (11,9)。通过 Menu → Save Game 存档，退出进程，用同一命令启动，从标题 Load 读回。第二回合由 Moreth 进入 (9,10)，再由 Deoran 进入 (11,12)。第一关获胜后记下 Remaining gold 和 Retained gold，进入第二关检查顶部金币和四名驻军；在 7 回合期限前带 Deoran 进入 (22,13)，然后击败敌首领。从标题 Load 选择各关的胜利回放，点播放并核对终局。存档和回放位于 `$env:APPDATA/Rustnoth/saves`。桌面对手由 Rustnoth 自身的 AI 驱动，每局的实际动作以该局存档为准。
 
 两关原版的战争迷雾和黑幕均关闭。逐格视野对拍照常执行。测实际揭雾耗时需使用相同地图、相同开局移动且仅给玩家阵营开启迷雾的单独样本。
+
+窗口条件、帧时间、恢复交互和拖动延迟的复跑步骤见 [Windows 战役路线计时](SOUTH_GUARD_TIMINGS.md)。

@@ -24,6 +24,7 @@ mod minimap_buttons;
 mod dialog;
 mod display_preferences;
 mod end_turn;
+mod frame_trace;
 mod turn_notice;
 mod menu;
 mod recruit_dialog;
@@ -113,6 +114,10 @@ fn main() -> ExitCode {
             }
         };
         camera::start_drag_input();
+        if let Err(error) = frame_trace::start(uncapped) {
+            eprintln!("Could not open desktop frame trace: {error}");
+            std::process::exit(1);
+        }
         macroquad::experimental::coroutines::start_coroutine(screenshot::listen());
         let result = match launch {
             Launch::Title(title) => title.run(fullscreen, vec2(window_width as f32, window_height as f32)).await,
@@ -307,6 +312,7 @@ async fn show_board(mut data: BoardData, players: Players) -> Result<(), Box<dyn
 }
 
 async fn play_board(mut data: BoardData, players: Players, journey: Option<(&campaign_browser::Browser, &mut engine_lite::fixed_match::carryover::CampaignCarryover)>) -> Result<Option<String>, Box<dyn Error>> {
+    frame_trace::mark("board_enter");
     let (browser, mut carryover) = journey.unzip();
     let campaign = browser.is_some();
     let mut restore = data.restore.take();
@@ -325,6 +331,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         Ok(map)
     }, replay_route.as_mut().or(carryover.as_deref_mut()), players == Players::Campaign)?;
     let mut session = Session::with_players(game, players);
+    frame_trace::mark("session_created");
     if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
@@ -336,7 +343,9 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     let skip_ai = display_preferences::skip_ai_moves()?;
     let preference_dir = display_preferences::config_directory()?;
     let mut locale = title_screen::locale::Locale::load(&data.wesnoth_root, title_screen::locale::saved(&preference_dir)?)?;
+    frame_trace::mark("art_begin");
     let mut art = render::BoardArt::new(&data.wesnoth_root, speed, &locale)?;
+    frame_trace::mark("art_ready");
     if let Some(checkpoint) = restore {
         if replay_route.is_some() || checkpoint.watch_replay {
             replay_viewer::watch(&mut session, &checkpoint.events, &data, &mut art, &mut camera).await?;
@@ -356,9 +365,11 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
         if let Some(lesson) = &mut data.lesson { lesson.start(&mut session, &data.wesnoth_root, &mut locale); }
         story::show(&data.story, &data.assets, &data.wesnoth_root, art.font.as_ref(), locale.ui("Skip")).await;
     }
+    frame_trace::mark("initial_assets_begin");
     if let Some(observation) = session.observation() {
         art.load(observation, &data.assets, &session);
     }
+    frame_trace::mark("initial_assets_ready");
     let mut message = None;
     let mut menu: Option<menu::Menu> = None;
     let mut dialogue_page = 0;
@@ -570,9 +581,24 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             camera.drag_input(false, 1.0);
         }
         let input_blocked = input_blocked || minimap_action;
+        if frame_trace::enabled() {
+            if dialogue_open && !briefing_scroll {
+                frame_trace::ready("dialogue_ready");
+            } else if !input_blocked && menu.is_none() && !session.legal_actions().is_empty() {
+                frame_trace::ready("map_ready");
+            }
+        }
         let mut ai_walk = None;
+        let ai_start = (frame_trace::enabled() && !input_blocked && session.has_computer_action())
+            .then(|| {
+                frame_trace::input("ai_action_begin");
+                std::time::Instant::now()
+            });
         let computer_acted = !input_blocked
             && session.play_computer_recording_walk((!skip_ai).then_some(&mut ai_walk))?;
+        if computer_acted && let Some(start) = ai_start {
+            frame_trace::record("ai_action_us", start.elapsed().as_micros() as i64);
+        }
         if computer_acted && let Some(lesson) = &mut data.lesson {
             lesson.after_computer(&mut session);
         }
@@ -711,6 +737,15 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             lesson.selected(selected, &mut session);
         }
         if let Some(action) = requested {
+            let visible_before = if frame_trace::enabled() && matches!(action, Action::Move { .. }) {
+                session.observation().map(frame_trace::visible_tiles)
+            } else { None };
+            match action {
+                Action::Move { .. } => frame_trace::input("move_input"),
+                Action::Attack(_) => frame_trace::input("combat_input"),
+                Action::EndTurn => frame_trace::input("end_turn_input"),
+                _ => {}
+            }
             let reselect = match &action {
                 Action::Attack(attack) => Some(attack.from),
                 _ => None,
@@ -722,6 +757,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             let mut walk = Vec::new();
             match session.apply_recording_walk(action, advancement, Some(&mut walk)) {
                 Ok(_) => {
+                    if let (Some(before), Some(view)) = (visible_before, session.observation()) {
+                        let revealed = view.tiles.iter().filter(|t| t.visible && !before.contains(&t.position)).count();
+                        if revealed > 0 { frame_trace::record("revealed_hexes", revealed as i64); }
+                    }
                     if let Some(lesson) = &mut data.lesson {
                         lesson.after_player(&mut session, weapon_hint);
                     }
@@ -755,8 +794,10 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
             top_menu.draw(&top_art, art.font.as_ref(), &commands);
         };
         if let Some(fight) = session.take_combat() && camera.layout().is_some() {
+            frame_trace::input("animation_begin");
             render::combat_motion::show(fight, &session, &mut camera, &mut art, &data.assets,
                 |art, layout| draw_controls(art, layout, &visible_prompt, visible_turn_label, turn_enabled)).await;
+            frame_trace::mark("animation_end");
         }
         if clicked && under_mouse.is_some() {
             session.dismiss_enemy_moves(under_mouse);

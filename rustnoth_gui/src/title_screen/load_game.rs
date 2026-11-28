@@ -126,7 +126,12 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
         if new != selected {
             selected = new;
             watch = false;
-            preview = selected.map(|i| Preview::read(root, &slots[i]).map_err(|e| e.to_string()));
+            preview = selected.map(|i| {
+                crate::frame_trace::input("preview_begin");
+                let result = Preview::read(root, &slots[i]).map_err(|e| e.to_string());
+                crate::frame_trace::ready("preview_end");
+                result
+            });
         }
         let valid = preview.as_ref().and_then(|p| p.as_ref().ok());
         let archive = valid.is_some_and(|p| p.replay);
@@ -164,6 +169,7 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
             set_default_camera();
             return Ok(());
         } else if valid.is_some() && (click(l.load()) || double_click || is_key_pressed(KeyCode::Enter)) {
+            crate::frame_trace::input("load_input");
             let Some(Ok(mut p)) = preview.take() else { unreachable!() };
             if let Some(restore) = &mut p.data.restore { restore.watch_replay = watch; }
             set_default_camera();
