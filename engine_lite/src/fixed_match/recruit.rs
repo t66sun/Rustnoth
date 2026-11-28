@@ -5,6 +5,21 @@ use crate::{board::UnitState, hex::Hex, recruit_hexes};
 use super::{Action, FixedMatch, MatchError, supports_unit};
 
 impl FixedMatch<'_> {
+    pub(super) fn recall_by_event(&mut self, filter: &crate::scenario_events::UnitFilter) -> Result<(), MatchError> {
+        let Some((side, at, leader)) = self.scenario.board.recall_event_unit(filter, |kind, terrain|
+            self.rules.walking_cost(kind, terrain).is_some()) else { return Ok(()) };
+        let sides = &self.scenario.sides;
+        let enemy = self.scenario.board.units().filter(|(hex, other)| {
+            sides[side - 1].is_enemy(&sides[other.side - 1])
+                && self.visibility_at(side, *hex) == Some(crate::visibility::HexVisibility::Visible)
+                && self.unit_visible_on_known_hex(side, *hex)
+        }).min_by_key(|(hex, other)| (at.distance(*hex) as i64 - i64::from(other.unit_type.level), other.serial));
+        let facing = enemy.and_then(|(hex, _)| at.direction_to(hex)).or_else(|| leader.direction_to(at));
+        if let Some(direction) = facing { self.scenario.board.face_unit(at, direction); }
+        self.capture_village(side, at)?;
+        Ok(())
+    }
+
     pub(super) fn extend_recruit_choices_in_view(
         &self,
         side: usize,

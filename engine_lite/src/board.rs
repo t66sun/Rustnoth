@@ -432,6 +432,31 @@ impl<'rules> Battlefield<'rules> {
         self.recall.get(&side).map_or(&[], Vec::as_slice)
     }
 
+    /// WML [recall] places the first matching reserve beside an eligible leader.
+    pub(crate) fn recall_event_unit(&mut self, filter: &crate::scenario_events::UnitFilter,
+        passable: impl Fn(&UnitType, &str) -> bool) -> Option<(usize, Hex, Hex)> {
+        let (side, slot, position, leader) = self.recall.iter().find_map(|(&side, roster)| {
+            let mut leaders: Vec<_> = self.units.iter()
+                .filter(|(_, unit)| unit.side == side && unit.can_recruit).collect();
+            leaders.sort_by_key(|(_, unit)| unit.serial);
+            roster.iter().enumerate().find_map(|(slot, unit)| {
+                if !filter.matches_fields(None, side, unit.id.as_deref(), &unit.unit_type.id) { return None; }
+                leaders.iter().filter(|(_, leader)| leader.can_recall_unit(unit)).find_map(|(at, _)| {
+                    self.event_vacancy(**at, None, |terrain| passable(unit.unit_type, terrain))
+                        .map(|position| (side, slot, position, **at))
+                })
+            })
+        })?;
+        let mut veteran = self.recall.get_mut(&side)?.remove(slot);
+        veteran.moves_left = veteran.max_movement().max(0);
+        self.units.insert(position, veteran);
+        Some((side, position, leader))
+    }
+
+    pub(crate) fn face_unit(&mut self, position: Hex, facing: Direction) {
+        if let Some(unit) = self.units.get_mut(&position) { unit.facing = Some(facing); }
+    }
+
     pub(crate) fn retain_reserves(&mut self, mut keep: impl FnMut(&UnitState<'rules>) -> bool) {
         for roster in self.recall.values_mut() { roster.retain(&mut keep); }
     }

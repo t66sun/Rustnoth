@@ -305,6 +305,10 @@ impl<'data> FixedMatch<'data> {
                         self.rules.walking_cost(kind, terrain).is_some()).map_err(MatchError::OpeningUnit)?;
                     continue;
                 }
+                BoardChange::Recall(filter) => {
+                    self.recall_by_event(&filter)?;
+                    continue;
+                }
                 BoardChange::ShowObjectives(sides) => {
                     let remaining = self.remaining_turns();
                     for index in sides {

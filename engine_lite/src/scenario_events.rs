@@ -88,6 +88,7 @@ pub(crate) enum BoardChange {
     Register(Box<Handler>),
     Fire(String),
     Run(Arc<Handler>, Option<Hex>),
+    Recall(UnitFilter),
     SetObjectives { sides: Vec<usize>, definition: objectives::Definition, notify: bool },
     ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
@@ -448,6 +449,9 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "recall" if cfg.children.is_empty()
+                && cfg.attributes.keys().all(|key| matches!(key.as_str(), "id" | "type" | "side")) =>
+                EventAction::Board(BoardChange::Recall(UnitFilter::read(cfg)?)),
             "fire_event" if cfg.children.is_empty() && cfg.attributes.len() == 1 => {
                 let name = cfg.attribute("name")?.trim();
                 if name.is_empty() || name.contains('$') { return None; }
@@ -1544,6 +1548,95 @@ x,y=2,1
 #[cfg(test)]
 mod reinforcements {
     use crate::{fixed_match::Action, hex::Hex, scenario_bundle::Bundle};
+
+    #[test]
+    fn opening_recalls_match_roster_order_and_place_veterans_beside_the_leader_for_free() {
+        let source = br#"[terrain_type]
+string=Gg
+id=flat
+[/terrain_type]
+[units]
+[movetype]
+name=foot
+[movement_costs]
+flat=1
+[/movement_costs]
+[/movetype]
+[unit_type]
+id=Guard
+movement_type=foot
+movement=5
+hitpoints=30
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv,Xv
+Xv,Gg,Gg,1 Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+gold=12
+[unit]
+id=Moreth
+type=Guard
+placement=recall
+experience=7
+[/unit]
+[unit]
+id=Gerrick
+type=Guard
+placement=recall
+moves=1
+experience=12
+[/unit]
+[unit]
+id=Last
+type=Guard
+placement=recall
+moves=1
+experience=3
+[/unit]
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=start
+[recall]
+id=absent
+[/recall]
+[recall]
+id=Gerrick
+[/recall]
+[recall]
+type=Guard,Archer
+[/recall]
+[/event]
+[event]
+name=side 2 turn
+[recall]
+id=Last
+[/recall]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(source).unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let state = game.audit_snapshot();
+        assert_eq!(state.reserves[0].len(), 1);
+        assert_eq!(state.reserves[0][0].experience, 3);
+        assert_eq!(state.gold[0], 12);
+        for (x, xp) in [(2, 12), (4, 7)] {
+            let unit = state.units.iter().find(|u| Some(u.position) == Hex::from_wml(x, 1)).unwrap();
+            assert_eq!((unit.experience, unit.moves_left, unit.attacks_left), (xp, 5, 1));
+            let visible = game.observation_for(1).unwrap().units.into_iter().find(|u| u.position == unit.position).unwrap();
+            assert_eq!(visible.facing, unit.position.direction_to(Hex::from_wml(5, 1).unwrap()));
+        }
+        game.step(Action::EndTurn).unwrap();
+        let state = game.audit_snapshot();
+        assert!(state.reserves[0].is_empty());
+        let last = state.units.iter().find(|u| u.experience == 3).unwrap();
+        assert_eq!((last.moves_left, last.attacks_left), (5, 1));
+    }
 
     #[test]
     fn turn_reinforcements_take_vacancies_and_reuse_or_enter_the_recall_list() {
