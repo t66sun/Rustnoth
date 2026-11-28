@@ -40,6 +40,7 @@ async fn show_on(root: &Path, font: Option<&Font>, message: &str, background: &T
                 17, Color::from_rgba(215, 215, 215, 255));
         }
         set_default_camera();
+        if !opening { crate::frame_trace::ready("turn_notice_ready"); }
         let dismiss = !opening && (is_mouse_button_pressed(MouseButton::Left) || is_key_pressed(KeyCode::Enter)
             || is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Escape));
         opening = false;

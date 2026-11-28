@@ -405,6 +405,10 @@ impl<'rules> Session<'rules> {
         &self.legal_actions
     }
 
+    pub fn has_computer_action(&self) -> bool {
+        self.dialogue().is_none() && self.computer_action.is_some()
+    }
+
     pub fn action_hints(&self, selected: Option<Hex>) -> Ref<'_, ActionHints> {
         self.action_hints.borrow_mut().update(selected, &self.legal_actions);
         self.action_hints.borrow()

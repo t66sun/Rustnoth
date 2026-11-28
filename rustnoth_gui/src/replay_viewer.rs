@@ -17,6 +17,7 @@ pub(super) async fn watch(session: &mut Session<'_>, events: &[Event], data: &Bo
     if let Some(view) = session.observation() { art.load(view, &data.assets, session); }
     next_frame().await;
     loop {
+        crate::frame_trace::ready("replay_ready");
         if is_key_pressed(KeyCode::Escape) { return Ok(()); }
         let point = Vec2::from(mouse_position());
         let mut viewport = render::board_viewport();
