@@ -7,7 +7,7 @@ mod installed;
 pub(crate) mod modifications;
 use std::{error::Error, fs, path::{Path, PathBuf}};
 
-use engine_lite::{campaign, fixed_match::carryover::{CampaignCarryover, CampaignGold}, wml, wml_emit};
+use engine_lite::{campaign, fixed_match::carryover::CampaignCarryover, wml, wml_emit};
 use macroquad::prelude::{next_frame, set_default_camera};
 use rustnoth_gui::session::Players;
 
@@ -47,16 +47,16 @@ impl Browser {
         Ok(Self { campaign, maps: Some(PathBuf::new()), core, root, seed, installed, mode: None, modifications: Vec::new() })
     }
 
-    pub(super) fn board(&self, id: &str, gold: &mut CampaignGold) -> Result<BoardData, Box<dyn Error>> {
+    pub(super) fn board(&self, id: &str, route: &mut CampaignCarryover) -> Result<BoardData, Box<dyn Error>> {
         let mut selected = campaign::select(&self.campaign, id, |file| self.read_map(file))?;
         if let Some(mode) = self.mode { mode.classify(&mut selected); }
         for (_, scenario) in selected.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
             modifications::apply(scenario, &self.modifications)?;
-            gold.transfer_to(scenario);
+            route.gold.transfer_to(scenario);
         }
         let mut source = Vec::new();
         wml_emit::write_config(&mut source, &selected)?;
-        BoardData::from_source(&source, &self.core, self.maps.clone().unwrap_or_default(), self.root.clone(), self.seed)
+        BoardData::from_source(&source, &self.core, self.maps.clone().unwrap_or_default(), self.root.clone(), route.scenario_seed(self.seed))
     }
 
     fn read_map(&self, file: &str) -> std::io::Result<String> {
@@ -124,7 +124,7 @@ impl Browser {
 
     async fn play_from(&self, id: String) -> Result<(), Box<dyn Error>> {
         let mut route = CampaignCarryover::default();
-        let board = self.board(&id, &mut route.gold)?;
+        let board = self.board(&id, &mut route)?;
         self.play_route(board, route, Players::Campaign).await
     }
 
@@ -140,7 +140,7 @@ impl Browser {
         crate::tutorial::localize_round_hints(&mut self.campaign, &self.root, &mut locale);
         let lesson = crate::tutorial::prepare_campaign(&mut self.campaign, hero)?;
         let mut route = CampaignCarryover::default();
-        let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route.gold)?;
+        let mut board = self.board(crate::tutorial::FIRST_SCENARIO, &mut route)?;
         board.lesson = Some(lesson);
         self.play_route(board, route, Players::Campaign).await
     }
@@ -148,7 +148,7 @@ impl Browser {
     pub(super) async fn play_route(&self, mut board: BoardData, mut route: CampaignCarryover, players: Players) -> Result<(), Box<dyn Error>> {
         loop {
             let Some(next) = play_board(board, players, Some((self, &mut route))).await? else { return Ok(()) };
-            board = self.board(&next, &mut route.gold)?;
+            board = self.board(&next, &mut route)?;
             next_frame().await;
         }
     }
@@ -220,8 +220,8 @@ mod tests {
         assert_eq!(campaign::scenarios(&browser.campaign).collect::<Vec<_>>(),
             [("first", ""), ("second", "River Crossing"), ("third", "The Harbor")]);
         let mut route = CampaignCarryover::default();
-        assert!(browser.board("first", &mut route.gold).is_err());
-        let board = browser.board("second", &mut route.gold).unwrap();
+        assert!(browser.board("first", &mut route).is_err());
+        let board = browser.board("second", &mut route).unwrap();
         assert_eq!(wml::parse(&board.source).unwrap().attribute("random_mode"), Some("deterministic"));
         assert_eq!(board.title, "River Crossing");
         assert_eq!(board.story.len(), 2);
@@ -235,7 +235,9 @@ mod tests {
         assert_eq!(session.next_scenario(), None);
         session.apply(engine_lite::fixed_match::Action::EndTurn).unwrap();
         session.store_campaign_survivors(&mut route);
-        let successor = browser.board(session.next_scenario().unwrap(), &mut route.gold).unwrap();
+        let successor = browser.board(session.next_scenario().unwrap(), &mut route).unwrap();
+        assert_eq!(successor.seed, engine_lite::rng::ReplayRng::new(9).next_u32(),
+            "1.18.8 seeds the next scenario with the next word after settlement");
         assert_eq!(wml::parse(&successor.source).unwrap().attribute("rustnoth_interactive_rng"), Some("yes"));
         assert_eq!(successor.title, "The Harbor");
         let mut next = successor.scenario.start_campaign(successor.seed, |_| unreachable!(), Some(&mut route)).unwrap();

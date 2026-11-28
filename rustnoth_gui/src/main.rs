@@ -244,7 +244,7 @@ impl Launch {
 }
 
 struct BoardData {
-    fresh_attack_seeds: bool,
+    fresh_command_seeds: bool,
     tutorial_award: Option<title_screen::tutorial_progress::Award>,
     source: Vec<u8>,
     core: Vec<u8>,
@@ -266,21 +266,21 @@ impl BoardData {
         if !images.is_dir() {
             return Err(format!("Wesnoth image directory is missing at {}", images.display()).into());
         }
-        let (scenario, (assets, title, story, skip_turn_confirmation, turn_names, tutorial_award, fresh_attack_seeds)) =
+        let (scenario, (assets, title, story, skip_turn_confirmation, turn_names, tutorial_award, fresh_command_seeds)) =
             Bundle::parse_with_core_and(source, core, |sources| {
                 let config = sources.scenario;
-                let fresh_attack_seeds = sources.bundle.attribute("rustnoth_interactive_rng") == Some("yes")
+                let fresh_command_seeds = sources.bundle.attribute("rustnoth_interactive_rng") == Some("yes")
                     && sources.bundle.attribute("random_mode").unwrap_or_default().is_empty();
                 let assets = AssetCatalog::from_board(&wesnoth_root, sources)?;
                 let title = config.attribute("name").filter(|name| !name.is_empty()).unwrap_or("Scenario").to_owned();
                 let story = story::read(config, &title);
                 Ok((assets, title, story, end_turn::side_overrides(config),
                     turn_notice::names(config), title_screen::tutorial_progress::Award::from_victory(config),
-                    fresh_attack_seeds))
+                    fresh_command_seeds))
             })?;
         Ok(Self {
             source: source.to_vec(), core: core.to_vec(), restore: None,
-            fresh_attack_seeds,
+            fresh_command_seeds,
             scenario,
             lesson: None,
             tutorial_award,
@@ -332,7 +332,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
     }, replay_route.as_mut().or(carryover.as_deref_mut()), players == Players::Campaign)?;
     let mut session = Session::with_players(game, players);
     frame_trace::mark("session_created");
-    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
+    if data.fresh_command_seeds { session.enable_fresh_command_seeds(); }
     let mut selection = Selection::default();
     let mut camera = BoardCamera::default();
     let mut minimap_drag = render::minimap::Drag::default();
@@ -481,7 +481,7 @@ async fn play_board(mut data: BoardData, players: Players, journey: Option<(&cam
                     session.undo_tutorial_move(restart)?
                 };
                 if let Some(from) = from {
-                    if data.fresh_attack_seeds { session.enable_fresh_attack_seeds(); }
+                    if data.fresh_command_seeds { session.enable_fresh_command_seeds(); }
                     session.enable_combat_playback();
                     selection.clear();
                     if let Some(view) = session.observation() {

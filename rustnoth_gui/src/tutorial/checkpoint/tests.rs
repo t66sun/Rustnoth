@@ -21,7 +21,7 @@ fn a_saved_lisar_lesson_uses_the_current_translation_for_delfadors_next_line() {
     wml_emit::write_config(fs::File::create(&original).unwrap(), &campaign).unwrap();
     let browser = Browser::load(&original, root.clone(), training_core().into_bytes(), root.clone(), 9).unwrap();
     let mut route = CampaignCarryover::default();
-    let mut board = browser.board("tutorial", &mut route.gold).unwrap();
+    let mut board = browser.board("tutorial", &mut route).unwrap();
     let roster = route.replay_roster();
     let mut live = Session::with_players(board.scenario.start_with_controllers(9, |_| unreachable!(), Some(&mut route), true).unwrap(), Players::Campaign);
     lesson.start(&mut live, &root, &mut Locale::load(&root, "C".into()).unwrap());
@@ -86,7 +86,7 @@ fn a_manual_training_save_resumes_the_exercise_and_carries_its_veteran_to_part_t
         wml_emit::write_config(fs::File::create(&original).unwrap(), &campaign).unwrap();
         let browser = Browser::load(&original, root.clone(), training_core().into_bytes(), root.clone(), 9).unwrap();
         let mut route = CampaignCarryover::default();
-        let mut board = browser.board("tutorial", &mut route.gold).unwrap();
+        let mut board = browser.board("tutorial", &mut route).unwrap();
         let roster = route.replay_roster();
         let mut live = Session::with_players(board.scenario.start_with_controllers(9, |_| unreachable!(), Some(&mut route), true).unwrap(), Players::Campaign);
         live.dismiss_dialogue();
@@ -122,7 +122,7 @@ fn a_manual_training_save_resumes_the_exercise_and_carries_its_veteran_to_part_t
         while resumed.dialogue().is_some() { resumed.dismiss_dialogue(); }
         assert_eq!(resumed.next_scenario(), Some("training_next"));
         resumed.store_campaign_survivors(&mut route);
-        let successor = saved.campaign.unwrap().board("training_next", &mut route.gold).unwrap();
+        let successor = saved.campaign.unwrap().board("training_next", &mut route).unwrap();
         let next = Session::with_players(successor.scenario.start_with_controllers(9, |_| unreachable!(), Some(&mut route), true).unwrap(), players);
         let student = next.observation().unwrap().units.iter().find(|unit| unit.side == 1 && unit.can_recruit).unwrap();
         assert_eq!(student.type_id, if hero == Hero::Konrad { "Fighter" } else { "Fighteress" });
