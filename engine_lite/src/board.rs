@@ -43,6 +43,7 @@ pub(crate) const DEFAULT_EXPERIENCE_MODIFIER: i32 = 100;
 pub struct Battlefield<'rules> {
     map: ScenarioMap,
     pub(crate) biased_combat: bool,
+    pub(crate) legacy_recruits: bool,
     units: BTreeMap<Hex, UnitState<'rules>>,
     units_created: u64,
     recall: BTreeMap<usize, Vec<UnitState<'rules>>>,
@@ -258,6 +259,7 @@ impl<'rules> Battlefield<'rules> {
         let mut board = Self {
             map,
             biased_combat: false,
+            legacy_recruits: false,
             units: BTreeMap::new(),
             units_created: 0,
             recall: BTreeMap::new(),
@@ -600,7 +602,7 @@ impl<'rules> Battlefield<'rules> {
         type_id: &str,
         position: Hex,
     ) -> Result<(), BoardError> {
-        self.place_recruit_with(side, type_id, position, |_, _| None)
+        self.place_recruit_with(side, type_id, position, |ty, _| (ty.female_gender(None), None))
     }
 
     pub(crate) fn place_random_recruit(
@@ -610,19 +612,29 @@ impl<'rules> Battlefield<'rules> {
         position: Hex,
         rng: &mut ReplayRng,
     ) -> Result<(), BoardError> {
+        self.place_rolled_recruit(side, type_id, position, rng, !self.legacy_recruits)
+    }
+
+    fn place_rolled_recruit(&mut self, side: usize, type_id: &str, position: Hex, rng: &mut ReplayRng,
+        roll_identity: bool) -> Result<(), BoardError> {
         self.place_recruit_with(side, type_id, position, |unit_type, base_max_experience| {
-            UnitModifications::from_definitions(
+            let female = unit_type.female_gender(roll_identity.then_some(&mut *rng));
+            let traits = UnitModifications::from_definitions(
                 unit_type, unit_type.traits.select_for_recruit(rng).into_iter()
                     .map(|node| Modification::Trait(Cow::Borrowed(node))).collect(),
                 base_max_experience,
-            )
+            );
+            if roll_identity {
+                for _ in 0..unit_type.recruit_name_draws[usize::from(female)] { rng.next_u32(); }
+            }
+            (female, traits)
         })
     }
 
     pub(crate) fn place_plague_unit(
         &mut self, side: usize, base: &'rules UnitType, victim_variation: &str, position: Hex, rng: &mut ReplayRng,
     ) {
-        self.place_random_recruit(side, &base.id, position, rng)
+        self.place_rolled_recruit(side, &base.id, position, rng, false)
             .expect("validated plague type and newly vacated hex");
         let raised = self.units.get_mut(&position).expect("just placed plague unit");
         let variation = base.variation(victim_variation);
@@ -645,7 +657,7 @@ impl<'rules> Battlefield<'rules> {
         side: usize,
         type_id: &str,
         position: Hex,
-        select: impl FnOnce(&'rules UnitType, i32) -> Option<UnitModifications<'rules>>,
+        select: impl FnOnce(&'rules UnitType, i32) -> (bool, Option<UnitModifications<'rules>>),
     ) -> Result<(), BoardError> {
         let experience_modifier = self.experience_modifier;
         let unit_type = self.unit_type(type_id);
@@ -656,13 +668,13 @@ impl<'rules> Battlefield<'rules> {
             type_id: type_id.to_owned(),
         })?;
         let base_max_experience = scaled_experience(unit_type.experience, experience_modifier);
-        let traits = select(unit_type, base_max_experience);
+        let (female, traits) = select(unit_type, base_max_experience);
         tile.insert(UnitState {
             serial,
             side,
             id: None,
             display_name: None,
-            female: unit_type.female_gender(None),
+            female,
             portrait: None,
             facing: None,
             unit_type,
@@ -1314,6 +1326,52 @@ mod tests {
             .unwrap_err(),
             BoardError::Occupied(WEST)
         );
+    }
+
+    #[test]
+    fn recruiting_consumes_gender_and_the_original_race_name_stream() {
+        let definitions = crate::wml::parse(br#"
+            [race]
+                id=human
+                male_names=Mark,John
+                female_name_generator="main=Fay"
+            [/race]
+            [unit_type]
+                id=Scout
+                race=human
+                gender=male,female
+            [/unit_type]
+            [unit_type]
+                id=Silent
+                race=human
+                generate_name=no
+            [/unit_type]
+            [unit_type]
+                id=Number
+                race=human
+                generate_name=0
+            [/unit_type]
+        "#).unwrap();
+        let types = crate::unit_type::read_unit_types(definitions);
+        let mut board = Battlefield::new(map(), Vec::new(), &types).unwrap();
+        let mut rng = ReplayRng::new(5489);
+        board.place_random_recruit(1, "Scout", WEST, &mut rng).unwrap();
+        assert!(!board.unit_at(WEST).unwrap().female);
+        assert_eq!(rng.seed_and_calls(), (5489, 13)); // gender + 12 Markov words
+        let mut rng = ReplayRng::new(1); // first MT19937 word is odd
+        board.place_random_recruit(1, "Scout", EAST, &mut rng).unwrap();
+        assert!(board.unit_at(EAST).unwrap().female);
+        assert_eq!(rng.seed_and_calls(), (1, 21)); // gender + 20 grammar words
+        let mut fresh = Battlefield::new(map(), Vec::new(), &types).unwrap();
+        fresh.place_random_recruit(1, "Silent", WEST, &mut rng).unwrap();
+        assert_eq!(rng.seed_and_calls(), (1, 21));
+        fresh.legacy_recruits = true;
+        fresh.place_random_recruit(1, "Scout", EAST, &mut rng).unwrap();
+        assert!(!fresh.unit_at(EAST).unwrap().female);
+        assert_eq!(rng.seed_and_calls(), (1, 21));
+        let mut fresh = Battlefield::new(map(), Vec::new(), &types).unwrap();
+        fresh.place_random_recruit(1, "Number", EAST, &mut rng).unwrap();
+        assert_eq!(rng.seed_and_calls(), (1, 33));
     }
 
     #[test]

@@ -77,9 +77,25 @@ fn listed_traits<'a>(definition: &'a Node, key: &str) -> impl Iterator<Item = &'
 
 struct RaceTraits {
     undead_variation: String,
+    name_draws: [u8; 2],
     count: i32,
     ignore_global: bool,
     additional: Vec<Arc<Node>>,
+}
+
+// Wesnoth seeds a context-free name with 20 words. A nonempty Markov chain
+// prefetches its entire 12-character limit, independent of the local language.
+fn name_draws(race: &Node) -> [u8; 2] {
+    let generator = |prefix: &str| {
+        if race.attribute(&format!("{prefix}name_generator")).is_some() {
+            return Some(20);
+        }
+        race.attribute(&format!("{prefix}names")).filter(|s| !s.trim().is_empty()).map(|_| {
+            if integer(race, "markov_chain_size") == Some(0) { 0 } else { 12 }
+        })
+    };
+    let fallback = generator("").unwrap_or(0);
+    ["male_", "female_"].map(|prefix| generator(prefix).unwrap_or(fallback))
 }
 
 #[derive(Default)]
@@ -100,6 +116,7 @@ impl TraitCatalog {
                     let id = definition.attribute("id").unwrap_or_default().to_owned();
                     catalog.races.entry(id).or_insert_with(|| RaceTraits {
                         undead_variation: definition.attribute("undead_variation").unwrap_or_default().to_owned(),
+                        name_draws: name_draws(&definition),
                         count: integer(&definition, "num_traits").unwrap_or_default(),
                         ignore_global: enabled(&definition, "ignore_global_traits"),
                         additional: definition
@@ -114,6 +131,11 @@ impl TraitCatalog {
             }
         }
         (catalog, unit_definitions)
+    }
+
+    pub(super) fn recruit_name_draws(&self, unit: &Node) -> [u8; 2] {
+        if !crate::scenario_sides::bool_attribute(unit, "generate_name", true) { return [0; 2]; }
+        self.races.get(unit.attribute("race").unwrap_or_default()).map_or([0; 2], |race| race.name_draws)
     }
 
     pub(super) fn inherited_traits(&self, unit: &Node, alignment: Alignment) -> TraitPool {

@@ -134,12 +134,16 @@ fn parse_windows(log: &str, prefix: &str) -> Result<BTreeMap<usize, AttackDraws>
 
 struct PendingRecruit<'a> {
     step: usize,
-    selecting_traits: bool,
+    trait_start: Option<usize>,
     draws: Vec<(usize, &'a str)>,
 }
 
 /// Read the trait draws of completed recruits, keyed by one-based action step.
 pub fn parse_recruits(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
+    recruit_windows(log, false)
+}
+
+fn recruit_windows(log: &str, whole_command: bool) -> Result<BTreeMap<usize, AttackDraws>, String> {
     let mut recruits = BTreeMap::new();
     let mut active: Option<PendingRecruit<'_>> = None;
 
@@ -165,7 +169,7 @@ pub fn parse_recruits(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String>
                     }
                     active = Some(PendingRecruit {
                         step,
-                        selecting_traits: false,
+                        trait_start: None,
                         draws: Vec::new(),
                     });
                 }
@@ -181,14 +185,17 @@ pub fn parse_recruits(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String>
                     if step != pending.step {
                         return Err(error("recruit end does not match its beginning"));
                     }
-                    let prefix = pending.draws.get(..count).ok_or_else(|| {
+                    let start = pending.trait_start.unwrap_or(pending.draws.len());
+                    let traits = &pending.draws[start..];
+                    let prefix = traits.get(..count).ok_or_else(|| {
                         format!(
                             "native RNG log line {line_number}: recruit step {step} reports {count} trait draws but only {} follow the trait selection marker",
-                            pending.draws.len()
+                            traits.len()
                         )
                     })?;
                     let mut draws = AttackDraws::default();
-                    for &(line, draw) in prefix {
+                    let selected = if whole_command { &pending.draws[..] } else { prefix };
+                    for &(line, draw) in selected {
                         append_draw(&mut draws, draw)
                             .map_err(|cause| format!("native RNG log line {line}: {cause}"))?;
                     }
@@ -201,13 +208,10 @@ pub fn parse_recruits(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String>
                 && message.starts_with("Generating a trait for unit type ")
                 && message.ends_with(" with must_have_only 0")
             {
-                recruit.selecting_traits = true;
-            } else if recruit.selecting_traits
-                && (category == "debug random" || category.ends_with(" debug random"))
+                recruit.trait_start.get_or_insert(recruit.draws.len());
+            } else if (category == "debug random" || category.ends_with(" debug random"))
                 && let Some(draw) = message.strip_prefix(RANDOM_DRAW)
             {
-                // Name generation follows trait selection in the same recruit window.
-                // The end marker gives the length of the trait prefix to validate.
                 recruit.draws.push((line_number, draw));
             }
         }
@@ -230,7 +234,7 @@ pub fn for_actions(log: &str, actions: &[crate::fixed_match::Action]) -> Result<
             return Err(format!("unexpected native movement RNG at step {step}"));
         }
     }
-    let mut recruits = parse_recruits(log)?;
+    let mut recruits = recruit_windows(log, true)?;
     for (index, action) in actions.iter().enumerate() {
         let step = index + 1;
         if matches!(action, crate::fixed_match::Action::Recruit { .. }) {
@@ -360,6 +364,19 @@ mod tests {
     const RECRUIT_END: &str = "info wml: RUSTNOTH_AUDIT_RECRUIT_END 1 2";
     const SELECT_TRAITS: &str =
         "info unit: Generating a trait for unit type Bowman with must_have_only 0";
+
+    #[test]
+    fn action_capture_includes_gender_before_traits_and_name_words_after_them() {
+        let log = format!("{RECRUIT_BEGIN}\ndebug random: pulled user random 31 for call 6 with seed 1571\n{SELECT_TRAITS}\n\
+            debug random: pulled user random 32 for call 7 with seed 1571\n\
+            debug random: pulled user random 33 for call 8 with seed 1571\n\
+            debug random: pulled user random 34 for call 9 with seed 1571\n{RECRUIT_END}");
+        let action = crate::fixed_match::Action::Recruit { unit_type: "Bowman".into(), to: crate::hex::Hex { x: 1, y: 0 } };
+        assert_eq!(for_actions(&log, &[action]).unwrap()[&1],
+            AttackDraws { checkpoint: Some((0x1571, 5)), words: vec![31, 32, 33, 34] });
+        assert_eq!(parse_recruits(&log).unwrap()[&1],
+            AttackDraws { checkpoint: Some((0x1571, 6)), words: vec![32, 33] });
+    }
 
     #[test]
     fn recruit_draws_begin_with_optional_selection_and_end_before_name_generation() {
