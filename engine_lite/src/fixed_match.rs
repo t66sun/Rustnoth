@@ -172,10 +172,16 @@ pub struct FixedMatch<'data> {
 
 impl<'data> FixedMatch<'data> {
     pub fn new(
-        scenario: ScenarioStart<'data>,
+        mut scenario: ScenarioStart<'data>,
         rules: Rules<'data>,
         seed: u32,
     ) -> Result<Self, MatchError> {
+        let mut rng = ReplayRng::new(seed);
+        scenario.roll_starting_units(&mut rng);
+        Self::with_rng(scenario, rules, rng)
+    }
+
+    pub(crate) fn with_rng(scenario: ScenarioStart<'data>, rules: Rules<'data>, rng: ReplayRng) -> Result<Self, MatchError> {
         let side_count = scenario.sides.len();
         if side_count < 2
             || scenario.sides.iter().enumerate().any(|(index, side)| side.side != index + 1)
@@ -214,7 +220,7 @@ impl<'data> FixedMatch<'data> {
             }),
             scenario,
             rules,
-            rng: ReplayRng::new(seed),
+            rng,
             village_owners,
             presentation: Vec::new(),
             tutorial_print: None,
@@ -1044,6 +1050,61 @@ impl error::Error for MatchError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scenario_units_draw_gender_then_remaining_traits_in_creation_order() {
+        let cfg = br#"[units]
+[trait]
+id=strong
+[/trait]
+[trait]
+id=quick
+[/trait]
+[trait]
+id=resilient
+[/trait]
+[unit_type]
+id=Guard
+gender=male,female
+num_traits=2
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv,Xv,Xv
+Xv,1 Gg,Gg,Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+[unit]
+type=Guard
+x,y=2,1
+random_traits=yes
+random_gender=yes
+[/unit]
+[unit]
+type=Guard
+x,y=3,1
+random_gender=yes
+[modifications]
+[trait]
+id=strong
+[/trait]
+[/modifications]
+[/unit]
+[/side]
+[side]
+type=Guard
+[/side]
+[/scenario]"#;
+        let bundle = crate::scenario_bundle::Bundle::parse(cfg).unwrap();
+        let game = bundle.start(5489, |_| unreachable!()).unwrap();
+        let units: Vec<_> = [2, 3].into_iter().map(|x| {
+            let unit = game.scenario.board.unit_at(crate::hex::Hex::from_wml(x, 1).unwrap()).unwrap();
+            (unit.female, unit.traits().map(|t| t.attribute("id").unwrap()).collect::<Vec<_>>())
+        }).collect();
+        assert_eq!(units, [(false, vec!["strong", "quick"]), (true, vec!["strong", "quick"])]);
+        assert_eq!(game.rng.seed_and_calls(), (5489, 5));
+    }
+
     use super::*;
     use crate::{
         movement_types::read_movement_types,

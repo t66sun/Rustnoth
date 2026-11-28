@@ -72,6 +72,13 @@ pub(crate) fn read_authored_starting_units(
     scenario: &Node,
     map: &ScenarioMap,
 ) -> Result<Vec<AuthoredStartingUnit>, PlacementError> {
+    read_starting_units_with(scenario, map, |_, _| {})
+}
+
+pub(crate) fn read_starting_units_with(
+    scenario: &Node, map: &ScenarioMap,
+    mut prepare: impl FnMut(&Node, &AuthoredStartingUnit),
+) -> Result<Vec<AuthoredStartingUnit>, PlacementError> {
     let mut result = Vec::new();
     let mut occupied = HashSet::new();
     for (index, side_cfg) in children_named(scenario, "side").enumerate() {
@@ -108,10 +115,31 @@ pub(crate) fn read_authored_starting_units(
                     leader_hex = Some(hex);
                 }
             }
-            result.push(authored_unit(unit, side, type_id, position, leader, can_recruit));
+            let placement = authored_unit(unit, side, type_id, position, leader, can_recruit);
+            prepare(unit, &placement);
+            result.push(placement);
         }
     }
     Ok(result)
+}
+
+#[derive(Debug)]
+pub(crate) struct StartingRoll {
+    pub gender: bool,
+    pub traits: bool,
+    pub full_hp: bool,
+    pub full_moves: bool,
+}
+
+impl StartingRoll {
+    pub(crate) fn read(cfg: &Node, unit: &AuthoredStartingUnit) -> Self {
+        use crate::scenario_sides::bool_attribute;
+        Self {
+            gender: unit.female.is_none() && bool_attribute(cfg, "random_gender", false),
+            traits: bool_attribute(cfg, "random_traits", true),
+            full_hp: unit.hitpoints.is_none(), full_moves: unit.moves_left.is_none(),
+        }
+    }
 }
 
 /// A literal on-map [unit] command. Variable-driven placements need a WML interpreter.

@@ -307,7 +307,7 @@ impl<'rules> Battlefield<'rules> {
             id,
             display_name,
             facing,
-            female: female.unwrap_or(unit_type.default_female),
+            female: female.unwrap_or_else(|| unit_type.female_gender(None)),
             portrait,
             unit_type,
             hitpoints: 0,
@@ -455,6 +455,25 @@ impl<'rules> Battlefield<'rules> {
 
     pub(crate) fn face_unit(&mut self, position: Hex, facing: Direction) {
         if let Some(unit) = self.units.get_mut(&position) { unit.facing = Some(facing); }
+    }
+
+    pub(crate) fn roll_starting_units(&mut self, rolls: &[crate::starting_units::StartingRoll], rng: &mut ReplayRng) {
+        let mut units: Vec<_> = self.units.values_mut().chain(self.recall.values_mut().flatten()).collect();
+        units.sort_by_key(|u| u.serial);
+        for unit in units {
+            let Some(roll) = rolls.get(unit.serial as usize - 1) else { continue };
+            if roll.gender { unit.female = unit.unit_type.female_gender(Some(rng)); }
+            if !roll.traits { continue; }
+            let added: Vec<_> = unit.unit_type.traits.select_for_unit(unit.traits().collect(), unit.can_recruit, rng)
+                .into_iter().map(|trait_| Modification::Trait(Cow::Owned(trait_.clone()))).collect();
+            if added.is_empty() { continue; }
+            let mut definitions = unit.traits.take().map_or_else(Vec::new, |t| t.definitions);
+            definitions.extend(added);
+            unit.traits = UnitModifications::from_definitions(unit.unit_type, definitions, unit.base_max_experience);
+            if let Some(t) = &unit.traits { unit.immunities = unit.immunities.with_traits(&t.stats); }
+            if roll.full_hp { unit.hitpoints = unit.max_hitpoints(); }
+            if roll.full_moves { unit.moves_left = unit.max_movement().max(0); }
+        }
     }
 
     pub(crate) fn retain_reserves(&mut self, mut keep: impl FnMut(&UnitState<'rules>) -> bool) {
@@ -622,7 +641,7 @@ impl<'rules> Battlefield<'rules> {
             side,
             id: None,
             display_name: None,
-            female: unit_type.default_female,
+            female: unit_type.female_gender(None),
             portrait: None,
             facing: None,
             unit_type,

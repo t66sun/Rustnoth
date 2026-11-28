@@ -13,6 +13,38 @@ pub struct AttackDraws {
     pub words: Vec<u32>,
 }
 
+#[derive(Debug, Default)]
+pub struct Opening {
+    pub draws: AttackDraws,
+    pub genders: BTreeMap<crate::hex::Hex, bool>,
+}
+
+/// Original synchronized words and unit genders up to the opening frame. Older captures had no marker.
+pub fn parse_opening(log: &str) -> Result<Option<Opening>, String> {
+    let Some(end) = log.lines().position(|l| l.ends_with("info wml: RUSTNOTH_AUDIT_OPENING_END")) else { return Ok(None) };
+    let mut opening = Opening::default();
+    for (i, line) in log.lines().take(end).enumerate() {
+        let Some((category, message)) = line.split_once(": ") else { continue };
+        if (category == "debug random" || category.ends_with(" debug random"))
+            && let Some(word) = message.strip_prefix(RANDOM_DRAW)
+        {
+            append_draw(&mut opening.draws, word).map_err(|e| format!("native opening RNG log line {}: {e}", i + 1))?;
+        } else if (category == "info wml" || category.ends_with(" info wml"))
+            && let Some(unit) = message.strip_prefix("RUSTNOTH_AUDIT_OPENING_UNIT ")
+        {
+            let parse = || {
+                let mut fields = unit.split_whitespace();
+                let at = crate::hex::Hex::from_wml(fields.next()?.parse().ok()?, fields.next()?.parse().ok()?)?;
+                let female = match fields.next()? { "female" => true, "male" => false, _ => return None };
+                fields.next().is_none().then_some((at, female))
+            };
+            let (at, female) = parse().ok_or_else(|| format!("invalid native opening unit at line {}", i + 1))?;
+            if opening.genders.insert(at, female).is_some() { return Err(format!("duplicate native opening unit at {at:?}")); }
+        }
+    }
+    Ok(Some(opening))
+}
+
 /// Read completed attack windows keyed by one-based action step.
 pub fn parse(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
     let mut attacks = BTreeMap::new();

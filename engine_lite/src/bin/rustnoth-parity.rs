@@ -142,7 +142,8 @@ fn compare_referees(
     let draws = original_draws(&native_log, &actions)
         .map_err(|error| format!("{error}; see {}", native_error_path.display()))?;
     let rust_file = run_dir.join(RUST_TRACE);
-    let rust_result = audit_replay::run_with_native_draws(
+    let opening = native_draws::parse_opening(&native_log)?;
+    let rust_result = audit_replay::run_with_capture(
         &bundle,
         &actions,
         seed,
@@ -153,11 +154,13 @@ fn compare_referees(
         },
         fs::File::create_new(&rust_file)?,
         &draws,
+        opening.as_ref(),
     );
     let rust_trace = fs::read_to_string(&rust_file)?;
     let native_trace = fs::read_to_string(capture.join(native_process::STDOUT_FILE))?;
     let comparison = audit_compare::compare(&rust_trace, &native_trace);
     if let Err(error) = rust_result {
+        if rust_trace.is_empty() { return Err(error); }
         return match comparison {
             Err(difference) => Err(format!("{error}\n{difference}").into()),
             Ok(_) => Err(error),

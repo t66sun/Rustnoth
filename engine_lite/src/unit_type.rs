@@ -21,7 +21,7 @@ pub(crate) use hiding::Hiding;
 pub struct UnitType {
     pub id: String,
     pub(crate) race: String,
-    pub(crate) default_female: bool,
+    genders: Vec<bool>,
     pub(crate) undead_variation: String,
     pub(crate) variation_id: String,
     variations: BTreeMap<String, UnitType>,
@@ -65,6 +65,12 @@ pub struct UnitType {
 }
 
 impl UnitType {
+    pub(crate) fn female_gender(&self, rng: Option<&mut crate::rng::ReplayRng>) -> bool {
+        let index = rng.filter(|_| self.genders.len() > 1)
+            .map_or(0, |rng| rng.next_u32() as usize % self.genders.len());
+        self.genders.get(index).copied().unwrap_or(false)
+    }
+
     /// Consumes one flat `[unit_type]` and its local traits.
     pub fn from_wml(unit: Node) -> Self {
         Self::from_catalog(unit, &TraitCatalog::default())
@@ -130,7 +136,9 @@ impl UnitType {
         let mut result = Self {
             id: text("id").to_owned(),
             race: text("race").to_owned(),
-            default_female: text("gender").split(',').next().is_some_and(|first| first.trim() == "female"),
+            genders: text("gender").split(',').filter_map(|g| match g.trim() {
+                "male" => Some(false), "female" => Some(true), _ => None,
+            }).collect(),
             undead_variation: catalog.undead_variation(&unit).to_owned(),
             variation_id: text("variation_id").to_owned(),
             variations: variations::read(&unit, catalog),
