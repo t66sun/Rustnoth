@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 const ATTACK_MARKER: &str = "RUSTNOTH_AUDIT_ATTACK_";
+const MOVE_MARKER: &str = "RUSTNOTH_AUDIT_MOVE_";
 const RECRUIT_MARKER: &str = "RUSTNOTH_AUDIT_RECRUIT_";
 const RANDOM_DRAW: &str = "pulled user random";
 
@@ -47,6 +48,42 @@ pub fn parse_opening(log: &str) -> Result<Option<Opening>, String> {
 
 /// Read completed attack windows keyed by one-based action step.
 pub fn parse(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
+    parse_windows(log, ATTACK_MARKER)
+}
+
+/// Exploration captures made before explicit movement windows marked the start of every command.
+pub fn parse_moves(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
+    if log.contains(MOVE_MARKER) { return parse_windows(log, MOVE_MARKER); }
+    let mut moves = BTreeMap::new();
+    let mut active: Option<(usize, AttackDraws)> = None;
+    for line in log.lines() {
+        let message = line.split_once(": ");
+        let command = message.and_then(|(category, text)| {
+            (category == "info wml" || category.ends_with(" info wml"))
+                .then(|| text.strip_prefix("RUSTNOTH_AUDIT_COMMAND ")).flatten()
+        });
+        if command.is_some() || line.starts_with("PASS TEST (0):") {
+            if let Some((step, draws)) = active.take() {
+                if moves.insert(step, draws).is_some() { return Err(format!("duplicate native move at step {step}")); }
+            }
+            if let Some((step, fields)) = command.and_then(|s| s.split_once('\t'))
+                && fields.starts_with("move\t")
+            {
+                active = Some((parse_step(step).ok_or("invalid native move step")?, AttackDraws::default()));
+            }
+        } else if let Some((_, draws)) = &mut active
+            && let Some((category, message)) = message
+            && (category == "debug random" || category.ends_with(" debug random"))
+            && let Some(draw) = message.strip_prefix(RANDOM_DRAW)
+        {
+            append_draw(draws, draw)?;
+        }
+    }
+    if let Some((step, _)) = active { return Err(format!("unterminated native movement at step {step}")); }
+    Ok(moves)
+}
+
+fn parse_windows(log: &str, prefix: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
     let mut attacks = BTreeMap::new();
     let mut active: Option<(usize, AttackDraws)> = None;
 
@@ -57,29 +94,29 @@ pub fn parse(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
         let error = |message| format!("native RNG log line {}: {message}", index + 1);
 
         if (category == "info wml" || category.ends_with(" info wml"))
-            && let Some(marker) = message.strip_prefix(ATTACK_MARKER)
+            && let Some(marker) = message.strip_prefix(prefix)
         {
-            let (kind, step) = parse_marker(marker).ok_or_else(|| error("malformed attack marker"))?;
+            let (kind, step) = parse_marker(marker).ok_or_else(|| error("malformed RNG window marker"))?;
             match kind {
                 "BEGIN" => {
                     if active.is_some() {
-                        return Err(error("nested attack beginning"));
+                        return Err(error("nested RNG window beginning"));
                     }
                     if attacks.last_key_value().is_some_and(|(&last_step, _)| step <= last_step) {
-                        return Err(error("attack steps must increase"));
+                        return Err(error("RNG window steps must increase"));
                     }
                     active = Some((step, AttackDraws::default()));
                 }
                 "END" => {
                     let Some((begin, draws)) = active.take() else {
-                        return Err(error("attack end without a beginning"));
+                        return Err(error("RNG window end without a beginning"));
                     };
                     if step != begin {
-                        return Err(error("attack end does not match its beginning"));
+                        return Err(error("RNG window end does not match its beginning"));
                     }
                     attacks.insert(step, draws);
                 }
-                _ => return Err(error("malformed attack marker")),
+                _ => return Err(error("malformed RNG window marker")),
             }
         } else if let Some((_, draws)) = &mut active
             && (category == "debug random" || category.ends_with(" debug random"))
@@ -90,7 +127,7 @@ pub fn parse(log: &str) -> Result<BTreeMap<usize, AttackDraws>, String> {
     }
 
     if let Some((step, _)) = active {
-        return Err(format!("native RNG log is missing the end of attack step {step}"));
+        return Err(format!("native RNG log is missing the end of {prefix} step {step}"));
     }
     Ok(attacks)
 }
@@ -225,6 +262,16 @@ mod tests {
     const BEGIN: &str = "info wml: RUSTNOTH_AUDIT_ATTACK_BEGIN 5";
     const END: &str = "info wml: RUSTNOTH_AUDIT_ATTACK_END 5";
     const DRAW: &str = "debug random: pulled user random 800589114 for call 8 with seed 3d204a68";
+
+    #[test]
+    fn movement_windows_keep_only_draws_from_the_move_and_its_events() {
+        let expected = BTreeMap::from([(5, AttackDraws { checkpoint: Some((0x3d204a68, 7)), words: vec![800589114] })]);
+        let fixed = format!("{DRAW}\n{}\n{DRAW}\n{}\n{DRAW}", BEGIN.replace("ATTACK", "MOVE"), END.replace("ATTACK", "MOVE"));
+        assert_eq!(parse_moves(&fixed), Ok(expected));
+        let archived = format!("{DRAW}\ninfo wml: RUSTNOTH_AUDIT_COMMAND 5\tmove\t1\t1\t2\t1\n{DRAW}\ninfo wml: RUSTNOTH_AUDIT_COMMAND 6\tend_turn\n{DRAW}");
+        assert_eq!(parse_moves(&archived), parse_moves(&fixed));
+        assert!(parse_moves(&fixed.replace("MOVE_END 5", "MOVE_END 6")).is_err());
+    }
 
     #[test]
     fn reads_only_windowed_draws_with_their_initial_offset() {

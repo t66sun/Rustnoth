@@ -82,7 +82,7 @@ pub(super) fn save(
     campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
-    set(&mut record, "format", 2);
+    set(&mut record, "format", 3);
     set(&mut record, "seed", data.seed);
     if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
@@ -151,7 +151,8 @@ pub(super) fn save(
 pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box<dyn Error>> {
     let dir = &slot.directory;
     let record = wml::parse(fs::read(dir.join("replay.cfg"))?)?;
-    if !matches!(record.attribute("format"), Some("1" | "2")) {
+    let format = record.attribute("format");
+    if !matches!(format, Some("1" | "2" | "3")) {
         return Err(invalid("Unsupported Rustnoth save version").into());
     }
     let seed = record
@@ -200,7 +201,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         })
     });
     let mut source = fs::read(dir.join("scenario.cfg"))?;
-    if record.attribute("format") == Some("1") { source = fixed_opening_source(&source)?; }
+    if format != Some("3") { source = legacy_unit_choices(&source, format == Some("1"))?; }
     let mut data = BoardData::from_source(
         &source,
         &fs::read(dir.join("rules.cfg"))?,
@@ -233,17 +234,31 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     Ok((data, players))
 }
 
-/// Format 1 placed the starting roster with only authored and mandatory traits.
-/// Keep that opening in the source so resaving the same match preserves its replay.
-fn fixed_opening_source(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+/// Old saves replay actions against their embedded scenario. Persist the old placement
+/// choices in that source, including when the player saves the restored game again.
+fn legacy_unit_choices(bytes: &[u8], fixed_opening: bool) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn fixed(unit: &mut Node) {
+        set(unit, "random_gender", "no");
+        set(unit, "random_traits", "no");
+    }
+    fn fixed_events(actions: &mut Node) {
+        for (tag, child) in &mut actions.children {
+            match tag.as_str() {
+                "unit" => fixed(child),
+                "event" | "if" | "then" | "else" => fixed_events(child),
+                _ => {}
+            }
+        }
+    }
     let mut document = wml::parse(bytes)?;
     for (_, scenario) in document.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
-        for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
-            set(side, "random_gender", "no");
-            set(side, "random_traits", "no");
-            for (_, unit) in side.children.iter_mut().filter(|(tag, _)| tag == "unit" || tag == "leader") {
-                set(unit, "random_gender", "no");
-                set(unit, "random_traits", "no");
+        for (tag, child) in &mut scenario.children {
+            if tag == "event" { fixed_events(child); }
+            if tag == "side" && fixed_opening {
+                fixed(child);
+                for (_, unit) in child.children.iter_mut().filter(|(tag, _)| tag == "unit" || tag == "leader") {
+                    fixed(unit);
+                }
             }
         }
     }
@@ -257,6 +272,42 @@ mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn legacy_move_history_keeps_its_fixed_reinforcement_on_reload_and_resave() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp = std::env::temp_dir().join(format!("rustnoth-fixed-event-{stamp}"));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        let slot = Slot { directory: temp.clone(), label: "Citadel".into() };
+        let source = "[scenario]\nmap_data=\"Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv\"\n[side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n[event]\nname=moveto\n[unit]\ntype=Guard\nid=Ufes\nx,y=3,1\nrandom_traits=yes\n[/unit]\n[/event]\n[/scenario]";
+        let core = "[terrain_type]\nstring=Gg\nid=flat\n[/terrain_type]\n[units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n[unit_type]\nid=Guard\nhitpoints=30\nmovement_type=foot\nmovement=4\nnum_traits=1\n[/unit_type]\n[trait]\nid=strong\n[/trait]\n[/units]";
+        fs::write(temp.join("scenario.cfg"), source).unwrap();
+        fs::write(temp.join("rules.cfg"), core).unwrap();
+        let action = Action::Move { from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 0 } };
+        for version in [1, 2] {
+            let mut history = Node::default();
+            set(&mut history, "format", version);
+            set(&mut history, "players", "hot_seat");
+            set(&mut history, "seed", 5489);
+            history.children.push(("step".into(), Event::Player(action.clone(), None, None).encode()));
+            wml_emit::write_config(fs::File::create(temp.join("replay.cfg")).unwrap(), &history).unwrap();
+            let (board, players) = load(&slot, &temp).unwrap();
+            let events = &board.restore.as_ref().unwrap().events;
+            let mut game = Session::with_players(board.scenario.start(5489, |_| unreachable!()).unwrap(), players);
+            events[0].apply(&mut game).unwrap();
+            let read_traits = |data: &BoardData| {
+                let mut battle = data.scenario.start(5489, |_| unreachable!()).unwrap();
+                battle.step(action.clone()).unwrap();
+                battle.audit_snapshot().units.into_iter().find(|u| u.position == Hex { x: 2, y: 0 }).unwrap().traits
+            };
+            assert!(read_traits(&board).is_empty());
+            let directory = temp.join(version.to_string());
+            save(&directory, "continued", &board, players, None, game.history(), None, None, None).unwrap();
+            let (resaved, _) = load(&slots(&directory).unwrap()[0], &temp).unwrap();
+            assert!(read_traits(&resaved).is_empty());
+        }
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn an_old_save_restores_its_fixed_starting_roster_and_first_action() {

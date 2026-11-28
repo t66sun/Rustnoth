@@ -389,7 +389,7 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.schedule.replace_global(entries, self.current_round, current_time);
                     continue;
                 }
-                BoardChange::PlaceUnit(unit) => {
+                BoardChange::PlaceUnit(unit, roll) => {
                     let side = unit.side;
                     let recalled = unit.id.as_ref().and_then(|id|
                         self.scenario.board.recall_roster(side).iter().find(|u| u.id.as_ref() == Some(id))
@@ -399,7 +399,7 @@ impl<'data> FixedMatch<'data> {
                     if kind.is_some_and(|kind| !supports_unit(kind)) {
                         return Err(MatchError::UnsupportedScenario);
                     }
-                    if let Some(position) = self.scenario.board.place_event_unit(*unit).map_err(MatchError::OpeningUnit)? {
+                    if let Some(position) = self.scenario.board.place_event_unit(*unit, &roll, &mut self.rng).map_err(MatchError::OpeningUnit)? {
                         self.capture_village(side, position)?;
                         self.update_side_sight(side, false);
                     }

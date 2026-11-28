@@ -105,7 +105,7 @@ pub(crate) enum BoardChange {
     Resume(PendingAction, Option<Hex>),
     TurnLimit(TurnLimitChange),
     EndLevel { victory: bool, report: bool, linger: bool, replay_save: bool, next_scenario: Option<String>, gold: Vec<crate::fixed_match::carryover::GoldOverride> },
-    PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>),
+    PlaceUnit(Box<crate::starting_units::AuthoredStartingUnit>, crate::starting_units::StartingRoll),
     MoveUnit { id: String, destination: Hex },
     Schedule { entries: Vec<crate::time_of_day::TimeOfDay>, current_time: i32 },
     Terrain { locations: Vec<WmlRectangle>, code: String, layer: crate::terrain_aliases::TerrainLayer, fallback: bool },
@@ -248,8 +248,10 @@ impl EventAction {
             return ItemChange::read(tag, cfg).map(Self::Item);
         }
         if tag == "unit" {
-            return crate::starting_units::read_event_unit(cfg, side_count)
-                .map(|unit| Self::Board(BoardChange::PlaceUnit(Box::new(unit))));
+            return crate::starting_units::read_event_unit(cfg, side_count).map(|unit| {
+                let roll = crate::starting_units::StartingRoll::read(cfg, &unit);
+                Self::Board(BoardChange::PlaceUnit(Box::new(unit), roll))
+            });
         }
         if matches!(tag, "time_area" | "remove_time_area") {
             return TimeAreaChange::read(tag, cfg).map(|area| Self::Board(BoardChange::TimeArea(area)));

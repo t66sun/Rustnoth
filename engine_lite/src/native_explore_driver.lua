@@ -39,7 +39,9 @@ local function run(time_over)
         elseif kind == "recall" then
             actions.recall(table.unpack(command, 2))
         elseif kind == "move" then
+            marker("MOVE_BEGIN " .. step)
             actions.move(table.unpack(command, 2))
+            marker("MOVE_END " .. step)
         else
             error("unknown exploration command: " .. tostring(kind))
         end

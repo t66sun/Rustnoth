@@ -114,7 +114,7 @@ impl Battlefield<'_> {
             } else if let Some(roster) = self.recall.get_mut(&side) {
                 roster.retain(|u| u.id != restored.id);
             }
-            self.add_authored_unit(restored)?;
+            self.add_authored_unit(restored, None)?;
             let unit = match position {
                 Some(p) => self.units.get_mut(&p).unwrap(),
                 None => self.recall.get_mut(&side).unwrap().last_mut().unwrap(),
