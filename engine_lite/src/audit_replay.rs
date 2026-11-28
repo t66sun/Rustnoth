@@ -43,7 +43,7 @@ pub fn run_with_capture(
         if !step
             .checked_sub(1)
             .and_then(|index| actions.get(index))
-            .is_some_and(|action| matches!(action, Action::Attack(_) | Action::Recruit { .. }))
+            .is_some_and(|action| matches!(action, Action::Attack(_) | Action::Recruit { .. } | Action::Move { .. }))
         {
             return Err(format!("unexpected native RNG record at step {step}").into());
         }
@@ -83,7 +83,12 @@ fn write_steps(
             return Err(format!("native attack RNG is missing at step {step}").into());
         }
         let consumption = if let Some(recorded) = recorded {
-            let kind = if matches!(action, Action::Attack(_)) { "combat" } else { "recruit trait" };
+            let kind = match action {
+                Action::Attack(_) => "combat",
+                Action::Recruit { .. } => "recruit trait",
+                Action::Move { .. } => "movement event",
+                _ => unreachable!("checked the native RNG step before replay"),
+            };
             let (recorded_seed, calls) = recorded.checkpoint.unwrap_or((seed, 0));
             validate_words(step, kind, recorded, recorded_seed, calls)?;
             let (_, consumed) = game
@@ -91,7 +96,11 @@ fn write_steps(
                 .map_err(|cause| RejectedStep { step, cause })?;
             Some((kind, consumed as usize, recorded.words.len()))
         } else {
+            let before = game.audit_rng_checkpoint();
             game.step(action.clone()).map_err(|cause| RejectedStep { step, cause })?;
+            if native_draws.is_some() && matches!(action, Action::Move { .. }) && before != game.audit_rng_checkpoint() {
+                return Err(format!("native movement RNG is missing at step {step}").into());
+            }
             None
         };
         write_snapshot(&mut out, step, &game.audit_snapshot())?;
@@ -194,6 +203,25 @@ Xv,Xv,Xv,Xv"
         let headers: Vec<_> = text.lines().filter(|line| line.starts_with("step\t")).collect();
         assert_eq!(headers, ["step\t0\tplaying\t1\t1", "step\t1\tplaying\t1\t2"]);
         assert!(text.ends_with("end\t1\n"));
+    }
+
+    #[test]
+    fn a_move_replays_native_trait_draws_for_its_scripted_reinforcement() {
+        let source = "[terrain_type]\nstring=Gg\nid=flat\n[/terrain_type]\n[units]\n\
+            [movetype]\nname=foot\n[movement_costs]\nflat=1\n[/movement_costs]\n[/movetype]\n\
+            [unit_type]\nid=Guard\nmovement_type=foot\nmovement=5\nhitpoints=30\nnum_traits=2\n[/unit_type]\n\
+            [trait]\nid=quick\n[/trait]\n[trait]\nid=strong\n[/trait]\n[/units]\n\
+            [scenario]\nmap_data=\"Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv,Xv\"\n\
+            [side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n[event]\nname=moveto\n\
+            [unit]\ntype=Guard\nid=Ufes\nside=1\nx,y=3,1\n[modifications]\n[trait]\nid=loyal\n[/trait]\n[/modifications]\n[/unit]\n[/event]\n[/scenario]";
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let actions = [Action::Move { from: Hex::from_wml(1, 1).unwrap(), to: Hex::from_wml(2, 1).unwrap() }];
+        let draws = BTreeMap::from([(1, AttackDraws { checkpoint: Some((5489, 0)), words: vec![3499211612] })]);
+        let mut output = Vec::new();
+        run_with_native_draws(&bundle, &actions, 7, |_| unreachable!(), &mut output, &draws).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("unit\t3\t1\t1\tGuard\t30\t5\t1\t0\t0\tloyal\tquick"));
+        let missing = run_with_native_draws(&bundle, &actions, 5489, |_| unreachable!(), Vec::new(), &BTreeMap::new()).unwrap_err();
+        assert!(missing.to_string().contains("movement RNG is missing at step 1"));
     }
 
     #[test]

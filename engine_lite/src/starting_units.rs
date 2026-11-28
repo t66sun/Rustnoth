@@ -123,7 +123,7 @@ pub(crate) fn read_starting_units_with(
     Ok(result)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct StartingRoll {
     pub gender: bool,
     pub traits: bool,

@@ -173,6 +173,11 @@ fn compare_referees(
 
 fn original_draws(log: &str, actions: &[Action]) -> Result<BTreeMap<usize, native_draws::AttackDraws>, String> {
     let mut draws = native_draws::parse(log)?;
+    for (step, window) in native_draws::parse_moves(log)? {
+        if !matches!(actions.get(step - 1), Some(Action::Move { .. })) || draws.insert(step, window).is_some() {
+            return Err(format!("unexpected native movement RNG at step {step}"));
+        }
+    }
     let mut recruits = native_draws::parse_recruits(log)?;
     for (index, action) in actions.iter().enumerate() {
         let step = index + 1;

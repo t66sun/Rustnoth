@@ -156,7 +156,9 @@ fn write_action(lua: &mut String, action: &Action, step: usize) -> io::Result<()
         Action::Move { from, to } => {
             let (from_x, from_y) = coordinates(*from)?;
             let (to_x, to_y) = coordinates(*to)?;
+            writeln!(lua, "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_BEGIN {step}\", false)").unwrap();
             writeln!(lua, "    actions.move({from_x}, {from_y}, {to_x}, {to_y})").unwrap();
+            writeln!(lua, "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_END {step}\", false)").unwrap();
         }
         Action::Attack(attack) => {
             let (from_x, from_y) = coordinates(attack.from)?;
@@ -265,7 +267,9 @@ mod tests {
         assert!(native.lua.contains(concat!(
             "groups[1] = function()\n",
             "    if checkpoint(0, false) then return end\n",
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_BEGIN 1\", false)\n",
             "    actions.move(1, 2, 2, 3)\n",
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_END 1\", false)\n",
             "    if checkpoint(1, false) then return end\n",
             "    actions.end_turn()\n"
         )));
@@ -374,7 +378,9 @@ mod tests {
         assert!(native.lua.contains(concat!(
             "groups[3] = function()\n",
             "    if checkpoint(2, false) then return end\n",
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_BEGIN 3\", false)\n",
             "    actions.move(1, 2, 2, 3)\n",
+            "    wesnoth.log(\"info\", \"RUSTNOTH_AUDIT_MOVE_END 3\", false)\n",
             "    if checkpoint(3, false) then return end\n",
             "    actions.end_turn()\n",
         )));

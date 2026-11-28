@@ -14,7 +14,7 @@ use crate::{
     map::ScenarioMap,
     movement::{MovementTile, Occupancy, reachable_with_teleports},
     rng::ReplayRng,
-    starting_units::{AuthoredStartingUnit, StartingUnit},
+    starting_units::{AuthoredStartingUnit, StartingRoll, StartingUnit},
     terrain_aliases::TerrainAliases,
     trait_effects::{CombatImmunities, Modification, RecruitStats, increase_percent},
     turn::Turn,
@@ -108,6 +108,20 @@ impl<'rules> UnitModifications<'rules> {
 }
 
 impl UnitState<'_> {
+    fn roll_authored_choices(&mut self, roll: &StartingRoll, rng: &mut ReplayRng) {
+        if roll.gender { self.female = self.unit_type.female_gender(Some(rng)); }
+        if !roll.traits { return; }
+        let added: Vec<_> = self.unit_type.traits.select_for_unit(self.traits().collect(), self.can_recruit, rng)
+            .into_iter().map(|trait_| Modification::Trait(Cow::Owned(trait_.clone()))).collect();
+        if added.is_empty() { return; }
+        let mut definitions = self.traits.take().map_or_else(Vec::new, |t| t.definitions);
+        definitions.extend(added);
+        self.traits = UnitModifications::from_definitions(self.unit_type, definitions, self.base_max_experience);
+        if let Some(t) = &self.traits { self.immunities = self.immunities.with_traits(&t.stats); }
+        if roll.full_hp { self.hitpoints = self.max_hitpoints(); }
+        if roll.full_moves { self.moves_left = self.max_movement().max(0); }
+    }
+
     pub fn max_hitpoints(&self) -> i32 {
         let base = self.traits.as_ref().map_or(self.unit_type.hitpoints, |traits| traits.stats.max_hitpoints);
         base.saturating_add(3 * i32::from(self.default_amlas))
@@ -244,12 +258,12 @@ impl<'rules> Battlefield<'rules> {
             experience_modifier,
         };
         for unit in starting_units {
-            board.add_authored_unit(unit)?;
+            board.add_authored_unit(unit, None)?;
         }
         Ok(board)
     }
 
-    pub(crate) fn add_authored_unit(&mut self, starting_unit: AuthoredStartingUnit) -> Result<(), BoardError> {
+    fn add_authored_unit(&mut self, starting_unit: AuthoredStartingUnit, roll: Option<(&StartingRoll, &mut ReplayRng)>) -> Result<(), BoardError> {
         let unit_types = self.unit_types;
         let experience_modifier = self.experience_modifier;
         let AuthoredStartingUnit {
@@ -334,6 +348,7 @@ impl<'rules> Battlefield<'rules> {
             traits,
         };
         unit.hitpoints = hitpoints.unwrap_or_else(|| unit.max_hitpoints());
+        if let Some((roll, rng)) = roll { unit.roll_authored_choices(roll, rng); }
         if let Some(tile) = tile {
             tile.insert(unit);
         } else {
@@ -344,7 +359,7 @@ impl<'rules> Battlefield<'rules> {
     }
 
     /// Place an event reinforcement, or store it for recall if the map has no vacancy.
-    pub(crate) fn place_event_unit(&mut self, mut unit: AuthoredStartingUnit) -> Result<Option<Hex>, BoardError> {
+    pub(crate) fn place_event_unit(&mut self, mut unit: AuthoredStartingUnit, roll: &StartingRoll, rng: &mut ReplayRng) -> Result<Option<Hex>, BoardError> {
         let destination = unit.position.and_then(|requested| self.event_vacancy(requested, None, |_| true));
         if let Some(index) = unit.id.as_ref().and_then(|id|
             self.recall_roster(unit.side).iter().position(|u| u.id.as_ref() == Some(id))
@@ -359,7 +374,7 @@ impl<'rules> Battlefield<'rules> {
         if unit.id.is_none() {
             unit.id = Some(format!("{}-{}", unit.type_id, self.units_created + 1));
         }
-        self.add_authored_unit(unit)?;
+        self.add_authored_unit(unit, Some((roll, rng)))?;
         Ok(destination)
     }
 
@@ -457,22 +472,12 @@ impl<'rules> Battlefield<'rules> {
         if let Some(unit) = self.units.get_mut(&position) { unit.facing = Some(facing); }
     }
 
-    pub(crate) fn roll_starting_units(&mut self, rolls: &[crate::starting_units::StartingRoll], rng: &mut ReplayRng) {
+    pub(crate) fn roll_starting_units(&mut self, rolls: &[StartingRoll], rng: &mut ReplayRng) {
         let mut units: Vec<_> = self.units.values_mut().chain(self.recall.values_mut().flatten()).collect();
         units.sort_by_key(|u| u.serial);
         for unit in units {
             let Some(roll) = rolls.get(unit.serial as usize - 1) else { continue };
-            if roll.gender { unit.female = unit.unit_type.female_gender(Some(rng)); }
-            if !roll.traits { continue; }
-            let added: Vec<_> = unit.unit_type.traits.select_for_unit(unit.traits().collect(), unit.can_recruit, rng)
-                .into_iter().map(|trait_| Modification::Trait(Cow::Owned(trait_.clone()))).collect();
-            if added.is_empty() { continue; }
-            let mut definitions = unit.traits.take().map_or_else(Vec::new, |t| t.definitions);
-            definitions.extend(added);
-            unit.traits = UnitModifications::from_definitions(unit.unit_type, definitions, unit.base_max_experience);
-            if let Some(t) = &unit.traits { unit.immunities = unit.immunities.with_traits(&t.stats); }
-            if roll.full_hp { unit.hitpoints = unit.max_hitpoints(); }
-            if roll.full_moves { unit.moves_left = unit.max_movement().max(0); }
+            unit.roll_authored_choices(roll, rng);
         }
     }
 
