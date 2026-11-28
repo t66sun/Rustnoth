@@ -130,7 +130,7 @@ fn verify(inputs: &Path, stages: [&Path; 2], native_save: &Path, out: &Path) -> 
     let next_seed = u32::from_str_radix(incoming.attribute("random_seed").ok_or("missing original next seed")?, 16)?;
     let mut campaign = CampaignCarryover::default();
     for (index, (&id, stage)) in IDS.iter().zip(stages).enumerate() {
-        let seed = [5489, next_seed][index];
+        let seed = campaign.scenario_seed(5489);
         let mut doc = wml::parse(fs::read(inputs.join(format!("{id}.cfg")))?)?;
         let level = &mut doc.children.iter_mut().find(|(tag, _)| tag == "scenario").ok_or("missing scenario")?.1;
         campaign.gold.transfer_to(level);
@@ -151,7 +151,12 @@ fn verify(inputs: &Path, stages: [&Path; 2], native_save: &Path, out: &Path) -> 
         let opening = native_draws::parse_opening(&log)?.ok_or("missing original opening RNG and genders")?;
         let destination = out.join(format!("{id}.tsv"));
         let objectives = (index == 1).then(|| objective_history(&log, actions.len())).transpose()?;
-        let replay = audit_replay::replay_match(game, &actions, seed, fs::File::create(&destination)?, &draws, Some(&opening), true, |step, game| {
+        let rng = match save.attribute("random_mode") {
+            Some("deterministic" | "biased") => audit_replay::CaptureRng::ScenarioStream,
+            _ => audit_replay::CaptureRng::CommandCheckpoints,
+        };
+        let options = audit_replay::ReplayOptions { all_sides_visibility: true, rng };
+        let replay = audit_replay::replay_match(game, &actions, seed, fs::File::create(&destination)?, &draws, Some(&opening), options, |step, game| {
             if let Some(history) = &objectives {
                 let current = game.objectives_for(1).ok_or_else(|| format!("step {step}: missing Westin objectives"))?;
                 let bits: String = WESTIN_OBJECTIVES.iter().map(|label| {
@@ -177,6 +182,9 @@ fn verify(inputs: &Path, stages: [&Path; 2], native_save: &Path, out: &Path) -> 
             actions.len(), snapshot.gold[0], game.retained_gold(1));
         if index == 0 {
             game.store_campaign_survivors(&mut campaign);
+            if campaign.scenario_seed(5489) != next_seed {
+                return Err(format!("campaign seed after {id}: original {next_seed:08x}, Rust {:08x}", campaign.scenario_seed(5489)).into());
+            }
             let roster = campaign.replay_roster();
             wml_emit::write_config(fs::File::create(out.join("outgoing.cfg"))?, &roster)?;
             let side = children(&roster, "side").find(|s| s.attribute("save_id") == Some("Deoran")).ok_or("missing Rust survivors")?;

@@ -60,7 +60,8 @@ struct PendingLine {
 pub struct Session<'rules> {
     game: FixedMatch<'rules>,
     animate_combat: bool,
-    live_attack_seed: Option<fn() -> u32>,
+    live_command_seed: Option<fn() -> u32>,
+    seed_moves_and_recruits: bool,
     last_combat: Option<engine_lite::fixed_match::combat_display::VisibleCombat>,
     dialogue: std::collections::VecDeque<PendingLine>,
     tutorial_hint: String,
@@ -86,7 +87,7 @@ impl<'rules> Session<'rules> {
     pub fn with_players(game: FixedMatch<'rules>, players: Players) -> Self {
         let mut session = Self {
             economy: None, tutorial_hint: String::new(), tutorial_undo: None,
-            animate_combat: false, live_attack_seed: None, last_combat: None,
+            animate_combat: false, live_command_seed: None, seed_moves_and_recruits: false, last_combat: None,
             enemy_moves: Default::default(),
             attack_cursor: Default::default(), hovered_move: None, route: None,
             dialogue: Default::default(), game, players, history: Vec::new(), observation: None, legal_actions: Vec::new(), computer_action: None,
@@ -248,17 +249,25 @@ impl<'rules> Session<'rules> {
         self.last_combat.take()
     }
 
-    pub fn enable_fresh_attack_seeds(&mut self) {
+    pub fn enable_fresh_command_seeds(&mut self) {
+        self.seed_moves_and_recruits = true;
         // Each RandomState uses fresh hash keys and requires no GUI/global PRNG state.
-        self.live_attack_seed = Some(|| {
+        self.live_command_seed = Some(|| {
             use std::hash::{BuildHasher, Hasher, RandomState};
             RandomState::new().build_hasher().finish() as u32
         });
     }
 
+    /// Retain the attack-only mode used by existing library callers.
+    pub fn enable_fresh_attack_seeds(&mut self) {
+        self.enable_fresh_command_seeds();
+        self.seed_moves_and_recruits = false;
+    }
+
     fn live_seed(&self, action: Option<&Action>) -> Option<u32> {
-        match (action, self.live_attack_seed) {
+        match (action, self.live_command_seed) {
             (Some(Action::Attack(_)), Some(next)) => Some(next()),
+            (Some(Action::Recruit { .. } | Action::Move { .. }), Some(next)) if self.seed_moves_and_recruits => Some(next()),
             _ => None,
         }
     }
@@ -266,8 +275,7 @@ impl<'rules> Session<'rules> {
     fn commit(&mut self, action: Action, advancement: Option<&str>, seed: Option<u32>) -> Result<MatchState, MatchError> {
         self.last_combat = None;
         let Action::Attack(choice) = action else {
-            if seed.is_some() { return Err(MatchError::ActionUnavailable); }
-            return self.game.step(action);
+            return self.game.with_command_seed(seed, |game| game.step(action));
         };
         let viewer = self.observation.as_ref().filter(|_| self.animate_combat).map(|view| view.side);
         let (state, fight) = self.game.attack_with_action_seed(choice, advancement, viewer, seed)?;
@@ -295,7 +303,8 @@ impl<'rules> Session<'rules> {
         if self.dialogue().is_some() { return Ok(false); }
         let Some(action) = self.computer_action.take() else { return Ok(false) };
         let result = match (&action, display, &self.observation) {
-            (Action::Move { from, to }, Some(walk), Some(view)) if seed.is_none() => self.game.move_for_viewer(*from, *to, view.side, walk),
+            (Action::Move { from, to }, Some(walk), Some(view)) =>
+                self.game.with_command_seed(seed, |game| game.move_for_viewer(*from, *to, view.side, walk)),
             _ => self.commit(action.clone(), None, seed),
         };
         match result {
@@ -487,7 +496,8 @@ impl<'rules> Session<'rules> {
             return Err(MatchError::ActionUnavailable);
         }
         let state = match (action.clone(), trace) {
-            (Action::Move { from, to }, Some(trace)) => self.game.move_with_trace(from, to, trace)?,
+            (Action::Move { from, to }, Some(trace)) =>
+                self.game.with_command_seed(seed, |game| game.move_with_trace(from, to, trace))?,
             (action, _) => self.commit(action, attacker, seed)?,
         };
         self.tutorial_undo = match (&action, self.game.take_tutorial_undo_print()) {
@@ -1149,6 +1159,44 @@ Xv,Xv,Xv,Xv"
     }
 
     #[test]
+    fn default_move_and_recruit_record_their_own_rng_and_leave_the_campaign_stream_at_its_checkpoint() {
+        use crate::save_replay::Event;
+        let source = "[terrain_type]\nstring=Kh\nid=keep\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+            [terrain_type]\nstring=Ch\nid=castle\nrecruit_onto=yes\n[/terrain_type]\n\
+            [units]\n[movetype]\nname=foot\n[movement_costs]\nkeep=1\ncastle=1\n[/movement_costs]\n[/movetype]\n\
+            [unit_type]\nid=Guard\nmovement_type=foot\ncost=10\nmovement=5\nhitpoints=30\nnum_traits=2\n[/unit_type]\n\
+            [trait]\nid=quick\n[/trait]\n[trait]\nid=strong\n[/trait]\n[/units]\n\
+            [scenario]\nnext_scenario=westin\nmap_data=\"Xv,Xv,Xv,Xv,Xv,Xv,Xv\nXv,1 Kh,Ch,Ch,Ch,2 Kh,Xv\nXv,Xv,Xv,Xv,Xv,Xv,Xv\"\n\
+            [side]\nid=Captain\ncontroller=human\ntype=Guard\nrecruit=Guard\ngold=100\n[/side]\n[side]\ntype=Guard\n[/side]\n\
+            [event]\nname=moveto\n[unit]\ntype=Guard\nid=Ufes\nside=1\nx,y=4,1\n\
+            [modifications]\n[trait]\nid=loyal\n[/trait]\n[/modifications]\n[/unit]\n\
+            [endlevel]\nresult=victory\n[/endlevel]\n[/event]\n[/scenario]";
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let start = || Session::with_players(bundle.start(5489, |_| unreachable!()).unwrap(), Players::Campaign);
+        let mut game = start();
+        game.enable_fresh_command_seeds();
+        game.live_command_seed = Some(|| 5489);
+        let recruit = Action::Recruit { to: Hex { x: 1, y: 0 }, unit_type: "Guard".into() };
+        game.apply(recruit.clone()).unwrap();
+        let movement = Action::Move { from: Hex { x: 0, y: 0 }, to: Hex { x: 2, y: 0 } };
+        let mut trace = Vec::new();
+        game.apply_recording_walk(movement.clone(), None, Some(&mut trace)).unwrap();
+        assert!(!trace.is_empty());
+        let next_seed = |session: &Session<'_>| {
+            assert_eq!(session.state(), MatchState::CampaignVictory);
+            let mut route = engine_lite::fixed_match::carryover::CampaignCarryover::default();
+            session.store_campaign_survivors(&mut route);
+            route.scenario_seed(5489)
+        };
+        assert_eq!(next_seed(&game), 3_499_211_612);
+        assert_eq!(game.history(), [Event::Player(recruit, None, Some(5489)), Event::Player(movement, None, Some(5489))]);
+        let mut restored = start();
+        for event in game.history() { Event::decode(&event.encode()).unwrap().apply(&mut restored).unwrap(); }
+        assert_eq!(restored.observation(), game.observation());
+        assert_eq!(next_seed(&restored), next_seed(&game));
+    }
+
+    #[test]
     fn saved_attacks_replay_their_own_seed_and_leave_future_commands_live() {
         use crate::save_replay::Event;
         let bundle = Bundle::parse(br#"
@@ -1189,15 +1237,23 @@ random_traits=no
 [/scenario]"#).unwrap();
         let start = || Session::with_players(bundle.start(11, |_| unreachable!()).unwrap(), Players::VersusComputer);
         let mut live = start();
-        live.live_attack_seed = Some(|| 5489);
+        live.live_command_seed = Some(|| 5489);
         let attack = Action::Attack(AttackChoice {
             from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 0 }, weapon: 0,
         });
         live.apply(attack.clone()).unwrap();
         let saved = live.history()[0].clone();
         assert_eq!(saved, Event::Player(attack.clone(), None, Some(5489)));
+        let mut old = saved.encode();
+        let seed = old.attributes.remove("command_seed").unwrap();
+        old.attributes.insert("attack_seed".into(), seed);
+        assert_eq!(Event::decode(&old).unwrap(), saved);
+        let mut attack_only = start();
+        attack_only.enable_fresh_attack_seeds();
+        assert!(attack_only.live_seed(Some(&attack)).is_some());
+        assert!(attack_only.live_seed(Some(&Action::Move { from: Hex { x: 0, y: 0 }, to: Hex { x: 1, y: 0 } })).is_none());
         let mut restored = start();
-        restored.live_attack_seed = Some(|| 3);
+        restored.live_command_seed = Some(|| 3);
         Event::decode(&saved.encode()).unwrap().apply(&mut restored).unwrap();
         assert_eq!(restored.observation(), live.observation());
         assert_eq!(restored.history(), live.history());
@@ -1210,7 +1266,7 @@ random_traits=no
         assert_eq!(restored.observation(), live.observation());
 
         let mut alternate = start();
-        alternate.live_attack_seed = Some(|| 3);
+        alternate.live_command_seed = Some(|| 3);
         alternate.apply(attack).unwrap();
         let mut original = start();
         saved.apply(&mut original).unwrap();

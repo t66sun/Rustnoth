@@ -10,6 +10,23 @@ use crate::{
     scenario_bundle::Bundle,
 };
 
+#[derive(Clone, Copy)]
+pub enum CaptureRng {
+    CommandCheckpoints,
+    ScenarioStream,
+}
+
+pub struct ReplayOptions {
+    pub all_sides_visibility: bool,
+    pub rng: CaptureRng,
+}
+
+impl From<bool> for ReplayOptions {
+    fn from(all_sides_visibility: bool) -> Self {
+        Self { all_sides_visibility, rng: CaptureRng::CommandCheckpoints }
+    }
+}
+
 /// Write step zero and a new frame after each accepted action.
 ///
 /// If the referee rejects an action, the completed frames remain in the output.
@@ -20,7 +37,7 @@ pub fn run(
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
     out: impl io::Write,
 ) -> Result<(), Box<dyn Error>> {
-    write_steps(bundle.start(seed, read_map_file)?, actions, seed, None, false, out, |_, _| Ok(())).map(|_| ())
+    write_steps(bundle.start(seed, read_map_file)?, actions, seed, None, false.into(), out, |_, _| Ok(())).map(|_| ())
 }
 
 /// Replays the native RNG at each attack and any supplied recruit checkpoint.
@@ -48,7 +65,7 @@ pub fn run_with_capture(
 /// The resulting referee can settle the victory and pass its survivors to the next scenario.
 pub fn replay_match<'rules>(
     game: FixedMatch<'rules>, actions: &[Action], seed: u32, out: impl io::Write,
-    native_draws: &BTreeMap<usize, AttackDraws>, opening: Option<&crate::native_draws::Opening>, all_sides_visibility: bool,
+    native_draws: &BTreeMap<usize, AttackDraws>, opening: Option<&crate::native_draws::Opening>, options: impl Into<ReplayOptions>,
     inspect: impl FnMut(usize, &FixedMatch<'_>) -> Result<(), Box<dyn Error>>,
 ) -> Result<FixedMatch<'rules>, Box<dyn Error>> {
     for &step in native_draws.keys() {
@@ -72,7 +89,7 @@ pub fn replay_match<'rules>(
         }
         if game.audit_unit_genders() != opening.genders { return Err("step 0: original and Rust unit genders differ".into()); }
     }
-    write_steps(game, actions, seed, Some(native_draws), all_sides_visibility, out, inspect)
+    write_steps(game, actions, seed, Some(native_draws), options.into(), out, inspect)
 }
 
 fn write_steps<'rules>(
@@ -80,10 +97,11 @@ fn write_steps<'rules>(
     actions: &[Action],
     seed: u32,
     native_draws: Option<&BTreeMap<usize, AttackDraws>>,
-    all_sides_visibility: bool,
+    options: ReplayOptions,
     mut out: impl io::Write,
     mut inspect: impl FnMut(usize, &FixedMatch<'_>) -> Result<(), Box<dyn Error>>,
 ) -> Result<FixedMatch<'rules>, Box<dyn Error>> {
+    let all_sides_visibility = options.all_sides_visibility;
     write_snapshot(&mut out, 0, &game.audit_snapshot_with_visibility(all_sides_visibility))?;
     inspect(0, &game)?;
     for (index, action) in actions.iter().enumerate() {
@@ -99,11 +117,23 @@ fn write_steps<'rules>(
                 Action::Move { .. } => "movement event",
                 _ => unreachable!("checked the native RNG step before replay"),
             };
-            let (recorded_seed, calls) = recorded.checkpoint.unwrap_or((seed, 0));
+            let before = game.audit_rng_checkpoint();
+            let (recorded_seed, calls) = recorded.checkpoint.unwrap_or(match options.rng {
+                CaptureRng::ScenarioStream => before,
+                CaptureRng::CommandCheckpoints => (seed, 0),
+            });
             validate_words(step, kind, recorded, recorded_seed, calls)?;
-            let (_, consumed) = game
-                .step_with_rng_checkpoint(action.clone(), recorded_seed, calls)
-                .map_err(|cause| RejectedStep { step, cause })?;
+            let consumed = match options.rng {
+                CaptureRng::ScenarioStream => {
+                    if (recorded_seed, calls) != before {
+                        return Err(format!("step {step}: original {kind} checkpoint {recorded_seed:08x}/{calls}, Rust {:08x}/{}", before.0, before.1).into());
+                    }
+                    game.step(action.clone()).map_err(|cause| RejectedStep { step, cause })?;
+                    game.audit_rng_checkpoint().1.wrapping_sub(calls)
+                }
+                CaptureRng::CommandCheckpoints => game.step_with_rng_checkpoint(action.clone(), recorded_seed, calls)
+                    .map_err(|cause| RejectedStep { step, cause })?.1,
+            };
             Some((kind, consumed as usize, recorded.words.len()))
         } else {
             let before = game.audit_rng_checkpoint();
@@ -346,6 +376,14 @@ Xv,Xv,Xv,Xv"
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("unit\t1\t1\t1\tFighter\t5\t0\t0\t1"));
         assert!(output.contains("unit\t2\t1\t2\tFighter\t5\t1\t1\t1"));
+
+        // An independently seeded command can have the same numerical seed as
+        // the scenario. Only the campaign's random_mode determines its domain.
+        let replay = |rng| replay_match(bundle.start(5489, |_| unreachable!()).unwrap(), &actions,
+            5489, io::sink(), &capture, None, ReplayOptions { all_sides_visibility: false, rng }, |_, _| Ok(()));
+        assert_eq!(replay(CaptureRng::CommandCheckpoints).unwrap().audit_rng_checkpoint(), (5489, 0));
+        let error = replay(CaptureRng::ScenarioStream).err().unwrap();
+        assert!(error.to_string().contains("original combat checkpoint 00001571/1, Rust 00001571/0"));
 
         let words = &mut capture.get_mut(&1).unwrap().words;
         words.pop();
