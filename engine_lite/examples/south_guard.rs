@@ -74,10 +74,23 @@ fn landmarks(id: &str, trace: &str) -> Result<()> {
     let visited = if id == IDS[0] {
         arrival(10, 9, "Infantry Lieutenant", 30) && arrival(12, 12, "Longbowman", 0)
     } else {
-        arrival(20, 13, "White Mage", 40) && frames.iter().any(|frame| {
-            unit(frame, 22, 13, "Horseman Commander") && unit(frame, 18, 12, "Spearman")
-                && unit(frame, 18, 13, "Bowman") && unit(frame, 19, 15, "Peasant")
-                && unit(frame, 20, 15, "Peasant")
+        frames.windows(2).any(|pair| {
+            let (before, after) = (pair[0], pair[1]);
+            // The WML places Hylas at (21,14). The original finds a vacant
+            // adjacent hex when a previously recruited unit occupies his site.
+            fn occupant(frame: &str) -> Option<(&str, &str)> {
+                let mut fields = frame.lines().find_map(|row| row.strip_prefix("unit\t21\t14\t"))?.split('\t');
+                Some((fields.next()?, fields.next()?))
+            }
+            let blocked = occupant(before).zip(occupant(after))
+                .is_some_and(|(a, b)| a == b && a.1 != "Horseman Commander");
+            let available = matches!(occupant(before), None | Some(("1", "Horseman Commander")));
+            let hylas = [(21, 14), (20, 13)].into_iter().all(|(x, y)| !unit(before, x, y, "White Mage"))
+                && ((available && unit(after, 21, 14, "White Mage")) || (blocked && unit(after, 20, 13, "White Mage")));
+            hylas && !unit(before, 22, 13, "Horseman Commander") && unit(after, 22, 13, "Horseman Commander")
+                && [(18,12,"Spearman"), (18,13,"Bowman"), (19,15,"Peasant"), (20,15,"Peasant")].into_iter()
+                    .all(|(x,y,kind)| !unit(before, x, y, kind) && unit(after, x, y, kind))
+                && enemy_gold(before).zip(enemy_gold(after)).is_some_and(|(a,b)| b-a == 40)
         })
     };
     if !visited { return Err(format!("{id}: missing the route's authored reinforcement or gold change").into()); }
@@ -208,6 +221,21 @@ mod tests {
         let (first, second) = (unit("Moreth"), unit("Sir Gerrick"));
         let list = |a: &str, b: &str| veterans(&wml::parse(format!("{a}{b}")).unwrap()).unwrap();
         assert_ne!(list(&first, &second), list(&second, &first));
+    }
+
+    #[test]
+    fn westin_checks_the_whole_arrival_with_a_free_or_occupied_mage_site() {
+        let sight = "view\t1\t1\tV\nseen\t1\t1,1\nview\t2\t1\tV\nseen\t2\t1,1";
+        let arrival = |mage: &str, occupant: &str| format!("step\t0\tplaying\t3\t1\ngold\t2\t12\n{sight}\n{occupant}step\t1\tplaying\t3\t1\ngold\t2\t52\n{sight}\n{occupant}unit\t22\t13\t1\tHorseman Commander\t38\nunit\t18\t12\t1\tSpearman\t36\nunit\t18\t13\t1\tBowman\t29\nunit\t19\t15\t1\tPeasant\t18\nunit\t20\t15\t1\tPeasant\t18\nunit\t{mage}\t1\tWhite Mage\t35\n");
+        let free = arrival("21\t14", "");
+        let occupied = arrival("20\t13", "unit\t21\t14\t1\tSpearman\t36\n");
+        assert!(landmarks(IDS[1], &free).is_ok());
+        assert!(landmarks(IDS[1], &free.replacen("step\t1", "unit\t21\t14\t1\tSpearman\t36\nstep\t1", 1)).is_err());
+        assert!(landmarks(IDS[1], &occupied).is_ok());
+        assert!(landmarks(IDS[1], &occupied.replacen("unit\t21\t14\t1\tSpearman\t36\n", "", 1)).is_err());
+        assert!(landmarks(IDS[1], &arrival("20\t13", "")).is_err());
+        assert!(landmarks(IDS[1], &free.replace("gold\t2\t52", "gold\t2\t51")).is_err());
+        assert!(landmarks(IDS[1], &free.replace("unit\t19\t15", "unit\t19\t14")).is_err());
     }
 }
 
