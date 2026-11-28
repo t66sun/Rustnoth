@@ -99,6 +99,12 @@ end
 function capture.snapshot(step, time_over, campaign_result)
     local units = wesnoth.units.find_on_map {}
     table.sort(units, hex_order)
+    if step == 0 then
+        for _, unit in ipairs(units) do
+            wesnoth.log("info", ("RUSTNOTH_AUDIT_OPENING_UNIT %d %d %s"):format(unit.x, unit.y, unit.gender), false)
+        end
+        wesnoth.log("info", "RUSTNOTH_AUDIT_OPENING_END", false)
+    end
     local sides = surviving_sides(units)
     local manual = false
     for _, side in ipairs(sides) do

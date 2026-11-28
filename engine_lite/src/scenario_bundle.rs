@@ -149,7 +149,9 @@ impl Bundle {
         carryover: Option<&mut crate::fixed_match::carryover::CampaignCarryover>,
         skip_null_controllers: bool,
     ) -> Result<FixedMatch<'_>, Box<dyn Error>> {
+        let mut rng = crate::rng::ReplayRng::new(seed);
         let mut start = scenario_start::load(&self.scenario, &self.unit_types, read_map_file)?;
+        start.roll_starting_units(&mut rng);
         start.skip_null_controllers = skip_null_controllers;
         let claimed = match &carryover {
             Some(route) => route.restore_units(&self.scenario, &mut start.board)?,
@@ -160,7 +162,7 @@ impl Bundle {
             movement: &self.movement,
             resistance: &self.resistance,
         };
-        let game = FixedMatch::new(start, rules, seed)?;
+        let game = FixedMatch::with_rng(start, rules, rng)?;
         if let Some(route) = carryover { route.finish_transfer(claimed); }
         Ok(game)
     }

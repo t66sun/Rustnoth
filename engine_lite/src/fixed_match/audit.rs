@@ -76,6 +76,11 @@ pub struct SnapshotUnit {
 }
 
 impl FixedMatch<'_> {
+    pub(crate) fn audit_rng_checkpoint(&self) -> (u32, u32) { self.rng.seed_and_calls() }
+    pub(crate) fn audit_unit_genders(&self) -> std::collections::BTreeMap<Hex, bool> {
+        self.scenario.board.units().map(|(at, unit)| (at, unit.female)).collect()
+    }
+
     /// Executes a referee audit step with a temporary stream at the given checkpoint.
     /// Returns the number of draws made by the normal action path.
     pub(crate) fn step_with_rng_checkpoint(

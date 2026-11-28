@@ -6,7 +6,7 @@ use crate::{
     scenario_map::{self, ScenarioMapError},
     scenario_sides::{SideConfig, read_sides},
     scenario_time::{integer, read_map_schedule},
-    starting_units::{PlacementError, read_authored_starting_units},
+    starting_units::{PlacementError, StartingRoll, read_starting_units_with},
     time_of_day::TimeSchedule,
     unit_type::UnitType,
     wml::Node,
@@ -16,6 +16,7 @@ use crate::{
 #[derive(Debug)]
 pub struct ScenarioStart<'rules> {
     pub board: Battlefield<'rules>,
+    starting_rolls: Vec<StartingRoll>,
     pub(crate) events: ScenarioEvents,
     pub(crate) manual_victory_sides: Vec<usize>,
     pub(crate) next_scenario: Option<String>,
@@ -27,6 +28,12 @@ pub struct ScenarioStart<'rules> {
     pub last_round: Option<i32>,
 }
 
+impl ScenarioStart<'_> {
+    pub(crate) fn roll_starting_units(&mut self, rng: &mut crate::rng::ReplayRng) {
+        self.board.roll_starting_units(&std::mem::take(&mut self.starting_rolls), rng);
+    }
+}
+
 /// Loads the scenario map, sides, placed units, and time schedules.
 pub fn load<'rules>(
     scenario: &Node,
@@ -35,8 +42,10 @@ pub fn load<'rules>(
 ) -> Result<ScenarioStart<'rules>, ScenarioStartError> {
     let map = scenario_map::load(scenario, read_map_file).map_err(ScenarioStartError::Map)?;
     let schedule = read_map_schedule(scenario, &map);
-    let units = read_authored_starting_units(scenario, &map)
-        .map_err(ScenarioStartError::Placement)?;
+    let mut starting_rolls = Vec::new();
+    let units = read_starting_units_with(scenario, &map, |cfg, unit| {
+        starting_rolls.push(StartingRoll::read(cfg, unit));
+    }).map_err(ScenarioStartError::Placement)?;
     let experience_modifier = integer(scenario, "experience_modifier")
         .unwrap_or(DEFAULT_EXPERIENCE_MODIFIER);
     let mut board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
@@ -46,6 +55,7 @@ pub fn load<'rules>(
     let sides = read_sides(scenario);
     Ok(ScenarioStart {
         board,
+        starting_rolls,
         events: ScenarioEvents::read(scenario, sides.len()),
         manual_victory_sides: manual_victory_sides(scenario),
         next_scenario: scenario.attribute("next_scenario").map(str::to_owned),

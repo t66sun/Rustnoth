@@ -82,7 +82,7 @@ pub(super) fn save(
     campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
-    set(&mut record, "format", 1);
+    set(&mut record, "format", 2);
     set(&mut record, "seed", data.seed);
     if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
@@ -151,7 +151,7 @@ pub(super) fn save(
 pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box<dyn Error>> {
     let dir = &slot.directory;
     let record = wml::parse(fs::read(dir.join("replay.cfg"))?)?;
-    if record.attribute("format") != Some("1") {
+    if !matches!(record.attribute("format"), Some("1" | "2")) {
         return Err(invalid("Unsupported Rustnoth save version").into());
     }
     let seed = record
@@ -199,8 +199,10 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
             y: record.attribute("selected_y")?.parse().ok()?,
         })
     });
+    let mut source = fs::read(dir.join("scenario.cfg"))?;
+    if record.attribute("format") == Some("1") { source = fixed_opening_source(&source)?; }
     let mut data = BoardData::from_source(
-        &fs::read(dir.join("scenario.cfg"))?,
+        &source,
         &fs::read(dir.join("rules.cfg"))?,
         dir.clone(),
         root.to_owned(),
@@ -231,11 +233,51 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     Ok((data, players))
 }
 
+/// Format 1 placed the starting roster with only authored and mandatory traits.
+/// Keep that opening in the source so resaving the same match preserves its replay.
+fn fixed_opening_source(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut document = wml::parse(bytes)?;
+    for (_, scenario) in document.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
+        for (_, side) in scenario.children.iter_mut().filter(|(tag, _)| tag == "side") {
+            set(side, "random_gender", "no");
+            set(side, "random_traits", "no");
+            for (_, unit) in side.children.iter_mut().filter(|(tag, _)| tag == "unit" || tag == "leader") {
+                set(unit, "random_gender", "no");
+                set(unit, "random_traits", "no");
+            }
+        }
+    }
+    let mut out = Vec::new();
+    wml_emit::write_translatable_config(&mut out, &document)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn an_old_save_restores_its_fixed_starting_roster_and_first_action() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp = std::env::temp_dir().join(format!("rustnoth-fixed-opening-{stamp}"));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        let slot = Slot { directory: temp.clone(), label: "legacy".into() };
+        fs::write(temp.join("replay.cfg"), "format=1\nseed=5489\nplayers=hot_seat\n").unwrap();
+        fs::write(temp.join("scenario.cfg"), b"[scenario]\nmap_data=\"Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Gg,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv\"\n[side]\ntype=Guard\n[unit]\ntype=Guard\nx,y=2,1\nrandom_traits=yes\n[/unit]\n[/side]\n[side]\ntype=Guard\n[/side]\n[/scenario]").unwrap();
+        fs::write(temp.join("rules.cfg"), b"[units]\n[unit_type]\nid=Guard\nnum_traits=1\n[/unit_type]\n[trait]\nid=strong\n[/trait]\n[/units]").unwrap();
+        let (data, _) = load(&slot, &temp).unwrap();
+        let mut game = data.scenario.start(data.seed, |_| unreachable!()).unwrap();
+        assert!(game.audit_snapshot().units.iter().all(|u| u.traits.is_empty()));
+        game.step(Action::EndTurn).unwrap();
+        assert_eq!(game.playing_side(), 2);
+        fs::write(temp.join("replay.cfg"), "format=2\nseed=5489\nplayers=hot_seat\n").unwrap();
+        let (data, _) = load(&slot, &temp).unwrap();
+        let game = data.scenario.start(data.seed, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().units[1].traits, ["strong"]);
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn a_midcampaign_checkpoint_replays_the_turn_and_continues_with_its_veterans_and_treasury() {

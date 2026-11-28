@@ -26,7 +26,15 @@ impl TraitPool {
 
     /// Selects the traits of a fresh non-leader recruit in native selection order.
     pub fn select_for_recruit(&self, rng: &mut ReplayRng) -> Vec<&Node> {
-        let mut selected = self.mandatory();
+        self.select_for_unit(Vec::new(), false, rng)
+    }
+
+    /// Additional traits after the authored modifications, in native selection order.
+    pub(crate) fn select_for_unit<'a>(&'a self, mut selected: Vec<&'a Node>, leader: bool, rng: &mut ReplayRng) -> Vec<&'a Node> {
+        let existing = selected.len();
+        for required in self.mandatory() {
+            if !selected.iter().any(|t| trait_id(t) == trait_id(required)) { selected.push(required); }
+        }
         let mut candidates = Vec::new();
         while selected.len() < self.count.max(0) as usize {
             let has_trait = |id| selected.iter().any(|&trait_| trait_id(trait_) == id);
@@ -37,6 +45,7 @@ impl TraitPool {
             candidates.extend(self.available.iter().map(Arc::as_ref).filter(|definition| {
                 let id = trait_id(definition);
                 !has_trait(id)
+                    && (!leader || definition.attribute("availability") == Some("any"))
                     && listed_traits(definition, "require_traits").all(has_trait)
                     && !listed_traits(definition, "exclude_traits")
                         .chain(exclusions.iter().copied())
@@ -49,7 +58,7 @@ impl TraitPool {
             selected.push(candidates[index]);
             candidates.clear();
         }
-        selected
+        selected.split_off(existing)
     }
 }
 

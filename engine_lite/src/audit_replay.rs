@@ -32,6 +32,13 @@ pub fn run_with_native_draws(
     out: impl io::Write,
     native_draws: &BTreeMap<usize, AttackDraws>,
 ) -> Result<(), Box<dyn Error>> {
+    run_with_capture(bundle, actions, seed, read_map_file, out, native_draws, None)
+}
+
+pub fn run_with_capture(
+    bundle: &Bundle, actions: &[Action], seed: u32, read_map_file: impl FnOnce(&str) -> io::Result<String>,
+    out: impl io::Write, native_draws: &BTreeMap<usize, AttackDraws>, opening: Option<&crate::native_draws::Opening>,
+) -> Result<(), Box<dyn Error>> {
     for &step in native_draws.keys() {
         if !step
             .checked_sub(1)
@@ -41,7 +48,24 @@ pub fn run_with_native_draws(
             return Err(format!("unexpected native RNG record at step {step}").into());
         }
     }
-    write_steps(bundle.start(seed, read_map_file)?, actions, seed, Some(native_draws), out)
+    let opening_seed = opening.and_then(|o| o.draws.checkpoint).map_or(seed, |(seed, _)| seed);
+    if let Some(opening) = opening {
+        let draws = &opening.draws;
+        validate_words(0, "opening", draws, opening_seed, 0)?;
+        if draws.checkpoint.is_some_and(|(_, calls)| calls != 0) {
+            return Err("native opening RNG did not start at call one".into());
+        }
+    }
+    let game = bundle.start(opening_seed, read_map_file)?;
+    if let Some(opening) = opening {
+        let draws = &opening.draws;
+        let (_, consumed) = game.audit_rng_checkpoint();
+        if consumed as usize != draws.words.len() {
+            return Err(format!("step 0: Rust used {consumed} opening draws; original logged {}", draws.words.len()).into());
+        }
+        if game.audit_unit_genders() != opening.genders { return Err("step 0: original and Rust unit genders differ".into()); }
+    }
+    write_steps(game, actions, seed, Some(native_draws), out)
 }
 
 fn write_steps(
@@ -170,6 +194,38 @@ Xv,Xv,Xv,Xv"
         let headers: Vec<_> = text.lines().filter(|line| line.starts_with("step\t")).collect();
         assert_eq!(headers, ["step\t0\tplaying\t1\t1", "step\t1\tplaying\t1\t2"]);
         assert!(text.ends_with("end\t1\n"));
+    }
+
+    #[test]
+    fn opening_replays_the_recorded_seed_and_rejects_missing_or_changed_words() {
+        let bundle = Bundle::parse(br#"[units]
+[unit_type]
+id=Guard
+gender=male,female
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+random_gender=yes
+[/side]
+[side]
+type=Guard
+[/side]
+[/scenario]"#).unwrap();
+        let replay = |log: &str| {
+            let opening = crate::native_draws::parse_opening(log).unwrap().unwrap();
+            run_with_capture(&bundle, &[], 99, |_| unreachable!(), io::sink(), &BTreeMap::new(), Some(&opening))
+        };
+        let ending = "info wml: RUSTNOTH_AUDIT_OPENING_UNIT 1 1 male\ninfo wml: RUSTNOTH_AUDIT_OPENING_UNIT 2 1 male\ninfo wml: RUSTNOTH_AUDIT_OPENING_END";
+        let log = format!("debug random: pulled user random 3499211612 for call 1 with seed 1571\n{ending}");
+        replay(&log).unwrap();
+        assert!(replay(ending).unwrap_err().to_string().contains("Rust used 1 opening draws; original logged 0"));
+        assert!(replay(&log.replace("3499211612", "22")).unwrap_err().to_string().contains("opening draw 1"));
+        assert!(replay(&log.replace("1 1 male", "1 1 female")).unwrap_err().to_string().contains("unit genders differ"));
     }
 
     #[test]
