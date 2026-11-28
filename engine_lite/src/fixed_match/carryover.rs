@@ -14,9 +14,15 @@ pub struct CampaignGold(BTreeMap<String, (i64, bool)>);
 pub struct CampaignCarryover {
     pub gold: CampaignGold,
     units: BTreeMap<String, Vec<Veteran>>,
+    successor_seed: Option<u32>,
 }
 
 impl CampaignCarryover {
+    /// A checkpoint stores the current board's seed separately. Rotate only
+    /// when the referee has actually settled its predecessor.
+    pub fn scenario_seed(&self, opening_seed: u32) -> u32 {
+        self.successor_seed.unwrap_or(opening_seed)
+    }
     /// Matched gold is already baked into the selected scenario's WML. Save
     /// unclaimed treasuries for sides that rejoin the route in a later scenario.
     pub fn replay_roster(&self) -> Node {
@@ -180,6 +186,7 @@ impl Treasury {
 impl FixedMatch<'_> {
     pub fn store_campaign_survivors(&self, campaign: &mut CampaignCarryover) {
         if self.next_scenario_after_victory().is_none() { return; }
+        campaign.successor_seed = Some(self.rng.clone().next_u32());
         self.store_campaign_gold(&mut campaign.gold);
         for (side, treasury) in self.scenario.sides.iter().zip(&self.scenario.treasuries) {
             let Some(id) = &treasury.save_id else { continue };

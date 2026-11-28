@@ -9,6 +9,7 @@ const LOWER_BITS: u32 = UPPER_BIT - 1;
 ///
 /// A replay checkpoint records the seed and number of draws already consumed.
 /// Keep the stream and checkpoint inside the referee and replay paths.
+#[derive(Clone)]
 pub struct ReplayRng {
     state: [u32; STATE_SIZE],
     cursor: usize,

@@ -36,18 +36,24 @@ impl FixedMatch<'_> {
         seed: Option<u32>,
     ) -> Result<(MatchState, Option<VisibleCombat>), MatchError> {
         let mut display = None;
-        let previous = seed.map(|seed| std::mem::replace(&mut self.rng, crate::rng::ReplayRng::new(seed)));
-        let state = self.step_with_choices(
+        let state = self.with_command_seed(seed, |game| game.step_with_choices(
             Action::Attack(attack),
             advancement,
             None,
             viewer.map(|side| (side, &mut display)),
             None,
-        );
-        if let Some(rng) = previous {
-            self.rng = rng;
-        }
+        ));
         state.map(|state| (state, display))
+    }
+
+    /// Default single-player commands use their own RNG and leave the scenario's
+    /// successor seed unaffected. Predictable games use the current stream.
+    pub fn with_command_seed<T>(&mut self, seed: Option<u32>, command: impl FnOnce(&mut Self) -> T) -> T {
+        let Some(seed) = seed else { return command(self) };
+        let previous = std::mem::replace(&mut self.rng, crate::rng::ReplayRng::new(seed));
+        let result = command(self);
+        self.rng = previous;
+        result
     }
 
     pub(super) fn visible_combat(&self, viewer: usize, attack: &Attack) -> Option<VisibleCombat> {

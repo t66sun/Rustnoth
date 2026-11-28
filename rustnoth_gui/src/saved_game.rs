@@ -82,7 +82,7 @@ pub(super) fn save(
     campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
-    set(&mut record, "format", 5);
+    set(&mut record, "format", 6);
     set(&mut record, "seed", data.seed);
     if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
@@ -152,7 +152,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     let dir = &slot.directory;
     let record = wml::parse(fs::read(dir.join("replay.cfg"))?)?;
     let format = record.attribute("format");
-    if !matches!(format, Some("1" | "2" | "3" | "4" | "5")) {
+    if !matches!(format, Some("1" | "2" | "3" | "4" | "5" | "6")) {
         return Err(invalid("Unsupported Rustnoth save version").into());
     }
     let seed = record
@@ -435,7 +435,7 @@ gold=20
         let browser = Browser::load(&file, maps.clone(), core.to_vec(), temp.clone(), 12).unwrap();
         let incoming = wml::parse("[side]\nsave_id=hero\n[unit]\nid=hero\ntype=Guard\nname=Veteran\nexperience=12\nearned_amlas=0\ncanrecruit=yes\n[/unit]\n[/side]\n[treasury]\nsave_id=ally\namount=46\nadd=true\n[/treasury]").unwrap();
         let mut route = CampaignCarryover::from_replay_roster(&incoming).unwrap();
-        let board = browser.board("west", &mut route.gold).unwrap();
+        let board = browser.board("west", &mut route).unwrap();
         let opening = route.replay_roster();
         let mut live = Session::new(board.scenario.start_campaign(12, |_| unreachable!(), Some(&mut route)).unwrap());
         assert_eq!(live.dialogue().unwrap().text, "Advance");
@@ -458,7 +458,7 @@ gold=20
         resumed.apply(Action::EndTurn).unwrap();
         assert_eq!(resumed.next_scenario(), Some("east"));
         resumed.store_campaign_survivors(&mut route);
-        let successor = campaign.board(resumed.next_scenario().unwrap(), &mut route.gold).unwrap();
+        let successor = campaign.board(resumed.next_scenario().unwrap(), &mut route).unwrap();
         let game = successor.scenario.start_campaign(successor.seed, |_| unreachable!(), Some(&mut route)).unwrap();
         assert_eq!(game.observation_for(2).unwrap().gold, Some(66));
         assert!(game.observation_for(1).unwrap().units.iter().any(|u| u.side == 1 && u.experience == 12));

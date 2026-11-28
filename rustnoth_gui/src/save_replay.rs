@@ -49,7 +49,7 @@ impl Event {
     pub fn encode(&self) -> Node {
         let mut node = Node::default();
         if let Self::Player(_, _, Some(seed)) | Self::Computer(Some(seed)) = self {
-            set(&mut node, "attack_seed", seed);
+            set(&mut node, "command_seed", seed);
         }
         let at = |n: &mut Node, x, y, p: Hex| {
             set(n, x, p.x);
@@ -118,11 +118,13 @@ impl Event {
             })
         };
         let kind = field("kind")?;
-        let seed = node.attribute("attack_seed").map(|s| s.parse::<u32>())
-            .transpose().map_err(|_| invalid("Invalid saved attack seed"))?;
-        if seed.is_some() && !matches!(kind, "computer" | "attack") {
-            return Err(invalid("Unexpected seed on a non-combat command"));
+        let seed = match (node.attribute("command_seed"), node.attribute("attack_seed")) {
+            (Some(seed), None) if matches!(kind, "computer" | "attack" | "recruit" | "move") => Some(seed),
+            (None, Some(seed)) if matches!(kind, "computer" | "attack") => Some(seed),
+            (None, None) => None,
+            _ => return Err(invalid("Unexpected seed on saved command")),
         }
+        .map(|s| s.parse::<u32>()).transpose().map_err(|_| invalid("Invalid saved command seed"))?;
         let action = match kind {
             "computer" => return Ok(Self::Computer(seed)),
             "dismiss_dialogue" => return Ok(Self::Dismiss),
