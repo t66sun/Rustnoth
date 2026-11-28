@@ -38,6 +38,7 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
         return Ok(());
     }
     let widgets = Widgets::new(root)?;
+    let mut locale = super::locale::Locale::load(root, art.locale.selected.clone())?;
     let now = SystemTime::now();
     let mut dates: Vec<_> = slots.iter().map(|s| Date::for_slot(s, now)).collect();
     let mut filter = String::new();
@@ -128,7 +129,7 @@ pub(super) async fn show(root: &Path, art: &Art, behind: impl Fn(f32, f32)) -> R
             watch = false;
             preview = selected.map(|i| {
                 crate::frame_trace::input("preview_begin");
-                let result = Preview::read(root, &slots[i]).map_err(|e| e.to_string());
+                let result = Preview::read(root, &slots[i], &mut locale).map_err(|e| e.to_string());
                 crate::frame_trace::ready("preview_end");
                 result
             });

@@ -124,7 +124,7 @@ impl Widgets {
         if preview.replay {
             dialog::text(font,&summary,x,y+53.,15,LABEL);
         } else {
-            dialog::text(font,art.locale.ui("Multiplayer"),x,y+53.,15,LABEL);
+            dialog::text(font,&dialog::fit(font,preview.mode_label.clone(),260.,15),x,y+53.,15,LABEL);
             dialog::text(font,&summary,x,y+76.,15,LABEL);
         }
         let line = y+if preview.replay { 75. } else { 98. };
