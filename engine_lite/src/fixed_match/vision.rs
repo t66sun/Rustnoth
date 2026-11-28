@@ -55,7 +55,7 @@ impl FixedMatch<'_> {
         let visible = |hex| self.visibility_at(side, hex) == Some(HexVisibility::Visible) && self.unit_visible_on_known_hex(side, hex);
         let villages = self.teleport_villages(from, unit, known, visible);
         board.walk_steps_in_view(side, from, to,
-            |terrain| self.rules.walking_cost(unit_type, terrain),
+            |terrain| self.rules.walking_cost(unit, terrain),
             |terrain| unit_type.defense_overrides.hit_chance_with_fallback(self.rules.terrain, terrain, inherited),
             |other| sides[side - 1].is_enemy(&sides[other - 1]),
             known, visible, &villages,

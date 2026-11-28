@@ -84,14 +84,15 @@ pub struct Rules<'data> {
 }
 
 impl Rules<'_> {
-    fn walking_cost(&self, unit_type: &UnitType, terrain: &str) -> Option<NonZeroU32> {
+    fn walking_cost(&self, unit: &UnitState<'_>, terrain: &str) -> Option<NonZeroU32> {
+        let unit_type = unit.unit_type;
         let inherited = self
             .movement
             .get(&unit_type.movement_type)
             .map(|profile| &profile.movement_costs);
-        unit_type
-            .movement_cost_overrides
-            .cost_with_fallback(self.terrain, terrain, false, inherited)
+        let cost = MovementCosts::layered_cost(self.terrain, terrain, false,
+            &[unit.object_movement_costs(), Some(&unit_type.movement_cost_overrides), inherited]);
+        (cost.get() != 99).then_some(cost)
     }
 
     /// Cost of seeing through a hex, including slow. Unreachable terrain costs 99.
@@ -105,6 +106,7 @@ impl Rules<'_> {
             &[
                 Some(&unit_type.vision_cost_overrides),
                 profile.map(|p| &p.vision_costs),
+                unit.object_movement_costs(),
                 Some(&unit_type.movement_cost_overrides),
                 profile.map(|p| &p.movement_costs),
             ],
@@ -380,6 +382,11 @@ impl<'data> FixedMatch<'data> {
                     self.scenario.board.set_unit_moves(&filter, moves);
                     continue;
                 }
+                BoardChange::MovementObject { side, can_recruit, object } => {
+                    self.scenario.board.give_movement_object(side, can_recruit, object);
+                    self.update_side_sight(side, false);
+                    continue;
+                }
                 BoardChange::CaptureVillage(capture) => capture,
                 BoardChange::TimeArea(area) => {
                     area.apply(&mut self.scenario.schedule, self.current_round);
@@ -598,7 +605,7 @@ impl<'data> FixedMatch<'data> {
                 .move_destinations_with_teleports(
                     turn.side,
                     from,
-                    |terrain| self.rules.walking_cost(unit.unit_type, terrain),
+                    |terrain| self.rules.walking_cost(unit, terrain),
                     is_enemy,
                     terrain_known,
                     unit_visible,

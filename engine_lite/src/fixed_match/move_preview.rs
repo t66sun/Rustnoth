@@ -34,7 +34,7 @@ impl FixedMatch<'_> {
                 let code = map.terrain_at(hex)?;
                 let cost = self
                     .rules
-                    .walking_cost(unit.unit_type, code)
+                    .walking_cost(unit, code)
                     .map_or(99, NonZeroU32::get);
                 Some((
                     hex,
