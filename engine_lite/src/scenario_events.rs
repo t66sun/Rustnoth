@@ -1,6 +1,7 @@
 //! Static campaign actions on scenario and turn events.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 mod endlevel;
 pub(crate) mod kill;
@@ -84,6 +85,9 @@ pub(crate) struct PendingAction(Box<EventAction>);
 
 #[derive(Clone, Debug)]
 pub(crate) enum BoardChange {
+    Register(Box<Handler>),
+    Fire(String),
+    Run(Arc<Handler>, Option<Hex>),
     SetObjectives { sides: Vec<usize>, definition: objectives::Definition, notify: bool },
     ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
@@ -444,6 +448,16 @@ fn read_actions<'a>(
     let mut actions = Vec::new();
     for (tag, cfg) in commands {
         let action = match tag.as_str() {
+            "fire_event" if cfg.children.is_empty() && cfg.attributes.len() == 1 => {
+                let name = cfg.attribute("name")?.trim();
+                if name.is_empty() || name.contains('$') { return None; }
+                EventAction::Board(BoardChange::Fire(name.replace(' ', "_")))
+            }
+            "event" if cfg.attributes.keys().all(|key| matches!(key.as_str(), "name" | "first_time_only" | "priority"))
+                && !cfg.attribute("name")?.contains('$') => {
+                let handler = Handler::read(cfg, scenario, side_count)?;
+                EventAction::Board(BoardChange::Register(Box::new(handler)))
+            }
             "move_unit" if cfg.children.is_empty() && cfg.attributes.len() == 3 => {
                 let id = cfg.attribute("id")?;
                 if id.is_empty() || id.contains([',', '$', '*', '?']) { return None; }
@@ -566,7 +580,7 @@ impl UnitFilter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum EventFilter {
     Unit(UnitFilter),
     SecondUnit(UnitFilter),
@@ -622,19 +636,48 @@ pub(crate) struct ArrivingUnit<'a> {
     pub(crate) type_id: &'a str,
 }
 
-#[derive(Debug)]
-struct Handler {
+#[derive(Clone, Debug)]
+pub(crate) struct Handler {
+    priority: f64,
     names: Vec<String>,
     once: bool,
     filters: Vec<EventFilter>,
     changes: Vec<EventAction>,
 }
 
+impl Handler {
+    fn read(event: &Node, scenario: &Node, side_count: usize) -> Option<Self> {
+        if event.attributes.keys().any(|k| k.starts_with("filter")) || event.children.is_empty() { return None; }
+        let names = event.attribute("name")?;
+        let (conditions, actions): (Vec<_>, Vec<_>) = event.children.iter()
+            .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side" | "filter_second"));
+        let filters = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
+            .collect::<Option<Vec<_>>>()?;
+        let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
+            let mut changes = vec![EventAction::Board(BoardChange::CaptureVillage(capture))];
+            if let Some((tag, clear)) = actions.last() && let Some(change) = ScalarChange::read(tag, clear) {
+                changes.push(EventAction::Variable(change));
+            }
+            changes
+        } else {
+            read_actions(actions, scenario, side_count)?
+        };
+        let once = match event.attribute("first_time_only").unwrap_or("yes") {
+            "yes" | "true" | "1" => true,
+            "no" | "false" | "0" => false,
+            _ => return None,
+        };
+        let priority = event.attribute("priority").and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite()).unwrap_or(0.0);
+        Some(Self { priority, names: names.split(',').map(|name| name.trim().replace(' ', "_")).collect(), once, filters, changes })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ScenarioEvents {
     pub(crate) wounded: Option<wounded::WoundedLesson>,
     objective_definitions: BTreeMap<usize, objectives::Definition>,
-    handlers: Vec<Handler>,
+    handlers: Vec<Arc<Handler>>,
     pub(crate) active_side: usize,
     variables: Scalars,
     pub(crate) items: MapItems,
@@ -650,7 +693,7 @@ impl ScenarioEvents {
     }
 
     pub(crate) fn accepts_event(scenario: &Node, side_count: usize, event: &Node) -> bool {
-        !Self::from_events(scenario, side_count, [event]).handlers.is_empty()
+        Handler::read(event, scenario, side_count).is_some()
     }
 
     fn from_events<'a>(scenario: &Node, side_count: usize, events: impl IntoIterator<Item=&'a Node>) -> Self {
@@ -662,46 +705,14 @@ impl ScenarioEvents {
             {
                 continue;
             }
-            // Filtered or scripted handlers cannot be interpreted as unconditional actions.
-            if event.attributes.keys().any(|k| k.starts_with("filter")) || event.children.is_empty()
-            {
-                continue;
+            if let Some(handler) = Handler::read(event, scenario, side_count) {
+                handlers.push(Arc::new(handler));
             }
-            let Some(names) = event.attribute("name") else { continue };
-            let (conditions, actions): (Vec<_>, Vec<_>) = event.children.iter()
-                .partition(|(tag, _)| matches!(tag.as_str(), "filter" | "filter_side" | "filter_second"));
-            let Some(filters) = conditions.into_iter().map(|(tag, cfg)| EventFilter::read(tag, cfg, side_count))
-                .collect::<Option<Vec<_>>>() else { continue };
-            let changes = if let Some(capture) = VillageCapture::from_starting_location(&actions) {
-                let mut changes = vec![EventAction::Board(BoardChange::CaptureVillage(capture))];
-                if let Some((tag, clear)) = actions.last()
-                    && let Some(change) = ScalarChange::read(tag, clear)
-                {
-                    changes.push(EventAction::Variable(change));
-                }
-                changes
-            } else {
-                let Some(changes) = read_actions(actions, scenario, side_count) else { continue };
-                changes
-            };
-            let once = match event.attribute("first_time_only").unwrap_or("yes") {
-                "yes" | "true" | "1" => true,
-                "no" | "false" | "0" => false,
-                _ => continue,
-            };
-            let priority = event.attribute("priority").and_then(|s| s.trim().parse::<f64>().ok())
-                .filter(|value| value.is_finite()).unwrap_or(0.0);
-            handlers.push((priority, Handler {
-                names: names.split(',').map(|name| name.trim().replace(' ', "_")).collect(),
-                once,
-                filters,
-                changes,
-            }));
         }
         // Equal priorities retain registration order.
-        handlers.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+        handlers.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap());
         Self {
-            handlers: handlers.into_iter().map(|(_, handler)| handler).collect(),
+            handlers,
             wounded: None,
             objective_definitions: BTreeMap::new(),
             active_side: 1,
@@ -717,27 +728,45 @@ impl ScenarioEvents {
         action.0.apply(state, &mut self.items, &mut self.variables, primary, Some(board), self.active_side);
     }
 
+    pub(crate) fn register(&mut self, handler: Handler) {
+        let index = self.handlers.partition_point(|old| old.priority >= handler.priority);
+        self.handlers.insert(index, Arc::new(handler));
+    }
+
     pub(crate) fn has_handler(&self, name: &str) -> bool {
         self.handlers.iter().any(|handler| handler.names.iter().any(|candidate| candidate == name))
     }
 
     pub(crate) fn fire(&mut self, name: &str, state: &mut EventState<'_>) {
-        self.dispatch(name, None, None, state);
+        if state.board_changes.is_empty() {
+            self.dispatch(name, None, None, state);
+        } else {
+            // A preceding phase can register a handler before this event fires.
+            state.board_changes.push(BoardChange::Fire(name.to_owned()));
+        }
     }
 
     pub(crate) fn dispatch(&mut self, name: &str, unit: Option<ArrivingUnit<'_>>, second: Option<ArrivingUnit<'_>>, state: &mut EventState<'_>) {
         if state.board_changes.iter().any(|c| matches!(c, BoardChange::EndLevel { .. })) { return; }
-        self.handlers.retain(|handler| {
-            if !handler.names.iter().any(|n| n == name)
-                || !handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref(), second.as_ref()))
-            {
-                return true;
-            }
-            for change in &handler.changes {
-                change.apply(state, &mut self.items, &mut self.variables, unit.as_ref().map(|unit| unit.position), None, self.active_side);
-            }
-            !handler.once
-        });
+        let matching: Vec<_> = self.handlers.iter().filter(|handler| handler.names.iter().any(|n| n == name)
+            && handler.filters.iter().all(|filter| filter.matches(&state.sides[self.active_side - 1], unit.as_ref(), second.as_ref())))
+            .cloned().collect();
+        let primary = unit.map(|unit| unit.position);
+        for handler in matching {
+            if state.board_changes.is_empty() { self.run_handler(&handler, primary, state); }
+            else { state.board_changes.push(BoardChange::Run(handler, primary)); }
+        }
+    }
+
+    pub(crate) fn run_handler(&mut self, handler: &Arc<Handler>, primary: Option<Hex>, state: &mut EventState<'_>) {
+        if handler.once {
+            // A nested fire may already have consumed this same registration.
+            let Some(index) = self.handlers.iter().position(|h| Arc::ptr_eq(h, handler)) else { return };
+            self.handlers.remove(index);
+        }
+        for change in &handler.changes {
+            change.apply(state, &mut self.items, &mut self.variables, primary, None, self.active_side);
+        }
     }
 
     pub(crate) fn begin_turn(&mut self, turn: Turn, new_round: bool, state: &mut EventState<'_>) {
@@ -784,6 +813,70 @@ impl ScenarioEvents {
 mod tests {
     use super::*;
     use crate::{fixed_match::Action, scenario_bundle::Bundle, wml};
+
+    #[test]
+    fn prestart_registers_a_handler_that_fires_before_the_next_start_handler() {
+        let config = br#"[units]
+[unit_type]
+id=Guard
+hitpoints=24
+[/unit_type]
+[/units]
+[scenario]
+map_data="Xv,Xv,Xv,Xv
+Xv,1 Gg,2 Gg,Xv
+Xv,Xv,Xv,Xv"
+[side]
+type=Guard
+gold=30
+[/side]
+[side]
+type=Guard
+[/side]
+[event]
+name=prestart
+[event]
+name=start
+priority=1
+[fire_event]
+name=raise banner
+[/fire_event]
+[set_variable]
+name=late
+value=yes
+[/set_variable]
+[/event]
+[gold]
+side=1
+amount=30
+[/gold]
+[/event]
+[event]
+name=start,raise banner
+[if]
+[variable]
+name=late
+equals=yes
+[/variable]
+[then]
+[gold]
+side=1
+amount=50
+[/gold]
+[/then]
+[else]
+[gold]
+side=1
+amount=5
+[/gold]
+[/else]
+[/if]
+[/event]
+[/scenario]"#;
+        let bundle = Bundle::parse(config).unwrap();
+        let game = bundle.start(5489, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().gold[0], 65);
+    }
 
     #[test]
     fn side_filters_follow_the_turn_owner_independently_of_the_event_unit() {

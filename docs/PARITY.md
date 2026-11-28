@@ -57,3 +57,30 @@ end_turn
 第 0 帧是开局，以后每个动作产生一帧。比较覆盖回合、行动方、双方金币、单位状态（含战斗经验）和村庄归属。命令在首处差异退出，运行目录保留 `rust.tsv`、`native.stdout` 和 `native.stderr`。这些文件用于裁判审计。
 
 启用战争迷雾或未探索黑幕的阵营会额外输出每行地图上的可见、雾中和未探索地块，以及当前能看见的单位坐标。原版记录每次攻击和招募特质抽样的种子、计数和随机数。Rust 从这些检查点回放动作，校验随机数序列和次数，然后比较每步状态。命令行种子提供给双方初始化，原版同步动作自行选择的种子以原版记录为准。原版启动或执行失败时，运行目录保留原版日志。
+
+## The South Guard 第一关河堡事件
+
+在仓库根目录用 PowerShell 7.4 或更高版本运行。把 `$install` 指向 Wesnoth 1.18.8 安装目录。以下命令使用 Civilian（`EASY`）难度，生成场景包和十步脚本，并保留原版招募时的随机数供复验。
+
+```powershell
+$install = 'D:\SteamLibrary\steamapps\common\wesnoth'
+$out = (New-Item -ItemType Directory -Path "verification/river-fort-$(Get-Date -Format yyyyMMdd-HHmmss)").FullName
+$campaign = "$install/data/campaigns/The_South_Guard"
+$wesnoth = "$install/wesnoth.exe"
+$profileArgs = '--wnoconsole', '--no-log-to-file', '--data-dir', $install, '--userdata-dir', "$out/userdata", '--userconfig-dir', "$out/config", '--usercache-dir', "$out/cache"
+& $wesnoth @profileArgs --preprocess-defines=CAMPAIGN_THE_SOUTH_GUARD,EASY,NO_TERRAIN_GFX --preprocess "$campaign/_main.cfg" "$out/campaign" | Out-Host
+& $wesnoth @profileArgs --preprocess-defines=SKIP_CORE,NO_TERRAIN_GFX --preprocess "$install/data/core/_main.cfg" "$out/core" | Out-Host
+
+$engine = '--release', '--locked', '--manifest-path', 'engine_lite/Cargo.toml'
+cargo run @engine --bin rustnoth-campaign -- "$out/campaign/_main.cfg" 01_Born_to_the_Banner "$campaign/maps" > "$out/scenario.cfg"
+@(
+    'move 14 5 12 8', 'move 15 5 10 7', 'move 10 7 9 9', 'move 12 8 11 9', 'end_turn',
+    'recruit 14 18 Ruffian', 'recruit 14 19 Ruffian', 'move 15 19 10 18', 'end_turn', 'move 11 9 9 10'
+) -replace ' ', "`t" | Set-Content -Encoding utf8NoBOM "$out/actions.tsv"
+
+$route = "$out/scenario.cfg", "$out/actions.tsv", '5489'
+cargo run @engine --bin rustnoth-parity -- $wesnoth @route "$out/native" --core-config "$out/core/_main.cfg"
+cargo run @engine --bin rustnoth-parity -- --replay-capture "$out/native" @route "$out/replay" --core-config "$out/core/_main.cfg"
+```
+
+两次对拍都应输出 `Matched 11 step(s)`，包含开局和十步动作。第十步 Moreth 进入 `(9,10)`，Sir Gerrick（`Infantry Lieutenant`）出现在 `(10,9)`，第二方金币从 6 增至 36。原版逐帧记录在 `$out/native/native.stdout`，同局 Rust 回放在 `$out/replay/rust.tsv`。
