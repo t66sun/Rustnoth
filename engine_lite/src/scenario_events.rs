@@ -318,7 +318,13 @@ impl EventAction {
             });
         }
         if tag == "modify_side" {
-            if !cfg.children.is_empty() || cfg.attributes.iter().any(|(key, value)| {
+            // recruitment_pattern configures the native controller's choice among legal
+            // recruits. It does not change the referee's recruit list or side economy.
+            if cfg.children.iter().any(|(tag, ai)| {
+                tag != "ai" || !ai.children.is_empty() || ai.attributes.len() != 1
+                    || !ai.attributes.get("recruitment_pattern").is_some_and(|v|
+                        v.translations.is_empty() && !v.text.contains('$'))
+            }) || cfg.attributes.iter().any(|(key, value)| {
                 // Campaigns often reveal the side in the native status table as they activate its AI.
                 !matches!(key.as_str(), "side" | "controller" | "hidden" | "defeat_condition" | "gold" | "income" | "village_gold" | "village_support")
                     || !value.translations.is_empty() || value.text.contains('$')
@@ -1257,6 +1263,30 @@ gold=100
             game.step(Action::EndTurn).unwrap();
             assert_eq!(game.audit_snapshot().gold, expected);
         }
+    }
+
+    #[test]
+    fn ai_recruitment_pattern_keeps_the_surrounding_citadel_commands() {
+        use crate::{fixed_match::Action, scenario_bundle::Bundle};
+        let source = "[terrain_type]\nstring=Kh\nrecruit_from=yes\nrecruit_onto=yes\n[/terrain_type]\n\
+            [terrain_type]\nstring=Ch\nrecruit_onto=yes\n[/terrain_type]\n[units]\n\
+            [unit_type]\nid=Footpad\ncost=12\n[/unit_type]\n[unit_type]\nid=Walking Corpse\ncost=8\n[/unit_type]\n[/units]\n\
+            [scenario]\nturns=7\nmap_data=\"Xv,Xv,Xv,Xv,Xv\nXv,1 Kh,Ch,2 Kh,Xv\nXv,Xv,Xv,Xv,Xv\"\n\
+            [side]\ntype=Footpad\ngold=10\n[/side]\n[side]\ntype=Footpad\ngold=55\nrecruit=Footpad\n[/side]\n[event]\nname=start\n\
+            [modify_turns]\nadd=17\n[/modify_turns]\n\
+            [set_recruit]\nside=2\nrecruit=Walking Corpse\n[/set_recruit]\n\
+            [modify_side]\nside=2\n[ai]\nrecruitment_pattern=fighter\n[/ai]\n[/modify_side]\n\
+            [gold]\nside=2\namount=40\n[/gold]\n[/event]\n[/scenario]";
+        let bundle = Bundle::parse(source.as_bytes()).unwrap();
+        let mut game = bundle.start(5489, |_| unreachable!()).unwrap();
+        assert_eq!(game.audit_snapshot().gold, [10, 95]);
+        game.step(Action::EndTurn).unwrap();
+        let (view, actions) = game.decision().unwrap();
+        assert_eq!(game.economy_for(&view).unwrap().last_round, Some(24));
+        let recruits: Vec<_> = actions.iter().filter_map(|a| match a {
+            Action::Recruit { unit_type, .. } => Some(unit_type.as_str()), _ => None,
+        }).collect();
+        assert_eq!(recruits, ["Walking Corpse"]);
     }
 
     #[test]
