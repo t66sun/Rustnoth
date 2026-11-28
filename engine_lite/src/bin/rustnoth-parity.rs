@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     env, error::Error, fs, io,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -139,7 +138,7 @@ fn compare_referees(
             audit_actions::parse(&script)?
         }
     };
-    let draws = original_draws(&native_log, &actions)
+    let draws = native_draws::for_actions(&native_log, &actions)
         .map_err(|error| format!("{error}; see {}", native_error_path.display()))?;
     let rust_file = run_dir.join(RUST_TRACE);
     let opening = native_draws::parse_opening(&native_log)?;
@@ -169,31 +168,6 @@ fn compare_referees(
     let count = comparison?;
     require_every_step(count, actions.len())?;
     Ok(count)
-}
-
-fn original_draws(log: &str, actions: &[Action]) -> Result<BTreeMap<usize, native_draws::AttackDraws>, String> {
-    let mut draws = native_draws::parse(log)?;
-    for (step, window) in native_draws::parse_moves(log)? {
-        if !matches!(actions.get(step - 1), Some(Action::Move { .. })) || draws.insert(step, window).is_some() {
-            return Err(format!("unexpected native movement RNG at step {step}"));
-        }
-    }
-    let mut recruits = native_draws::parse_recruits(log)?;
-    for (index, action) in actions.iter().enumerate() {
-        let step = index + 1;
-        if matches!(action, Action::Recruit { .. }) {
-            let recruit = recruits
-                .remove(&step)
-                .ok_or_else(|| format!("native recruit trait RNG is missing at step {step}"))?;
-            if draws.insert(step, recruit).is_some() {
-                return Err(format!("native attack RNG was also recorded at recruit step {step}"));
-            }
-        }
-    }
-    if let Some((&step, _)) = recruits.first_key_value() {
-        return Err(format!("native recruit trait RNG recorded at non-recruit step {step}"));
-    }
-    Ok(draws)
 }
 
 fn native_command_error(log: &str) -> bool {
@@ -289,16 +263,16 @@ mod tests {
     fn requires_a_native_recruit_checkpoint_even_when_no_traits_are_rolled() {
         let action = Action::Recruit { unit_type: "Fighter".to_owned(), to: Hex { x: 1, y: 0 } };
         assert_eq!(
-            original_draws("", &[action.clone()]).unwrap_err(),
+            native_draws::for_actions("", &[action.clone()]).unwrap_err(),
             "native recruit trait RNG is missing at step 1",
         );
         let log = concat!(
             "info wml: RUSTNOTH_AUDIT_RECRUIT_BEGIN 1\n",
             "info wml: RUSTNOTH_AUDIT_RECRUIT_END 1 0\n",
         );
-        assert_eq!(original_draws(log, &[action]).unwrap()[&1], native_draws::AttackDraws::default());
+        assert_eq!(native_draws::for_actions(log, &[action]).unwrap()[&1], native_draws::AttackDraws::default());
         assert_eq!(
-            original_draws(log, &[Action::EndTurn]).unwrap_err(),
+            native_draws::for_actions(log, &[Action::EndTurn]).unwrap_err(),
             "native recruit trait RNG recorded at non-recruit step 1",
         );
     }

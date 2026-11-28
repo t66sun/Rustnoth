@@ -98,6 +98,10 @@ impl FixedMatch<'_> {
 
     /// Records all sides for referee use, including after the match ends.
     pub fn audit_snapshot(&self) -> Snapshot {
+        self.audit_snapshot_with_visibility(false)
+    }
+
+    pub(crate) fn audit_snapshot_with_visibility(&self, all_sides: bool) -> Snapshot {
         Snapshot {
             state: self.state(),
             gold: self.gold.clone(),
@@ -138,7 +142,7 @@ impl FixedMatch<'_> {
                 .map(|(&hex, &side)| (hex, side))
                 .collect(),
             views: self.scenario.sides.iter()
-                .filter(|side| side.fog || side.shroud)
+                .filter(|side| all_sides || side.fog || side.shroud)
                 .map(|side| SnapshotView::from_observation(
                     self.observation_for(side.side).expect("scenario side has an observation"),
                 ))

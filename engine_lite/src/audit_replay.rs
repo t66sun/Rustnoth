@@ -20,7 +20,7 @@ pub fn run(
     read_map_file: impl FnOnce(&str) -> io::Result<String>,
     out: impl io::Write,
 ) -> Result<(), Box<dyn Error>> {
-    write_steps(bundle.start(seed, read_map_file)?, actions, seed, None, out)
+    write_steps(bundle.start(seed, read_map_file)?, actions, seed, None, false, out, |_, _| Ok(())).map(|_| ())
 }
 
 /// Replays the native RNG at each attack and any supplied recruit checkpoint.
@@ -39,6 +39,18 @@ pub fn run_with_capture(
     bundle: &Bundle, actions: &[Action], seed: u32, read_map_file: impl FnOnce(&str) -> io::Result<String>,
     out: impl io::Write, native_draws: &BTreeMap<usize, AttackDraws>, opening: Option<&crate::native_draws::Opening>,
 ) -> Result<(), Box<dyn Error>> {
+    let opening_seed = opening.and_then(|o| o.draws.checkpoint).map_or(seed, |(seed, _)| seed);
+    let game = bundle.start(opening_seed, read_map_file)?;
+    replay_match(game, actions, seed, out, native_draws, opening, false, |_, _| Ok(())).map(|_| ())
+}
+
+/// Audit an already started match, including a campaign with its actual incoming veterans.
+/// The resulting referee can settle the victory and pass its survivors to the next scenario.
+pub fn replay_match<'rules>(
+    game: FixedMatch<'rules>, actions: &[Action], seed: u32, out: impl io::Write,
+    native_draws: &BTreeMap<usize, AttackDraws>, opening: Option<&crate::native_draws::Opening>, all_sides_visibility: bool,
+    inspect: impl FnMut(usize, &FixedMatch<'_>) -> Result<(), Box<dyn Error>>,
+) -> Result<FixedMatch<'rules>, Box<dyn Error>> {
     for &step in native_draws.keys() {
         if !step
             .checked_sub(1)
@@ -48,34 +60,32 @@ pub fn run_with_capture(
             return Err(format!("unexpected native RNG record at step {step}").into());
         }
     }
-    let opening_seed = opening.and_then(|o| o.draws.checkpoint).map_or(seed, |(seed, _)| seed);
     if let Some(opening) = opening {
         let draws = &opening.draws;
+        let (opening_seed, consumed) = game.audit_rng_checkpoint();
         validate_words(0, "opening", draws, opening_seed, 0)?;
         if draws.checkpoint.is_some_and(|(_, calls)| calls != 0) {
             return Err("native opening RNG did not start at call one".into());
         }
-    }
-    let game = bundle.start(opening_seed, read_map_file)?;
-    if let Some(opening) = opening {
-        let draws = &opening.draws;
-        let (_, consumed) = game.audit_rng_checkpoint();
         if consumed as usize != draws.words.len() {
             return Err(format!("step 0: Rust used {consumed} opening draws; original logged {}", draws.words.len()).into());
         }
         if game.audit_unit_genders() != opening.genders { return Err("step 0: original and Rust unit genders differ".into()); }
     }
-    write_steps(game, actions, seed, Some(native_draws), out)
+    write_steps(game, actions, seed, Some(native_draws), all_sides_visibility, out, inspect)
 }
 
-fn write_steps(
-    mut game: FixedMatch<'_>,
+fn write_steps<'rules>(
+    mut game: FixedMatch<'rules>,
     actions: &[Action],
     seed: u32,
     native_draws: Option<&BTreeMap<usize, AttackDraws>>,
+    all_sides_visibility: bool,
     mut out: impl io::Write,
-) -> Result<(), Box<dyn Error>> {
-    write_snapshot(&mut out, 0, &game.audit_snapshot())?;
+    mut inspect: impl FnMut(usize, &FixedMatch<'_>) -> Result<(), Box<dyn Error>>,
+) -> Result<FixedMatch<'rules>, Box<dyn Error>> {
+    write_snapshot(&mut out, 0, &game.audit_snapshot_with_visibility(all_sides_visibility))?;
+    inspect(0, &game)?;
     for (index, action) in actions.iter().enumerate() {
         let step = index + 1;
         let recorded = native_draws.and_then(|draws| draws.get(&step));
@@ -103,7 +113,8 @@ fn write_steps(
             }
             None
         };
-        write_snapshot(&mut out, step, &game.audit_snapshot())?;
+        write_snapshot(&mut out, step, &game.audit_snapshot_with_visibility(all_sides_visibility))?;
+        inspect(step, &game)?;
         if let Some((kind, consumed, expected)) = consumption
             && consumed != expected
         {
@@ -113,7 +124,7 @@ fn write_steps(
             .into());
         }
     }
-    Ok(())
+    Ok(game)
 }
 
 fn validate_words(
