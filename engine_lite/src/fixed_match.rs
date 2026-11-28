@@ -265,9 +265,33 @@ impl<'data> FixedMatch<'data> {
         let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
         handle(&mut self.scenario.events, &mut state);
         let mut killed = false;
-        let mut pending = std::collections::VecDeque::from(state.board_changes);
-        while let Some(change) = pending.pop_front() {
+        let mut pending: Vec<_> = state.board_changes.into_iter().rev()
+            .map(|change| (change, primary, speaker_ids, 0usize)).collect();
+        while let Some((change, primary, speaker_ids, depth)) = pending.pop() {
             let capture = match change {
+                BoardChange::Register(handler) => {
+                    self.scenario.events.register(*handler);
+                    continue;
+                }
+                BoardChange::Run(handler, at) => {
+                    if !matches!(self.state, MatchState::Playing(_)) { continue; }
+                    let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
+                    self.scenario.events.run_handler(&handler, at, &mut state);
+                    pending.extend(state.board_changes.into_iter().rev()
+                        .map(|next| (next, primary, speaker_ids, depth)));
+                    continue;
+                }
+                BoardChange::Fire(name) => {
+                    if !matches!(self.state, MatchState::Playing(_)) { continue; }
+                    // Wesnoth bounds nested events at game_config::max_loop. Keep
+                    // their continuation on the heap, with fresh unit locations.
+                    if depth >= 65536 { return Err(MatchError::UnsupportedScenario); }
+                    let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
+                    self.scenario.events.dispatch(&name, None, None, &mut state);
+                    pending.extend(state.board_changes.into_iter().rev()
+                        .map(|next| (next, None, [None, None], depth + 1)));
+                    continue;
+                }
                 BoardChange::HealUnit(heal) => {
                     heal.apply(&mut self.scenario.board, primary);
                     continue;
@@ -317,7 +341,8 @@ impl<'data> FixedMatch<'data> {
                 BoardChange::Resume(action, position) => {
                     let mut state = EventState { gold: &mut self.gold, sides: &mut self.scenario.sides, board_changes: Vec::new() };
                     self.scenario.events.resume(&action, position, &self.scenario.board, &self.village_owners, &mut state);
-                    for next in state.board_changes.into_iter().rev() { pending.push_front(next); }
+                    pending.extend(state.board_changes.into_iter().rev()
+                        .map(|next| (next, primary, speaker_ids, depth)));
                     continue;
                 }
                 BoardChange::TurnLimit(change) => {
