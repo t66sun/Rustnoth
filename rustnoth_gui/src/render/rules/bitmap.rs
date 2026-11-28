@@ -68,12 +68,22 @@ impl Bitmaps {
             return Some(Rc::clone(src));
         }
         let mut pieces = operations(expression).into_iter();
-        let name = pieces
-            .next()?
-            .strip_prefix("terrain/")
-            .unwrap_or_else(|| expression.split('~').next().unwrap_or(""));
-        let path = catalog.files.get(name)?;
-        let mut data = crate::frame_trace::time_asset("terrain_decode_us", || image::open(path).ok().map(|im| im.into_rgba8()))?;
+        let file = pieces.next()?;
+        let name = file.strip_prefix("terrain/").unwrap_or(file);
+        let original = if let Some(image) = self.sources.get(name) {
+            Rc::clone(image)
+        } else {
+            let path = catalog.files.get(name)?;
+            let image = crate::frame_trace::time_asset("terrain_decode_us", || {
+                image::open(path).ok().map(|image| Rc::new(image.into_rgba8()))
+            })?;
+            self.sources.insert(name.into(), Rc::clone(&image));
+            image
+        };
+        if pieces.len() == 0 {
+            return Some(original);
+        }
+        let mut data = (*original).clone();
         for modifier in pieces {
             let (command, body) = modifier.split_once('(')?;
             let args = pattern::split(body.strip_suffix(')')?);
@@ -179,6 +189,27 @@ impl Bitmaps {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    #[test]
+    fn distinct_modifiers_share_one_decoded_original_until_sources_are_released() {
+        let file = std::env::temp_dir().join(format!("rustnoth-terrain-shared-{}.png", std::process::id()));
+        RgbaImage::from_pixel(2, 1, Rgba([80, 60, 20, 255])).save(&file).unwrap();
+        let mut catalog = super::super::compile::compile(&[], &[]);
+        catalog.files.insert("water.png".into(), file.clone());
+        let mut bitmaps = Bitmaps::default();
+
+        let translucent = bitmaps.read(&catalog, "terrain/water.png~O(50%)").unwrap();
+        std::fs::remove_file(file).unwrap();
+        let tinted = bitmaps.read(&catalog, "water.png~CS(10,0,-5)").expect("reuse the first decode");
+        let original = bitmaps.read(&catalog, "terrain/water.png").unwrap();
+        assert_eq!(translucent.get_pixel(0, 0).0, [80, 60, 20, 128]);
+        assert_eq!(tinted.get_pixel(0, 0).0, [90, 60, 15, 255]);
+        assert_eq!(original.get_pixel(0, 0).0, [80, 60, 20, 255]);
+        assert!(Rc::ptr_eq(&original, &bitmaps.read(&catalog, "water.png").unwrap()));
+
+        bitmaps.release_sources();
+        assert!(bitmaps.read(&catalog, "water.png").is_none());
+    }
 
     #[test]
     fn terrain_cuts_copy_rgba_bytes_and_pad_outside_the_source() {
