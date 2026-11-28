@@ -41,7 +41,7 @@ impl FixedMatch<'_> {
                 let attack_here = view.units.iter().any(|target| target.position == hex && !target.petrified
                     && !view.allied_sides.contains(&target.side));
                 attack_here || tiles.get(&hex).is_some_and(|terrain| {
-                    let cost = self.rules.walking_cost(unit.unit_type, terrain).map_or(99, |cost| cost.get());
+                    let cost = self.rules.walking_cost(unit, terrain).map_or(99, |cost| cost.get());
                     cost.saturating_mul(if unit.slowed { 2 } else { 1 }) <= moves.max(0) as u32
                 })
             })

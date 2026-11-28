@@ -33,7 +33,7 @@ impl FixedMatch<'_> {
             let reachable = reachable_with_teleports(enemy.position, unit.max_movement().max(0) as u32,
                 &villages, |hex| {
                     let tile = tiles.get(&hex)?;
-                    let base = self.rules.walking_cost(unit.unit_type, &tile.terrain)?;
+                    let base = self.rules.walking_cost(unit, &tile.terrain)?;
                     let cost = if enemy.slowed { base.checked_mul(NonZeroU32::new(2)?)? } else { base };
                     // Native path highlights include pass-through allies. Their hexes
                     // are traversable even though the mover cannot end an order there.

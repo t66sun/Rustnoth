@@ -93,6 +93,7 @@ pub(crate) enum BoardChange {
     ShowObjectives(Vec<usize>),
     HealUnit(crate::board::HealUnit),
     SetUnitMoves { filter: UnitFilter, moves: i32 },
+    MovementObject { side: usize, can_recruit: bool, object: Node },
     Dialogue(crate::fixed_match::dialogue::Message),
     TutorialHint(Node),
     TutorialPrint(Node),
@@ -227,6 +228,18 @@ pub(crate) struct EventState<'a> {
 
 impl EventAction {
     fn read(tag: &str, cfg: &Node, side_count: usize) -> Option<Self> {
+        if tag == "object" {
+            if cfg.attributes.len() != 1 || !crate::scenario_sides::bool_attribute(cfg, "silent", false) { return None; }
+            let [(filter_tag, filter), (effect_tag, effect)] = cfg.children.as_slice() else { return None };
+            if filter_tag != "filter" || effect_tag != "effect" || !filter.children.is_empty() || filter.attributes.len() != 2 { return None; }
+            crate::movement_cost::MovementCosts::replacement(effect)?;
+            let side = filter.attribute("side")?.parse().ok()?;
+            if !(1..=side_count).contains(&side) { return None; }
+            let can_recruit = match filter.attribute("canrecruit")? {
+                "yes" | "true" | "1" => true, "no" | "false" | "0" => false, _ => return None,
+            };
+            return Some(Self::Board(BoardChange::MovementObject { side, can_recruit, object: cfg.clone() }));
+        }
         if tag == "modify_unit" {
             let [(tag, filter)] = cfg.children.as_slice() else { return None };
             if tag != "filter" || cfg.attributes.len() != 1 { return None; }

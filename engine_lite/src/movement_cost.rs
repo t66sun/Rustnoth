@@ -14,6 +14,16 @@ pub struct MovementCosts {
 }
 
 impl MovementCosts {
+    /// The literal replacement table supported by WML objects changing terrain costs.
+    pub(crate) fn replacement(effect: &Node) -> Option<&Node> {
+        if effect.attributes.len() != 2 || effect.attribute("apply_to") != Some("movement_costs")
+            || !crate::scenario_sides::bool_attribute(effect, "replace", false) { return None; }
+        let [(tag, table)] = effect.children.as_slice() else { return None };
+        (tag == "movement_costs" && table.children.is_empty() && !table.attributes.is_empty()
+            && table.attributes.values().all(|v| v.translations.is_empty() && v.text.trim().parse::<i32>().is_ok()))
+            .then_some(table)
+    }
+
     /// Read the contents of a preprocessed terrain cost table.
     pub fn from_wml(table: &Node) -> Self {
         Self::from_wml_tables([table])

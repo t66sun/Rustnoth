@@ -82,7 +82,7 @@ pub(super) fn save(
     campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
-    set(&mut record, "format", 3);
+    set(&mut record, "format", 4);
     set(&mut record, "seed", data.seed);
     if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
@@ -152,7 +152,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     let dir = &slot.directory;
     let record = wml::parse(fs::read(dir.join("replay.cfg"))?)?;
     let format = record.attribute("format");
-    if !matches!(format, Some("1" | "2" | "3")) {
+    if !matches!(format, Some("1" | "2" | "3" | "4")) {
         return Err(invalid("Unsupported Rustnoth save version").into());
     }
     let seed = record
@@ -201,7 +201,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         })
     });
     let mut source = fs::read(dir.join("scenario.cfg"))?;
-    if format != Some("3") { source = legacy_unit_choices(&source, format == Some("1"))?; }
+    if let Some(version @ ("1" | "2" | "3")) = format { source = legacy_scenario(&source, version)?; }
     let mut data = BoardData::from_source(
         &source,
         &fs::read(dir.join("rules.cfg"))?,
@@ -234,18 +234,19 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     Ok((data, players))
 }
 
-/// Old saves replay actions against their embedded scenario. Persist the old placement
-/// choices in that source, including when the player saves the restored game again.
-fn legacy_unit_choices(bytes: &[u8], fixed_opening: bool) -> Result<Vec<u8>, Box<dyn Error>> {
+/// Encode the old scenario semantics in the embedded source so resaves replay the same history.
+fn legacy_scenario(bytes: &[u8], version: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     fn fixed(unit: &mut Node) {
         set(unit, "random_gender", "no");
         set(unit, "random_traits", "no");
     }
-    fn fixed_events(actions: &mut Node) {
+    fn fixed_events(actions: &mut Node, fixed_reinforcements: bool) {
         for (tag, child) in &mut actions.children {
             match tag.as_str() {
-                "unit" => fixed(child),
-                "event" | "if" | "then" | "else" => fixed_events(child),
+                "unit" if fixed_reinforcements => fixed(child),
+                // Through format 3 an object action made its enclosing event unsupported.
+                "object" => *tag = "rustnoth_legacy_unsupported_object".into(),
+                "event" | "if" | "then" | "else" => fixed_events(child, fixed_reinforcements),
                 _ => {}
             }
         }
@@ -253,8 +254,8 @@ fn legacy_unit_choices(bytes: &[u8], fixed_opening: bool) -> Result<Vec<u8>, Box
     let mut document = wml::parse(bytes)?;
     for (_, scenario) in document.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
         for (tag, child) in &mut scenario.children {
-            if tag == "event" { fixed_events(child); }
-            if tag == "side" && fixed_opening {
+            if tag == "event" { fixed_events(child, version != "3"); }
+            if tag == "side" && version == "1" {
                 fixed(child);
                 for (_, unit) in child.children.iter_mut().filter(|(tag, _)| tag == "unit" || tag == "leader") {
                     fixed(unit);
@@ -272,6 +273,34 @@ mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn a_version_three_water_crossing_survives_load_and_resave() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp = std::env::temp_dir().join(format!("rustnoth-westin-water-{stamp}"));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        let slot = Slot { directory: temp.clone(), label: "River".into() };
+        let core = "[terrain_type]\nid=flat\nstring=Gg\n[/terrain_type]\n[terrain_type]\nid=shallow_water\nstring=Ww\n[/terrain_type]\n[units]\n[movetype]\nname=foot\n[movement_costs]\nflat=1\nshallow_water=1\n[/movement_costs]\n[/movetype]\n[unit_type]\nid=Guard\nmovement_type=foot\nmovement=5\nhitpoints=30\n[/unit_type]\n[/units]";
+        let source = "[scenario]\nmap_data=\"Xv,Xv,Xv,Xv,Xv\nXv,1 Gg,Ww,2 Gg,Xv\nXv,Xv,Xv,Xv,Xv\"\n[side]\ntype=Guard\n[/side]\n[side]\ntype=Guard\n[/side]\n[event]\nname=prestart\n[object]\nsilent=yes\n[filter]\nside=2\ncanrecruit=yes\n[/filter]\n[effect]\napply_to=movement_costs\nreplace=yes\n[movement_costs]\nshallow_water=99\n[/movement_costs]\n[/effect]\n[/object]\n[/event]\n[/scenario]";
+        fs::write(temp.join("rules.cfg"), core).unwrap();
+        fs::write(temp.join("scenario.cfg"), source).unwrap();
+        let mut history = wml::parse("format=3\nplayers=hot_seat\nseed=5489").unwrap();
+        let crossing = Action::Move { from: Hex { x: 2, y: 0 }, to: Hex { x: 1, y: 0 } };
+        for action in [Action::EndTurn, crossing] {
+            history.children.push(("step".into(), Event::Player(action, None, None).encode()));
+        }
+        wml_emit::write_config(fs::File::create(temp.join("replay.cfg")).unwrap(), &history).unwrap();
+        let resume = |slot: &Slot| {
+            let (data, players) = load(slot, &temp).unwrap();
+            let mut session = Session::with_players(data.scenario.start(5489, |_| unreachable!()).unwrap(), players);
+            let events = &data.restore.as_ref().unwrap().events;
+            for event in events { event.apply(&mut session).unwrap(); }
+            save(&temp.join("resaved"), "Crossing", &data, players, None, session.history(), None, None, None).unwrap();
+        };
+        resume(&slot);
+        resume(&slots(&temp.join("resaved")).unwrap()[0]);
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn legacy_move_history_keeps_its_fixed_reinforcement_on_reload_and_resave() {

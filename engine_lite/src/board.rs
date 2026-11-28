@@ -90,6 +90,7 @@ pub struct UnitState<'rules> {
 struct UnitModifications<'rules> {
     definitions: Vec<Modification<'rules>>,
     stats: RecruitStats,
+    movement_costs: crate::movement_cost::MovementCosts,
 }
 
 impl<'rules> UnitModifications<'rules> {
@@ -99,6 +100,9 @@ impl<'rules> UnitModifications<'rules> {
         base_max_experience: i32,
     ) -> Option<Self> {
         (!definitions.is_empty()).then(|| Self {
+            movement_costs: crate::movement_cost::MovementCosts::from_wml_tables(definitions.iter()
+                .flat_map(|m| &m.definition().children).filter(|(tag, _)| tag == "effect")
+                .filter_map(|(_, effect)| crate::movement_cost::MovementCosts::replacement(effect))),
             stats: RecruitStats::from_modifications(
                 unit, definitions.iter().map(Modification::definition), base_max_experience, CombatImmunities::default(),
             ),
@@ -108,6 +112,10 @@ impl<'rules> UnitModifications<'rules> {
 }
 
 impl UnitState<'_> {
+    pub(crate) fn object_movement_costs(&self) -> Option<&crate::movement_cost::MovementCosts> {
+        self.traits.as_ref().map(|m| &m.movement_costs)
+    }
+
     fn roll_authored_choices(&mut self, roll: &StartingRoll, rng: &mut ReplayRng) {
         if roll.gender { self.female = self.unit_type.female_gender(Some(rng)); }
         if !roll.traits { return; }
@@ -381,10 +389,10 @@ impl<'rules> Battlefield<'rules> {
     /// move_unit.lua extracts the unit, finds a passable vacancy, and places it
     /// with its HP, movement, and attacks intact. It does not capture a village.
     pub(crate) fn move_event_unit(&mut self, id: &str, requested: Hex,
-        passable: impl Fn(&UnitType, &str) -> bool) -> Result<(), BoardError> {
+        passable: impl Fn(&UnitState<'_>, &str) -> bool) -> Result<(), BoardError> {
         let Some((&from, unit)) = self.units.iter().find(|(_, unit)| unit.id.as_deref() == Some(id)) else { return Ok(()) };
         if from == requested { return Ok(()); }
-        let to = self.event_vacancy(requested, Some(from), |terrain| passable(unit.unit_type, terrain))
+        let to = self.event_vacancy(requested, Some(from), |terrain| passable(unit, terrain))
             .ok_or(BoardError::NoEventVacancy(requested))?;
         let facing = match from.x.cmp(&to.x) {
             std::cmp::Ordering::Less => Some(Direction::SouthEast),
@@ -430,6 +438,14 @@ impl<'rules> Battlefield<'rules> {
         }
     }
 
+    pub(crate) fn give_movement_object(&mut self, side: usize, can_recruit: bool, object: Node) {
+        if let Some(unit) = self.units.values_mut().filter(|u| u.side == side && u.can_recruit == can_recruit).min_by_key(|u| u.serial) {
+            let mut definitions = unit.traits.take().map_or_else(Vec::new, |mods| mods.definitions);
+            definitions.push(Modification::Object(object));
+            unit.traits = UnitModifications::from_definitions(unit.unit_type, definitions, unit.base_max_experience);
+        }
+    }
+
     pub(crate) fn replace_terrain(&mut self, hex: Hex, code: &str) {
         self.map.replace_terrain(hex, code);
     }
@@ -449,7 +465,7 @@ impl<'rules> Battlefield<'rules> {
 
     /// WML [recall] places the first matching reserve beside an eligible leader.
     pub(crate) fn recall_event_unit(&mut self, filter: &crate::scenario_events::UnitFilter,
-        passable: impl Fn(&UnitType, &str) -> bool) -> Option<(usize, Hex, Hex)> {
+        passable: impl Fn(&UnitState<'_>, &str) -> bool) -> Option<(usize, Hex, Hex)> {
         let (side, slot, position, leader) = self.recall.iter().find_map(|(&side, roster)| {
             let mut leaders: Vec<_> = self.units.iter()
                 .filter(|(_, unit)| unit.side == side && unit.can_recruit).collect();
@@ -457,7 +473,7 @@ impl<'rules> Battlefield<'rules> {
             roster.iter().enumerate().find_map(|(slot, unit)| {
                 if !filter.matches_fields(None, side, unit.id.as_deref(), &unit.unit_type.id) { return None; }
                 leaders.iter().filter(|(_, leader)| leader.can_recall_unit(unit)).find_map(|(at, _)| {
-                    self.event_vacancy(**at, None, |terrain| passable(unit.unit_type, terrain))
+                    self.event_vacancy(**at, None, |terrain| passable(unit, terrain))
                         .map(|position| (side, slot, position, **at))
                 })
             })
