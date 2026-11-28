@@ -51,6 +51,7 @@ pub fn load<'rules>(
     let mut board = Battlefield::from_authored_starting_units(map, units, unit_types, experience_modifier)
         .map_err(ScenarioStartError::Board)?;
     board.biased_combat = scenario.attribute("random_mode") == Some("biased");
+    board.legacy_recruits = scenario.attribute("rustnoth_legacy_recruits") == Some("yes");
 
     let sides = read_sides(scenario);
     Ok(ScenarioStart {

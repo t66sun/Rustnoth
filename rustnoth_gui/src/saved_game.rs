@@ -82,7 +82,7 @@ pub(super) fn save(
     campaign: Option<CampaignSave<'_>>,
 ) -> io::Result<()> {
     let mut record = Node::default();
-    set(&mut record, "format", 4);
+    set(&mut record, "format", 5);
     set(&mut record, "seed", data.seed);
     if let Some(CampaignSave::Checkpoint(_, _, hint)) = &campaign {
         set(&mut record, "kind", "campaign");
@@ -152,7 +152,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
     let dir = &slot.directory;
     let record = wml::parse(fs::read(dir.join("replay.cfg"))?)?;
     let format = record.attribute("format");
-    if !matches!(format, Some("1" | "2" | "3" | "4")) {
+    if !matches!(format, Some("1" | "2" | "3" | "4" | "5")) {
         return Err(invalid("Unsupported Rustnoth save version").into());
     }
     let seed = record
@@ -201,7 +201,7 @@ pub(super) fn load(slot: &Slot, root: &Path) -> Result<(BoardData, Players), Box
         })
     });
     let mut source = fs::read(dir.join("scenario.cfg"))?;
-    if let Some(version @ ("1" | "2" | "3")) = format { source = legacy_scenario(&source, version)?; }
+    if let Some(version @ ("1" | "2" | "3" | "4")) = format { source = legacy_scenario(&source, version)?; }
     let mut data = BoardData::from_source(
         &source,
         &fs::read(dir.join("rules.cfg"))?,
@@ -253,8 +253,9 @@ fn legacy_scenario(bytes: &[u8], version: &str) -> Result<Vec<u8>, Box<dyn Error
     }
     let mut document = wml::parse(bytes)?;
     for (_, scenario) in document.children.iter_mut().filter(|(tag, _)| tag == "scenario") {
+        set(scenario, "rustnoth_legacy_recruits", "yes");
         for (tag, child) in &mut scenario.children {
-            if tag == "event" { fixed_events(child, version != "3"); }
+            if tag == "event" && version != "4" { fixed_events(child, version != "3"); }
             if tag == "side" && version == "1" {
                 fixed(child);
                 for (_, unit) in child.children.iter_mut().filter(|(tag, _)| tag == "unit" || tag == "leader") {
@@ -273,6 +274,25 @@ mod tests {
     use super::*;
     use engine_lite::{board::AttackChoice, fixed_match::Action};
     use rustnoth_gui::session::Session;
+
+    #[test]
+    fn version_four_keeps_its_recruit_stream_and_authored_objects_on_resave() {
+        let temp = std::env::temp_dir().join(format!("rustnoth-legacy-recruit-{}", std::process::id()));
+        fs::create_dir_all(temp.join("data/core/images")).unwrap();
+        fs::write(temp.join("rules.cfg"), "[units]\n[/units]").unwrap();
+        fs::write(temp.join("scenario.cfg"), "[scenario]\nid=old\n[event]\nname=prestart\n[object]\n[/object]\n[/event]\n[/scenario]").unwrap();
+        fs::write(temp.join("replay.cfg"), "format=4\nplayers=hot_seat\nseed=5489").unwrap();
+        let old = Slot { directory: temp.clone(), label: "legacy".into() };
+        let (data, players) = load(&old, &temp).unwrap();
+        let saves = temp.join("saves");
+        save(&saves, "again", &data, players, None, &[], None, None, None).unwrap();
+        let (reopened, _) = load(&slots(&saves).unwrap()[0], &temp).unwrap();
+        let source = wml::parse(&reopened.source).unwrap();
+        let scenario = &source.children.iter().find(|(tag, _)| tag == "scenario").unwrap().1;
+        assert_eq!(scenario.attribute("rustnoth_legacy_recruits"), Some("yes"));
+        assert_eq!(scenario.children[0].1.children[0].0, "object");
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn a_version_three_water_crossing_survives_load_and_resave() {

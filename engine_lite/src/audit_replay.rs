@@ -95,7 +95,7 @@ fn write_steps<'rules>(
         let consumption = if let Some(recorded) = recorded {
             let kind = match action {
                 Action::Attack(_) => "combat",
-                Action::Recruit { .. } => "recruit trait",
+                Action::Recruit { .. } => "recruit",
                 Action::Move { .. } => "movement event",
                 _ => unreachable!("checked the native RNG step before replay"),
             };

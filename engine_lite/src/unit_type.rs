@@ -22,6 +22,7 @@ pub struct UnitType {
     pub id: String,
     pub(crate) race: String,
     genders: Vec<bool>,
+    pub(crate) recruit_name_draws: [u8; 2],
     pub(crate) undead_variation: String,
     pub(crate) variation_id: String,
     variations: BTreeMap<String, UnitType>,
@@ -136,6 +137,7 @@ impl UnitType {
         let mut result = Self {
             id: text("id").to_owned(),
             race: text("race").to_owned(),
+            recruit_name_draws: catalog.recruit_name_draws(&unit),
             genders: text("gender").split(',').filter_map(|g| match g.trim() {
                 "male" => Some(false), "female" => Some(true), _ => None,
             }).collect(),
